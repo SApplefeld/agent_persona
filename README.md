@@ -193,17 +193,31 @@ Three goal tools do more than their descriptions state, and this section is for 
 
 ### The task list
 
-A persona tracks work in three tiers, each with its own store field and its own verbs. The task list is the lightest: a short checklist of working items under whichever goal is active right now. The goal tree above it holds the work itself, a root, its plans and their task-kind leaves, driven by the `goal_*` verbs. The long-term goals beside the tree hold aims that never become active work, as "Findings, proposals and long-term goals" below states. A goal-tree task is an entry the controller activates, scores and completes. A task-list item is none of those. It is a note the persona keeps while it works one goal, and nothing in the plugin schedules it.
+The task list is a short checklist of working items a persona keeps under whichever goal is active right now. It is the lightest of three tracking tiers. The goal tree holds the work itself: a root, its plans and their task-kind leaves, driven by the `goal_*` verbs. The long-term goals beside the tree hold aims that never become active work, as "Findings, proposals and long-term goals" below states.
 
-Three verbs drive the list, and none of them is gated on whose turn it is, since the persona drives its own list. `task_add` adds one item to the active goal's list. It refuses when no goal is active, when the active goal already holds `MAX_TASKS_PER_GOAL` items (20, done items included), when the text is empty, and under a plan run. It folds line breaks in the text to spaces and cuts it at `TASK_TEXT_MAX_CHARS` (200). `task_done` marks one item done by the id `task_add` returned. It refuses an id that is not under the active goal as unknown, and an item already done stays as it was. `task_clear` removes every item of the active goal's list and leaves other goals' lists alone. All three refuse on a store that has not loaded and in a session that does not hold the persona, and a reader session does not register them. Each writes the store through `persistOrRollBack`, so a write that fails or yields leaves no change the verb reported.
+A task-list item differs from a goal tree's task-kind leaf. A leaf is an entry the controller activates and scores, and the persona or the controller completes it. A task-list item is a note the persona keeps while it works one goal. Nothing in the plugin activates, scores or schedules it.
 
-The list is scoped to one goal. Each item names the goal it was added under, and only the active goal's items are shown or changed. An item under an open goal that is not active waits until that goal is active again. Completing a goal clears its list. When a goal is complete or abandoned, every item under it is dropped at the next store write and at every load (`reapCompletedGoalTasks` in `hooks/agent-state.ts`). This holds on every path a goal completes by, the root included, so a goal reopened later starts with an empty list.
+Three verbs drive the list. None of them is gated on whose turn it is. The persona drives its own list, so the turn-origin gate the goal-creation acts carry does not apply.
 
-The completion authority runs one way. A goal's completion clears its tasks, but finishing every task never completes the goal. When the last open item is marked done, `task_done`'s result and the injected block both suggest `goal_done`, and the goal stays active until the persona or the controller completes it.
+- `task_add` adds one item to the active goal's list. It refuses when no goal is active, when the active goal is a plan entry, when the text is empty, and when the goal already holds `MAX_TASKS_PER_GOAL` (20) items. Done items count toward that cap. It folds line breaks in the text to spaces and cuts it at `TASK_TEXT_MAX_CHARS` (200).
+- `task_done` marks one item done by the id `task_add` returned. It refuses an id not under the active goal as unknown. An item already done is left as it was.
+- `task_clear` removes every item of the active goal's list. Other goals' lists are left alone.
 
-On every prompt, `prompt.submit` injects a `[TASK LIST]` block right after `[GOAL TREE]`. It is injected only when a goal is active, no node from that goal up to the root carries a `planPath`, and the active goal holds at least one item. The block names the goal and lists open items before done ones, each in the order it was added: an open item reads `- <id>: <text>` and a done one `- <id> (done): ~~<text>~~`. It shows at most `TASK_LIST_MAX_LINES` (12) items. Past that, one line reads `...and N more`, followed by `(M open)` when any hidden item is still open. Every id and text is cut to its cap, folded to one line and passed through `bracketSafeText`, so text read back from the store cannot forge a delivery label. A reader session injects nothing.
+`task_done` and `task_clear` also refuse when no goal is active. All three refuse on a store that has not loaded, and in a session that does not hold the persona. A reader session does not register them. Each writes the store through `persistOrRollBack`. A write that fails or yields is undone in memory, and the verb reports that it was not saved.
 
-A plan run keeps its own tracker. Where the active goal or any ancestor carries a `planPath`, the plan document's chapters are the task list: `task_add` refuses and names the plan document, and no `[TASK LIST]` block is injected. The chapters are not touched by any task verb.
+The list is scoped to one goal. Each item names the goal it was added under, and the verbs and the injected block see only the active goal's items. An item under an open goal that is not active waits until that goal is active again.
+
+Completing a goal clears its list. An item is dropped once its goal is complete, abandoned or gone from the tree, at the next `persist` write and at every load (`reapCompletedGoalTasks` in `hooks/agent-state.ts`). This holds on every path by which a goal completes, the root included. So a goal reopened later starts with an empty list, and a `goal_create` that replaces the tree drops every item.
+
+The completion authority runs one way. A goal's completion clears its tasks. Finishing every task never completes the goal. When the last open item is marked done, `task_done`'s result and the injected block both suggest `goal_done`. The goal stays active until the persona or the controller completes it.
+
+When a goal is active, is not a plan entry, and holds at least one item, the `prompt.submit` hook injects a `[TASK LIST]` block right after `[GOAL TREE]`. That hook runs for a prompt from outside the plugin: the operator's keyboard, a channel message or an SDK caller. The plugin's own submitted turns, a nudge, an ask re-raise or an inbox delivery, bypass the hook and carry no block. A reader session injects nothing.
+
+The block names the goal and lists open items before done ones, each group in the order it was added. An open item reads `- <id>: <text>`, and a done one reads `- <id> (done): ~~<text>~~`. It shows at most `TASK_LIST_MAX_LINES` (12) items. Past that, one line reads `...and N more`, followed by `(M open)` when any hidden item is still open. Every id and text is cut to its cap, folded to one line and passed through `bracketSafeText`, so text read back from the store cannot forge a delivery label.
+
+A plan entry keeps its own tracker. Where the active goal is a plan entry, as "What a plan entry is" above defines it, the plan document's Chapters are its task list. `task_add` refuses and names the plan document, and no `[TASK LIST]` block is injected.
+
+`.kit/task-store-unit-test.mjs` pins the store field, its migration and its reap at load. The task-list cases in `.kit/controller-tick-test.mjs` pin the three verbs, the reap at `persist` and the injected block.
 
 ### C4: Clock is enough
 
@@ -561,7 +575,7 @@ The plugin tracks its own model-call cost and caps nudge frequency. All options 
 
 **Ledger:** The plugin estimates token cost per site (classify, reason, selfReview, planner) as prompt chars over 4 plus the maxTokens cap. The `nudge` site is count-only because the nudge's cost is a main-model turn the hooks cannot measure.
 
-**Test coverage:** `.kit/cost-ledger-unit-test.mjs` (ledger math), `.kit/cost-migration-test.mjs` (state migration), `.kit/task-store-unit-test.mjs` (the task list's store field, its migration and its reap), `.kit/controller-tick-test.mjs` (D2, D4, AM7, D3 deterministic cases).
+**Test coverage:** `.kit/cost-ledger-unit-test.mjs` (ledger math), `.kit/cost-migration-test.mjs` (state migration), `.kit/controller-tick-test.mjs` (D2, D4, AM7, D3 deterministic cases).
 
 **AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. The engine version the typings were written by is line 1 of `.claude/types/claude-code.d.ts`.
 
