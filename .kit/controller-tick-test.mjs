@@ -20581,14 +20581,14 @@ async function casePlanHealth_continuedUnpromptedTrueUnnudgedFalseNudged(clock) 
     afterNudgedTurn.length === 1, afterNudgedTurn);
 }
 
-// Fix round 1, F1: the nudge site captures the call it is settling before
+// The nudge site captures the call it is settling before
 // $.prompt.submit parks, and settles that captured call rather than
 // whatever the field holds once the submit resolves. A whole nudged turn
 // can open and complete, arming a fresh call for the same entry, while the
-// nudge's own submit is still parked; the fix keeps the false write on the
-// call the nudge was actually about.
+// nudge's own submit is still parked; the false write stays on the call
+// the nudge was actually about.
 async function casePlanHealth_continuedUnpromptedSettlesTheCallItWasArmedForAcrossAParkedSubmit(clock) {
-  console.log("\n=== Section 5 plan health (fix round 1, F1): a nudge settles the call it was armed for, not one armed while its submit parked ===");
+  console.log("\n=== Section 5 plan health: a nudge settles the call it was armed for, not one armed while its submit parked ===");
   const h = await planHealthHarness("s5_cu_parked", clock);
   h.setHttpResponse(jevPicking());
   await planHealthTurn(h, "t-cu-parked-1", "Working on it.");
@@ -20631,12 +20631,12 @@ async function casePlanHealth_continuedUnpromptedSettlesTheCallItWasArmedForAcro
     !after.outcomes.some((o) => o.kind === "continued_unprompted" && o.callStampId === after.calls[1].stampId), after.outcomes);
 }
 
-// Fix round 1, F3: the true rule is unaccounted-and-not-channel, not merely
+// The true rule is unaccounted-and-not-channel, not merely
 // "not a nudge". A channel message and a delivered record are each somebody
 // or something else acting first, so the next completed turn opening from
 // either writes false.
 async function casePlanHealth_continuedUnpromptedFalseOnChannelAndDeliveryNextTurns(clock) {
-  console.log("\n=== Section 5 plan health (fix round 1, F3): continued_unprompted is false where the next completed turn was a channel message or a delivery ===");
+  console.log("\n=== Section 5 plan health: continued_unprompted is false where the next completed turn was a channel message or a delivery ===");
   const channelRun = await planHealthHarness("s5_cu_channel", clock);
   channelRun.setHttpResponse(jevPicking());
   await planHealthTurn(channelRun, "t-cu-ch-1", "Working on it.");
@@ -20658,10 +20658,10 @@ async function casePlanHealth_continuedUnpromptedFalseOnChannelAndDeliveryNextTu
     deliveryOutcomes.length === 1 && deliveryOutcomes[0].value === "false" && deliveryOutcomes[0].callStampId === deliveryFirstCall.stampId, deliveryOutcomes);
 }
 
-// Fix round 1, F2: a nudge for a different entry leaves the held call
+// A nudge for a different entry leaves the held call
 // unwritten at the nudge site, since that nudge says nothing about it.
 async function casePlanHealth_continuedUnpromptedNudgeForAnotherEntryLeavesTheHeldCallUnwritten(clock) {
-  console.log("\n=== Section 5 plan health (fix round 1, F2): a nudge for a different entry leaves the held call unwritten ===");
+  console.log("\n=== Section 5 plan health: a nudge for a different entry leaves the held call unwritten ===");
   const h = await planHealthSiblingsHarness("s5_cu_entry_scope", clock);
   await planHealthTurn(h, "t-es-1", "Working on A.");
   const firstCall = planHealthLines(h).calls[0];
@@ -20676,13 +20676,13 @@ async function casePlanHealth_continuedUnpromptedNudgeForAnotherEntryLeavesTheHe
     outcomes.length === 0, outcomes);
 }
 
-// Fix round 1, the Tests line's at-most-once case, driven across an entry
+// The at-most-once case, driven across an entry
 // that carries no plan document: the first call is settled by the very
 // next completed turn regardless of that turn's entry, and a non-plan-entry
 // turn arms no new call to settle in its place, so a further turn writes
 // nothing more for the first call.
 async function casePlanHealth_continuedUnpromptedAtMostOnceAcrossFurtherTurns(clock) {
-  console.log("\n=== Section 5 plan health (fix round 1): continued_unprompted lands at most once for the first call across further turns ===");
+  console.log("\n=== Section 5 plan health: continued_unprompted lands at most once for the first call across further turns ===");
   clock.set(T0);
   const tree = plan2Goals({ chapterCount: 1 });
   tree.goals.push(makeGoalNode({ id: "task-bare", parentId: "root-1", kind: "task", status: "paused", maxRounds: 10, createdAt: T0 - 4000 }));
@@ -20720,11 +20720,11 @@ async function casePlanHealth_continuedUnpromptedAtMostOnceAcrossFurtherTurns(cl
     afterSecond.outcomes.filter((o) => o.kind === "continued_unprompted").length === 1, afterSecond.outcomes);
 }
 
-// Fix round 1, the Tests line's failed-submit case: a rejected nudge submit
+// The failed-submit case: a rejected nudge submit
 // restores the held record rather than leaving it lost, and the next
 // un-originated turn then settles it true.
 async function casePlanHealth_continuedUnpromptedRestoresOnAFailedSubmitThenSettlesTrue(clock) {
-  console.log("\n=== Section 5 plan health (fix round 1): a failed nudge submit restores the held record, settled true by the next turn ===");
+  console.log("\n=== Section 5 plan health: a failed nudge submit restores the held record, settled true by the next turn ===");
   const h = await planHealthHarness("s5_cu_failed_submit", clock);
   h.setHttpResponse(jevPicking());
   await planHealthTurn(h, "t-cu-fail-1", "Working on it.");
