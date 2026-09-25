@@ -15599,6 +15599,7 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
     await primeCountToTwo(h, clock);
     const before = await countReading(h, clock);
     const ok = async () => ({ result: "ok" });
+    const nudgeQueued = h.queuedTurnTexts.some(t => t.startsWith("[GOAL]"));
     if (midTurn) await h.handlers["turn.start"](h.fake, { turnId: "t-across" }, ok);
     const store = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
     const takeoverEpoch = (store.default.epoch ?? 0) + 5;
@@ -15614,9 +15615,40 @@ async function caseCount_activationAndTheAskCloseReset(clock) {
     const promoted = getState(h).decisions.some(d => d.action === "reader_promoted");
     if (midTurn) await h.handlers["turn.complete"](h.fake, { turnId: "t-across", answer: "Still looking.", reason: "completed" }, ok);
     check(`count reader promotion (${leg}) setup: the count read 2, the yield log names the new owner, then the session was promoted back`,
-      before === 2 && yielded && promoted, { before, yielded, promoted, actions: getState(h).decisions.slice(-4).map(d => d.action) });
+      before === 2 && nudgeQueued && yielded && promoted, { before, nudgeQueued, yielded, promoted, actions: getState(h).decisions.slice(-4).map(d => d.action) });
     const after = await countReading(h, clock);
     check(`count reader promotion (${leg}): the count reads 0 on the promoted session`, after === 0, after);
+  }
+  // A turn that starts while the nudged turn is still open does not clear
+  // the reset the nudged turn's activation recorded.
+  clock.set(T0);
+  {
+    const h = await countHarness("count_activate_overlapping_turn");
+    await primeCountToTwo(h, clock);
+    const before = await countReading(h, clock);
+    const nudgeQueued = h.queuedTurnTexts.some(t => t.startsWith("[GOAL]"));
+    const ok = async () => ({ result: "ok" });
+    await h.handlers["turn.start"](h.fake, { turnId: "t-nudged" }, ok);
+    await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done", turnId: "t-nudged" }, async () => ({ result: "passthrough" }));
+    await h.handlers["turn.start"](h.fake, { turnId: "t-beside", text: "an unrelated prompt" }, ok);
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-beside", answer: "Done.", reason: "completed" }, ok);
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-nudged", answer: "Marked it done.", reason: "completed" }, ok);
+    check("count activate with an overlapping turn setup: the count read 2, a nudge was queued, goal_done activated task-2",
+      before === 2 && nudgeQueued && getState(h).activeGoalId === "task-2", { before, nudgeQueued, active: getState(h).activeGoalId });
+    const after = await countReading(h, clock);
+    check("count activate with an overlapping turn: the nudged turn's unlined answer leaves the count 0", after === 0, after);
+  }
+  // session.start fires again on a plugin reload while the module's session
+  // state lives on, so the count is dropped there.
+  clock.set(T0);
+  {
+    const h = await countHarness("count_session_restart");
+    await primeCountToTwo(h, clock);
+    const before = await countReading(h, clock);
+    await h.handlers["session.start"](h.fake, {}, async () => ({}));
+    const after = await countReading(h, clock);
+    check("count session restart setup: the count read 2 before the second session.start", before === 2, before);
+    check("count session restart: the count reads 0 after the second session.start", after === 0, after);
   }
   for (const close of ["expiry", "answer"]) {
     clock.set(T0);

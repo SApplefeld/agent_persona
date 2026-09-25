@@ -930,11 +930,13 @@ let toolCallsThisTurn = 0;
 // the calls that make a turn a working turn for the nudge count's reset.
 let nudgeCountWorkThisTurn = 0;
 
-// Whether this turn activated an entry or replaced the tree, reset at
-// turn.start beside nudgeCountWorkThisTurn. The count resets on every such
-// act, and a nudged answer the same turn closes with no status line resets it
-// rather than adding one, so the entry the turn activated starts at zero.
-let countResetThisTurn = false;
+// Whether the count was reset, by an activation, a new tree or a loaded
+// state, since the open nudged reading began. It is cleared where that
+// reading opens and where it is spent, not at every turn.start, so a turn
+// starting beside the nudged one cannot clear it. A nudged answer with no
+// status line then resets the count rather than adding one, so the entry
+// activated or loaded under it starts at zero.
+let countResetSinceNudgeOpened = false;
 
 // Health run helper (E2).
 async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
@@ -2321,7 +2323,7 @@ const dropDecision = (entry: AgentState["decisions"][number]): void => {
 // "activated" entry that says "No node to activate".
 export const activate = (dp: any, nextId: string | null, reason: string): void => {
   sess.nudgedAnswersWithoutStatus = 0;
-  countResetThisTurn = true;
+  countResetSinceNudgeOpened = true;
   sess.lastNudgeAt = 0;
   if (nextId) {
     sess.state.decisions.push({
@@ -2916,6 +2918,11 @@ export const register: Register = async (on, options) => {
       $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
       return next(e);
     }
+    // session.start fires again on a plugin reload, and sess outlives the
+    // register that holds the nudged reading, so a count carried from before
+    // the reload is dropped with the state this start loads afresh.
+    sess.nudgedAnswersWithoutStatus = 0;
+    countResetSinceNudgeOpened = false;
     try {
       sess.mySessionId = String(await $.session.id());
     } catch {
@@ -3869,7 +3876,7 @@ export const register: Register = async (on, options) => {
             // The heartbeat runs with a turn open, so a nudged turn begun
             // before the yield is not added to this tree's count either.
             sess.nudgedAnswersWithoutStatus = 0;
-            countResetThisTurn = true;
+            countResetSinceNudgeOpened = true;
             sess.state.activeSessionId = sess.mySessionId;
             sess.state.epoch += 1;
             sess.myEpoch = sess.state.epoch;
@@ -6517,7 +6524,6 @@ export const register: Register = async (on, options) => {
     // Item 2 sub-bullet: reset the tool-call counter for this turn.
     toolCallsThisTurn = 0;
     nudgeCountWorkThisTurn = 0;
-    countResetThisTurn = false;
     // Steer 68/69: capture whether this turn opened from a channel message,
     // then clear the handoff flag so an unrelated later turn never inherits
     // it. Reset the reply-tracking flag for the turn now starting.
@@ -6574,7 +6580,10 @@ export const register: Register = async (on, options) => {
       unexpectTurn(matched);
       currentTurnKind = matched.kind;
       if (matched.kind === "delivery") stampRecordId = matched.recordId;
-      if (matched.kind === "nudge") nudgedTurnId = e.turnId ? e.turnId : null;
+      if (matched.kind === "nudge") {
+        nudgedTurnId = e.turnId ? e.turnId : null;
+        countResetSinceNudgeOpened = false;
+      }
     } else {
       currentTurnKind = "unaccounted";
       // A delivery entry outlives its record when no turn opens with a
@@ -6984,9 +6993,10 @@ export const register: Register = async (on, options) => {
     // cannot be placed never counts toward the cap; a subagent's completion
     // under an id other than the nudged turn's; and an aborted, errored or
     // refused turn. A nudged completion with no answer
-    // opens with none of the three lines, so it adds one. Where the same turn
-    // activated an entry or replaced the tree, its nudged answer resets the
-    // count rather than adding one, so the reset that activation performs is
+    // opens with none of the three lines, so it adds one. Where an entry was
+    // activated, the tree replaced or the state loaded while the nudged turn
+    // was open, its answer resets the count rather than adding one, so the
+    // reset that act performs is
     // not undone by the answer that follows it. Only the owner session keeps
     // the count. The other resets are activation, which activate() and the
     // switch and goal_resume sites perform, a new tree from goal_create, the
@@ -6998,7 +7008,7 @@ export const register: Register = async (on, options) => {
     } else if (nudgeCountWorkThisTurn > 0 || wasChannelOrigin) {
       sess.nudgedAnswersWithoutStatus = 0;
     } else if (completesNudgedTurn && !(e.aborted || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal")) {
-      if (statusLine !== null || countResetThisTurn) sess.nudgedAnswersWithoutStatus = 0;
+      if (statusLine !== null || countResetSinceNudgeOpened) sess.nudgedAnswersWithoutStatus = 0;
       else sess.nudgedAnswersWithoutStatus += 1;
     }
 
@@ -7611,7 +7621,7 @@ export const register: Register = async (on, options) => {
       // under the previous persona neither carry into it nor are added by
       // the answer closing this turn.
       sess.nudgedAnswersWithoutStatus = 0;
-      countResetThisTurn = true;
+      countResetSinceNudgeOpened = true;
       // F9: commons is the single arbiter. Claim first, then check if a live
       // earlier holder exists. Only the commons winner takes ownership.
       const resource = `persona:${sess.persona}`;
@@ -7810,7 +7820,7 @@ export const register: Register = async (on, options) => {
       });
       // H2b: a new goal inherits a clean nudge budget.
       sess.nudgedAnswersWithoutStatus = 0;
-      countResetThisTurn = true;
+      countResetSinceNudgeOpened = true;
       sess.lastNudgeAt = 0;
 
       const writeOk = await persist($);
@@ -8548,7 +8558,7 @@ export const register: Register = async (on, options) => {
       target.updatedAt = Date.now();
       sess.state.activeGoalId = target.id;
       sess.nudgedAnswersWithoutStatus = 0;
-      countResetThisTurn = true;
+      countResetSinceNudgeOpened = true;
       sess.lastNudgeAt = 0;
       sess.state.decisions.push({
         timestamp: Date.now(),
