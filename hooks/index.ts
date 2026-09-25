@@ -4245,9 +4245,10 @@ export const register: Register = async (on, options) => {
       // D5: if a pending record answers the open ask, close the ask first
       // (ask_answered path) before the general drain.
       // The open-turn reading is taken here rather than trusted from the
-      // caller. The tick's blocks before this call submit, and a submit does
-      // not resolve until the session is next idle, so a turn can have opened
-      // underneath them by the time this line runs. This drain marks
+      // caller. The tick's blocks before this call submit, and a submit
+      // resolves once its turn has started or been queued rather than when
+      // that turn ends, so a turn can have opened underneath them by the time
+      // this line runs. This drain marks
       // a record delivered and then submits it, and a submit into an open turn
       // is queued rather than answered, so the record would carry a delivered
       // stamp with no turn that ever read it. Skipping leaves it pending and
@@ -8153,9 +8154,9 @@ export const register: Register = async (on, options) => {
     // The completion drain: a turn this session saw start has closed and no
     // other is open, so the next waiting record is delivered now rather than
     // at the next tick, and a burst drains one record per turn. It runs after
-    // this handler rather than inside it, because a submit settles only when
-    // the session is next idle and an awaited one would hold the hook chain
-    // open. A refused submit is recorded inside the drain as at the tick. A
+    // this handler rather than inside it, so its store reads and its submit
+    // never hold the hook chain the engine awaits before the next turn
+    // starts. A refused submit is recorded inside the drain as at the tick. A
     // throw out of it is caught here into one decision, and skips it wrote
     // are saved, since no tick save follows this path.
     const drain = drainInboxNow;
