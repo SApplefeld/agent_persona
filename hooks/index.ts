@@ -2595,29 +2595,58 @@ export const register: Register = async (on, options) => {
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
   // anywhere during the current turn. Reset at turn.start, set by tool.call.
   let replyCalledThisTurn = false;
-  // The turns open right now, each id against the clock at its turn.start, so
-  // the controller tick can skip while the worker is inside one.
+  // The turns open right now, each key against the clock at the first event
+  // that opened it, so the controller tick can skip while the worker is inside
+  // one. Three events open an entry, because each one proves a live turn and
+  // the harness under-reports turn.start: turn.start under its id, and
+  // prompt.submit and tool.call under the event's turn id where it carries one
+  // and under OPEN_TURN_SYNTHETIC_KEY otherwise. A tool call carries no turn
+  // id and a prompt submitted while idle carries none, so those two take the
+  // synthetic key. An entry already open keeps its first time, so repeated
+  // tool calls do not move it.
+  //
+  // A turn.complete closes the id it carries where it carries one, and always
+  // closes the synthetic key. The synthetic key names no turn, so no
+  // completion can be matched to it, and closing it at any completion is what
+  // keeps it from silencing nudges for the life of the session. It therefore
+  // lives only until the next completion of any turn, a background subagent's
+  // included; the next tool call of a turn still running opens it again.
+  //
   // Keyed by id rather than held as a boolean because turn events are not
   // reliably paired:
   // two turns can be open at once, and a turn.complete can arrive for a turn
   // whose turn.start this session never saw. A boolean carries only the last
   // event, so any single completion reads as "no turn open" however many turns
   // are still running, and the tick then nudges into a live turn. A completion
-  // for an id not in the map removes nothing and leaves the reading alone.
+  // for an id not in the map removes no id entry, so it cannot clear a
+  // different turn still open under its own id.
   //
   // The map holds no entry a live process cannot account for. A turn.complete
   // is delivered whatever the turn's reason, an abort included, so an id is
   // left behind only by a failure below the harness, and a failure that takes
-  // the host down takes this in-process map with it. That is why the reading
-  // needs no age-out: there is no state a running process can reach in which
-  // an entry here is not a turn.
+  // the host down takes this in-process map with it. The synthetic key closes
+  // at every completion, so it cannot outlive the turn that opened it. That is
+  // why the reading needs no age-out: there is no state a running process can
+  // reach in which an entry here is not a turn.
   //
-  // The value is that turn's own start time. turn.complete reads it two ways:
+  // The value is the time the entry opened. turn.complete reads it two ways:
   // the long-turn record measures against the completing turn's own entry, and
   // sess.turnStartedAt, the stamp a reader session sees, is derived from the
-  // earliest entry left after the delete.
-  const openTurns = new Map<string, number>();
+  // earliest entry left after the delete. That stamp is written only by the
+  // two turn handlers, so an entry prompt.submit or tool.call opens reaches it
+  // at the next turn.start.
+  // The key an event with no turn id opens. A symbol, so no turn id the
+  // harness mints can collide with it.
+  const OPEN_TURN_SYNTHETIC_KEY: unique symbol = Symbol("open-turn-without-id");
+  const openTurns = new Map<string | typeof OPEN_TURN_SYNTHETIC_KEY, number>();
   const turnIsOpen = () => openTurns.size > 0;
+  // Opens the reading for an event that proves a live turn: under its turn id
+  // where it carries one, under the synthetic key otherwise. An entry already
+  // open keeps the time it first opened.
+  const openTurnUnder = (turnId: string | undefined): void => {
+    const key = typeof turnId === "string" && turnId !== "" ? turnId : OPEN_TURN_SYNTHETIC_KEY;
+    if (!openTurns.has(key)) openTurns.set(key, Date.now());
+  };
   // The published stamp names the earliest turn still open, or null when none
   // is. Both turn handlers derive it through here rather than each writing its
   // own value: a start that simply stamped its own clock would move the stamp
@@ -6404,6 +6433,10 @@ export const register: Register = async (on, options) => {
     sess.state.monitor.lastTurnId = e.turnId;
     // The turn is open from here until a completion carrying this same id.
     openTurns.set(e.turnId, Date.now());
+    // The id goes to the plugin's log line rather than the decision ring,
+    // which DECISIONS_MAX caps and a per-turn record would crowd. It is
+    // event-supplied text, so it is folded to one line and bracket-safe.
+    try { $.ui.log(`Agentic: turn start ${kaizenLine(String(e.turnId))}`); } catch { /* non-fatal */ }
     // Plan item 8.3: publish a start so a reader session can report how long a
     // pending record has waited. The value names the earliest turn still open,
     // which on an overlap is not this one. Derived through the helper so this
@@ -6575,8 +6608,11 @@ export const register: Register = async (on, options) => {
     // This turn's own entry, read before the delete below removes it.
     const mapStartedAt = openTurns.get(e.turnId);
     // Closing by id: a completion for a turn this session never saw start
-    // removes nothing, so it cannot clear a different turn that is still open.
+    // removes no id entry, so it cannot clear a different turn that is still
+    // open. The synthetic key names no turn, so every completion closes it.
     openTurns.delete(e.turnId);
+    openTurns.delete(OPEN_TURN_SYNTHETIC_KEY);
+    try { $.ui.log(`Agentic: turn complete ${kaizenLine(String(e.turnId ?? "none"))}`); } catch { /* non-fatal */ }
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
     // point that knows both ends of the turn.
@@ -7403,6 +7439,9 @@ export const register: Register = async (on, options) => {
 
   // --- tool.call: serve tools, enforce constraints ---
   on("tool.call", async ($, e, next) => {
+    // A tool call proves a live turn. It carries no turn id, so it opens the
+    // synthetic key, before any await so a tick running now reads it.
+    openTurnUnder(undefined);
     sess.state.monitor.totalToolCalls += 1;
     if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
     // Steer 68/69: the reply tool ran somewhere in this turn, so the
@@ -9003,6 +9042,9 @@ export const register: Register = async (on, options) => {
   // Actuator 1: context injection (always on, free, cannot be refused).
   // Both owner and passive reader can inject (read-only access to sess.state).
   on("prompt.submit", async ($, e, next) => {
+    // A prompt proves a live turn: the one it was delivered into, under that
+    // turn's id, or the one it opens from idle, under the synthetic key.
+    openTurnUnder(e.turnId);
     // Capture the prompt text for the goal scorer.
     currentPrompt = e.text;
     // Item 2 backstop safety: mark whether this genuine external turn is

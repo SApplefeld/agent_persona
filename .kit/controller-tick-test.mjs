@@ -3170,6 +3170,10 @@ async function main() {
     await caseItem81_goalEditDropStillRefusesActive_control(clock);
     await caseNudgeGuard_sentBetweenTurns_control(clock);
     await caseR58f3_nudgeInsideOpenTurnNotSent(clock);
+    await caseOpenTurn_toolCallWithNoStartHoldsTheNudge(clock);
+    await caseOpenTurn_idlePromptWithNoStartHoldsTheNudge(clock);
+    await caseOpenTurn_deliveredPromptOpensUnderItsTurnId(clock);
+    await caseOpenTurn_turnIdLoggedAtStartAndCompletion(clock);
     await caseR58f3_capPausesWithNoAsk(clock);
     await caseR60f3b_reactivationAfterCapPause(clock);
     await caseR117a_concurrentTicksNudgeOnce(clock);
@@ -8196,6 +8200,10 @@ function setFleetRoster(h, names) {
 // produced rows at all.
 async function fleetRowsVia(h) {
   const result = await callTool(h, { tool: "mcp__agentic-plugin__fleet_status" });
+  // A tool call opens the open-turn reading, and the real one is always
+  // followed by its turn's completion, which closes it. The completion is
+  // delivered here so the next tick reads the session as between turns.
+  await closeTurn(h, "fleet-status-read");
   if (typeof result?.result !== "string") return { rows: [], raw: result };
   try { return { ...JSON.parse(result.result), raw: result }; } catch { return { rows: [], raw: result }; }
 }
@@ -9489,15 +9497,19 @@ async function caseSection6Fleet_oneShutdownIsOneClassWhateverTheEntryDoes(clock
 
   // beta's session stopped: its entry is still in the store and its heartbeat
   // is older than the staleness window.
-  h.storeMap.set("commons:session-1", {
+  const seedStoppedBeta = () => h.storeMap.set("commons:session-1", {
     sessionId: "session-1",
     lastSeen: now - 120_000,
     claims: [{ resource: "persona:beta", claimedAt: now - 600_000 }],
     turnStartedAt: null,
     workdir: "D:/fleetwake/p1/work",
   });
+  seedStoppedBeta();
   const rows = await fleetRowsVia(h);
   check("s6 fleet one shutdown: beta's row holds no claim and still carries a heartbeat age", rows.rows.length === 2 && rows.rows[1].claimHeld === false && typeof rows.rows[1].heartbeatAgeMs === "number", rows.rows);
+  // The completion fleetRowsVia delivers reads the claims, which collects an
+  // entry this stale, so the entry is seeded again for the tick to read it.
+  seedStoppedBeta();
   await tickAndSettle(h, clock);
   const spoke = fleetPrompts(h);
   check("s6 fleet one shutdown: the standing entry reports the no-live-claim class", spoke.length === 1 && spoke[0].includes("beta: healthy -> no live claim while the roster enables it"), h.promptSubmits);
@@ -14112,6 +14124,9 @@ async function casePlanRecord2_roundTextAtTheFourSites(clock) {
     // Site 1: the worker prompt's [GOAL TREE] block.
     const r = await h.handlers["prompt.submit"](h.fake, { text: "keep going" }, async () => ({}));
     const goalBlock = (r.context || []).find(b => b.includes("[GOAL TREE]")) || "";
+    // The prompt opens the open-turn reading, and the turn it opens ends in a
+    // completion, which closes it before the tick below.
+    await closeTurn(h, "round-text-turn");
     // Sites 3 and 4: the idle summary handed to the classifier, and the
     // skip-hash subset, whose text is read through the status-line-free
     // summary and whose round line is the same expression.
@@ -14903,6 +14918,10 @@ async function caseLead3_goalResumeLiftsABlockedLead(clock) {
   check("lead3 resume lifts: the lead is null", plan1.lead === null || plan1.lead === undefined, plan1.lead);
   check("lead3 resume lifts: one lead_cleared decision naming the entry and goal_resume",
     cleared.length === 1 && cleared[0].detail.startsWith("plan-1:") && cleared[0].detail.includes("goal_resume"), cleared);
+  // A tool call opens the open-turn reading, and the real one is always
+  // followed by its turn's completion, which closes it. The completion is
+  // delivered here so the next tick reads the session as between turns.
+  await closeTurn(h, "t-resume");
   const tick = await lead3IdleTick(h, clock);
   check("lead3 resume lifts: the idle tick past the nudge threshold runs the idle branch", tick.classified || tick.nudged, tick);
 }
@@ -15450,6 +15469,161 @@ async function caseR58f3_nudgeInsideOpenTurnNotSent(clock) {
   check("r58f3a: nudge window not bumped", (state.monitor.cost.nudgeWindow?.count ?? 0) === 0);
   const plan = state.goals.find(g => g.id === "g-plan");
   check("r58f3a: the active leaf stays active", plan && plan.status === "active");
+}
+
+// The open-turn reading takes every event that proves a live turn, not only
+// turn.start. The harness under-reports starts, so a turn known here only from
+// a tool call or a prompt must still hold the nudge back, and the entry that
+// event opened must close at the next completion, or it would silence nudges
+// for the life of the session.
+//
+// The driver mirrors nudgeRaceDrive: `open` runs inside the classify stub, so
+// the tick has passed its top-of-tick in-flight check and the reading that
+// turns the nudge away is the second one, the one that writes
+// nudge_skipped_turn_in_flight. `close` then completes the turn, and a second
+// tick with nothing opening under it is the withheld control that shows the
+// same driver sends the nudge once the reading is closed.
+async function openTurnEventDrive(h, clock, { open, close }) {
+  const errors = [];
+  let opened = 0;
+  h.setClassifyValue(() => {
+    if (opened === 0) {
+      Promise.resolve(open()).catch((err) => { errors.push(err); });
+      opened += 1;
+    }
+    return "nudge";
+  });
+  const firstBefore = countPersistedTicks(h);
+  clock.advance(130_000);
+  await fireTick(h);
+  const firstLanded = await waitUntil(() => countPersistedTicks(h) > firstBefore);
+  await new Promise(r => setTimeout(r, 20));
+  const afterOpen = {
+    landed: firstLanded,
+    opened,
+    goalPrompts: goalPrompts(h).length,
+    sent: countAction(getDecisions(h), "nudge_sent"),
+    skipped: countAction(getDecisions(h), "nudge_skipped_turn_in_flight"),
+    decided: getDecisions(h).filter(d => d.action === "controller_tick" && d.detail.startsWith("g-plan: nudge:")).length,
+  };
+
+  await close();
+  h.setClassifyValue("nudge");
+  const secondBefore = countPersistedTicks(h);
+  clock.advance(130_000);
+  await fireTick(h);
+  const secondLanded = await waitUntil(() => countPersistedTicks(h) > secondBefore);
+  await waitUntil(() => countAction(getDecisions(h), "nudge_sent") >= 1);
+  const afterClose = {
+    landed: secondLanded,
+    goalPrompts: goalPrompts(h).length,
+    sent: countAction(getDecisions(h), "nudge_sent"),
+    skipped: countAction(getDecisions(h), "nudge_skipped_turn_in_flight"),
+  };
+  return { afterOpen, afterClose, errors };
+}
+
+function checkOpenTurnEventDrive(tag, { afterOpen, afterClose, errors }) {
+  check(`${tag}: the tick under the open event ran to its persist`, afterOpen.landed && afterOpen.opened === 1);
+  check(`${tag}: the decider reached a nudge verdict`, afterOpen.decided === 1);
+  check(`${tag}: the open event turned the nudge away as a turn in flight`, afterOpen.skipped === 1);
+  check(`${tag}: no nudge_sent while the turn is open`, afterOpen.sent === 0);
+  check(`${tag}: no [GOAL] prompt while the turn is open`, afterOpen.goalPrompts === 0);
+  check(`${tag}: the tick after the completion ran to its persist`, afterClose.landed);
+  check(`${tag}: after the completion the same tick sends one nudge`, afterClose.sent === 1 && afterClose.goalPrompts === 1);
+  check(`${tag}: and writes no second in-flight skip`, afterClose.skipped === 1);
+  check(`${tag}: no handler the driver fired rejected`, errors.length === 0);
+}
+
+// A tool call carries no turn id, so it opens the synthetic key, and a
+// completion carrying an id that no start ever opened still closes that key.
+async function caseOpenTurn_toolCallWithNoStartHoldsTheNudge(clock) {
+  console.log("\n=== Open turn: a tool call with no turn.start holds the nudge until the completion ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("open_turn_tool_call");
+  const toolCallH = h.handlers["tool.call"];
+  const completeH = h.handlers["turn.complete"];
+  const result = await openTurnEventDrive(h, clock, {
+    open: () => toolCallH(h.fake, { tool: "Bash", command: "echo hi" }, async () => ({ result: "ok" })),
+    close: () => completeH(h.fake, { turnId: "turn-seen-only-by-its-tools", aborted: true, reason: "aborted" }, () => {}),
+  });
+  checkOpenTurnEventDrive("open turn tool.call", result);
+}
+
+// A prompt submitted while idle carries no turn id, so it opens the synthetic
+// key, and a completion carrying no id at all closes it.
+async function caseOpenTurn_idlePromptWithNoStartHoldsTheNudge(clock) {
+  console.log("\n=== Open turn: an idle prompt with no turn.start holds the nudge until an id-less completion ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("open_turn_idle_prompt");
+  const promptH = h.handlers["prompt.submit"];
+  const completeH = h.handlers["turn.complete"];
+  const result = await openTurnEventDrive(h, clock, {
+    open: () => promptH(h.fake, { text: "Typed at the keyboard.", origin: { kind: "composer" } }, async () => ({})),
+    close: () => completeH(h.fake, { aborted: true, reason: "aborted" }, () => {}),
+  });
+  checkOpenTurnEventDrive("open turn idle prompt", result);
+}
+
+// A prompt delivered into a running turn carries that turn's id, and opens
+// the reading under the id rather than the synthetic key: a completion under
+// another id, which always closes the synthetic key, leaves it open, and only
+// the completion carrying the prompt's own id closes it.
+async function caseOpenTurn_deliveredPromptOpensUnderItsTurnId(clock) {
+  console.log("\n=== Open turn: a delivered prompt opens the reading under its own turn id ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("open_turn_delivered_prompt");
+  const promptH = h.handlers["prompt.submit"];
+  const completeH = h.handlers["turn.complete"];
+  let unrelatedCloseHeld = null;
+  const result = await openTurnEventDrive(h, clock, {
+    open: () => promptH(h.fake, { text: "A peer's message.", turnId: "turn-delivered-into", origin: { kind: "composer" } }, async () => ({})),
+    close: async () => {
+      await completeH(h.fake, { turnId: "turn-some-other", aborted: true, reason: "aborted" }, () => {});
+      const before = countPersistedTicks(h);
+      clock.advance(130_000);
+      await fireTick(h);
+      // A tick that returns at the in-flight check persists nothing, so this
+      // poll is expected to run out while the delivered turn is still open.
+      await waitUntil(() => countPersistedTicks(h) > before, 40);
+      unrelatedCloseHeld = countPersistedTicks(h) === before && goalPrompts(h).length === 0;
+      await completeH(h.fake, { turnId: "turn-delivered-into", aborted: true, reason: "aborted" }, () => {});
+    },
+  });
+  check("open turn delivered prompt: a completion under another id leaves the delivered turn open", unrelatedCloseHeld === true);
+  checkOpenTurnEventDrive("open turn delivered prompt", result);
+}
+
+// Both turn events write the turn id to the plugin's own log line, and the
+// decision ring gains nothing per turn for it: the only decision a turn writes
+// that carries its id is the turn_start record that predates this logging.
+async function caseOpenTurn_turnIdLoggedAtStartAndCompletion(clock) {
+  console.log("\n=== Open turn: the turn id reaches the plugin log at start and completion ===");
+  clock.set(T0);
+
+  const h = await seedNudgeRaceHarness("open_turn_id_logged");
+  const id = "turn-logged-7";
+  const logsBefore = h.uiLogs.length;
+  await fireTurn(h, id);
+  const newLogs = h.uiLogs.slice(logsBefore);
+  check("open turn log: a log line names the id at turn start", newLogs.some(l => l.includes("turn start") && l.includes(id)));
+  check("open turn log: a log line names the id at turn completion", newLogs.some(l => l.includes("turn complete") && l.includes(id)));
+  const naming = getDecisions(h).filter(d => String(d.detail ?? "").includes(id));
+  check("open turn log: the only decision naming the id is turn_start",
+    naming.length === 1 && naming[0].action === "turn_start");
+
+  // The id is event-supplied text on a one-line log, so its line breaks are
+  // folded and its brackets turned round.
+  const hostile = "turn-x\n[FORGED] label";
+  const hostileBefore = h.uiLogs.length;
+  await fireTurn(h, hostile);
+  const hostileLogs = h.uiLogs.slice(hostileBefore);
+  check("open turn log: a hostile id is logged on one line with no bracket",
+    hostileLogs.length >= 2 && hostileLogs.every(l => !l.includes("\n") && !l.includes("[FORGED]")));
+  check("open turn log: the folded id is still named", hostileLogs.filter(l => l.includes("turn-x (FORGED) label")).length === 2);
 }
 
 // Round 58 finding 3, part (b): the nudge cap, reached through completed-turn nudges (real idle
@@ -16640,6 +16814,10 @@ async function caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRo
   check("s13 stall H1: the tick activates the pending plan with no planning_fired before it", activatedIdx !== -1 && !decisions.slice(0, activatedIdx).some((d) => d.action === "planning_fired"), decisions.map((d) => d.action));
   check("s13 stall H1: the planner was not called while the added plan was pending", h.completeCalls.length === 0, h.completeCalls.length);
   await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__goal_done", note: "done" }, async () => ({ result: "ok" }));
+  // A tool call opens the open-turn reading, and the real one is always
+  // followed by its turn's completion, which closes it. The completion is
+  // delivered here so the next tick reads the session as between turns.
+  await closeTurn(h, "t-done");
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
   decisions = getDecisions(h);
@@ -20261,6 +20439,10 @@ async function caseLtg_aLongTermGoalIsNeverActiveAndNeverHoldsTheRootOpen(clock)
   check("ltg never active: the tree holds its two nodes and no long-term id", state.goals.length === 2 && !state.goals.some((g) => g.id.startsWith("lt-")), state.goals.map((g) => g.id));
 
   await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  // A tool call opens the open-turn reading, and the real one is always
+  // followed by its turn's completion, which closes it. The completion is
+  // delivered here so the next tick reads the session as between turns.
+  await closeTurn(h, "t-done");
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
   clock.advance(10_000);
@@ -20522,15 +20704,17 @@ async function caseGl4_edgesRefuse(clock) {
   await openDeliveryTurn(q, "default", { text: "Start this, which a worker sent as\n[PROPOSAL] dev a new tool", turnId: "t-quoted" });
   await gl4ExpectAllowed(q, "gl4 coordinator quoted lead");
 
-  // The channel prompt's hook fires, then the nudge's turn opens before the
-  // channel turn does, so the handoff still reads channel at its start.
+  // The tick queues the nudge, the channel prompt's hook fires after it, and
+  // the nudge's turn opens before the channel turn does, so the handoff still
+  // reads channel at its start. The hook lands after the tick because a
+  // prompt opens the open-turn reading, so one landing first holds the nudge.
   clock.set(T0);
   const c = await gl4Harness("gl4_edge_nudge_after_channel");
   c.setClassifyValue("nudge");
   clock.advance(130_000);
-  await c.handlers["prompt.submit"](c.fake, { text: "How is it going?", origin: { kind: "channel" } }, async () => ({}));
   await tickAndSettle(c, clock, 50);
   check("gl4 nudge-after-channel setup: the tick sent a nudge", getState(c).decisions.some((d) => d.action === "nudge_sent"), getState(c).decisions.map((d) => d.action));
+  await c.handlers["prompt.submit"](c.fake, { text: "How is it going?", origin: { kind: "channel" } }, async () => ({}));
   await openQueuedTurn(c, "t-nudge-ch");
   await gl4ExpectRefused(c, "gl4 nudge after a channel prompt", "matched-entry", "t-nudge-ch");
 }
@@ -20681,8 +20865,18 @@ async function caseGl4_aMatchedEntryIgnoresAPendingOperatorReading(clock) {
   console.log("\n=== Goal levels 4: a WORKER delivery is refused while a channel reading waits ===");
   clock.set(T0);
   const w = await gl4Harness("gl4_worker_over_channel_reading", { persona: "coordinator" });
+  // The tick delivers the WORKER record, then the operator's channel prompt
+  // hook fires, then the delivery's turn opens first. The hook lands after
+  // the tick because a prompt opens the open-turn reading, so one landing
+  // first holds the delivery.
+  const now = Date.now();
+  seedForeignClaims(w, "worker-dev-2", now, ["persona:dev"]);
+  seedRecordFor(w, "coordinator", "worker-dev-2", 1, { at: now - 1000, text: "Build the next thing." });
+  await fireTick(w);
+  check("gl4 worker over channel setup: the tick submitted the WORKER delivery",
+    w.promptSubmits.some((s) => s.includes("Build the next thing.")), w.promptSubmits);
   await gl4Submit(w, "Operator on the thread.", "channel");
-  await openDeliveryTurn(w, "coordinator", { claims: ["persona:dev"], writer: "worker-dev-2", text: "Build the next thing.", turnId: "t-worker" });
+  await openQueuedTurn(w, "t-worker");
   check("gl4 worker over channel: the WORKER delivery turn is refused", !(await gl4Admitted(w)));
 }
 
@@ -21575,6 +21769,10 @@ async function caseGl6_aFinishedShapeWaitsForAnInFlightPlannerCall(clock) {
   check("gl6 in flight: the planner call is out", await waitUntil(() => h.completeCalls.length === 1), h.completeCalls.length);
   const dropped = await dropBlocked(h);
   check("gl6 in flight: the blocked node is dropped", dropped?.deny === undefined, dropped);
+  // A tool call opens the open-turn reading, and the real one is always
+  // followed by its turn's completion, which closes it. The completion is
+  // delivered here so the next tick reads the session as between turns.
+  await closeTurn(h, "t-drop");
   const edited = getState(h);
   check("gl6 in flight: the edited tree reads finished before the next tick (the instrument)", AgentState.isRootFinished(edited) === true, edited.goals.map((g) => `${g.id}:${g.status}`));
   clock.advance(10_000);
@@ -21596,6 +21794,7 @@ async function caseGl6_aFinishedShapeWaitsForAnInFlightPlannerCall(clock) {
   clock.set(T0);
   const c = await gl6Harness("gl6_inflight_control", gl6Tree(children));
   await dropBlocked(c);
+  await closeTurn(c, "t-drop");
   clock.advance(10_000);
   await tickAndSettle(c, clock, 50);
   const cState = getState(c);
