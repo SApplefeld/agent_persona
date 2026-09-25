@@ -14934,11 +14934,11 @@ function bank2CheckSettled(label, outcome) {
   }
 }
 
-// A durable turn end owes the bank and runs nothing itself: the kit lapses a
-// marker recorded there on the inbound line that opens the next turn.
+// A turn end runs nothing itself, whether or not it owes the bank: the kit
+// lapses a marker recorded there on the inbound line that opens the next turn.
 function bank2CheckOwedOnly(label, h, runs, endOutcome) {
   bank2CheckSettled(`${label} (turn end)`, endOutcome);
-  check(`${label} (turn end): the durable turn end ran no child process by itself`, runs.length === 0, runs);
+  check(`${label} (turn end): the turn end ran no child process by itself`, runs.length === 0, runs);
   check(`${label} (turn end): no compaction_boundary decision yet`, bank2Decisions(h).length === 0, bank2Decisions(h));
 }
 

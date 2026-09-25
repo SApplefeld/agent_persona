@@ -2916,8 +2916,10 @@ export const register: Register = async (on, options) => {
   // and a marker positioned ahead of that line lapses on it. A completion
   // that settles after a newer turn has started clears it rather than set
   // it: that turn's first tool call may already have run, and a bank taken
-  // at a later call would land mid-turn. That rare bank is missed rather
-  // than misplaced. It is held in memory only: a restart is a new session
+  // at a later call would land mid-turn. The engine waits for the whole
+  // turn.complete chain before it starts the next turn, so this clear is a
+  // guard that does not fire in normal running; where it does, the bank is
+  // missed rather than misplaced. It is held in memory only: a restart is a new session
   // id, whose marker would be another key.
   let pendingCompactionBank: { turnKind: string } | null = null;
   // Every turn.start this module has seen, counted up and never reset, so a
@@ -7984,8 +7986,10 @@ export const register: Register = async (on, options) => {
     }
 
     // The compaction boundary the persona's last own turn owed, taken at the
-    // first main-loop tool call after it, before this tool is served or
-    // passed on, so the marker records a position before the tool's work. By
+    // first main-loop tool call after it, before this call's tool is served
+    // or passed on, so the marker records a position before that tool's
+    // work. A sibling call from the same assistant message is not held back
+    // while the bank runs, so its work may land after the marker. By
     // this point the turn's opening prompt line is on disk, which turn.start
     // cannot guarantee. Only a call the model made takes it: next.origin
     // names "engine" there. A call a plugin raised through $.tool.call
