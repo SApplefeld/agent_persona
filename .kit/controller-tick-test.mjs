@@ -3157,7 +3157,7 @@ async function main() {
     await caseLead3_leadSurvivesARestart(clock);
     await caseLead3_blockedWithAnAskOpensTheAskAndSetsTheLead(clock);
     await caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock);
-    await caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock);
+    await caseLead3_ignoredCompleteNudgesEachWindowUntilTheCapAsk(clock);
     await caseLead3_staleLeadOnATaskEntryIsNotHeld(clock);
     await caseLead3_taskEntrySetsNoLead(clock);
     await caseLead3_theOperatorsAnswerToTheAskLiftsABlockedLead(clock);
@@ -3182,8 +3182,8 @@ async function main() {
     await caseSection4_channelAndDeliveryTurnsSkipTheScorer(clock);
     await caseSection4_unaccountedTurnScoredOnTaskEntryNotOnPlanEntry(clock);
     await caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntry(clock);
-    await caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock);
-    await caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock);
+    await caseSection4_threeNudgedDriftTurnsOpenTheCapAsk(clock);
+    await caseSection4_threeNudgedCompleteTurnsOpenTheCapAsk(clock);
     await caseSection4_nudgedCompleteStillCompletesATaskEntry_control(clock);
     await caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock);
 
@@ -14051,7 +14051,7 @@ async function casePlanRecord2_unchangedChapterCountLogsNothing(clock) {
 // block it and completedRounds stays 0, for the plan node itself and for a
 // task under it alike, and goal_done spends nothing either. Turns alternate
 // on-goal and drift so the on-goal label resets the nudge counter every
-// other turn and the three-nudge stall pause never trips - a separate
+// other turn and the three-nudge cap ask never opens - a separate
 // mechanism this case must not exercise. The hourly nudge cap is raised, as
 // Section 3's own repeat case raises it, since 25 nudges inside one
 // fake-clock hour would otherwise hit that cap before the round-budget
@@ -14623,7 +14623,7 @@ async function caseLead3_controllerCompleteIsIgnoredOnAPlanEntry(clock) {
 // complete logs complete_ignored and sends a nudge, and the three-nudge cap's
 // ask is what bounds the repeats. The nudge cost cap is raised so the
 // nudge cap, not the hourly cap, is the bound read here.
-async function caseLead3_ignoredCompleteNudgesEachWindowUntilTheStallPause(clock) {
+async function caseLead3_ignoredCompleteNudgesEachWindowUntilTheCapAsk(clock) {
   console.log("\n=== Section 3 lead: an ignored complete nudges each window until the nudge cap's ask ===");
   clock.set(T0);
   const h = await lead3Harness("lead3_complete_repeats", {}, { costMaxNudgesPerHour: 10 });
@@ -15429,7 +15429,7 @@ async function caseSection4_unaccountedTurnScoredOnTaskEntryNotOnPlanEntry(clock
 // Bullet 2: a nudged turn on a plan entry labelled on-goal resets the nudge
 // counter. One labelled complete moves nothing at the scorer - not the
 // counter, not a round, not the entry's status - so it neither completes
-// the entry nor clears what a run of nudges owes the stall pause. Done is
+// the entry nor clears what a run of nudges owes the cap ask. Done is
 // read from the plan document (Section 2), never from this classifier's
 // label.
 async function caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntry(clock) {
@@ -15483,9 +15483,9 @@ async function caseSection4_nudgedOnGoalResetsButCompleteMovesNothingOnAPlanEntr
 
 // A plan entry's complete verdict at the scorer moves the counter not at all, so three nudged turns each scored complete,
 // with the plan document's Chapter count never rising, trip the same
-// three-nudge stall pause three drift-labelled turns do.
-async function caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock) {
-  console.log("\n=== Section 4: three nudged complete turns on a plan entry (no Chapter rise) trip the stall pause ===");
+// three-nudge cap ask three drift-labelled turns do.
+async function caseSection4_threeNudgedCompleteTurnsOpenTheCapAsk(clock) {
+  console.log("\n=== Section 4: three nudged complete turns on a plan entry (no Chapter rise) open the cap ask ===");
   clock.set(T0);
   const h = await plan2Harness("section4_stall_pause_complete", { chapterCount: 1 }, { costMaxNudgesPerHour: 10 });
   h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
@@ -15497,19 +15497,19 @@ async function caseSection4_threeNudgedCompleteTurnsTripTheStallPause(clock) {
     await h.handlers["turn.complete"](h.fake, { turnId: `t-complete-${window}`, answer: "Think it's done.", reason: "completed" }, async () => ({ result: "ok" }));
     const decisions = getDecisions(h);
     const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-    check(`section4 stall pause (complete): window ${window} scores complete ${window} time(s) in all`,
+    check(`section4 cap ask (complete): window ${window} scores complete ${window} time(s) in all`,
       decisions.filter(d => d.action === "score" && d.detail.includes(": complete")).length === window, decisions.filter(d => d.action === "score"));
-    check(`section4 stall pause (complete): window ${window} sends nudge #${window}`,
+    check(`section4 cap ask (complete): window ${window} sends nudge #${window}`,
       decisions.filter(d => d.action === "nudge_sent").length === window, decisions.filter(d => d.action === "nudge_sent"));
-    check(`section4 stall pause (complete): window ${window} leaves plan-1 active, not completed`, plan1.status === "active", plan1.status);
+    check(`section4 cap ask (complete): window ${window} leaves plan-1 active, not completed`, plan1.status === "active", plan1.status);
   }
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
   const decisions = getDecisions(h);
   const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-  check("section4 stall pause (complete): the fourth window reaches the nudge cap, no fourth nudge",
+  check("section4 cap ask (complete): the fourth window reaches the nudge cap, no fourth nudge",
     decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
-  check("section4 stall pause (complete): the cap opens an ask and leaves plan-1 active without completing it",
+  check("section4 cap ask (complete): the cap opens an ask and leaves plan-1 active without completing it",
     plan1.status === "active" && typeof getState(h).pendingAskId === "string" && !decisions.some(d => d.action === "complete" || d.action === "paused_by_controller"), plan1);
 }
 
@@ -15566,12 +15566,12 @@ async function caseSection4_channelOriginNudgeIsStillScoredAsANudge(clock) {
 }
 
 // Bullet 3: three nudged turns labelled drift on a plan entry trip the
-// stall pause - drift never resets the counter, so three real
+// cap ask - drift never resets the counter, so three real
 // nudge-and-score cycles raise it to the MAX_CONSECUTIVE_NUDGES bound. The
-// nudge cost cap is raised so the stall pause, not the hourly cap, is the
+// nudge cost cap is raised so the cap ask, not the hourly cap, is the
 // bound reached.
-async function caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock) {
-  console.log("\n=== Section 4: three nudged drift turns on a plan entry trip the existing stall pause ===");
+async function caseSection4_threeNudgedDriftTurnsOpenTheCapAsk(clock) {
+  console.log("\n=== Section 4: three nudged drift turns on a plan entry open the cap ask ===");
   clock.set(T0);
   const h = await plan2Harness("section4_stall_pause", { chapterCount: 1 }, { costMaxNudgesPerHour: 10 });
   h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
@@ -15583,19 +15583,19 @@ async function caseSection4_threeNudgedDriftTurnsTripTheStallPause(clock) {
     await h.handlers["turn.complete"](h.fake, { turnId: `t-drift-${window}`, answer: "Still working.", reason: "completed" }, async () => ({ result: "ok" }));
     const decisions = getDecisions(h);
     const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-    check(`section4 stall pause: window ${window} scores drift ${window} time(s) in all`,
+    check(`section4 cap ask: window ${window} scores drift ${window} time(s) in all`,
       decisions.filter(d => d.action === "score" && d.detail.includes(": drift")).length === window, decisions.filter(d => d.action === "score"));
-    check(`section4 stall pause: window ${window} sends nudge #${window}`,
+    check(`section4 cap ask: window ${window} sends nudge #${window}`,
       decisions.filter(d => d.action === "nudge_sent").length === window, decisions.filter(d => d.action === "nudge_sent"));
-    check(`section4 stall pause: window ${window} leaves plan-1 active`, plan1.status === "active", plan1.status);
+    check(`section4 cap ask: window ${window} leaves plan-1 active`, plan1.status === "active", plan1.status);
   }
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
   const decisions = getDecisions(h);
   const plan1 = getState(h).goals.find(g => g.id === "plan-1");
-  check("section4 stall pause: the fourth window reaches the nudge cap, no fourth nudge",
+  check("section4 cap ask: the fourth window reaches the nudge cap, no fourth nudge",
     decisions.some(d => d.action === "nudge_cap_reached") && decisions.filter(d => d.action === "nudge_sent").length === 3, decisions.slice(-4));
-  check("section4 stall pause: the cap opens an ask and leaves plan-1 active without completing it",
+  check("section4 cap ask: the cap opens an ask and leaves plan-1 active without completing it",
     plan1.status === "active" && typeof getState(h).pendingAskId === "string" && !decisions.some(d => d.action === "complete" || d.action === "paused_by_controller"), plan1);
 }
 
