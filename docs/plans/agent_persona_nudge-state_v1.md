@@ -308,6 +308,7 @@ pin gains `continued_unprompted`), `README.md` (the question table at 686 and th
 
 ### 5. The documents
 Model: sonnet
+Locus: inline
 
 `README.md` and `docs/architecture.md` state the behavior as it now is: the hold and its reasons,
 what the controller writes on an entry and what it never writes, the three status lines, the
@@ -323,8 +324,8 @@ row.
 
 Acceptance:
 - No sentence in either document says the controller pauses an entry on its own reading of a
-  count or of the worker's text, escalates the cap to an ask-operator verdict, or reads
-  `turn.start` alone.
+  count or of the worker's text, escalates the cap to an ask-operator verdict, or says the
+  open-turn reading opens on `prompt.submit` or `tool.call`.
 - The four backlog edits are made and the three retired entries sit in the quarter archive.
 
 Files in scope: `README.md`, `docs/architecture.md`, `docs/backlog.md`,
@@ -504,3 +505,21 @@ Delta: SCOTT-CLAUDE, 2026-09-25 06:13
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
 
+
+### Chapter 5 - 2026-09-25
+Completed: 5. The documents
+Implemented By: main session (Locus: inline)
+Metrics: review rounds 1, closed claim-exit; provenance 1 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked)
+Decisions / Surprises:
+- README.md gains the Open turn bullet under Nudge discipline, a cost-cap row stating the ask leaves the entry active and nudges stay refused until the window rolls, and one sentence after the classifier paragraph: a `pause` or `ask-operator` verdict is converted to a nudge with `ask_idle_gap_converted` logged (hooks/index.ts:6154), so neither pauses an entry or opens an ask. The README named both labels and never said what they do.
+- docs/architecture.md gains the hold paragraph (holdOf, what the controller writes on an entry and never writes, the status lines, the fixed ask, the turn-id log lines, the shadow question), and its error_streak row stops saying the streak pauses an entry.
+- docs/backlog.md: the nudge-cap entry (2026-09-23), the README nudge-counter entry (2026-09-21) and the extra-turn-completions entry (parked 2026-09-13) moved byte-for-byte to docs/archive/backlog-2026-Q3.md, each with a retirement note. The ask-close entry (2026-09-22) is narrowed to its persist-ordering half, since reactivateAskedEntry (hooks/index.ts:2412) clears a leftover reason on an active entry and the load repair drops pausedByNudgeCap (hooks/agent-state.ts:709). Chapter 3's three routed items landed: two new entries (the unread persisted NudgeBudget count, the openTurns comment's first reason) and wasNudged added to the existing turn.complete scoring entry.
+- The extra-turn-completions entry's open question, whether a subagent's completion carries its own turn id, lives on in this plan's Operator Verification and goes into the operator-checks backlog entry at the archive.
+- docs/README.md's row for this plan states what shipped. docs/plans/README.md does not exist in this repository.
+- Drift from the plan, recorded deliberately: acceptance bullet 1's third clause read "or reads `turn.start` alone". That predates the architect's ruling of 2026-09-25, which made turn.start the only opener. The clause now forbids saying the reading opens on prompt.submit or tool.call, which is the ruling's concern.
+- A coordinator priority change arrived during the review: docs/plans/agent_persona_planner-catch_spec_v1.md runs ahead of this plan's finishing pass. This plan resumes at finishing-work once that one is Complete and archived.
+Review Findings: review: adversarial at sonnet, Workflow high (round 1, the writer's tier). 1 Major (claim): acceptance bullet 1's third clause contradicted the ruling, fixed by the rewording above. Every document sentence in the delta was confirmed against the code, and the three archived entries were confirmed byte-identical. A prose-only fix delta owes no further round.
+Stamps: adjudicated 0, stamped 0.
+Gate: targeted lane (SCOTT-CLAUDE, 2026-09-25, worktree D:/agent_persona-nudge, the section 5 edits uncommitted on top of 3bb940c, no code change): /d/agent_persona/node_modules/.bin/tsc --noEmit -p . exit 0; node .kit/controller-tick-test.mjs exit 0, 3574 OK, equal to section 4's close; question-catalog-unit-test, decision-journal-unit-test and injection-duplicate-test exit 0. A first tsc run through npx resolved a different package in this worktree and did not compile; it was re-run with the main checkout's compiler. Test delta: 0 added, 0 retired.
+Next: finishing-work (after the planner-catch plan)
+Commit Model: Branch-and-PR

@@ -137,7 +137,7 @@ The controller tick builds a summary from the active goal and the session's own 
 | `LESSON` | The newest self-review lesson's text, cut to 120 characters. Present only where one exists |
 | `Environment` | The git branch with its dirty, ahead and behind counts, and the last health check's exit code with the goal node id it ran for. Present only where either is known |
 
-The summary ends with the four standing choices, and with `switch` as a fifth only where a plan is pending. So `$.model.classify` returns one of `nudge`, `pause`, `complete` or `ask-operator`, and `switch` where a pending plan exists to switch to.
+The summary ends with the four standing choices, and with `switch` as a fifth only where a plan is pending. So `$.model.classify` returns one of `nudge`, `pause`, `complete` or `ask-operator`, and `switch` where a pending plan exists to switch to. A `pause` or `ask-operator` verdict is converted to a nudge before it acts, with an `ask_idle_gap_converted` decision logged. So neither verdict pauses an entry or opens an ask. The nudge tells the worker to state a real fork itself, as an `ASK:` line in its next turn.
 
 **L1**: The idle gate is enforced **in code**, not in the prompt. The tick computes `idleMs = now - lastTurnComplete` and only proceeds to a model call if `idleMs >= nudgeIdleMs`. The model decides **what** (nudge/pause/complete/ask-operator), never **whether** : the threshold is a hard gate.
 
@@ -153,6 +153,7 @@ The summary ends with the four standing choices, and with `switch` as a fifth on
 - **Cap**: the count reaching 3 opens one ask to the operator and pauses nothing. The ask's question is a fixed text naming the persona and the entry's title: `The <persona> persona answered 3 nudges on "<title>" with no status line. Is it still on that entry? Any answer resumes nudging.` The title's continuation lines are quoted with `> `. The entry stays `active`; the open ask is the controller's hold on its nudges, and the ask's close, by answer or expiry, is the lift. The count resets as the ask opens, and no nudge goes out while it is open. No nudged turn is under way as the ask opens either, since the cap opens it from the idle branch, which runs only with no turn open. So the close finds the count at zero. The cap shows a toast as well.
 - **Idle gate**: session must be idle for `nudgeIdleMs` (default 2 min) before any model call. Ticks inside the gate are skipped entirely.
 - **Skip**: no active goal or a turn in flight → skip the tick entirely.
+- **Open turn**: a turn is in flight from its `turn.start` until a `turn.complete` carrying the same turn id. `turn.start` is the only event that opens the reading; `prompt.submit` and `tool.call` open nothing. A completion for an id this session never saw start closes nothing, and a background subagent finishing inside an open turn is such a completion. Both events write the turn id to the plugin's log, `Agentic: turn start <id>` and `Agentic: turn complete <id>` (`none` where a completion carries no id), folded to one line with any square bracket turned into a parenthesis, so whether a turn was open when a nudge went out can be read from the log. No decision is written per turn.
 - **Visible**: `$.ui.status` shows the goal line while a goal is active; cleared on pause/complete/blocked.
 - **H8: Nudged-turn scoring.** When the controller nudges, `$.prompt.submit` bypasses the plugin's own `prompt.submit` hook, so `currentPrompt` is set to the nudge text manually. The `turn.complete` scorer uses a reduced label set (`on-goal`, `drift`, `complete`) for nudged turns : `off-goal-by-instruction` is impossible because the nudge *is* the instruction.
 
@@ -535,7 +536,7 @@ The plugin tracks its own model-call cost and caps nudge frequency. All options 
 |---|---|---|
 | `costEnabled` | `true` | Master switch for D2 (idle skip), D3 (caps), D4 (backoff). When `false`, the ledger still runs but idle ticks are not skipped and caps are not enforced. |
 | `costSummaryEveryNTicks` | `20` | Emit a `cost_summary` decision every N ticks (wall-clock regular, skipped ticks still count). |
-| `costMaxNudgesPerHour` | `12` | Maximum nudges per hour per persona. When reached, the controller logs `cost_cap_reached` once per window and returns from the tick. |
+| `costMaxNudgesPerHour` | `12` | Maximum nudges per hour per persona. When reached, the controller logs `cost_cap_reached` once per window, opens one ask per window with the entry left `active`, and returns from the tick. Once that ask closes, nudges stay refused until the window rolls. |
 | `costMaxPluginCallsPerHour` | `600` | Maximum plugin model calls (classify + reason + selfReview + planner) per hour per persona. |
 | `nudgeFloorMs` | `300000` (5 min) | Minimum time between nudges. |
 | `nudgeIdleMs` | `120000` (2 min) | Idle gate on classify and nudge (the tick fires every `controllerTickMs`; this is the idle threshold for a nudge to be sent). |
