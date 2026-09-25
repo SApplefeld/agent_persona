@@ -1,6 +1,6 @@
 # A turn's end delivers the next waiting record at once
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-24
 
@@ -181,6 +181,7 @@ question from this plan's.
 
 ### 1. The drain runs at a turn's completion
 Model: opus
+Locus: inline
 
 In `hooks/index.ts`, the `D3` inbox block of the controller tick moves into a local async
 function `drainInbox()` in the same scope, unchanged inside, returning `true` where it submitted a
