@@ -523,3 +523,10 @@ Stamps: adjudicated 0, stamped 0.
 Gate: targeted lane (SCOTT-CLAUDE, 2026-09-25, worktree D:/agent_persona-nudge, the section 5 edits uncommitted on top of 3bb940c, no code change): /d/agent_persona/node_modules/.bin/tsc --noEmit -p . exit 0; node .kit/controller-tick-test.mjs exit 0, 3574 OK, equal to section 4's close; question-catalog-unit-test, decision-journal-unit-test and injection-duplicate-test exit 0. A first tsc run through npx resolved a different package in this worktree and did not compile; it was re-run with the main checkout's compiler. Test delta: 0 added, 0 retired.
 Next: finishing-work (after the planner-catch plan)
 Commit Model: Branch-and-PR
+
+### Interim board 2 - 2026-09-25
+- The operator released the hold on the relay thread: finish this plan now, and the architect handles the planner-catch plan directly. Chapter 5's "after the planner-catch plan" no longer applies.
+- Finishing pass opened. The trunk (origin/main at fb753eb) was merged into the branch as 0f68491 before the reviews, so they read the merged code. The code merged cleanly. docs/README.md and docs/archive/backlog-2026-Q3.md conflicted where both sides appended, and both were resolved by keeping both sides' entries and dropping the archived self-review-flood index row. Base ref for the pass: fb753eb.
+- Whole offline gate over 0f68491 (SCOTT-CLAUDE, 2026-09-25, worktree clean): `.kit/scratch/nudge-state/finishing/gate.sh`, 28 lanes, each exit 0; controller-tick-test 3602 OK, PASS 0 failures; tsc exit 0, with a planted-error control that failed as it should; injection ledger byte-matches. Deferred under the gate policy of 2026-09-18 to `docs/plans/agent_persona_deferred-gate-run_v1.md`: the five live-* suites and supervisor-natural-exit-test.sh. No foreign runner on the box at start.
+- Live dispatches: the qa-verifier (acceptance criteria), and one workflow carrying the adversarial, security and performance lenses at fable, high.
+- Next: adjudicate the wave, then the goal read, documentation curation, close and archive, and the pull request.
