@@ -1041,7 +1041,7 @@ const KIT_BOUNDARY_TIMEOUT_MS = 15_000;
 // and the record with the greatest lastUpdated is the build in use. The file is
 // the engine's, so every shape miss (no home, no file, a read that fails, text
 // that is not JSON, no plugins object, no key, a value that is not an array, an
-// empty array, a record without a string installPath or a readable
+// empty array, no record with a string installPath and a readable
 // lastUpdated) returns a reason rather than throwing.
 async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { skip: string }> {
   let home: unknown;
@@ -1073,22 +1073,26 @@ async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { sk
   const records = plugins[KIT_PLUGIN_KEY];
   if (!Array.isArray(records)) return { skip: `${KIT_PLUGIN_KEY} is not an array` };
   if (records.length === 0) return { skip: `${KIT_PLUGIN_KEY} has no install record` };
+  // A record without a string installPath or a readable lastUpdated is passed
+  // over, so a stale or partial entry beside a good one still leaves the good
+  // one to run; the run is skipped only when no record qualifies.
   let best: { installPath: string; at: number } | null = null;
   for (const record of records) {
-    if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) {
-      return { skip: `a ${KIT_PLUGIN_KEY} record has no installPath` };
-    }
+    if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) continue;
     const at = typeof record.lastUpdated === "string" ? Date.parse(record.lastUpdated) : NaN;
-    if (Number.isNaN(at)) return { skip: `a ${KIT_PLUGIN_KEY} record has no readable lastUpdated` };
+    if (Number.isNaN(at)) continue;
     if (best === null || at > best.at) best = { installPath: record.installPath.trim(), at };
   }
-  return { installPath: best!.installPath };
+  if (best === null) return { skip: `no ${KIT_PLUGIN_KEY} record has an installPath and a readable lastUpdated` };
+  return { installPath: best.installPath };
 }
 
 // Runs the kit's checkpoint command with its boundary verb for this session,
 // which records the compaction marker the kit's own gate honors. The marker is
 // keyed by session id under ~/.kit, so the child takes the session id in its
-// environment and no working directory. Best-effort: every outcome is one
+// environment and is handed no working directory. It still inherits the
+// session's directory, where the kit may create its gitignored .kit/ scratch
+// directory. Best-effort: every outcome is one
 // decision and nothing throws. The decision carries the exit code and the
 // first line the child wrote to stderr, because the command exits zero on a
 // marker it could not position and says so only there. turnKind is what
@@ -6868,11 +6872,12 @@ export const register: Register = async (on, options) => {
     // turn.start here is the persona's own: its event carries no agent id,
     // and a subagent's start is not delivered to this hook. The owed bank is
     // taken and cleared before the command runs, so it clears whatever the
-    // exit, and runs only while this session is still the owner, since a
-    // persona switch between the two events leaves nothing this session
-    // should bank. The opening inbound line of this turn is already in the
-    // transcript here, so the marker records a position after it and holds
-    // for this turn's work. bankCompactionBoundary never throws, and its one
+    // exit, and runs only while this session is still the owner, since
+    // ownership lost between the two events leaves nothing this session
+    // should bank. The lines that open this turn (the queue's enqueue and
+    // dequeue records and the prompt line) are already in the transcript
+    // here, so the marker records a position after them and holds for this
+    // turn's work until a new message arrives. bankCompactionBoundary never throws, and its one
     // decision is saved the way the stamp lines below are.
     const owedBank = pendingCompactionBank;
     pendingCompactionBank = null;

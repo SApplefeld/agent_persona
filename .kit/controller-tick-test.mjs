@@ -15062,6 +15062,7 @@ async function caseBank2_nonDurableTurnsBankNothing(clock) {
       seed: () => {},
       answer: "Made progress on the section.",
       opts: {},
+      expectAction: "plan_record_unreadable",
     },
   ];
   for (const c of cases) {
@@ -15072,6 +15073,7 @@ async function caseBank2_nonDurableTurnsBankNothing(clock) {
     const runs = bank2Recorder(h);
     const end = await bank2Turn(h, "t-none", c.answer, c.opts);
     bank2CheckNothing(`bank2 ${c.label} (turn end)`, h, runs, end);
+    if (c.expectAction) check(`bank2 ${c.label}: the turn logged ${c.expectAction}`, getDecisions(h).some(d => d.action === c.expectAction), getDecisions(h).map(d => d.action));
     const start = await bank2Start(h, "t-after");
     bank2CheckNothing(`bank2 ${c.label} (next turn start)`, h, runs, start);
   }
@@ -15128,14 +15130,16 @@ async function caseBank2_onlyThePersonasOwnTurnEndBanks(clock) {
   }
 }
 
-// A turn.start with no owed bank runs nothing. A subagent-shaped completion
+// A turn.start with no owed bank runs nothing. The engine raises no
+// turn.start for a subagent (.claude/types/claude-code.d.ts, TurnStartInput),
+// so a subagent reaches this hook only as a completion. A subagent-shaped completion
 // (an id this session never saw start, arriving with no turn open, closing
 // on a durable-looking answer) neither owes a bank nor takes one already
 // owed: with a bank owed by the persona's durable end, such a completion in
 // between leaves it owed, and the persona's next turn.start still banks it
 // exactly once.
 async function caseBank2_theOwedBankIsTakenOnlyByAPersonaTurnStart(clock) {
-  console.log("\n=== boundary-compaction Section 2: only a persona turn start takes an owed bank ===");
+  console.log("\n=== boundary-compaction Section 2: a start with nothing owed runs nothing, and a subagent completion takes no owed bank ===");
 
   clock.set(T0);
   {
@@ -15161,7 +15165,9 @@ async function caseBank2_theOwedBankIsTakenOnlyByAPersonaTurnStart(clock) {
 }
 
 // The run takes the install record with the greatest lastUpdated, placed
-// neither first nor last so neither end of the array is what is read.
+// neither first nor last so neither end of the array is what is read. A
+// record with no installPath, dated after every other, and one whose
+// lastUpdated does not parse are passed over rather than ending the scan.
 async function caseBank2_greatestLastUpdatedRecordIsRun(clock) {
   console.log("\n=== boundary-compaction Section 2: the greatest-lastUpdated install record is the one run ===");
   clock.set(T0);
@@ -15173,6 +15179,8 @@ async function caseBank2_greatestLastUpdatedRecordIsRun(clock) {
         { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-old", lastUpdated: "2026-09-01T00:00:00.000Z" },
         { scope: "user", installPath: BANK2_INSTALL, lastUpdated: "2026-09-25T09:59:04.362Z" },
         { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-mid", lastUpdated: "2026-09-20T00:00:00.000Z" },
+        { scope: "user", lastUpdated: "2026-09-30T00:00:00.000Z" },
+        { scope: "user", installPath: "C:\\kit-cache\\claude-kit\\build-undated", lastUpdated: "not a date" },
       ],
     },
   });
@@ -15193,6 +15201,7 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
     { label: "missing key", seed: { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } }, token: "no claude-kit@applefeld key" },
     { label: "empty array", seed: { version: 2, plugins: { "claude-kit@applefeld": [] } }, token: "no install record" },
     { label: "unparseable JSON", seed: "{ \"version\": 2, \"plugins\": ", token: "not JSON" },
+    { label: "no usable record", seed: { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", lastUpdated: "2026-09-25T00:00:00.000Z" }, { scope: "user", installPath: "C:\\kit", lastUpdated: "never" }] } }, token: "no claude-kit@applefeld record has an installPath" },
   ];
   for (const m of misses) {
     clock.set(T0);
