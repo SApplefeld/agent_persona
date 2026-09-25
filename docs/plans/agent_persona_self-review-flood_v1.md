@@ -1,6 +1,6 @@
 # A failed self-review is retried on the review's own cadence, not every tick
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-24
 

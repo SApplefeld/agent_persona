@@ -5119,6 +5119,21 @@ export const register: Register = async (on, options) => {
 
         if (reactive.eligible || periodic.eligible) {
           const trigger = reactive.eligible ? reactive.reason : periodic.reason;
+          // The five fields every attempt at this trigger must leave stamped,
+          // success or failure, so the next tick's shouldSelfReview reads a
+          // spent attempt rather than the state it started from. Stamps once:
+          // a throw arriving after a success path already stamped (persist
+          // throwing after the findings path, for one) must not stamp twice.
+          let stamped = false;
+          const stampAttempt = (): void => {
+            if (stamped) return;
+            stamped = true;
+            sr.count += 1;
+            if (sr.windowStart === 0) sr.windowStart = now;
+            sr.lastAt = now;
+            sr.turnsSince = 0;
+            sr.pendingPeriodic = false;
+          };
           try {
             // Plan item 8.4: before asking the model for a lesson, read the
             // worker's own record mechanically. A repeated weakness becomes a
@@ -5154,11 +5169,7 @@ export const register: Register = async (on, options) => {
                 action: "self-review",
                 detail: `${trigger}: own record -> ${findings.length} finding(s), no lesson`,
               });
-              sr.count += 1;
-              if (sr.windowStart === 0) sr.windowStart = now;
-              sr.lastAt = now;
-              sr.turnsSince = 0;
-              sr.pendingPeriodic = false;
+              stampAttempt();
               sess.state.updatedAt = now;
               await persist($);
             }
@@ -5229,20 +5240,23 @@ export const register: Register = async (on, options) => {
                 });
               }
               // Update selfReview state after review.
-              sr.count += 1;
-              if (sr.windowStart === 0) sr.windowStart = now;
-              sr.lastAt = now;
-              sr.turnsSince = 0;
-              sr.pendingPeriodic = false;
+              stampAttempt();
             }
-          } catch {
-            // Self-review failed; non-fatal.
+          } catch (err) {
+            // Self-review failed; non-fatal. The attempt still stamps, so the
+            // debounce and the hourly cap bound a review that keeps throwing
+            // exactly as they bound one that keeps succeeding.
+            const message = typeof err === "object" && err !== null && typeof (err as { message?: unknown }).message === "string"
+              ? (err as { message: string }).message
+              : String(err);
+            const foldedMessage = message.replace(/[\r\n]+/g, " ").slice(0, 200);
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",
               action: "self-review",
-              detail: `${trigger}: error`,
+              detail: `${trigger}: error: ${foldedMessage}`,
             });
+            stampAttempt();
           }
           sess.state.updatedAt = now;
           await persist($);
