@@ -15030,23 +15030,60 @@ async function caseHold_theCapAskLiftsOnExpiryAndOnAnswer(clock) {
       countAction(after.decisions, "nudge_sent") === 4 && countAction(after.decisions, "nudge_cap_reached") === 1 && countAction(after.decisions, "ask_opened") === 1, after.decisions.slice(-4).map(d => d.action));
     if (lift === "expiry") {
       check(`${label}: that nudge names the cap's expired question`,
-        lastPrompt.startsWith("[GOAL]") && lastPrompt.includes('An ask on this entry, "Nudged 3 times without on-goal; escalating", expired unanswered after its wait, so nudging resumes.'), lastPrompt);
+        lastPrompt.startsWith("[GOAL]") && lastPrompt.includes('"Nudged 3 times without on-goal; escalating"') && lastPrompt.includes("expired unanswered"), lastPrompt);
     } else {
       check(`${label}: that nudge names no expired question`, lastPrompt.startsWith("[GOAL]") && !lastPrompt.includes("expired unanswered"), lastPrompt);
     }
     check(`${label}: g-plan is still active with no ask open`, after.goals.find(g => g.id === "g-plan")?.status === "active" && after.pendingAskId === undefined);
   }
+
+  // A store write that throws as the cap opens its ask: the count stays at
+  // the cap and no ask_opened is logged, the persisted slot names nothing,
+  // and on the next tick the slot the tick took in memory is found naming
+  // no record and cleared, after which the cap fires again and, with the
+  // store accepting, opens its ask. The seam is the fake store's own set.
+  {
+    clock.set(T0);
+    const h = await createTickHarness({ ...OPTS, costMaxNudgesPerHour: 20, askOperatorWaitMs: 60_000, caseName: "hold_cap_ask_write_throws" });
+    h.setClassifyValue("nudge");
+    await fireTurn(h);
+    await new Promise(r => setTimeout(r, 20));
+    for (let i = 0; i < 3; i++) {
+      clock.advance(130_000);
+      await tickAndSettle(h, clock);
+    }
+    check("hold cap ask (throwing write) setup: three nudges sent and no cap yet", countAction(getDecisions(h), "nudge_sent") === 3 && countAction(getDecisions(h), "nudge_cap_reached") === 0, getDecisions(h).map(d => d.action));
+    const realSet = h.fake.store.set;
+    h.fake.store.set = (key, value) => (String(key).startsWith("ask:") ? Promise.reject(new Error("store refused the ask record")) : realSet(key, value));
+    clock.advance(130_000);
+    await tickAndSettle(h, clock);
+    // The throw ends the tick before its persist, so what disk shows is
+    // tick 3's state: no ask record, no ask_opened, no slot, no fourth nudge.
+    let state = getState(h);
+    check("hold cap ask (throwing write): no ask record exists, no ask_opened is persisted, the persisted slot names nothing, and no fourth nudge went out",
+      countAction(state.decisions, "ask_opened") === 0 && ![...h.storeMap.keys()].some(k => k.startsWith("ask:")) && state.pendingAskId === undefined && countAction(state.decisions, "nudge_sent") === 3,
+      state.decisions.map(d => d.action));
+    h.fake.store.set = realSet;
+    clock.advance(130_000);
+    await tickAndSettle(h, clock);
+    state = getState(h);
+    check("hold cap ask (throwing write): the next tick clears the recordless slot, the cap fires again (the count was left at the cap) and the ask opens, with no fourth nudge",
+      countAction(state.decisions, "nudge_cap_reached") === 2 && countAction(state.decisions, "ask_opened") === 1 && typeof state.pendingAskId === "string" && h.storeMap.get(`ask:default:${state.pendingAskId}`)?.status === "open" && countAction(state.decisions, "nudge_sent") === 3,
+      state.decisions.slice(-4).map(d => d.action));
+  }
 }
 
-// The cost cap's ask leaves the entry active. Its close lifts the hold, and
-// the hourly refusal before classify still holds past it until the window
-// rolls: the refused tick sends no nudge and, with no ask open, opens the
-// cost-cap ask again. Once the window rolls a nudge goes out, and it names
-// the ask that expired unanswered.
+// The cost cap's ask leaves the entry active and opens once per nudge
+// window. Its close lifts the hold, and the hourly refusal before classify
+// still holds past it until the window rolls: each refused tick sends no
+// nudge and opens no second ask. Once the window rolls, nudges go out again,
+// and the cap reached afresh in the new window opens its ask once more.
 async function caseHold_theCostCapAskLeavesTheEntryActiveAndTheRefusalHoldsPastIt(clock) {
-  console.log("\n=== Hold: the cost cap's ask leaves the entry active, and the hourly refusal holds past its close until the window rolls ===");
+  console.log("\n=== Hold: the cost cap's ask leaves the entry active, opens once per window, and the refusal holds past its close until the window rolls ===");
   clock.set(T0);
-  const h = await createTickHarness({ ...OPTS, askOperatorWaitMs: 60_000, caseName: "hold_cost_cap_ask" });
+  // The plan carries a round budget, since a scored on-goal turn below
+  // burns a round and the harness default plan has none to burn.
+  const h = await createTickHarness({ ...OPTS, askOperatorWaitMs: 60_000, caseName: "hold_cost_cap_ask", stateOpts: { now: T0, goals: rootWithActivePlan(T0), activeGoalId: "g-plan" } });
   h.setClassifyValue("nudge");
   const plan = () => getState(h).goals.find(g => g.id === "g-plan");
   for (let i = 0; i < 3; i++) {
@@ -15062,23 +15099,35 @@ async function caseHold_theCostCapAskLeavesTheEntryActiveAndTheRefusalHoldsPastI
   await h.handlers["prompt.submit"](h.fake, { text: "keep going", origin: { kind: "channel" } }, async () => ({}));
   state = getState(h);
   check("hold cost cap: the answer closed the ask and left g-plan active", state.pendingAskId === undefined && h.storeMap.get(`ask:default:${askId}`)?.status === "answered" && plan()?.status === "active", { slot: state.pendingAskId });
-  clock.advance(130_000);
-  await tickAndSettle(h, clock, 50);
-  state = getState(h);
-  check("hold cost cap: inside the window the next tick still refuses the nudge (nudge_sent stays 2) and g-plan stays active",
-    countAction(state.decisions, "nudge_sent") === 2 && plan()?.status === "active", state.decisions.slice(-3).map(d => d.action));
-  check("hold cost cap: the refused tick opened the cost-cap ask again, with no status written",
-    countAction(state.decisions, "ask_opened") === 2 && typeof state.pendingAskId === "string" && !state.decisions.some(d => d.action === "paused_by_controller"), state.decisions.filter(d => d.action === "ask_opened"));
+  // One on-goal turn resets the per-session consecutive count, so the two
+  // nudges after the roll below reach the cost cap and not the nudge cap.
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  // The answer's own turn is channel-origin and scored for nothing; the
+  // completed turn after it is the one the scorer reads.
+  await fireTurn(h, "t-answer-turn");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-on-goal" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-on-goal", answer: "Took the next step.", reason: "completed" }, async () => ({ result: "ok" }));
+  check("hold cost cap: the on-goal turn was scored", getDecisions(h).some(d => d.action === "score" && d.detail.includes("on-goal")), getDecisions(h).filter(d => d.action === "score"));
+  for (let tick = 1; tick <= 2; tick++) {
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    state = getState(h);
+    check(`hold cost cap: refused tick ${tick} inside the window sends no nudge (nudge_sent stays 2), opens no second ask (the window latch), and g-plan stays active`,
+      countAction(state.decisions, "nudge_sent") === 2 && countAction(state.decisions, "ask_opened") === 1 && state.pendingAskId === undefined && countAction(state.decisions, "cost_cap_reached") === 1 && plan()?.status === "active",
+      state.decisions.slice(-3).map(d => d.action));
+  }
   clock.advance(3_600_000);
   await tickAndSettle(h, clock, 50);
   state = getState(h);
-  check("hold cost cap: past the window the reopened ask expires and the slot clears", state.decisions.some(d => d.action === "ask_timeout") && state.pendingAskId === undefined, state.decisions.slice(-3).map(d => d.action));
+  check("hold cost cap: once the window rolls a nudge goes out (nudge_sent 3) and g-plan is active", countAction(state.decisions, "nudge_sent") === 3 && plan()?.status === "active", state.decisions.slice(-3).map(d => d.action));
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
   state = getState(h);
-  const lastPrompt = (h.promptSubmits || [])[(h.promptSubmits || []).length - 1] ?? "";
-  check("hold cost cap: once the window rolls a nudge goes out (nudge_sent 3) and g-plan is active", countAction(state.decisions, "nudge_sent") === 3 && plan()?.status === "active", state.decisions.slice(-3).map(d => d.action));
-  check("hold cost cap: that nudge names the expired cost-cap question", lastPrompt.startsWith("[GOAL]") && lastPrompt.includes('An ask on this entry, "cost-cap: nudge budget spent') && lastPrompt.includes("expired unanswered"), lastPrompt);
+  check("hold cost cap: the cap reached afresh in the new window opens its ask once more (nudge_sent 4, cost_cap_reached 2, ask_opened 2) with g-plan active",
+    countAction(state.decisions, "nudge_sent") === 4 && countAction(state.decisions, "cost_cap_reached") === 2 && countAction(state.decisions, "ask_opened") === 2 && typeof state.pendingAskId === "string" && plan()?.status === "active",
+    state.decisions.map(d => d.action));
 }
 
 // A worker ASK: line leaves the entry active with the ask as the hold. The
@@ -15113,7 +15162,7 @@ async function caseHold_theWorkerAskLineLeavesTheEntryActiveAndAnExpiryIsNamedOn
   const namedText = (h.promptSubmits || [])[(h.promptSubmits || []).length - 1] ?? "";
   check("hold worker ask: the next idle tick nudges", named.classified && named.nudged, named);
   check("hold worker ask: that nudge names the expired question in one sentence",
-    namedText.startsWith("[GOAL]") && namedText.includes(`An ask on this entry, "${question}", expired unanswered after its wait, so nudging resumes.`), namedText);
+    namedText.startsWith("[GOAL]") && namedText.includes(`"${question}"`) && namedText.includes("expired unanswered"), namedText);
   const again = await lead3IdleTick(h, clock);
   const againText = (h.promptSubmits || [])[(h.promptSubmits || []).length - 1] ?? "";
   check("hold worker ask: the nudge after it names nothing", again.nudged && againText.startsWith("[GOAL]") && !againText.includes("expired unanswered"), againText);

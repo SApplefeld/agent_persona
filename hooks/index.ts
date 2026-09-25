@@ -5858,21 +5858,27 @@ export const register: Register = async (on, options) => {
             // below does: the entry stays active with no reason written on
             // it, holdOf reads the open ask as the hold, and the ask's
             // close, by an answer or by expiry, is the lift. The count is
-            // reset here, as the ask opens, rather than at the close: while
-            // the ask is open holdOf holds every nudge, so nothing raises
-            // the count in between (the only increment is the nudge send
-            // past the hold, and the other writers all reset it), and a
-            // count left at the cap would reopen the ask on the tick after
-            // the close in place of the nudge the lift promises. The floor
-            // is left alone, since the last nudge's spacing still applies.
-            sess.consecutiveNudgesWithoutOnGoal = 0;
-            // Defensive: holdOf returned null for this tick to reach here,
-            // so the slot is empty. The guard keeps the one-ask rule legible
-            // at the site that opens one, as the cost cap's guard below does.
+            // reset as the ask opens rather than at the close: while the
+            // ask is open holdOf holds every nudge, so nothing raises the
+            // count in between (the only increment is the nudge send past
+            // the hold, and the other writers all reset it), and a count
+            // left at the cap would reopen the ask on the tick after the
+            // close in place of the nudge the lift promises. The floor is
+            // left alone, since the last nudge's spacing still applies.
+            //
+            // The slot is taken before the record is written, so a tick
+            // that runs during the write reads the ask hold, and the count
+            // is reset only once the write returns: a write that throws
+            // leaves the count at the cap, so the cap fires again on a later
+            // tick, after tickOpenAsk has cleared the slot whose record is
+            // absent. Defensive guard: holdOf returned null for this tick
+            // to reach here, so the slot is empty; the guard keeps the
+            // one-ask rule legible at the site that opens one.
             if (!sess.state.pendingAskId) {
               const askId = `ask-${g.id}-${capTs}`;
-              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
               sess.state.pendingAskId = askId;
+              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
+              sess.consecutiveNudgesWithoutOnGoal = 0;
               sess.state.decisions.push({
                 timestamp: capTs,
                 loop: "monitor",
@@ -5910,7 +5916,14 @@ export const register: Register = async (on, options) => {
 
           // AH5: Nudge cap check before classify. If the nudge cap is latched, skip classify entirely.
           // AK2: emit cost_cap_reached once per window (latched by capNoticeWindowStart).
-          // BF2: when the nudge cost cap refuses a nudge and pendingAskId is unset, open an ask.
+          // The cost-cap ask opens once per nudge window, under the same
+          // latch as the notice: the entry stays active with no reason
+          // written on it and the open ask is the hold. Once that ask
+          // closes inside the window the refusal alone holds, no nudge and
+          // no second ask, and a new window that reaches the cap latches
+          // afresh and opens one again. The slot guard inside is defensive:
+          // holdOf returned null for this tick to reach here, so no ask is
+          // open, and the guard keeps the one-ask rule legible at the site.
           const nudgeCapped = costEnabled && costMaxNudgesPerHour > 0 &&
             effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now) >= costMaxNudgesPerHour;
           if (nudgeCapped) {
@@ -5922,23 +5935,19 @@ export const register: Register = async (on, options) => {
                 detail: `${g.id}: nudge cap reached (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour), refusing nudge`,
               });
               sess.state.monitor.cost.capNoticeWindowStart = sess.state.monitor.cost.nudgeWindow.start;
-            }
-            // BF2: open an ask if none is pending
-            if (!sess.state.pendingAskId) {
-              const askId = `ask-${g.id}-${tickTs}`;
-              const capReason = `cost-cap: nudge budget spent (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour)`;
-              await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
-              sess.state.pendingAskId = askId;
-              sess.state.decisions.push({
-                timestamp: tickTs,
-                loop: "monitor",
-                action: "ask_opened",
-                detail: `${g.id}: ${capReason} (ask ${askId})`,
-              });
-              try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
-              // The open ask is the hold; the entry stays active with no
-              // reason written on it. Once the ask closes this check still
-              // refuses the nudge until the window rolls.
+              if (!sess.state.pendingAskId) {
+                const askId = `ask-${g.id}-${tickTs}`;
+                const capReason = `cost-cap: nudge budget spent (${effectiveWindowCount(sess.state.monitor.cost.nudgeWindow, now)}/${costMaxNudgesPerHour} per hour)`;
+                await writeAskRecord(commonsStoreOf($), sess.persona, askId, g.id, capReason, sess.mySessionId);
+                sess.state.pendingAskId = askId;
+                sess.state.decisions.push({
+                  timestamp: tickTs,
+                  loop: "monitor",
+                  action: "ask_opened",
+                  detail: `${g.id}: ${capReason} (ask ${askId})`,
+                });
+                try { $.ui.toast(`Agentic: ${capReason}`); } catch { /* non-fatal */ }
+              }
             }
             sess.state.updatedAt = tickTs;
             await persist($);
