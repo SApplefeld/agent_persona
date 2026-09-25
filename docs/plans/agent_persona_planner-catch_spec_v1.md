@@ -1,6 +1,6 @@
 # A planner attempt that throws counts as a planning failure, and a completion result is read through one reader, so a due root cannot burn a Haiku call every tick without end
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-25
 
@@ -96,3 +96,16 @@ Tests: lock the admission in both directions and the turn gate; a root closed fr
 - `docs/archive/agent_persona_goal-tree-curation_v1.md`: `goal_done` by name, which this plan extends to a finished root.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-25
+Completed: 1. Reproduce the silent loop in the tick harness
+Implemented By: implementer-opus
+Metrics: review rounds 0 (reviewed with section 2, see below); provenance 1 spec-traceable
+Decisions / Surprises:
+- Three cases in .kit/controller-tick-test.mjs, registered after caseS13_planFail_threeFailuresBlockTheRoot: casePlannerCatch_noTextCompletionCountsAndBlocksAtThree (the regression pin, complete resolves {}), casePlannerCatch_textFieldCompletionParses ({ text: "[]" }) and casePlannerCatch_selfReviewNoTextWritesNoLesson. Each is written with the post-fix assertions and is red on this base. .kit/tick-harness.mjs is unchanged.
+- Drift from the plan, recorded deliberately: the spec says three ticks log three planning_fired. On the trunk the store holds one after three ticks, because the throwing gate pushes planning_fired and reaches the bare catch without persisting (hooks/index.ts:5363-5608). The in-memory log holds three, which the implementer read with a temporary probe it then deleted. So the durable pin shows the defect through zero planning_failed and a pending root. After section 2, registerPlanningFailure persists on every tick.
+- Beyond the Tests line: each planning_failed detail must equal "Planner returned no text (object, keys: none)"; the self-review decision must carry "(object, keys: none)" after ": error: "; and no model call follows the block, which pins the cost leak directly.
+- Review deferred: the reviewer pair reviews these cases in section 2's round, green against the fix, since a red case cannot yet show it passes for the right reason.
+Gate: targeted lane (SCOTT-CLAUDE, 2026-09-25, worktree D:/agent_persona-planner on 9ca1cbc): baseline node .kit/controller-tick-test.mjs exit 0, 3393 OK; after the cases exit 10, 3397 OK, 10 FAIL, every FAIL in the new cases (main session's re-run). tsc --noEmit exit 0 (implementer's run). Test delta: 3 cases added, 0 retired. Contention: none attributed, 15 node processes (sidecar, relay and daemons).
+Next: 2. The reader and the counted catch
+Commit Model: Branch-and-PR

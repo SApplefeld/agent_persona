@@ -3586,6 +3586,9 @@ async function main() {
     await caseS13_health_redThenGreenAndTheRedReachesTheTurn(clock);
     await caseS13_stall_pendingPlanActivatesFirstAndNothingActivatesAfterRootComplete(clock);
     await caseS13_planFail_threeFailuresBlockTheRoot(clock);
+    await casePlannerCatch_noTextCompletionCountsAndBlocksAtThree(clock);
+    await casePlannerCatch_textFieldCompletionParses(clock);
+    await casePlannerCatch_selfReviewNoTextWritesNoLesson(clock);
     await caseS13_identity_takesOverAStaleHolder(clock);
     await caseS13_lessonInject_newestLessonReachesTheNextTurnOnce(clock);
     await caseSection6_off_noToolNoClaimNoTimer(clock);
@@ -16966,6 +16969,133 @@ async function caseS13_planFail_threeFailuresBlockTheRoot(clock) {
   const afterBlock = decisions.slice(blockIdx + 1).map((d) => d.action);
   check("s13 planfail: no planning_failed or planning_fired after the block", blockIdx !== -1 && !afterBlock.includes("planning_failed") && !afterBlock.includes("planning_fired"), afterBlock);
   check("s13 planfail: no planning_created (the fault flag took effect)", countAction(decisions, "planning_created") === 0);
+}
+
+// A root the planner has broken down (planningRounds 1) whose children are all
+// complete or abandoned. isRootFinished leaves such a root to the planner, so
+// isPlanningDue holds on every tick until the planner answers or is blocked.
+function plannerCatchGoals() {
+  return [
+    makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 10, planningRounds: 1 }),
+    makeGoalNode({ id: "g-done", parentId: "g-root", kind: "plan", status: "complete", maxRounds: 5, source: "controller", planningRound: 0 }),
+    makeGoalNode({ id: "g-dropped", parentId: "g-root", kind: "plan", status: "abandoned", maxRounds: 5, source: "controller", planningRound: 0 }),
+  ];
+}
+
+// What the planner gate left in the store, as the failure detail of every
+// planner-catch check, so a red run shows the loop's own shape.
+function plannerCatchObservation(h) {
+  const state = getState(h);
+  const rootNow = state.goals.find((g) => g.parentId === null);
+  return {
+    planning_fired: countAction(state.decisions, "planning_fired"),
+    planning_failed: countAction(state.decisions, "planning_failed"),
+    planning_complete: countAction(state.decisions, "planning_complete"),
+    block: countAction(state.decisions, "block"),
+    root: rootNow && rootNow.status,
+    completeCalls: h.completeCalls.length,
+  };
+}
+
+// A completion that carries no text is a planning failure: each of three ticks
+// logs one planning_failed naming the value's shape, the third blocks the root,
+// and no planner call fires after the block. A completion of {} is the value
+// shape that reaches the planner with no text in it.
+async function casePlannerCatch_noTextCompletionCountsAndBlocksAtThree(clock) {
+  console.log("\n=== Planner catch: a completion with no text counts as a planning failure, and three block the root ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_no_text",
+    completeValue: {},
+    stateOpts: { now: T0, goals: plannerCatchGoals(), activeGoalId: null },
+  });
+  for (let tick = 1; tick <= 3; tick++) {
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 20);
+    check(`planner catch no-text: tick ${tick} leaves ${tick} planning_failed`,
+      countAction(getDecisions(h), "planning_failed") === tick, plannerCatchObservation(h));
+  }
+  const state = getState(h);
+  const failed = state.decisions.filter((d) => d.action === "planning_failed");
+  check("planner catch no-text: each planning_failed names the value's shape",
+    failed.length === 3 && failed.every((d) => d.detail === "Planner returned no text (object, keys: none)"), failed.map((d) => d.detail));
+  const rootNow = state.goals.find((g) => g.parentId === null);
+  const blockIdx = state.decisions.findIndex((d) => d.action === "block");
+  check("planner catch no-text: the third tick blocks the root with a reason naming the planner",
+    blockIdx !== -1 && !!rootNow && rootNow.status === "blocked" && /Planner failing/.test(rootNow.blockedReason || ""),
+    { ...plannerCatchObservation(h), blockedReason: rootNow && rootNow.blockedReason });
+  const callsAtBlock = h.completeCalls.length;
+  for (let i = 0; i < 2; i++) {
+    clock.advance(10_000);
+    await tickAndSettle(h, clock, 20);
+  }
+  const decisions = getDecisions(h);
+  const afterBlock = blockIdx === -1 ? null : decisions.slice(blockIdx + 1).map((d) => d.action);
+  check("planner catch no-text: no planning_fired after the block",
+    afterBlock !== null && !afterBlock.includes("planning_fired"), afterBlock ?? plannerCatchObservation(h));
+  check("planner catch no-text: no model call after the block",
+    blockIdx !== -1 && h.completeCalls.length === callsAtBlock, { callsAtBlock, callsNow: h.completeCalls.length });
+}
+
+// A completion that carries its text in an object's text field is read as that
+// text: "[]" is the planner's empty plan, so one tick logs planning_complete
+// and completes the root.
+async function casePlannerCatch_textFieldCompletionParses(clock) {
+  console.log("\n=== Planner catch: a completion carrying { text: \"[]\" } is parsed, and the root completes ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "planner_catch_text_field",
+    completeValue: { text: "[]" },
+    stateOpts: { now: T0, goals: plannerCatchGoals(), activeGoalId: null },
+  });
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  const state = getState(h);
+  const rootNow = state.goals.find((g) => g.parentId === null);
+  check("planner catch text-field: one planning_complete", countAction(state.decisions, "planning_complete") === 1, plannerCatchObservation(h));
+  check("planner catch text-field: one root_complete and the root is complete",
+    countAction(state.decisions, "root_complete") === 1 && !!rootNow && rootNow.status === "complete", plannerCatchObservation(h));
+  check("planner catch text-field: no planning_failed", countAction(state.decisions, "planning_failed") === 0, plannerCatchObservation(h));
+}
+
+// The self-review lesson reads the same model call. A completion of {} takes
+// the review's failure path: one self-review decision naming the value's shape,
+// and no lesson in memory. The string completion beside it is the control that
+// the lesson predicate reads a lesson where one is written.
+async function casePlannerCatch_selfReviewNoTextWritesNoLesson(clock) {
+  console.log("\n=== Planner catch: a self-review completion with no text logs its shape and writes no lesson ===");
+  const selfReviewLessons = (h) => getState(h).memory.filter((m) => m.kind === "lesson" && m.source === "self-review");
+  const run = async (caseName, completeValue) => {
+    clock.set(T0);
+    const h = await createTickHarness({
+      ...OPTS,
+      caseName,
+      completeValue,
+      stateOpts: {
+        now: T0,
+        goals: [catchStampsAttemptRootGoal()],
+        activeGoalId: null,
+        selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: true, lastInjectAt: 0 },
+      },
+      classifyValue: "NONE",
+    });
+    await tickAndSettle(h, clock, 100);
+    return h;
+  };
+
+  const control = await run("planner_catch_self_review_control", "The test suite confirmed the fix, verified by a passing harness case.");
+  check("planner catch self-review control: a string completion writes one self-review lesson",
+    selfReviewLessons(control).length === 1, getState(control).memory);
+
+  const h = await run("planner_catch_self_review_no_text", {});
+  const reviews = getDecisions(h).filter((d) => d.action === "self-review");
+  check("planner catch self-review: one self-review decision", reviews.length === 1, reviews);
+  check("planner catch self-review: the decision is the failure path naming the value's shape",
+    reviews.length === 1 && reviews[0].detail.startsWith("periodic:") && reviews[0].detail.includes(": error: ")
+      && reviews[0].detail.includes("(object, keys: none)"), reviews.map((d) => d.detail));
+  check("planner catch self-review: no self-review lesson in memory", selfReviewLessons(h).length === 0, getState(h).memory);
 }
 
 // Stale-holder takeover: a session that joined as reader behind a live holder
