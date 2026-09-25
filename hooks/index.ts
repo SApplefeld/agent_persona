@@ -2595,74 +2595,29 @@ export const register: Register = async (on, options) => {
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
   // anywhere during the current turn. Reset at turn.start, set by tool.call.
   let replyCalledThisTurn = false;
-  // The turns open right now, each key against the clock at the first event
-  // that opened it, so the controller tick can skip while the worker is inside
-  // one. turn.start opens an entry under its turn id. The harness
-  // under-reports turn.start, so two more events that prove a live turn open
-  // one: every prompt.submit, and every tool.call made on the main loop. Both
-  // open OPEN_TURN_SYNTHETIC_KEY, whatever turn id a prompt carries. Any
-  // turn.complete this hook receives closes that key, while an id key closes
-  // only on a completion carrying that same id, so a prompt whose turn
-  // completed before this hook ran would otherwise leave an id key open for
-  // good. A tool call made on another loop, a subagent's or a teammate's,
-  // opens nothing. Such a loop can run long after the main turn completed, and
-  // an entry it opened would hold the tick for the whole of its run. An entry
-  // already open keeps its first time, so repeated calls do not move it.
-  //
-  // A turn.complete closes the id it carries where it carries one, and always
-  // closes the synthetic key. The synthetic key names no turn, so no
-  // completion can be matched to it, and closing it at any turn.complete this
-  // hook receives is what keeps it from silencing nudges for the life of the
-  // session. The next main-loop tool call of a turn still running opens it
-  // again.
-  //
+  // The turns open right now, each id against the clock at its turn.start, so
+  // the controller tick can skip while the worker is inside one.
   // Keyed by id rather than held as a boolean because turn events are not
   // reliably paired:
   // two turns can be open at once, and a turn.complete can arrive for a turn
   // whose turn.start this session never saw. A boolean carries only the last
   // event, so any single completion reads as "no turn open" however many turns
   // are still running, and the tick then nudges into a live turn. A completion
-  // for an id not in the map removes no id entry, so it cannot clear a
-  // different turn still open under its own id.
+  // for an id not in the map removes nothing and leaves the reading alone.
   //
-  // A turn.complete is delivered whatever the turn's reason, an abort
-  // included, so a turn.start entry is left behind only by a failure below the
-  // harness, and a failure that takes the host down takes this in-process map
-  // with it. The synthetic key closes at every completion. A prompt opens its
-  // key before anything knows whether a turn follows, so prompt.submit removes
-  // the key its own call opened when a hook beneath drops the prompt or its
-  // chain throws. The one case this hook cannot see is a prompt that a
-  // UserPromptSubmit settings hook blocks: those hooks run after this chain
-  // settles and before turn.start, so no turn follows, and the key that
-  // prompt opened stays until any turn.complete this hook receives. The reading
-  // has no age-out, so on an idle session that key holds the tick until a
-  // turn next completes.
+  // The map holds no entry a live process cannot account for. A turn.complete
+  // is delivered whatever the turn's reason, an abort included, so an id is
+  // left behind only by a failure below the harness, and a failure that takes
+  // the host down takes this in-process map with it. That is why the reading
+  // needs no age-out: there is no state a running process can reach in which
+  // an entry here is not a turn.
   //
-  // The value is the time the entry opened. turn.complete reads it two ways:
+  // The value is that turn's own start time. turn.complete reads it two ways:
   // the long-turn record measures against the completing turn's own entry, and
   // sess.turnStartedAt, the stamp a reader session sees, is derived from the
-  // earliest entry left after the delete. That stamp is written only by the
-  // two turn handlers, so an entry prompt.submit or tool.call opens reaches it
-  // at the next turn.start.
-  // The key an event with no turn id opens. A symbol, so no turn id the
-  // harness mints can collide with it.
-  const OPEN_TURN_SYNTHETIC_KEY: unique symbol = Symbol("open-turn-without-id");
-  const openTurns = new Map<string | typeof OPEN_TURN_SYNTHETIC_KEY, number>();
+  // earliest entry left after the delete.
+  const openTurns = new Map<string, number>();
   const turnIsOpen = () => openTurns.size > 0;
-  // Opens the synthetic key for an event that proves a live turn. An entry
-  // already open keeps the time it first opened. Returns the key where this
-  // call opened it, or null where it was already open, so a caller undoing
-  // its own open removes only what it added.
-  const openSyntheticTurn = (): typeof OPEN_TURN_SYNTHETIC_KEY | null => {
-    if (openTurns.has(OPEN_TURN_SYNTHETIC_KEY)) return null;
-    openTurns.set(OPEN_TURN_SYNTHETIC_KEY, Date.now());
-    return OPEN_TURN_SYNTHETIC_KEY;
-  };
-  // Whether a hook event ran on a loop other than the main one: a dispatched
-  // subagent, a teammate, a workflow's agents or the engine's own forks.
-  // e.agentId, the loop's id, is non-empty on those and absent on the main
-  // loop.
-  const isOtherLoop = (agentId: string | undefined): boolean => typeof agentId === "string" && agentId.length > 0;
   // The published stamp names the earliest turn still open, or null when none
   // is. Both turn handlers derive it through here rather than each writing its
   // own value: a start that simply stamped its own clock would move the stamp
@@ -6624,10 +6579,8 @@ export const register: Register = async (on, options) => {
     // This turn's own entry, read before the delete below removes it.
     const mapStartedAt = openTurns.get(e.turnId);
     // Closing by id: a completion for a turn this session never saw start
-    // removes no id entry, so it cannot clear a different turn that is still
-    // open. The synthetic key names no turn, so every completion closes it.
+    // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
-    openTurns.delete(OPEN_TURN_SYNTHETIC_KEY);
     try { $.ui.log(`Agentic: turn complete ${kaizenLine(String(e.turnId ?? "none"))}`); } catch { /* non-fatal */ }
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
@@ -7455,10 +7408,6 @@ export const register: Register = async (on, options) => {
 
   // --- tool.call: serve tools, enforce constraints ---
   on("tool.call", async ($, e, next) => {
-    // A main-loop tool call proves a live turn and opens the synthetic key,
-    // before any await so a tick running now reads it. Another loop's call
-    // opens nothing, as the openTurns comment explains.
-    if (!isOtherLoop(e.agentId)) openSyntheticTurn();
     sess.state.monitor.totalToolCalls += 1;
     if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
     // Steer 68/69: the reply tool ran somewhere in this turn, so the
@@ -8955,7 +8904,7 @@ export const register: Register = async (on, options) => {
     // reaches the owner, so such a call neither reads nor advances the
     // throttle, and the record stays pending for the tick or for the
     // owner's own next call.
-    const inSubagent = isOtherLoop(e.agentId);
+    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
     if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastBreakInCheckAt >= urgentCheckMinMs) {
       // One clock reading for the whole scan, so every record in it is
       // judged against the same instant.
@@ -9059,266 +9008,254 @@ export const register: Register = async (on, options) => {
   // Actuator 1: context injection (always on, free, cannot be refused).
   // Both owner and passive reader can inject (read-only access to sess.state).
   on("prompt.submit", async ($, e, next) => {
-    // A prompt proves a live turn, the one it was delivered into or the one
-    // it opens from idle, and opens the synthetic key for either.
-    const openedKey = openSyntheticTurn();
-    // A prompt that a hook beneath drops, or whose chain throws, opens no
-    // turn. No completion will then close the key this call opened, so both
-    // paths remove it here. A key that was already open is left alone.
-    try {
-      // Capture the prompt text for the goal scorer.
-      currentPrompt = e.text;
-      // Item 2 backstop safety: mark whether this genuine external turn is
-      // the supervisor's own synthetic priming message.
-      // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
-      const originKind = (e as { origin?: { kind?: string } }).origin?.kind;
-      // A [SUPERVISOR-ASK prompt is the supervisor's status check on a session
-      // it reads as silent, and takes the same flag: it is not task work, and it
-      // is not the operator. Only the supervisor's own write to the child's
-      // input carries it, and that arrives as the sdk origin, so the same text
-      // typed at the keyboard or relayed from a channel is the operator's turn.
-      const supervisorAskTurn = e.text.startsWith("[SUPERVISOR-ASK") && originKind === "sdk";
-      isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn;
-      lastPromptWasChannelOrigin = originKind === "channel";
-      lastPromptWasExternal = true;
-      // The effort gate's reading of this prompt, taken by the turn that opens
-      // with its text. Its settled text is filled in below once the chain
-      // beneath has answered.
-      const originReading: OriginReading = {
-        text: e.text,
-        kind: typeof originKind === "string" ? originKind : "unclassified",
-        priming: e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn,
-      };
-      originReadings.push(originReading);
-      if (originReadings.length > ORIGIN_READINGS_CAP) originReadings.shift();
+    // Capture the prompt text for the goal scorer.
+    currentPrompt = e.text;
+    // Item 2 backstop safety: mark whether this genuine external turn is
+    // the supervisor's own synthetic priming message.
+    // Steer 68/69: a real Discord message carries e.origin.kind === "channel".
+    const originKind = (e as { origin?: { kind?: string } }).origin?.kind;
+    // A [SUPERVISOR-ASK prompt is the supervisor's status check on a session
+    // it reads as silent, and takes the same flag: it is not task work, and it
+    // is not the operator. Only the supervisor's own write to the child's
+    // input carries it, and that arrives as the sdk origin, so the same text
+    // typed at the keyboard or relayed from a channel is the operator's turn.
+    const supervisorAskTurn = e.text.startsWith("[SUPERVISOR-ASK") && originKind === "sdk";
+    isPrimingTurn = e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn;
+    lastPromptWasChannelOrigin = originKind === "channel";
+    lastPromptWasExternal = true;
+    // The effort gate's reading of this prompt, taken by the turn that opens
+    // with its text. Its settled text is filled in below once the chain
+    // beneath has answered.
+    const originReading: OriginReading = {
+      text: e.text,
+      kind: typeof originKind === "string" ? originKind : "unclassified",
+      priming: e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn,
+    };
+    originReadings.push(originReading);
+    if (originReadings.length > ORIGIN_READINGS_CAP) originReadings.shift();
 
-      // D5b (bullet 1): an open ask never silences the worker. This hook fires
-      // only for a genuine external turn - the controller's own $.prompt.submit
-      // calls (nudges, operator-record delivery, the ask re-raise) bypass this
-      // handler, per the expected-turns comment above. So any turn that reaches
-      // here while an ask is open is the operator answering it, whether it
-      // came from the keyboard or a Discord thread reply, and whether or not
-      // it carries the ask id: close the ask and reactivate the paused node.
-      // A [SUPERVISOR-ASK prompt is the one external turn that is not the
-      // operator, so it leaves an open ask open.
-      if (sess.isOwner && sess.state.pendingAskId && !supervisorAskTurn) {
-        const askId = sess.state.pendingAskId;
-        const store = commonsStoreOf($);
-        const askRecord = await readAskRecord(store, sess.persona, askId);
-        if (askRecord && askRecord.status === "open") {
-          askRecord.status = "answered";
-          await store.set(askKey(sess.persona, askId), askRecord);
-          sess.state.pendingAskId = undefined;
-          const askedNode = sess.state.goals.find((n) => n.id === askRecord.nodeId);
-          if (askedNode) {
-            askedNode.lastAskQuestion = askRecord.question;
-            askedNode.lastAskClosedAt = Date.now();
-            if (askedNode.status === "paused") reactivateAskedEntry(askedNode, `thread reply to ask ${askId}`);
-          }
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "ask_answered_by_reply",
-            detail: `ask ${askId} closed by thread reply, no ask id typed`,
-          });
-          await persist($);
+    // D5b (bullet 1): an open ask never silences the worker. This hook fires
+    // only for a genuine external turn - the controller's own $.prompt.submit
+    // calls (nudges, operator-record delivery, the ask re-raise) bypass this
+    // handler, per the expected-turns comment above. So any turn that reaches
+    // here while an ask is open is the operator answering it, whether it
+    // came from the keyboard or a Discord thread reply, and whether or not
+    // it carries the ask id: close the ask and reactivate the paused node.
+    // A [SUPERVISOR-ASK prompt is the one external turn that is not the
+    // operator, so it leaves an open ask open.
+    if (sess.isOwner && sess.state.pendingAskId && !supervisorAskTurn) {
+      const askId = sess.state.pendingAskId;
+      const store = commonsStoreOf($);
+      const askRecord = await readAskRecord(store, sess.persona, askId);
+      if (askRecord && askRecord.status === "open") {
+        askRecord.status = "answered";
+        await store.set(askKey(sess.persona, askId), askRecord);
+        sess.state.pendingAskId = undefined;
+        const askedNode = sess.state.goals.find((n) => n.id === askRecord.nodeId);
+        if (askedNode) {
+          askedNode.lastAskQuestion = askRecord.question;
+          askedNode.lastAskClosedAt = Date.now();
+          if (askedNode.status === "paused") reactivateAskedEntry(askedNode, `thread reply to ask ${askId}`);
         }
-      }
-
-      const r = await next(e);
-      if (r.drop !== undefined) {
-        // A dropped prompt opens no turn, so the one-shot flags set above
-        // must not survive to the next turn.start.
-        lastPromptWasChannelOrigin = false;
-        lastPromptWasExternal = false;
-        const i = originReadings.indexOf(originReading);
-        if (i >= 0) originReadings.splice(i, 1);
-        if (openedKey !== null) openTurns.delete(openedKey);
-        return r;
-      }
-      if (typeof r.text === "string") originReading.settledText = r.text;
-
-      if (arming === "reader") {
-        // Section 6: a reader session owns no goal tree, so no [GOAL TREE],
-        // [GOAL QUEUE], [NO GOAL], [ENV], [LESSON] or [MEMORY] block is appended -
-        // the prompt reaches the model exactly as the harness delivered it.
-        return r;
-      }
-
-      const contextBlocks: string[] = [...(r.context ?? [])];
-
-      // --- Active goal injection (M5: [GOAL TREE] shape per plan lines 349-354) ---
-      const activeNode = sess.state.activeGoalId
-        ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
-        : null;
-      if (activeNode && activeNode.status === "active") {
-        // Build the [GOAL TREE] block: Active, Path, Pending siblings, Last note.
-        const parent = activeNode.parentId
-          ? sess.state.goals.find((g) => g.id === activeNode.parentId)
-          : null;
-        const path = parent
-          ? `root > ${parent.title.slice(0, 40)} > ${activeNode.title.slice(0, 40)}`
-          : `root > ${activeNode.title.slice(0, 40)}`;
-        const siblings = activeNode.parentId
-          ? sess.state.goals.filter((g) => g.parentId === activeNode.parentId && g.id !== activeNode.id && g.status === "pending")
-          : [];
-        const siblingLine = siblings.length > 0
-          ? `Pending siblings: ${siblings.map((s) => s.title.slice(0, 30)).join("; ")}\n`
-          : "";
-        const lastNote = activeNode.notes.length > 0
-          ? `Last note: ${activeNode.notes[activeNode.notes.length - 1]}\n`
-          : "";
-        // A plan entry has no round budget, so its prompt carries no round
-        // text; a task entry reads the round it is entering over its budget.
-        const roundText = isPlanEntry(sess.state, activeNode)
-          ? ""
-          : ` | round ${activeNode.completedRounds + 1}/${activeNode.maxRounds}`;
-        const goalBlock =
-          `[GOAL TREE]\n` +
-          `Active: ${activeNode.kind} ${activeNode.id}${roundText} | ${activeNode.objective}\n` +
-          `Path: ${path}\n` +
-          siblingLine +
-          lastNote +
-          `Keep working toward this objective. If the user's current request conflicts with it, follow the user.\n` +
-          `Close this step with goal_done, whose description says what the call does next.`;
-        contextBlocks.push(goalBlock);
-        // L17: log each injected block.
-        try { $.ui.log(`Agentic: [GOAL TREE] injected for ${activeNode.id}`); } catch { /* non-fatal */ }
-      } else {
-        // With no active entry, the [GOAL QUEUE] block lists every open entry
-        // in openGoals order with its status, so the model reads the whole
-        // queue rather than one entry's reason. Its last line says whether the
-        // controller will start anything by itself, which hasStartableWork
-        // decides from the controller's own walk.
-        const open = openGoals(sess.state);
-        if (open.length > 0) {
-          const listed = open.slice(0, GOAL_QUEUE_MAX_LINES);
-          const queueLines =
-            listed
-              .map((g) => `- ${g.status} ${g.kind} ${g.id} | ${g.title.slice(0, 40)}${g.blockedReason ? ` | ${g.blockedReason.slice(0, 60)}` : ""}\n`)
-              .join("") +
-            (open.length > listed.length ? `...and ${open.length - listed.length} more open ${open.length - listed.length === 1 ? "entry" : "entries"}.\n` : "");
-          const queueClose = hasStartableWork(sess.state)
-            ? `The next pending entry starts on the controller's next tick; do not start it by hand.`
-            : `Nothing here starts by itself: every open entry is paused, blocked or out of the controller's reach. Ask the operator or the coordinator which to release. On the operator's or the coordinator's word, resume a paused one with goal_resume or drop one with goal_edit.`;
-          const queueBlock =
-            `[GOAL QUEUE]\n` +
-            queueLines +
-            queueClose;
-          contextBlocks.push(queueBlock);
-          try { $.ui.log(`Agentic: [GOAL QUEUE] injected with ${open.length} open entries`); } catch { /* non-fatal */ }
-        } else if (sess.state.goals.length === 0) {
-          // Passive-supervisor plan item 2: with no goal at all (never created,
-          // or the root already completed), an operator message phrased as a
-          // plain request has nothing telling the model to open a goal tree.
-          // Without this reminder a cheap-tier child can read an ordinary
-          // request as small talk and never call goal_create at all.
-          const idleBlock =
-            `No goal is active. If the message above describes something to ` +
-            `accomplish, call goal_create with that as the objective before doing ` +
-            `any other work - even a one-step or trivial-looking request, since ` +
-            `size is not the test: a plain request that names no tool always opens ` +
-            `a goal first. Then reply in one line naming the goal you took. Only ` +
-            `skip goal_create if the message is not a request to accomplish ` +
-            `anything (small talk, a question with no task attached).`;
-          contextBlocks.push(idleBlock);
-          try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
-        }
-      }
-
-      // --- [ENV] block injection (G4: only when notable per plan section 4; push env_inject) ---
-      const env = sess.state.monitor.env;
-      const facts = envNotable(env, Date.now());
-      if (facts.length > 0) {
-        const envBlock = `[ENV] ${facts.join(", ")}\nEnvironment state above is current; act on it when it affects your plan.`;
-        contextBlocks.push(envBlock);
         sess.state.decisions.push({
           timestamp: Date.now(),
           loop: "monitor",
-          action: "env_inject",
-          detail: `env_inject: ${facts.join(", ")}`,
+          action: "ask_answered_by_reply",
+          detail: `ask ${askId} closed by thread reply, no ask id typed`,
         });
-        try { $.ui.log(`Agentic: [ENV] injected`); } catch { /* non-fatal */ }
+        await persist($);
       }
+    }
 
-      // --- Lesson injection (S11: gated on lastInjectAt) ---
-      const recentLessons = sess.state.memory
-        .filter((m) => m.source === "self-review" && m.kind === "lesson")
-        .sort((a, b) => b.createdAt - a.createdAt);
-      if (recentLessons.length > 0) {
-        const newest = recentLessons[0];
-        const sr = sess.state.monitor.selfReview;
-        if (sr && newest.createdAt > sr.lastInjectAt) {
-          const lessonBlock = `[LESSON] ${newest.text}\nA self-review lesson from recent activity. Avoid repeating the same mistake.`;
-          contextBlocks.push(lessonBlock);
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "lesson_inject",
-            detail: `lesson_inject: ${newest.text.slice(0, 80)}`,
-          });
-          sr.lastInjectAt = Date.now();
-          try { $.ui.log(`Agentic: [LESSON] injected`); } catch { /* non-fatal */ }
-        }
+    const r = await next(e);
+    if (r.drop !== undefined) {
+      // A dropped prompt opens no turn, so the one-shot flags set above
+      // must not survive to the next turn.start.
+      lastPromptWasChannelOrigin = false;
+      lastPromptWasExternal = false;
+      const i = originReadings.indexOf(originReading);
+      if (i >= 0) originReadings.splice(i, 1);
+      return r;
+    }
+    if (typeof r.text === "string") originReading.settledText = r.text;
+
+    if (arming === "reader") {
+      // Section 6: a reader session owns no goal tree, so no [GOAL TREE],
+      // [GOAL QUEUE], [NO GOAL], [ENV], [LESSON] or [MEMORY] block is appended -
+      // the prompt reaches the model exactly as the harness delivered it.
+      return r;
+    }
+
+    const contextBlocks: string[] = [...(r.context ?? [])];
+
+    // --- Active goal injection (M5: [GOAL TREE] shape per plan lines 349-354) ---
+    const activeNode = sess.state.activeGoalId
+      ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
+      : null;
+    if (activeNode && activeNode.status === "active") {
+      // Build the [GOAL TREE] block: Active, Path, Pending siblings, Last note.
+      const parent = activeNode.parentId
+        ? sess.state.goals.find((g) => g.id === activeNode.parentId)
+        : null;
+      const path = parent
+        ? `root > ${parent.title.slice(0, 40)} > ${activeNode.title.slice(0, 40)}`
+        : `root > ${activeNode.title.slice(0, 40)}`;
+      const siblings = activeNode.parentId
+        ? sess.state.goals.filter((g) => g.parentId === activeNode.parentId && g.id !== activeNode.id && g.status === "pending")
+        : [];
+      const siblingLine = siblings.length > 0
+        ? `Pending siblings: ${siblings.map((s) => s.title.slice(0, 30)).join("; ")}\n`
+        : "";
+      const lastNote = activeNode.notes.length > 0
+        ? `Last note: ${activeNode.notes[activeNode.notes.length - 1]}\n`
+        : "";
+      // A plan entry has no round budget, so its prompt carries no round
+      // text; a task entry reads the round it is entering over its budget.
+      const roundText = isPlanEntry(sess.state, activeNode)
+        ? ""
+        : ` | round ${activeNode.completedRounds + 1}/${activeNode.maxRounds}`;
+      const goalBlock =
+        `[GOAL TREE]\n` +
+        `Active: ${activeNode.kind} ${activeNode.id}${roundText} | ${activeNode.objective}\n` +
+        `Path: ${path}\n` +
+        siblingLine +
+        lastNote +
+        `Keep working toward this objective. If the user's current request conflicts with it, follow the user.\n` +
+        `Close this step with goal_done, whose description says what the call does next.`;
+      contextBlocks.push(goalBlock);
+      // L17: log each injected block.
+      try { $.ui.log(`Agentic: [GOAL TREE] injected for ${activeNode.id}`); } catch { /* non-fatal */ }
+    } else {
+      // With no active entry, the [GOAL QUEUE] block lists every open entry
+      // in openGoals order with its status, so the model reads the whole
+      // queue rather than one entry's reason. Its last line says whether the
+      // controller will start anything by itself, which hasStartableWork
+      // decides from the controller's own walk.
+      const open = openGoals(sess.state);
+      if (open.length > 0) {
+        const listed = open.slice(0, GOAL_QUEUE_MAX_LINES);
+        const queueLines =
+          listed
+            .map((g) => `- ${g.status} ${g.kind} ${g.id} | ${g.title.slice(0, 40)}${g.blockedReason ? ` | ${g.blockedReason.slice(0, 60)}` : ""}\n`)
+            .join("") +
+          (open.length > listed.length ? `...and ${open.length - listed.length} more open ${open.length - listed.length === 1 ? "entry" : "entries"}.\n` : "");
+        const queueClose = hasStartableWork(sess.state)
+          ? `The next pending entry starts on the controller's next tick; do not start it by hand.`
+          : `Nothing here starts by itself: every open entry is paused, blocked or out of the controller's reach. Ask the operator or the coordinator which to release. On the operator's or the coordinator's word, resume a paused one with goal_resume or drop one with goal_edit.`;
+        const queueBlock =
+          `[GOAL QUEUE]\n` +
+          queueLines +
+          queueClose;
+        contextBlocks.push(queueBlock);
+        try { $.ui.log(`Agentic: [GOAL QUEUE] injected with ${open.length} open entries`); } catch { /* non-fatal */ }
+      } else if (sess.state.goals.length === 0) {
+        // Passive-supervisor plan item 2: with no goal at all (never created,
+        // or the root already completed), an operator message phrased as a
+        // plain request has nothing telling the model to open a goal tree.
+        // Without this reminder a cheap-tier child can read an ordinary
+        // request as small talk and never call goal_create at all.
+        const idleBlock =
+          `No goal is active. If the message above describes something to ` +
+          `accomplish, call goal_create with that as the objective before doing ` +
+          `any other work - even a one-step or trivial-looking request, since ` +
+          `size is not the test: a plain request that names no tool always opens ` +
+          `a goal first. Then reply in one line naming the goal you took. Only ` +
+          `skip goal_create if the message is not a request to accomplish ` +
+          `anything (small talk, a question with no task attached).`;
+        contextBlocks.push(idleBlock);
+        try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
       }
+    }
 
-      // --- Memory injection (MEMQ seam) ---
-      const candidates = sess.state.memory.filter((m) => m.confidence > 0.3);
-      if (candidates.length > 0) {
-        let entries: typeof candidates | undefined;
+    // --- [ENV] block injection (G4: only when notable per plan section 4; push env_inject) ---
+    const env = sess.state.monitor.env;
+    const facts = envNotable(env, Date.now());
+    if (facts.length > 0) {
+      const envBlock = `[ENV] ${facts.join(", ")}\nEnvironment state above is current; act on it when it affects your plan.`;
+      contextBlocks.push(envBlock);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "env_inject",
+        detail: `env_inject: ${facts.join(", ")}`,
+      });
+      try { $.ui.log(`Agentic: [ENV] injected`); } catch { /* non-fatal */ }
+    }
 
-        // Try MEMQ MCP ranker first.
-        try {
-          const result = await $.mcp.call("MEMQ", "rank", {
-            query: e.text.slice(0, 500),
-            memories: candidates.map((m) => ({ id: m.id, text: m.text, kind: m.kind })),
-          });
-          if (result?.content?.length) {
-            const textBlock = (result as any).content.find((c: any) => c.type === "text");
-            if (textBlock) {
-              const rankedIds: string[] = JSON.parse(textBlock.text);
-              const byId = new Map(candidates.map((m) => [m.id, m]));
-              const ranked = rankedIds.map((id) => byId.get(id)).filter(Boolean) as typeof candidates;
-              if (ranked.length > 0) {
-                entries = ranked.slice(0, 20);
-                for (const m of entries) {
-                  m.lastAccessed = Date.now();
-                  m.accessCount += 1;
-                }
+    // --- Lesson injection (S11: gated on lastInjectAt) ---
+    const recentLessons = sess.state.memory
+      .filter((m) => m.source === "self-review" && m.kind === "lesson")
+      .sort((a, b) => b.createdAt - a.createdAt);
+    if (recentLessons.length > 0) {
+      const newest = recentLessons[0];
+      const sr = sess.state.monitor.selfReview;
+      if (sr && newest.createdAt > sr.lastInjectAt) {
+        const lessonBlock = `[LESSON] ${newest.text}\nA self-review lesson from recent activity. Avoid repeating the same mistake.`;
+        contextBlocks.push(lessonBlock);
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "monitor",
+          action: "lesson_inject",
+          detail: `lesson_inject: ${newest.text.slice(0, 80)}`,
+        });
+        sr.lastInjectAt = Date.now();
+        try { $.ui.log(`Agentic: [LESSON] injected`); } catch { /* non-fatal */ }
+      }
+    }
+
+    // --- Memory injection (MEMQ seam) ---
+    const candidates = sess.state.memory.filter((m) => m.confidence > 0.3);
+    if (candidates.length > 0) {
+      let entries: typeof candidates | undefined;
+
+      // Try MEMQ MCP ranker first.
+      try {
+        const result = await $.mcp.call("MEMQ", "rank", {
+          query: e.text.slice(0, 500),
+          memories: candidates.map((m) => ({ id: m.id, text: m.text, kind: m.kind })),
+        });
+        if (result?.content?.length) {
+          const textBlock = (result as any).content.find((c: any) => c.type === "text");
+          if (textBlock) {
+            const rankedIds: string[] = JSON.parse(textBlock.text);
+            const byId = new Map(candidates.map((m) => [m.id, m]));
+            const ranked = rankedIds.map((id) => byId.get(id)).filter(Boolean) as typeof candidates;
+            if (ranked.length > 0) {
+              entries = ranked.slice(0, 20);
+              for (const m of entries) {
+                m.lastAccessed = Date.now();
+                m.accessCount += 1;
               }
             }
           }
-        } catch {
-          // MEMQ unavailable: fall through to local ranking.
         }
-
-        // Local fallback: confidence-ranked.
-        if (!entries) {
-          entries = [...candidates]
-            .sort((a, b) => b.confidence - a.confidence || b.accessCount - a.accessCount)
-            .slice(0, 20);
-          for (const m of entries) {
-            m.lastAccessed = Date.now();
-            m.accessCount += 1;
-          }
-        }
-
-        const memoryBlock =
-          "Relevant user memories (persisted across sessions; treat as standing preferences unless the user overrides them):\n" +
-          entries.map((m) => `- [${m.kind}] ${m.text}`).join("\n");
-        contextBlocks.push(memoryBlock);
-        // L17: log memory injection.
-        try { $.ui.log(`Agentic: [MEMORY] injected (${entries.length} entries)`); } catch { /* non-fatal */ }
+      } catch {
+        // MEMQ unavailable: fall through to local ranking.
       }
 
-      return {
-        ...r,
-        context: contextBlocks as readonly string[],
-      };
-    } catch (err) {
-      if (openedKey !== null) openTurns.delete(openedKey);
-      throw err;
+      // Local fallback: confidence-ranked.
+      if (!entries) {
+        entries = [...candidates]
+          .sort((a, b) => b.confidence - a.confidence || b.accessCount - a.accessCount)
+          .slice(0, 20);
+        for (const m of entries) {
+          m.lastAccessed = Date.now();
+          m.accessCount += 1;
+        }
+      }
+
+      const memoryBlock =
+        "Relevant user memories (persisted across sessions; treat as standing preferences unless the user overrides them):\n" +
+        entries.map((m) => `- [${m.kind}] ${m.text}`).join("\n");
+      contextBlocks.push(memoryBlock);
+      // L17: log memory injection.
+      try { $.ui.log(`Agentic: [MEMORY] injected (${entries.length} entries)`); } catch { /* non-fatal */ }
     }
+
+    return {
+      ...r,
+      context: contextBlocks as readonly string[],
+    };
   });
 
 };

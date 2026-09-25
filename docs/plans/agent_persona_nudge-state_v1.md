@@ -12,14 +12,14 @@ entry. Its idle branch reads one hold, computed from an open ask and the worker'
 BLOCKED line, and the nudge cap, the hourly nudge budget and the error streak each hold by opening
 an ask rather than by writing a status. A nudge asks the worker for a status line from a
 closed set, the count that trips the cap counts nudged answers that carried none, and the third
-such answer opens one fixed question to the operator and pauses nothing. The controller's reading
-of whether a turn is open takes every event that proves one, so a nudge is never queued into live
-work. And one shadow question, whether work should continue on its own after the worker's closing
+such answer opens one fixed question to the operator and pauses nothing. Each turn's id
+reaches the plugin's log at its start and its completion, so whether a turn was open when a nudge
+went out can be read from the log. And one shadow question, whether work should continue on its own after the worker's closing
 text, is journaled with an outcome so it can be scored before it is trusted. It matters because on
 2026-09-23 the dev-persona persona's goal-levels entry was paused mid-section by a cap that counts
-nudges the scorer never judged, the tick handed its slot to the next plan, and the same persona's
-live log shows 67 turn starts against 106 completions, so the controller believed no turn was open
-for four turns in ten.
+nudges the scorer never judged, and the tick handed its slot to the next plan. The same persona's live
+log shows 67 turn starts against 106 completions, a gap the ruling of 2026-09-25 under Intent
+traces to background subagents finishing inside an open turn rather than to missed starts.
 
 ## Dispatch Authorization
 
@@ -79,6 +79,15 @@ is not built, because under this plan the cap never pauses the entry and there i
 hold behind or lift. So this plan gates on goal-levels alone, and its Section 5 retires the two
 backlog entries the nudge-cap plan would have retired, the nudge-cap entry of 2026-09-23 and the
 README nudge-counter entry of 2026-09-21.
+
+Ruled 2026-09-25 by the architect, on the executing session's finding: section 1 is narrowed to
+its logging half. The premise that the harness under-delivers `turn.start` is disproven at the
+source: the child debug logs reconcile every persona turn's start with the prompts that opened it
+(the backlog entry of 2026-09-23 on the extra turn completions), and the surplus completions are
+background subagents finishing inside an open turn. So `prompt.submit` and `tool.call` do not
+open the open-turn reading, and `turn.start` stays its only opener. A dev-persona session nudged
+while its closing text read `WAITING:` is idle on a background run, which is section 2's waiting
+hold, not a turn the reading missed.
 
 Provenance: distilled from the architect session of 2026-09-23 on the operator's thread, four
 messages from the operator between the nudge-cap plan's merge and this plan's draft.
@@ -147,14 +156,11 @@ whose text is a named literal with a ledger entry: the persona, the entry's titl
 nudges were answered with no status line, and that any answer resumes nudging. The answer closes
 the ask, lifts the hold, and resets the count. The toast stays.
 
-**The open-turn reading.** `openTurns` (`hooks/index.ts:2251-2252`) is opened by `turn.start`
-today. It is also opened by `prompt.submit` and by `tool.call`, under the event's turn id where
-the event carries one and under one synthetic key otherwise. A `turn.complete` closes the id it
-carries where it carries one, and always closes the synthetic key, so a synthetic entry lives
-only until the next completion of any turn. An implementer who finds an event carrying a shape
-this rule does not fit stops with a `BLOCKED:` lead naming the event and the field. Both `turn.start` and `turn.complete` write `e.turnId` through the plugin's own log line rather
-than the decision ring, which `DECISIONS_MAX` caps at 200 and a per-completion record would
-crowd; that is the cheap first step the backlog entry of 2026-09-13 asks for. The idle
+**The open-turn reading.** `openTurns` (`hooks/index.ts:2251-2252`) stays opened by `turn.start`
+alone, under the ruling of 2026-09-25 in Intent. Both `turn.start` and `turn.complete` write
+`e.turnId` through the plugin's own log line rather than the decision ring, which
+`DECISIONS_MAX` caps at 200 and a per-completion record would crowd; that is the cheap first step
+the backlog entry of 2026-09-13 asks for, and the instrument the Open Questions read. The idle
 clock keeps reading `lastTurnComplete`.
 
 **The shadow question.** `hooks/question-catalog.ts` gains `WORK_CONTINUES = "work-continues"`,
@@ -190,29 +196,28 @@ at `4193`, `5022-5039`, `6251`, `7113`, `7174`, `7353`, `7500-7503`, `8124`, `82
 `6436-6438`, `6463`. Line numbers are the trunk's at `a923263` and move once the goal-levels plan
 merges, so the worker finds each site by the symbol named beside it.
 
+## Standing Brief Amendments
+
+- `turn.start` is the only event that opens the open-turn reading; `prompt.submit` and `tool.call`
+  open nothing (the architect's ruling of 2026-09-25 under Intent).
+
 ## Sections of Work
 
-### 1. The open-turn reading takes every event that proves a live turn
+### 1. The turn id reaches the plugin log at turn start and completion
 Model: opus
 
-The change under "The open-turn reading". Opus because the event shapes are read from the
-plugin's own handlers and the harness's delivery is uneven, so the synthetic-key rule has to be
-checked against what each event carries rather than assumed.
+The change under "The open-turn reading", narrowed to its logging half by the ruling of
+2026-09-25 in Intent.
 
 Acceptance:
-- A tick between a `tool.call` and its `turn.complete`, with no `turn.start` delivered, sends no
-  nudge and logs `nudge_skipped_turn_in_flight`; the same tick after the `turn.complete` sends
-  one.
-- A `prompt.submit` with no `turn.start` opens the reading the same way, and a `turn.complete`
-  carrying no id closes the synthetic key.
-- The plugin's log carries the turn id at both turn start and turn completion, no new decision
-  is written per turn, and the existing open-turn cases pass unchanged.
+- The plugin's log carries the turn id at both turn start and turn completion, folded to one line
+  with no square bracket, no new decision is written per turn, and the existing open-turn cases
+  pass unchanged.
 
-Files in scope: `hooks/index.ts` (the `openTurns` map and the four event handlers),
+Files in scope: `hooks/index.ts` (the `turn.start` and `turn.complete` handlers),
 `.kit/controller-tick-test.mjs`.
-Tests: lock that a live turn known only from a tool call blocks the nudge, since the dev-persona
-log shows four turns in ten open without a start event, and lock that the reading closes, since a
-key that never closes silences nudges for the life of the session.
+Tests: lock that both log lines carry the id and that a hostile id cannot break the line, since
+the line is the instrument the Open Questions read.
 
 ### 2. One hold, and the controller stops writing paused
 Model: fable
@@ -373,3 +378,26 @@ the Chapter records as drift.
 
 ## Chapters
 
+### Chapter 1 - 2026-09-25
+Completed: 1. The turn id reaches the plugin log at turn start and completion
+Implemented By: implementer-opus (three rounds), then main session for the narrowing revert after the architect's ruling
+Metrics: review rounds 3, closed major-closed; provenance 9 spec-traceable, 0 fix-introduced, 1 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 1 open: changes the open-turn reading so prompt.submit and tool.call open it (by turn id where carried, else one synthetic key) and turn.complete always closes the synthetic key, plus turn-id logging at turn.start and turn.complete; serves the Goal sentence "The controller's reading of whether a turn is open takes every event that proves one" and the Intent clause "The controller never queues a nudge while a turn is live"; adds a mechanism, the synthetic key, which the Approach "The open-turn reading" names; size about 3 handler edits and one key constant plus 4-6 test cases; not building it leaves four turns in ten read as idle and nudged into.
+- round 1 fix (drop leak, Critical blind / Major adversarial, spec-traceable): prompt.submit removes the synthetic key it opened when the prompt is dropped or the handler throws; serves section 1's Tests clause "lock that the reading closes, since a key that never closes silences nudges for the life of the session"; adds no mechanism beyond undoing its own open (a guard traced to that clause); size about 10 lines plus 2 cases; not building it lets one dropped idle prompt silence the controller for the session.
+- round 2 fix (blind Majors, spec-traceable to Tests "a key that never closes silences nudges" and Goal "a nudge is never queued into live work"): tool.call from a subagent loop (agentId set) no longer opens the reading, and prompt.submit always opens the synthetic key rather than its turn id; adds no mechanism (narrows an existing open, reuses the file's inSubagent predicate); size about 4 lines plus 2 cases; not building it holds the whole tick, inbox delivery included, for a background agent's whole run, and lets a delivered prompt leave an id key no completion closes.
+- round 3 fix (adversarial Majors, spec-traceable to section 1 "opens the reading the same way" and Tests "lock that the reading closes"): prompt.submit no longer removes its key when its chain throws, since the host skips a failed hook and the turn still runs (claude-code.d.ts:2101, 2193); comments corrected on settings hooks, which run inside next(e), and on turn.start delivery; removes a mechanism rather than adding one; size about 10 lines net. Superseded before it landed: the implementer was stopped mid-round by the ruling below, and its uncommitted edits were discarded.
+- The premise was wrong. Round 3's adversarial review found the repository's own backlog entry of 2026-09-23 ("The extra turn completions are subagents finishing inside an open turn") reconciling every persona turn's start with the prompts that opened it, and the comment in the currentGateTurnId block of hooks/index.ts saying the same. The Goal's 67-against-106 gap is background subagents' completions, not missed starts. The architect ruled on 2026-09-25 to narrow section 1 to its logging half and drop the extra opens, after the check that nothing in sections 2 to 5 reads them (their Approach reads the ask slot and the lead, never openTurns). The main session rebuilt the section from the base commit 55b9025 plus the two log lines and the logging case, and reverted every fixture change the extra opens had forced on existing cases. Commits d65e2b6, bb34bfc and 07f8233 on the branch carry the superseded rounds; the section's net diff against 55b9025 is the logging half alone.
+- Plan doc drift, recorded deliberately: the header moved from Ready to In Progress at the start of this run; the ruling of 2026-09-25 is appended under Intent; the Goal's open-turn sentence and its evidence sentence are rewritten to the ruling; the Approach paragraph "The open-turn reading" and section 1's heading, acceptance, Files in scope and Tests are rewritten to the logging half; a Standing Brief Amendments block is added above Sections of Work carrying the ruling.
+- The Open Question about a dev-persona nudged through test runs while writing WAITING now points at section 2's waiting-lead hold, per the same ruling.
+Assumptions:
+- assumed 2026-09-25 (default, section 1): a turn id is event-supplied text on a one-line log, so it passes through the file's existing kaizenLine fold (one line, bracket-safe) rather than a new sanitizer; reversal: one call site each.
+Review Findings: review: adversarial + blind at fable, Agent tool (rounds 1 and 2); review: performance at fable, Agent tool (round 1); review: adversarial at opus, Workflow high (round 3). Every Critical and Major across the three rounds was about the extra opens (the drop leak, the throw path, subagent tool calls, delivered-prompt id keys, subagent completions closing the synthetic key, the plain-path skip log, the premise), and the narrowing removed the code each one named, so none survives against the shipped delta. The round 3 premise Major, orchestrator-traced to the Goal's evidence sentence, is the one whose remedy was the ruling. Minors: 0 fixed in the close pass, 0 upgraded, 22 left because the narrowing removed the code each names, except the hostile-id pin, which ships in its round 2 shape (no line terminator and no bracket, rather than an exact rendering). Author re-read of the narrowing delta in place of a fourth round: the shipped code diff is the two log lines rounds 1 to 3 already reviewed, and the test diff is the logging case in its reviewed round 2 shape.
+Stamps: adjudicated 2, stamped 2 (the-shell-pipe-is-a-better-turn-signal-than-the-plugins-hook-events and prompt-submit-always-waits-for-idle-so-it-cannot-reach-a-running-turn, both of which shaped the event-shape reading); the 20 operator-tier hits are other sessions' reads on this machine's shared tier and none bore on this section.
+Gate: targeted lane (SCOTT-CLAUDE, 2026-09-25 00:57, worktree D:/agent_persona-nudge, three files modified on top of 07f8233): tsc --noEmit exit 0; node .kit/controller-tick-test.mjs exit 0, 3372 OK, 0 failures, against the baseline 3365 OK, 0 failures on the same lane at 55b9025 (the implementer's run, reported). Red before green: the logging case against the base hooks/index.ts failed 3 checks and passed after. Test delta: 1 added (caseOpenTurn_turnIdLoggedAtStartAndCompletion, 7 checks, pins that both turn log lines carry the id and that a hostile id cannot break or bracket the line), 0 retired, 0 existing tests edited. Spawning tests added: 0. Contention: none beyond the relay and sidecar daemons.
+Next: 2. One hold, and the controller stops writing paused
+Commit Model: Branch-and-PR
+Delta: SCOTT-CLAUDE, 2026-09-25 00:57
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
