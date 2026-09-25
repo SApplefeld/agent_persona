@@ -3444,7 +3444,9 @@ async function main() {
     await caseBank2_everyPersonaTurnEndRecomputesTheOwedBank(clock);
     await caseBank2_onlyAModelMadeCallTakesTheOwedBank(clock);
     await caseBank2_theReplyBackfillTakesNoOwedBank(clock);
-    await caseBank2_aNextTurnStartingMidCompletionKeepsTheOwedBank(clock);
+    await caseBank2_aNextTurnStartingMidCompletionLeavesNothingOwed(clock);
+    await caseBank2_aLateSettlingEndClearsAStaleOwedBank(clock);
+    await caseBank2_aLateSettlingEndNeverBanksMidTurn(clock);
     await caseBank2_greatestLastUpdatedRecordIsRun(clock);
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
@@ -15345,35 +15347,126 @@ async function caseBank2_theReplyBackfillTakesNoOwedBank(clock) {
   bank2CheckBanked("bank2 the model's first call after the backfilled turn banks once", h, runs, call);
 }
 
-// Whether a turn is still open is read at this completion's own delete. A
-// completion that is still settling when the next turn.start fires (here its
-// memory-curation classify is held until that start has run) still owes the
-// bank for a durable end, and the model's first call of that next turn banks
-// it once.
-async function caseBank2_aNextTurnStartingMidCompletionKeepsTheOwedBank(clock) {
-  console.log("\n=== boundary-compaction Section 2: a turn start during a durable completion leaves the bank owed ===");
+// Parks the next memory-curation classify the handlers make: it returns a
+// promise the case resolves through the returned release, and every classify
+// after it answers discard at once. The harness's classify stub already takes
+// a function, so this adds nothing to the harness.
+function bank2ParkNextClassify(h) {
+  const park = { release: null };
+  h.setClassifyValue(() => {
+    if (park.release !== null) return "discard";
+    return new Promise((resolve) => { park.release = () => resolve("discard"); });
+  });
+  return park;
+}
+
+// Parks the next write of the heartbeat file, which a completion makes at
+// its owner heartbeat before any other await, so a turn.start can run whole
+// inside that window. Later writes land at once; the parked one lands on
+// release.
+function bank2ParkNextHeartbeatWrite(h) {
+  const park = { release: null };
+  const realWrite = h.fake.fs.write;
+  h.fake.fs.write = (p, content) => {
+    if (p !== HEARTBEAT_FILE || park.release !== null) return realWrite(p, content);
+    return new Promise((resolve, reject) => {
+      park.release = () => { realWrite(p, content).then(resolve, reject); };
+    });
+  };
+  return park;
+}
+
+async function bank2UntilParked(park) {
+  for (let i = 0; i < 1000 && park.release === null; i++) await new Promise((r) => setImmediate(r));
+  return park.release !== null;
+}
+
+// A durable end whose completion is still settling (parked in its
+// memory-curation classify) when the next turn starts owes nothing once it
+// settles: that turn's first tool call may already have run, so a bank set
+// now could only land mid-turn. The next turn's first and later model calls
+// run nothing. That turn's own durable end, with nothing interleaved, owes
+// the bank again, and the turn after it banks once: the control that the
+// recorder records here.
+async function caseBank2_aNextTurnStartingMidCompletionLeavesNothingOwed(clock) {
+  console.log("\n=== boundary-compaction Section 2: a turn start during a durable completion leaves nothing owed ===");
   clock.set(T0);
   const h = await bank2NoGoalHarness("bank2_mid_completion");
   await bank2SeedInstalled(h, bank2Installed());
   const runs = bank2Recorder(h);
-  let releaseClassify = null;
-  let classifyHeld = false;
-  h.setClassifyValue(() => {
-    if (classifyHeld) return "discard";
-    classifyHeld = true;
-    return new Promise((resolve) => { releaseClassify = () => resolve("discard"); });
-  });
+  const park = bank2ParkNextClassify(h);
   await h.handlers["turn.start"](h.fake, { turnId: "t-durable" }, async () => ({ result: "ok" }));
   const settling = bank2Complete(h, "t-durable", "Here is the answer.");
-  for (let i = 0; i < 1000 && releaseClassify === null; i++) await new Promise((r) => setImmediate(r));
-  check("bank2 mid-completion setup: the completion is parked in its classify", releaseClassify !== null);
+  check("bank2 mid-completion setup: the completion is parked in its classify", await bank2UntilParked(park));
   const start = await bank2Start(h, "t-next");
   bank2CheckSettled("bank2 the next turn start while the completion settles", start);
-  if (releaseClassify) releaseClassify();
+  park.release();
   const end = await settling;
   bank2CheckOwedOnly("bank2 a durable end that settled after the next turn started", h, runs, end);
-  const call = await bank2Call(h, "t-next");
-  bank2CheckBanked("bank2 the next turn's first model call banks the owed bank once", h, runs, call);
+  const first = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 the next turn's first model call after a late-settling durable end", h, runs, first);
+  const later = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 the next turn's later model call after a late-settling durable end", h, runs, later);
+  const nextEnd = await bank2Complete(h, "t-next", "Here is the next answer.");
+  bank2CheckSettled("bank2 the next turn's own durable end", nextEnd);
+  const call = await bank2NextTurnCall("bank2 the turn after an uninterleaved durable end (control)", h, runs, "t-after");
+  bank2CheckBanked("bank2 the turn after an uninterleaved durable end (control)", h, runs, call);
+}
+
+// The stale-bank order. Turn A ends durable, so the bank is owed. Turn B
+// makes no model tool call and ends on WAITING:, and its completion is parked
+// at its owner heartbeat write, before any other await, while turn C starts.
+// B's boundary facts were read at its delete, so B is still the persona's own
+// turn ending when it settles, and a newer turn having started clears the
+// owed bank. C's model calls run nothing.
+async function caseBank2_aLateSettlingEndClearsAStaleOwedBank(clock) {
+  console.log("\n=== boundary-compaction Section 2: a late-settling turn end clears a stale owed bank ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_stale_owed");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const endA = await bank2Turn(h, "t-a", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 turn A's durable end", h, runs, endA);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-b" }, async () => ({ result: "ok" }));
+  const park = bank2ParkNextHeartbeatWrite(h);
+  const settlingB = bank2Complete(h, "t-b", "WAITING: on the operator's reply.");
+  check("bank2 stale-owed setup: turn B's completion is parked at its heartbeat write", await bank2UntilParked(park));
+  const startC = await bank2Start(h, "t-c");
+  bank2CheckSettled("bank2 turn C's start while B's completion settles", startC);
+  park.release();
+  const endB = await settlingB;
+  bank2CheckSettled("bank2 turn B's lead-ended end, settled after C started", endB);
+  check("bank2 turn B's settling ran nothing", runs.length === 0, runs);
+  const first = await bank2Call(h, "t-c");
+  bank2CheckNothing("bank2 turn C's first model call after B cleared the stale bank", h, runs, first);
+  const later = await bank2Call(h, "t-c");
+  bank2CheckNothing("bank2 turn C's later model call after B cleared the stale bank", h, runs, later);
+}
+
+// The mid-turn order. A durable end is parked in its classify, the next turn
+// starts, and that turn's first model call arrives while the completion is
+// still parked, which runs nothing since no bank is owed yet. When the
+// completion then settles it owes nothing, so a second model call in that
+// same turn runs nothing: a bank there would land mid-turn.
+async function caseBank2_aLateSettlingEndNeverBanksMidTurn(clock) {
+  console.log("\n=== boundary-compaction Section 2: a durable end settling after the next turn's first call never banks mid-turn ===");
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_mid_turn");
+  await bank2SeedInstalled(h, bank2Installed());
+  const runs = bank2Recorder(h);
+  const park = bank2ParkNextClassify(h);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-durable" }, async () => ({ result: "ok" }));
+  const settling = bank2Complete(h, "t-durable", "Here is the answer.");
+  check("bank2 mid-turn setup: the completion is parked in its classify", await bank2UntilParked(park));
+  const start = await bank2Start(h, "t-next");
+  bank2CheckSettled("bank2 the next turn start while the completion settles", start);
+  const first = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 the next turn's first model call while the completion is parked", h, runs, first);
+  park.release();
+  const end = await settling;
+  bank2CheckSettled("bank2 the durable end, settled after the next turn's first call", end);
+  const second = await bank2Call(h, "t-next");
+  bank2CheckNothing("bank2 a second model call in that turn after the completion settled", h, runs, second);
 }
 
 // The run takes the install record with the greatest lastUpdated, placed

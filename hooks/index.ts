@@ -2913,10 +2913,18 @@ export const register: Register = async (on, options) => {
   // that opens every turn, so one recorded at turn end is never honored. It
   // waits past turn.start for the first tool call because turn.start can
   // fire before the turn's opening prompt line reaches the transcript file,
-  // and a marker positioned ahead of that line lapses on it. It is held in
-  // memory only: a restart is a new session id, whose marker would be
-  // another key.
+  // and a marker positioned ahead of that line lapses on it. A completion
+  // that settles after a newer turn has started clears it rather than set
+  // it: that turn's first tool call may already have run, and a bank taken
+  // at a later call would land mid-turn. That rare bank is missed rather
+  // than misplaced. It is held in memory only: a restart is a new session
+  // id, whose marker would be another key.
   let pendingCompactionBank: { turnKind: string } | null = null;
+  // Every turn.start this module has seen, counted up and never reset, so a
+  // completion can tell whether a newer turn started while it settled.
+  // sess.state.monitor.turnCount is not that count: a state load or a new
+  // tree resets it.
+  let turnStartSeq = 0;
 
   // Section 2 (plan-health-from-the-record): the plan holders whose document
   // have logged plan_record_unreadable since their document last read, so an
@@ -6825,6 +6833,7 @@ export const register: Register = async (on, options) => {
   // --- turn.start: track turn ---
   on("turn.start", async ($, e, next) => {
     sess.state.monitor.turnCount += 1;
+    turnStartSeq += 1;
     sess.state.monitor.lastTurnId = e.turnId;
     // The turn is open from here until a completion carrying this same id.
     openTurns.set(e.turnId, Date.now());
@@ -7010,11 +7019,19 @@ export const register: Register = async (on, options) => {
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
     openTurns.delete(e.turnId);
-    // Whether a turn is still open once this completion's own entry is gone,
-    // read here rather than later: the awaits below can let the next
-    // turn.start in, and a turn opened after this one ended must not decide
-    // whether this one ended at a boundary.
+    // The compaction boundary step's facts, read together here at the delete
+    // and before any await, because the awaits below can let the next
+    // turn.start in and that start rewrites every one of them: whether this
+    // completion is the persona's own turn ending (by the id its turn.start
+    // carried), what opened that turn (for the step's decision), whether a
+    // turn is still open once this completion's own entry is gone, and how
+    // many turns have started so far. The step compares that last count with
+    // the live one: a newer turn started in between means this completion
+    // settled too late to owe a bank.
+    const completesGateTurn = currentGateTurnId !== null && e.turnId === currentGateTurnId;
+    const turnKindAtStart: string = currentTurnKind;
     const turnOpenAfterDelete = turnIsOpen();
+    const turnStartSeqAtDelete = turnStartSeq;
     try { $.ui.log(`Agentic: turn complete ${kaizenLine(String(e.turnId ?? "none"))}`); } catch { /* non-fatal */ }
     // Plan item 8.4: a turn that ran past an hour is one of the weaknesses
     // the own-record pass counts, so record it as a decision here, the only
@@ -7089,11 +7106,6 @@ export const register: Register = async (on, options) => {
     // is read once.
     const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
-    // Read before the resets below, for the compaction boundary step: whether
-    // this completion is the persona's own turn ending, by the id turn.start
-    // carried, and what opened that turn, which the step's decision records.
-    const completesGateTurn = currentGateTurnId !== null && e.turnId === currentGateTurnId;
-    const turnKindAtStart: string = currentTurnKind;
     currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId) {
       currentTurnOriginKind = "unclassified";
@@ -7925,12 +7937,20 @@ export const register: Register = async (on, options) => {
     // its holder's document gained a Chapter or completed the holder this
     // turn. A plan holder that did neither is mid-section and owes nothing,
     // since a marker there would license compaction mid-work. It runs after
-    // the plan-record read, which settles the Chapter signal.
+    // the plan-record read, which settles the Chapter signal. Its boundary
+    // facts were read at the delete. Where a newer turn has started since,
+    // this completion settled too late: that turn's first tool call may have
+    // run already, so a bank set now could only land mid-turn, and the owed
+    // bank is cleared with nothing logged instead.
     if (completesGateTurn) {
-      const endedOnLead = statusLine !== null && statusLine.state !== "working";
-      const midSection = planHolder !== undefined && !planChapterAdvanced && !planCompletedByDocument;
-      const durable = !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead && !midSection;
-      pendingCompactionBank = durable ? { turnKind: turnKindAtStart } : null;
+      if (turnStartSeq !== turnStartSeqAtDelete) {
+        pendingCompactionBank = null;
+      } else {
+        const endedOnLead = statusLine !== null && statusLine.state !== "working";
+        const midSection = planHolder !== undefined && !planChapterAdvanced && !planCompletedByDocument;
+        const durable = !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead && !midSection;
+        pendingCompactionBank = durable ? { turnKind: turnKindAtStart } : null;
+      }
     }
 
     // M7: single guarded-write path (shared helper).
@@ -7978,7 +7998,7 @@ export const register: Register = async (on, options) => {
     // owner, since ownership lost between the two events leaves nothing this
     // session should bank. bankCompactionBoundary never throws, and its one
     // decision is saved the way this handler's other bookkeeping lines are.
-    const modelMadeCall = (next as any).origin?.plugin === "engine";
+    const modelMadeCall = next.origin?.plugin === "engine";
     if (modelMadeCall && !inSubagent && pendingCompactionBank !== null) {
       const owedBank = pendingCompactionBank;
       pendingCompactionBank = null;
