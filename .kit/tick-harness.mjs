@@ -714,9 +714,10 @@ function makeState(opts = {}) {
 
 // --- Turn driver: fires turn.start then turn.complete (aborted, no scoring) ---
 
-// The same turnId rides both events, because the plugin closes an open turn by
-// the id its turn.start carried; a completion under a different id (or none)
-// closes nothing and leaves the session reading as still inside a turn.
+// The same turnId rides both events, because the plugin closes a turn.start
+// entry only on a completion carrying that same id. A completion under a
+// different id, or none, closes the plugin's synthetic key and no id key, so
+// the session still reads as inside the turn its turn.start opened.
 async function fireTurn(harness, turnId = "harness-turn") {
   const { fake } = harness;
   const handlers = harness.handlers;

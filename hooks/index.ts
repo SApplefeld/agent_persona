@@ -2597,20 +2597,24 @@ export const register: Register = async (on, options) => {
   let replyCalledThisTurn = false;
   // The turns open right now, each key against the clock at the first event
   // that opened it, so the controller tick can skip while the worker is inside
-  // one. Three events open an entry, because each one proves a live turn and
-  // the harness under-reports turn.start: turn.start under its id, and
-  // prompt.submit and tool.call under the event's turn id where it carries one
-  // and under OPEN_TURN_SYNTHETIC_KEY otherwise. A tool call carries no turn
-  // id and a prompt submitted while idle carries none, so those two take the
-  // synthetic key. An entry already open keeps its first time, so repeated
-  // tool calls do not move it.
+  // one. turn.start opens an entry under its turn id. The harness
+  // under-reports turn.start, so two more events that prove a live turn open
+  // one: every prompt.submit, and every tool.call made on the main loop. Both
+  // open OPEN_TURN_SYNTHETIC_KEY, whatever turn id a prompt carries. Any
+  // turn.complete this hook receives closes that key, while an id key closes
+  // only on a completion carrying that same id, so a prompt whose turn
+  // completed before this hook ran would otherwise leave an id key open for
+  // good. A tool call made on another loop, a subagent's or a teammate's,
+  // opens nothing. Such a loop can run long after the main turn completed, and
+  // an entry it opened would hold the tick for the whole of its run. An entry
+  // already open keeps its first time, so repeated calls do not move it.
   //
   // A turn.complete closes the id it carries where it carries one, and always
   // closes the synthetic key. The synthetic key names no turn, so no
-  // completion can be matched to it, and closing it at any completion is what
-  // keeps it from silencing nudges for the life of the session. It therefore
-  // lives only until the next completion of any turn, a background subagent's
-  // included; the next tool call of a turn still running opens it again.
+  // completion can be matched to it, and closing it at any turn.complete this
+  // hook receives is what keeps it from silencing nudges for the life of the
+  // session. The next main-loop tool call of a turn still running opens it
+  // again.
   //
   // Keyed by id rather than held as a boolean because turn events are not
   // reliably paired:
@@ -2630,7 +2634,7 @@ export const register: Register = async (on, options) => {
   // chain throws. The one case this hook cannot see is a prompt that a
   // UserPromptSubmit settings hook blocks: those hooks run after this chain
   // settles and before turn.start, so no turn follows, and the key that
-  // prompt opened stays until the next completion of any turn. The reading
+  // prompt opened stays until any turn.complete this hook receives. The reading
   // has no age-out, so on an idle session that key holds the tick until a
   // turn next completes.
   //
@@ -2645,17 +2649,20 @@ export const register: Register = async (on, options) => {
   const OPEN_TURN_SYNTHETIC_KEY: unique symbol = Symbol("open-turn-without-id");
   const openTurns = new Map<string | typeof OPEN_TURN_SYNTHETIC_KEY, number>();
   const turnIsOpen = () => openTurns.size > 0;
-  // Opens the reading for an event that proves a live turn: under its turn id
-  // where it carries one, under the synthetic key otherwise. An entry already
-  // open keeps the time it first opened. Returns the key this call opened, or
-  // null where the entry was already open, so a caller undoing its own open
-  // removes only what it added.
-  const openTurnUnder = (turnId: string | undefined): string | typeof OPEN_TURN_SYNTHETIC_KEY | null => {
-    const key = typeof turnId === "string" && turnId !== "" ? turnId : OPEN_TURN_SYNTHETIC_KEY;
-    if (openTurns.has(key)) return null;
-    openTurns.set(key, Date.now());
-    return key;
+  // Opens the synthetic key for an event that proves a live turn. An entry
+  // already open keeps the time it first opened. Returns the key where this
+  // call opened it, or null where it was already open, so a caller undoing
+  // its own open removes only what it added.
+  const openSyntheticTurn = (): typeof OPEN_TURN_SYNTHETIC_KEY | null => {
+    if (openTurns.has(OPEN_TURN_SYNTHETIC_KEY)) return null;
+    openTurns.set(OPEN_TURN_SYNTHETIC_KEY, Date.now());
+    return OPEN_TURN_SYNTHETIC_KEY;
   };
+  // Whether a hook event ran on a loop other than the main one: a dispatched
+  // subagent, a teammate, a workflow's agents or the engine's own forks.
+  // e.agentId, the loop's id, is non-empty on those and absent on the main
+  // loop.
+  const isOtherLoop = (agentId: string | undefined): boolean => typeof agentId === "string" && agentId.length > 0;
   // The published stamp names the earliest turn still open, or null when none
   // is. Both turn handlers derive it through here rather than each writing its
   // own value: a start that simply stamped its own clock would move the stamp
@@ -7448,9 +7455,10 @@ export const register: Register = async (on, options) => {
 
   // --- tool.call: serve tools, enforce constraints ---
   on("tool.call", async ($, e, next) => {
-    // A tool call proves a live turn. It carries no turn id, so it opens the
-    // synthetic key, before any await so a tick running now reads it.
-    openTurnUnder(undefined);
+    // A main-loop tool call proves a live turn and opens the synthetic key,
+    // before any await so a tick running now reads it. Another loop's call
+    // opens nothing, as the openTurns comment explains.
+    if (!isOtherLoop(e.agentId)) openSyntheticTurn();
     sess.state.monitor.totalToolCalls += 1;
     if (isWorkTool(e.tool)) toolCallsThisTurn += 1;
     // Steer 68/69: the reply tool ran somewhere in this turn, so the
@@ -8947,7 +8955,7 @@ export const register: Register = async (on, options) => {
     // reaches the owner, so such a call neither reads nor advances the
     // throttle, and the record stays pending for the tick or for the
     // owner's own next call.
-    const inSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    const inSubagent = isOtherLoop(e.agentId);
     if (!inSubagent && sess.isOwner && r.deny === undefined && Date.now() - lastBreakInCheckAt >= urgentCheckMinMs) {
       // One clock reading for the whole scan, so every record in it is
       // judged against the same instant.
@@ -9051,9 +9059,9 @@ export const register: Register = async (on, options) => {
   // Actuator 1: context injection (always on, free, cannot be refused).
   // Both owner and passive reader can inject (read-only access to sess.state).
   on("prompt.submit", async ($, e, next) => {
-    // A prompt proves a live turn: the one it was delivered into, under that
-    // turn's id, or the one it opens from idle, under the synthetic key.
-    const openedKey = openTurnUnder(e.turnId);
+    // A prompt proves a live turn, the one it was delivered into or the one
+    // it opens from idle, and opens the synthetic key for either.
+    const openedKey = openSyntheticTurn();
     // A prompt that a hook beneath drops, or whose chain throws, opens no
     // turn. No completion will then close the key this call opened, so both
     // paths remove it here. A key that was already open is left alone.
