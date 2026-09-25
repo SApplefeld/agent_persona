@@ -1,6 +1,6 @@
 # A failed self-review is retried on the review's own cadence, not every tick
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-24
 
@@ -176,6 +176,11 @@ in one hour reopens the work.
 
 None.
 
+## Related
+
+- `docs/plans/agent_persona_nudge-state_v1.md`: edits the same controller tick's idle branch, not this block; whichever lands second merges the trunk first.
+- `docs/plans/agent_persona_inbox-drain_v1.md`: moves the tick's inbox drain into a shared function and names this plan as runnable in any order beside it.
+
 ## Chapters
 
 ### Interim board 1 - 2026-09-24
@@ -223,3 +228,21 @@ Steps 2 and 3 ran as one folded adversarial dispatch at fable, effort high, thro
 Gate after the fixes, clean worktree apart from these edits: `.kit/controller-tick-test.mjs` 3389 OK, 0 failures, exit 0; `.kit/self-review-unit-test.mjs` exit 0; `tsc --noEmit` exit 0.
 
 Next: the fix delta's one-lens review and the step 4 goal read, then the Minor pass, docs curation, the close and the pull request.
+
+### Chapter 2 - 2026-09-24
+Completed: 1. The catch stamps the attempt and names the error (finishing pass)
+Implemented By: the main session for the finishing fixes and the close
+Metrics: finishing review rounds 2 (whole changeset, then the fix delta), closed minor-closed; provenance 1 spec-traceable Major, 0 fix-introduced, 0 new-requirement; goal read 4 declared, 0 refused, 0 asked, 0 unbuilt; advisory: 2 findings, 0 fixed, 1 deferred, 0 refused, 1 clear; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal (verbatim): When this is done, a periodic or reactive self-review that throws is recorded once, with the error's message in the decision, and is retried only when the review's own debounce and hourly cap would admit a fresh review, so a controller whose review keeps failing writes at most a handful of decisions an hour rather than one every ten seconds. It matters because on 2026-09-23 the dev-persona persona's store held 174 decisions reading `periodic: pendingPeriodic (goal_done): error` over 34 minutes, the decision ring holds 200, and the flood evicted the goal loop's own record, so the nudge-cap events two other findings were traced from are no longer in that store. The thrown error was swallowed, so what failed is still not known.; What the tree does now: when the supervisor's periodic or error-triggered check of a worker's own activity is about to run, it first records the attempt, so a check that fails waits out the same five-turn pause and counts against the same two-an-hour limit as one that succeeds, and a failed check writes one line to the decision log naming what went wrong, with the error's name or "unprintable error" standing in where the message cannot be read.; Refinements during the run: the consultant ruled that a failed attempt owed to a goal_done keeps that request, so it is retried after five turns rather than twenty; the attempt stamp moved before the review's first await, because overlapping ticks could relaunch a slow failing review; the finishing review added a pin that a failed error-triggered attempt sets nothing and the fallback text pins; operator-pending items: after the plugin update on each persona, read the next self-review failure's decision line and count such lines per hour.
+Decisions / Surprises:
+- finishing, adversarial Major (spec-traceable, the Standing Brief Amendments line): pin that a failed reactive-only attempt leaves `pendingPeriodic` unset; serves the amendment's second half; adds no mechanism (one test case); about 30 lines; not building it leaves an unconditional re-set invisible to the suite.
+- The first seeding of the error streak wrote the store after the harness had loaded it and never reached the session; the case now builds the streak with three real error turns, the same way other cases do.
+- Security advisory Minor (C0 control characters survive into the decision detail): first refused on the ground that the tick's outer catch already logs the same text. The docs curator's sweep showed that catch logs nothing (`hooks/index.ts:6381-6383`), so the ground was false. Re-dispositioned as deferred: the text cleaner every decision path shares, `bracketSafeText` behind `safeErrorText`, keeps C0 for every writer, so the strip belongs there. It is a backlog entry. Interim board 2's "Refused" line is superseded by this one.
+- Drift adjudication: five items, all deviation. D1 the stamp sits after the eligibility check, before the review's first await rather than the block's, which the architecture paragraph now states. D2 the fallback text (the error's name, `unprintable error`) is documented. D3 the backlog entry falsified by this change is retired at this close. D4 the test count is recorded in this Chapter. D5 `windowStart` is set only where it is zero, now stated. D6 the finding pass sends findings before its summary decision; the pre-change read (`git show 60df823:docs/architecture.md`, line 180) showed the old order predated this effort, and the sentence is corrected. Library hygiene: this plan gained a Related section naming the nudge-state and inbox-drain plans.
+Assumptions: none
+Review Findings: review: adversarial at fable high, Workflow, performance and security folded (whole changeset, resolved model claude-fable-5-1 on 34 of 34 turns); review: adversarial at fable high, Workflow (fix delta ae5dad7..a6e5d2f); goal read at fable through the Agent tool. Whole changeset: 1 Major fixed in a6e5d2f; 4 Minors fixed in a6e5d2f (cap case at 3, name fallback guarded, two stale plan sentences); security 1 Minor deferred to the backlog; performance clear. Fix delta: 2 Minors fixed in 4ee4376 (the two guarded reads split again, so an Error whose message getter throws still records its name; the two fallbacks pinned); that Minor pass took the author's re-read rather than a round. Goal read: BUILT-BUT-UNASKED 4, all accept-and-declare (the 200-character cut and its fallbacks, the reactive-only pin, the fold-and-cut pin, the two architecture sentences on the cap); ASKED-BUT-UNBUILT none. QA: build pass; 28 lanes, 27 exit 0 and `plan-record-unit-test.mjs` exit 127 on the known Node teardown assertion (backlog, same shape) after 0 failures, exit 0 on two reruns, outside this changeset; bullets 1-5 pass, bullet 6 done at this close.
+Stamps: adjudicated 1, stamped 1 (a-trace-target-you-composed-cannot-check-your-own-work, operator tier, applied to the goal read's brief)
+Gate: whole offline gate over the closed tree (4ee4376 plus the close edits), `.kit/scratch/self-review-flood/finishing/gate.sh`: 28 lanes, every one exit 0, 686 s; `.kit/controller-tick-test.mjs` 3393 OK, 0 failures (baseline 3365 OK, 0 failures at 60df823); `.kit/self-review-unit-test.mjs` all passed; `tsc --noEmit` exit 0; `injection-ledger.mjs` and `check-loader-rule.mjs` exit 0. Deferred by the operator gate policy: the five `live-*` suites and `supervisor-natural-exit-test.sh`. No contention lane is defined in this repo. No foreign test runner in the process list at start.
+Test delta: 7 `caseCatchStampsAttempt_` cases in `.kit/controller-tick-test.mjs`, 28 checks over the base's 3365: the five Chapter 1 names, plus `caseCatchStampsAttempt_reactiveOnlySetsNothing` and `caseCatchStampsAttempt_fallbacksNameTheFailure`.
+Next: none; the pull request from branch `self-review-flood`.
+Commit Model: Branch-and-PR
