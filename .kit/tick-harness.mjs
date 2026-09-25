@@ -734,7 +734,7 @@ async function fireTurn(harness, turnId = "harness-turn") {
 // stays open until closeTurn, so a tick fired meanwhile reads it as open.
 async function openPromptTurn(harness, { originKind = "composer", text = "Typed at the keyboard.", turnId = "prompt-turn" } = {}) {
   const e = originKind === null ? { text } : { text, origin: { kind: originKind } };
-  await harness.handlers["prompt.submit"](harness.fake, e, async () => ({}));
+  await harness.handlers["prompt.submit"](harness.fake, e, async (core) => ({ text: core.text, context: core.context }));
   await harness.handlers["turn.start"](harness.fake, { turnId, text }, () => {});
 }
 
