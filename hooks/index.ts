@@ -5119,6 +5119,16 @@ export const register: Register = async (on, options) => {
 
         if (reactive.eligible || periodic.eligible) {
           const trigger = reactive.eligible ? reactive.reason : periodic.reason;
+          // Stamp the attempt before the first await. $.clock.every does not
+          // await the tick, so a tick that overlaps a slow review must read it
+          // as spent, and a review that throws is spent exactly as one that
+          // succeeds: the debounce and the hourly cap bound both.
+          const owedPeriodic = sr.pendingPeriodic;
+          sr.count += 1;
+          if (sr.windowStart === 0) sr.windowStart = now;
+          sr.lastAt = now;
+          sr.turnsSince = 0;
+          sr.pendingPeriodic = false;
           try {
             // Plan item 8.4: before asking the model for a lesson, read the
             // worker's own record mechanically. A repeated weakness becomes a
@@ -5154,11 +5164,6 @@ export const register: Register = async (on, options) => {
                 action: "self-review",
                 detail: `${trigger}: own record -> ${findings.length} finding(s), no lesson`,
               });
-              sr.count += 1;
-              if (sr.windowStart === 0) sr.windowStart = now;
-              sr.lastAt = now;
-              sr.turnsSince = 0;
-              sr.pendingPeriodic = false;
               sess.state.updatedAt = now;
               await persist($);
             }
@@ -5228,21 +5233,35 @@ export const register: Register = async (on, options) => {
                   detail: `${trigger}: NONE`,
                 });
               }
-              // Update selfReview state after review.
-              sr.count += 1;
-              if (sr.windowStart === 0) sr.windowStart = now;
-              sr.lastAt = now;
-              sr.turnsSince = 0;
-              sr.pendingPeriodic = false;
             }
-          } catch {
-            // Self-review failed; non-fatal.
+          } catch (err) {
+            // Self-review failed; non-fatal. The attempt is already stamped, so
+            // the debounce and the hourly cap bound the retry. The decision
+            // names the error on one line, so the next failure says what threw.
+            let message = "";
+            try {
+              message = safeErrorText(err);
+            } catch {
+              // A thrown value whose conversion itself throws.
+            }
+            if (message === "" && err instanceof Error) {
+              try {
+                message = bracketSafeText(String(err.name));
+              } catch {
+                // An Error whose name itself throws.
+              }
+            }
+            const foldedMessage = message.split(LINE_TERMINATOR).join(" ").slice(0, 200) || "unprintable error";
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",
               action: "self-review",
-              detail: `${trigger}: error`,
+              detail: `${trigger}: error: ${foldedMessage}`,
             });
+            // A failed attempt did not serve the goal_done review it was owed,
+            // so that request stays set and is retried once the debounce
+            // admits it. A failed reactive-only review sets nothing.
+            if (owedPeriodic) sr.pendingPeriodic = true;
           }
           sess.state.updatedAt = now;
           await persist($);
