@@ -174,7 +174,8 @@ export const LONG_TERM_GOAL_CAP = 5;
 // One working item on a goal's task list. The list sits beside the goal tree,
 // never in it: a task names the goal it belongs to by goalId and lives only as
 // long as that goal is open, since reapCompletedGoalTasks drops it once the
-// goal is complete or abandoned, or no longer in the tree.
+// goal is complete or abandoned, or no longer in the tree. A goal_create that
+// replaces the tree therefore drops every task the old tree's goals held.
 export interface TaskItem {
   id: string;
   goalId: string;
@@ -191,9 +192,9 @@ export const MAX_TASKS_PER_GOAL = 20;
 // by count.
 export const TASK_LIST_MAX_LINES = 12;
 
-// A task id, minted in the shape every other store id takes: a prefix, the
-// clock in base 36, and a random tail. The "tk-" prefix is one no goal node
-// or long-term goal carries, so a task id never reads as a goal id.
+// A task id, minted in the goal nodes' shape: a prefix, the clock in base 36,
+// and a random tail. The "tk-" prefix is one no goal node or long-term goal
+// carries, so a task id never reads as a goal id.
 export function newTaskId(now: number): string {
   return `tk-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
