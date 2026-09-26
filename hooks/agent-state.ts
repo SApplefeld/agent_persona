@@ -1086,6 +1086,40 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
 
   // H3: Root completion belongs to the controller tick, not the cascade.
   // completeLeaf never touches the root.
+
+  clearSettledAwaiting(state);
+}
+
+// The blockedReason a plan queued at the plan-and-ask autonomy level carries
+// while it waits for the operator's yes.
+export const AWAITING_YES_REASON = "Awaiting the operator's yes";
+
+// The entry awaiting the operator's yes at `node` or above it, or undefined
+// where neither the node nor any ancestor carries awaitingYes. Every gate on
+// such an entry reads this one walk, so a node under the entry is held as the
+// entry is. The walk is bounded by the node count, so a parentId cycle ends
+// it rather than spinning.
+export function awaitingEntryAtOrAbove(state: AgentState, node: GoalNode): GoalNode | undefined {
+  let current: GoalNode | undefined = node;
+  let steps = state.goals.length;
+  while (current) {
+    if (current.awaitingYes) return current;
+    if (current.parentId === null || steps-- <= 0) return undefined;
+    const parentId: string = current.parentId;
+    current = state.goals.find((g) => g.id === parentId);
+  }
+  return undefined;
+}
+
+// A complete node no longer waits for the operator's yes, so its flag goes,
+// and its reason too where the reason is the awaiting one. completeLeaf runs
+// this after every completion, whichever verb or path completed the node.
+export function clearSettledAwaiting(state: AgentState): void {
+  for (const g of state.goals) {
+    if (g.status !== "complete" || !g.awaitingYes) continue;
+    g.awaitingYes = undefined;
+    if (g.blockedReason === AWAITING_YES_REASON) g.blockedReason = undefined;
+  }
 }
 
 // Section 10 fix round: whether a single node is eligible to become the
@@ -1223,7 +1257,10 @@ export function activateNext(state: AgentState, completedId?: string): string | 
           (g) =>
             g.parentId === completed.parentId &&
             g.status === "pending" &&
-            !hasChildren(g.id)
+            !hasChildren(g.id) &&
+            // A node under an entry awaiting the operator's yes starts only
+            // once that entry is resumed.
+            awaitingEntryAtOrAbove(state, g) === undefined
         )
         .sort((a, b) => orderKey(a) - orderKey(b));
       if (siblings.length > 0) {

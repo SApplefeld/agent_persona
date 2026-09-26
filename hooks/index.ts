@@ -50,6 +50,8 @@ import {
   LONG_TERM_GOAL_CAP,
   AUTONOMY_LEVELS,
   isAutonomyLevel,
+  AWAITING_YES_REASON,
+  awaitingEntryAtOrAbove,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
@@ -510,14 +512,12 @@ const AUTONOMY_REFUSED_TEXT =
   "Refused: the autonomy level is the operator's to set, in a turn the operator starts on this persona's own thread, " +
   "and this turn is not one. Ask the operator to set it there.";
 
-// The blockedReason a plan queued at plan-and-ask carries while it waits.
-const AWAITING_YES_REASON = "Awaiting the operator's yes";
-
-// The one refusal goal_resume gives on an entry awaiting the operator's yes
-// outside a turn the operator or the coordinator persona started.
+// The one refusal goal_resume gives on an entry awaiting the operator's yes,
+// or a node under one, outside a turn the operator or the coordinator
+// persona started.
 const AWAITING_YES_RESUME_REFUSED_TEXT =
-  "Refused: this entry waits for the operator's word, and only a turn the operator or the coordinator persona started may resume it. " +
-  "It stays paused until that word reaches you.";
+  "Refused: this entry waits for the operator's word, or sits under a plan that does, and only a turn the operator or the coordinator persona started may resume it. " +
+  "It stays as it is until that word reaches you.";
 
 // The refusal goal_add gives a plan the autonomy level admitted when the
 // record telling the coordinator persona about it cannot be written. `cause`
@@ -536,17 +536,18 @@ function unpromptedPlanNotUndoneText(cause: string, nodeId: string): string {
 }
 
 // The one refusal goal_edit drop gives on an entry awaiting the operator's
-// yes outside a turn the operator or the coordinator persona started.
+// yes, or a node under one, outside a turn the operator or the coordinator
+// persona started.
 const AWAITING_YES_DROP_REFUSED_TEXT =
-  "Refused: this entry waits for the operator's word, and only a turn the operator or the coordinator persona started may drop it. " +
-  "It stays paused until that word reaches you.";
+  "Refused: this entry waits for the operator's word, or sits under a plan that does, and only a turn the operator or the coordinator persona started may drop it. " +
+  "It stays as it is until that word reaches you.";
 
 // The one refusal goal_done by name gives on an entry awaiting the operator's
 // yes, or on a node under one, outside a turn the operator or the coordinator
 // persona started.
 const AWAITING_YES_DONE_REFUSED_TEXT =
   "Refused: this entry waits for the operator's word, or sits under a plan that does, and only a turn the operator or the coordinator persona started may complete it. " +
-  "It stays paused until that word reaches you.";
+  "It stays as it is until that word reaches you.";
 
 // The record goal_add sends the coordinator persona for a plan the autonomy
 // level admitted outside the operator's and the coordinator persona's turns:
@@ -3500,8 +3501,8 @@ export const register: Register = async (on, options) => {
       name: "goal_resume",
       description:
         "Resume a paused goal leaf and reset its nudge budget. A different active node is paused first, with the reason " +
-        "recorded on it. Owner only. An entry awaiting the operator's yes is refused outside a turn the operator or the coordinator persona started, " +
-        "and a call with nodeId omitted passes over it there.",
+        "recorded on it. Owner only. An entry awaiting the operator's yes, or a node under one, is refused outside a turn the operator or the coordinator persona started, " +
+        "and a call with nodeId omitted passes over them there. A resume allowed in such a turn clears the entry's wait.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3560,7 +3561,7 @@ export const register: Register = async (on, options) => {
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
         "never activated, and refuses any other status; a drop is for work that will not be done, or for a plan queued as paused by mistake that is then added again as pending, and it does not reach the node's children. pause holds an active or pending node with a reason, and goal_resume " +
         "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only. " +
-        "A drop of an entry awaiting the operator's yes is refused outside a turn the operator or the coordinator persona started.",
+        "A drop of an entry awaiting the operator's yes, or of a node under one, is refused outside a turn the operator or the coordinator persona started.",
       inputSchema: {
         type: "object",
         properties: {
@@ -8910,8 +8911,8 @@ export const register: Register = async (on, options) => {
 
       // Takes this add back out of memory: the node, the root's reopening,
       // the activation with the session-local nudge fields activate() reset,
-      // and the decision lines. The active slot goes back only while it still
-      // names this entry, so a change another call made meanwhile stands.
+      // and the decision lines. The active slot goes back only where it names
+      // this entry.
       const rollBackAdd = (): void => {
         const at = sess.state.goals.indexOf(newNode);
         if (at !== -1) sess.state.goals.splice(at, 1);
@@ -9011,7 +9012,7 @@ export const register: Register = async (on, options) => {
           toolErrorsThisTurn++;
           return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending, paused, or blocked nodes can be dropped).` };
         }
-        if (node.awaitingYes && !turnIsOperatorsOrCoordinators()) {
+        if (awaitingEntryAtOrAbove(sess.state, node) && !turnIsOperatorsOrCoordinators()) {
           toolErrorsThisTurn++;
           return { deny: AWAITING_YES_DROP_REFUSED_TEXT };
         }
@@ -9300,13 +9301,8 @@ export const register: Register = async (on, options) => {
         // An entry awaiting the operator's yes, or a node under one, completes
         // by name only in a turn the operator or the coordinator persona
         // started, since completing it would settle the wait without that
-        // word. The walk is bounded by the node count.
-        let awaitingAt: GoalNode | undefined = named;
-        for (let steps = sess.state.goals.length; awaitingAt && !awaitingAt.awaitingYes && steps > 0; steps--) {
-          const parentId: string | null = awaitingAt.parentId;
-          awaitingAt = parentId === null ? undefined : sess.state.goals.find((g) => g.id === parentId);
-        }
-        if (awaitingAt?.awaitingYes && !turnIsOperatorsOrCoordinators()) {
+        // word.
+        if (awaitingEntryAtOrAbove(sess.state, named) && !turnIsOperatorsOrCoordinators()) {
           toolErrorsThisTurn++;
           return { deny: AWAITING_YES_DONE_REFUSED_TEXT };
         }
@@ -9333,11 +9329,6 @@ export const register: Register = async (on, options) => {
       if (byNameId) {
         target.blockedReason = undefined;
         target.lead = null;
-        // A flagged entry this call completed, the named one or a plan the
-        // cascade completed, no longer waits for the operator's yes.
-        for (const g of sess.state.goals) {
-          if (g.awaitingYes && g.status === "complete") g.awaitingYes = undefined;
-        }
       }
       // E2: health run at completeLeaf site (goal_done).
       await runHealth($, completedId);
@@ -9549,21 +9540,21 @@ export const register: Register = async (on, options) => {
         return { deny: "goal_resume requires ownership of this persona." };
       }
       const nodeId = String((e as any).nodeId || "").trim();
-      // An entry awaiting the operator's yes is resumed only in a turn the
-      // operator or the coordinator persona started. Outside those turns a
-      // call naming it is refused, and a call naming none passes over it to
-      // the unflagged paused entries.
+      // An entry awaiting the operator's yes, or a node under one, is resumed
+      // only in a turn the operator or the coordinator persona started.
+      // Outside those turns a call naming one is refused, and a call naming
+      // none passes over them to the other paused entries.
       const mayResumeAwaiting = turnMayStartEffort("goal_resume_awaiting");
       let target: GoalNode | undefined;
       if (nodeId) {
         target = sess.state.goals.find((g) => g.id === nodeId && g.status === "paused");
-        if (target && target.awaitingYes && !mayResumeAwaiting) {
+        if (target && awaitingEntryAtOrAbove(sess.state, target) && !mayResumeAwaiting) {
           toolErrorsThisTurn++;
           return { deny: AWAITING_YES_RESUME_REFUSED_TEXT };
         }
       } else {
         target = sess.state.goals
-          .filter((g) => g.status === "paused" && (mayResumeAwaiting || !g.awaitingYes))
+          .filter((g) => g.status === "paused" && (mayResumeAwaiting || awaitingEntryAtOrAbove(sess.state, g) === undefined))
           .sort((a, b) => b.updatedAt - a.updatedAt)[0];
       }
       if (!target) {
@@ -9586,6 +9577,15 @@ export const register: Register = async (on, options) => {
       }
       // M10: clear blockedReason on resume.
       const pausedReason = target.blockedReason || "unknown";
+      // An allowed resume at or under an entry awaiting the operator's yes is
+      // that word on the entry, so the entry's flag goes, and its awaiting
+      // reason with it. An entry above the resumed node stays paused.
+      const awaitingAbove = awaitingEntryAtOrAbove(sess.state, target);
+      if (awaitingAbove && awaitingAbove !== target) {
+        awaitingAbove.awaitingYes = undefined;
+        if (awaitingAbove.blockedReason === AWAITING_YES_REASON) awaitingAbove.blockedReason = undefined;
+        awaitingAbove.updatedAt = Date.now();
+      }
       target.blockedReason = undefined;
       target.awaitingYes = undefined;
       target.status = "active";
