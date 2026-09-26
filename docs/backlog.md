@@ -699,3 +699,23 @@ The `goal_longterm` handler in `hooks/index.ts` saves with a bare `persist($)` a
 `goal_add` has the same gap on every path but one. Its unprompted plan add, the one outside the operator's and the coordinator persona's turns, saves through `persistOrRollBack` since the autonomy-dial plan's second section, because a record to the coordinator persona must never name an entry the store lacks. Every other `goal_add`, a task or a plan added in the operator's or the coordinator persona's turn, still saves with a bare `persist($)`, so a yield leaves the new node in memory while the tool reports it was not saved.
 
 Remedy: save `goal_longterm` and the remaining `goal_add` paths through `persistOrRollBack`, restoring what each changed and dropping its decision lines on a save that does not land, with a tick-suite case for each yield. The unprompted plan add's `rollBackAdd` in `hooks/index.ts` is the pattern for `goal_add`.
+
+## The security model is silent on the classifier vendor whose answer will steer persona state (found 2026-09-26)
+
+`docs/security-model.md` names no external party and no egress path. A grep over the whole file for `Jev`, `TypeSafe`, `typesafe` and `TYPESAFE_API_KEY` returns nothing. Yet the decision seam sends persona state to `https://api.typesafe.ai/v1/systemone`, holds the one third-party credential the plugin carries, and after the goal-every-turn plan a vendor answer will set a turn record's delivered status, which that plan reads into compaction banking and nudge suppression.
+
+Two operator decisions on exactly this already exist, in the kit's operator memory tier and dated 2026-09-20: `source-code-may-leave-the-lan-to-typesafe` and `typesafe-request-body-retention-risk-accepted`. So the acceptance is recorded where a session finds it and absent from the document a reader of this repository would open.
+
+No section of the goal-every-turn plan discharges this. Its section 7 holds `README.md`, `docs/architecture.md` and `docs/README.md`, and no section holds `docs/security-model.md`.
+
+This is not owed before that plan closes, because `jevLive` is empty by default, so no answer reaches any branch until the operator names a question, and the plan's own Operator Verification already gates promotion on a labeling pass over the shadow journal. It is owed before the first question is promoted.
+
+Remedy: add a TypeSafe entry under `## Trust boundaries` (line 43) stating what is trusted from a live answer and what is not, and an entry under `## Accepted risks` (line 85) for state leaving the machine, naming its preconditions as the code holds them: the key floor in `send`, the state scrub, the per-primitive answer validation, and the live list that decides which question's answer is read at all. Carry the two dated operator decisions into that entry so the document and the memory store agree. `## Known gaps` (line 116) is the fallback home if the acceptance is not yet settled in the shape the other two sections need.
+
+## The journal call-line and answer-line shape is written twice in hooks/index.ts (found 2026-09-26)
+
+`shadowAsk` and `liveAsk` in `hooks/index.ts` each build the same `writeCall` payload and the same single-element `writeAnswers` payload, about twenty-five lines that differ in two places: the `haikuValue` each passes, and whether the writes sit on the caller's awaited path. Two copies of one line shape can drift, and the journal's columns are what a labeling pass reads.
+
+The extraction was not taken in the goal-every-turn plan's section 3 because that section's own text states `shadowAsk` is untouched, and a shared helper cannot be introduced without editing it.
+
+Remedy: one private `journalResult(host, site, stampId, questionSetId, mode, result, haikuValue)` in `hooks/index.ts` that both wrappers call, taken in a change that is already allowed to touch `shadowAsk`. Keep the two callers' own difference outside it: `shadowAsk` fires the helper detached and `liveAsk` fires it detached as well, so the helper itself awaits its two writes and neither caller does.

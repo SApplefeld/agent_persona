@@ -236,6 +236,11 @@ function shadowAsk(
   mode: string,
   haikuValue: string | null,
 ): string | null {
+  // The exact string `shadow` and nothing else. The seam's other sending
+  // mode, `live`, is its own internal mode: liveAsk chooses it per question
+  // and hands it to the seam directly, and it is not a settings value. So a
+  // settings file hand-edited to `live` reads here as off, which sends
+  // nothing and writes no line saying so.
   if (mode !== "shadow") return null;
   // Read once here rather than in the continuation: these name the session the
   // call was made in, and the continuation runs after the caller has returned.
@@ -301,11 +306,21 @@ function shadowAsk(
  *
  * So a caller reads one shape, an answer or null, and null always means the
  * question's stated default. A live call is awaited on the path that asked
- * it, so the seam bounds it at LIVE_TIMEOUT_MS; nothing here can hold that
- * path longer, and nothing here can throw into it. `jevMode` is read before
- * the list, so under `off` a question the list names is not sent either.
+ * it. What the live timer bounds is the request: the seam races it against
+ * LIVE_TIMEOUT_MS from the moment the request leaves. Two awaits sit before
+ * that race and outside its bound, the key read and the override resolver,
+ * which reads `active.json` and, where one is named, a version file; both
+ * are small local reads. The two journal writes are not awaited: they ride
+ * a detached chain, as shadowAsk's do, since an append rewrites the day's
+ * file and queues behind every pending append to it, and a hook holding for
+ * that would hold past the timer. Nothing here can throw into the path,
+ * given the one precondition the caller owes: `jevLive` is an array. The
+ * list is read with `includes` and nothing here checks its shape, since the
+ * shape belongs to the settings read that turns the configured value into
+ * this list, filtered to the promotable set. `jevMode` is read before the
+ * list, so under `off` a question the list names is not sent either.
  *
- * Exported so the suite can drive it before any hook does.
+ * Exported so the test suite can call it directly over the fake host.
  */
 export async function liveAsk(
   host: PluginHost,
@@ -320,44 +335,61 @@ export async function liveAsk(
     shadowAsk(host, site, questionSetId, optionIds, state, jevMode, null);
     return null;
   }
+  // The seam's live mode is chosen here, per question, and never read from
+  // the settings: `jevMode` admits `shadow` alone as a sending value.
   const mode = "live";
   const persona = sess.persona;
   const session = sess.mySessionId;
   const stampId = newStampId(persona, session);
+  let result: SeamResult;
   try {
-    const result: SeamResult = await ask(host, questionSetId, optionIds, state, mode, null, resolverOf(host));
-    noteJournalWrite(await writeCall(host, {
-      stampId,
-      persona,
-      session,
-      site,
-      questionSet: questionSetId,
-      mode,
-      result,
-    }), site);
-    if (!result.ok) return null;
-    noteJournalWrite(await writeAnswers(host, {
-      persona,
-      session,
-      answers: [{
-        callStampId: stampId,
-        questionId: result.questionId,
-        questionVersion: result.questionVersion,
-        overrideRefused: result.overrideRefused,
-        primitive: result.primitive,
-        value: result.answer.choice,
-        probabilities: result.answer.probabilities,
-        confidence: result.answer.confidence,
-        haikuValue: null,
-      }],
-    }), site);
-    return result.answer;
+    result = await ask(host, questionSetId, optionIds, state, mode, null, resolverOf(host));
   } catch {
-    // As in shadowAsk: the seam and the journal never reject, so this catches
-    // a host that broke that contract. Here the chain is awaited by a hook,
-    // so the catch is what keeps a broken host from throwing into it.
+    // As in shadowAsk: the seam never rejects, so this catches a host that
+    // broke that contract. This await sits on a hook's path, so the catch is
+    // what keeps a broken host from throwing into it.
     return null;
   }
+  // The journal writes ride a detached chain, as shadowAsk's do, so the hook
+  // that awaited the answer is not held for them.
+  void writeCall(host, {
+    stampId,
+    persona,
+    session,
+    site,
+    questionSet: questionSetId,
+    mode,
+    result,
+  })
+    .then(async (write) => {
+      noteJournalWrite(write, site);
+      // A failed call has no answer to record, and writeAnswers would write
+      // nothing for it anyway.
+      if (!result.ok) return;
+      noteJournalWrite(await writeAnswers(host, {
+        persona,
+        session,
+        answers: [{
+          callStampId: stampId,
+          questionId: result.questionId,
+          questionVersion: result.questionVersion,
+          overrideRefused: result.overrideRefused,
+          primitive: result.primitive,
+          value: result.answer.choice,
+          probabilities: result.answer.probabilities,
+          confidence: result.answer.confidence,
+          haikuValue: null,
+        }],
+      }), site);
+    })
+    .catch(() => {
+      // The journal holds a never-rejects contract, so this catches a host
+      // that broke it rather than a path the module takes. It stays because
+      // no caller awaits this chain: a rejection with nothing attached is an
+      // unhandled rejection, which ends the process rather than losing one
+      // measurement.
+    });
+  return result.ok ? result.answer : null;
 }
 
 // Section 5 (plan-health-from-the-record): the four plan health questions.

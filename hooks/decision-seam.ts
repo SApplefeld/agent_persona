@@ -369,6 +369,17 @@ function countOf(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
 }
 
+// Whether a probability the body carried lies in 0 to 1, the range every
+// probability the vendor returns runs over (https://docs.typesafe.ai/api.md).
+// One helper for every validator that reads one, because the bound is a
+// property of the channel and not of the validator that first needed it: a
+// live answer is read by comparing a probability against a threshold, so a
+// value past 1 admitted by one validator and refused by another would read
+// as a certain answer on the path that admitted it.
+function inUnitInterval(p: number): boolean {
+  return p >= 0 && p <= 1;
+}
+
 // The first way a resolver's value fails to be a ResolvedQuestion of the
 // primitive the caller asked for, or null where it is one. The detail names
 // the field and never quotes the value. A primitive other than the one asked
@@ -402,8 +413,9 @@ function questionProblem(v: unknown, expected: QuestionPrimitive): string | null
 
 // The validated ChoiceAnswer built from the body's answer for the asked
 // question, or the first field that failed. Only the four fields are copied,
-// the choice must be one of the ids the request offered, and every number
-// must be finite. The problem text is fixed per field and never quotes the
+// the choice must be one of the ids the request offered, every number must
+// be finite, and every probability must lie in 0 to 1 on the same ground the
+// Noul's value must. The problem text is fixed per field and never quotes the
 // body, since the body is a detail bound for the journal.
 function choiceAnswerOf(v: unknown, optionIds: readonly string[]): { answer: ChoiceAnswer } | { problem: string } {
   if (!isRecord(v)) return { problem: "answer is not an object" };
@@ -424,6 +436,7 @@ function choiceAnswerOf(v: unknown, optionIds: readonly string[]): { answer: Cho
     // whole day's file and would carry that cost for every later line.
     if (!optionIds.includes(id)) return { problem: "answer probabilities carry an option that was not offered" };
     if (typeof p !== "number" || !Number.isFinite(p)) return { problem: "answer probabilities carry a value that is not a finite number" };
+    if (!inUnitInterval(p)) return { problem: "answer probabilities carry a value that is outside 0 to 1" };
     probabilities[id] = p;
   }
   if (typeof v.confidence !== "number" || !Number.isFinite(v.confidence)) return { problem: "answer confidence is not a finite number" };
@@ -439,7 +452,7 @@ function noulAnswerOf(v: unknown): { answer: NoulAnswer } | { problem: string } 
   if (!isRecord(v)) return { problem: "answer is not an object" };
   if (v.type !== "noul") return { problem: "answer type is not noul" };
   if (typeof v.noul !== "number" || !Number.isFinite(v.noul)) return { problem: "answer noul is not a finite number" };
-  if (v.noul < 0 || v.noul > 1) return { problem: "answer noul is outside 0 to 1" };
+  if (!inUnitInterval(v.noul)) return { problem: "answer noul is outside 0 to 1" };
   return { answer: { type: "noul", noul: v.noul } };
 }
 
@@ -467,6 +480,7 @@ function scoreAnswerOf(v: unknown, levelCount: number): { answer: ScoreAnswer } 
     // thousand keys cannot reach a line.
     if (!levelKeys.includes(level)) return { problem: "answer probabilities carry a level that was not sent" };
     if (typeof p !== "number" || !Number.isFinite(p)) return { problem: "answer probabilities carry a value that is not a finite number" };
+    if (!inUnitInterval(p)) return { problem: "answer probabilities carry a value that is outside 0 to 1" };
     probabilities[level] = p;
   }
   if (typeof v.confidence !== "number" || !Number.isFinite(v.confidence)) return { problem: "answer confidence is not a finite number" };
@@ -660,11 +674,15 @@ async function send(
   // When the request wins, the timer is not cancelled: SeamHost.sleep carries
   // no abort signal, so it runs to its end as an orphan. That is accepted.
   // It is bounded at the mode's timeout and there is at most one per call.
-  // The wiring puts two shadow calls on a tick, the controller decision and
-  // the plan switch, and up to three on a turn, the turn score, the memory
-  // kind gate and the plan health request, so up to five orphans can be live
-  // across a tick and a turn. Still bounded, still harmless, and worth
-  // stating truthfully.
+  // The count across a tick and a turn is the count of call sites, each of
+  // which makes one call: two on a tick, the controller decision and the plan
+  // switch, and three on a turn, the turn score, the memory kind gate and the
+  // plan health request. Five, read off those sites rather than derived, so a
+  // site added later leaves this number checkable against them. Still
+  // bounded, still harmless, and worth stating truthfully.
+  // The other orphan is the request: $.http.fetch takes no abort signal
+  // either, so when the timer wins, the request it raced stays open for as
+  // long as the host's own fetch allows.
   // Its settling is handled here, so it can neither reject nor touch the
   // result.
   const timer: Promise<Settled> = Promise.resolve()

@@ -1038,9 +1038,9 @@ The boundary a change takes effect at is the child process, not the next questio
 
 ### What leaves the machine
 
-Each shadow call sends TypeSafe one HTTP POST carrying the state text for that question, the question's instructions, the option ids in force each with its catalog description, and the model alias `jev-latest`. The bearer key rides the `Authorization` header. The state is the text the site had just sent Haiku, with one change: every occurrence of the API key's value is replaced with `[key]`. That scrub covers the key and nothing else.
+The seam sends in either of its two modes, shadow and live, and the request body is the same in both. Each call sends TypeSafe one HTTP POST carrying the state text for that question, the question's instructions, the option ids in force each with its catalog description, and the model alias `jev-latest`. The bearer key rides the `Authorization` header. The state is the text the site had just sent Haiku, with one change: every occurrence of the API key's value is replaced with `[key]`. That scrub covers the key and nothing else.
 
-What is in that state differs by site, and four of the five carry free text a person wrote.
+What is in that state differs by site. Five sites have a call site today, listed below, and four of the five carry free text a person wrote.
 
 **`turn-score`** sends the first 500 characters of the text that opened the turn, labelled `User asked`, then the first 1000 characters of the worker's own answer, then the goal's objective in full. On an ordinary turn the first of those is the operator's own prompt as typed. On a turn the controller nudged it is the plugin's nudge text, and on a turn opened by a delivered inbox record it is that record's text.
 

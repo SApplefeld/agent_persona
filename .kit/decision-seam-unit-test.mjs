@@ -512,6 +512,12 @@ try {
       ["probabilities that is an array", { ...valid, probabilities: [0.3, 0.7] }, "answer probabilities is not an object"],
       ["a probability that is a string", { ...valid, probabilities: { nudge: "0.3", wait: 0.7 } }, "answer probabilities carry a value that is not a finite number"],
       ["a probability that is null", { ...valid, probabilities: { nudge: null } }, "answer probabilities carry a value that is not a finite number"],
+      // A probability is bounded the way a Noul's value is: a finite number
+      // outside 0 to 1 is a malformed body. A live turn-disposition answer is
+      // read by comparing one probability against a threshold, so a value
+      // past 1 would read as delivered on that comparison.
+      ["a probability above 1", { ...valid, probabilities: { nudge: 7, wait: 0.7 } }, "answer probabilities carry a value that is outside 0 to 1"],
+      ["a probability below 0", { ...valid, probabilities: { nudge: -0.1, wait: 0.7 } }, "answer probabilities carry a value that is outside 0 to 1"],
       ["no confidence", { type: "choice", choice: "wait", probabilities: {} }, "answer confidence is not a finite number"],
       ["a confidence that is a string", { ...valid, confidence: "high" }, "answer confidence is not a finite number"],
     ];
@@ -923,6 +929,8 @@ try {
       ["a level number that was not sent", { ...valid, probabilities: { "0": 0, "1": 0, "2": 0, "3": 1 } }, "answer probabilities carry a level that was not sent"],
       ["a level keyed by its text rather than its number", { ...valid, probabilities: { steady: 1 } }, "answer probabilities carry a level that was not sent"],
       ["a probability that is a string", { ...valid, probabilities: { "1": "1" } }, "answer probabilities carry a value that is not a finite number"],
+      ["a probability above 1", { ...valid, probabilities: { "1": 7 } }, "answer probabilities carry a value that is outside 0 to 1"],
+      ["a probability below 0", { ...valid, probabilities: { "1": -0.1 } }, "answer probabilities carry a value that is outside 0 to 1"],
       ["no confidence", { type: "score", score: 1, probabilities: { "1": 1 } }, "answer confidence is not a finite number"],
     ];
     for (const [label, answer, detail] of bad) {

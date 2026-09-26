@@ -4014,6 +4014,7 @@ async function main() {
     // The live path: the two turn record questions through liveAsk.
     await caseLiveAsk_bothTurnQuestionsAreInvariantWithNoLiveList(clock);
     await caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock);
+    await caseLiveAsk_theAnswerReturnsBeforeItsJournalLinesLand(clock);
     await caseSeamEachSiteWritesItsCallAndAnswerLines(clock);
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
@@ -22811,8 +22812,6 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
     answer !== null && answer.type === "choice" && answer.choice === "delivered"
       && Object.keys(answer.probabilities).length === Catalog.TURN_DISPOSITION_OPTIONS.length && answer.probabilities.delivered === 0.5,
     answer);
-  check("live direction: a delivered probability at the threshold reads as delivered",
-    answer !== null && answer.probabilities.delivered >= Catalog.TURN_DELIVERED_THRESHOLD, answer && answer.probabilities);
   await new Promise((r) => setTimeout(r, 20));
   const liveCalls = journalLinesOfKind(h, "call");
   const liveAnswers = journalLinesOfKind(h, "answer");
@@ -22840,14 +22839,15 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
       && JSON.stringify(Object.keys(openBody.questions[Catalog.TURN_OPEN].criteria)) === JSON.stringify([...Catalog.TURN_OPEN_OPTIONS]),
     openBody.questions);
 
-  // Below the threshold: the answer still comes back whole, and the
-  // comparison a caller makes reads it as not delivered.
+  // Below the threshold: the answer still comes back whole, its probability
+  // as the vendor gave it. What a caller reads from that probability is the
+  // record-closing code's to pin.
   h.sleeps.length = 0;
   h.httpCalls.length = 0;
   h.setHttpResponse(jevTurnAnswer(0.49));
   const below = await liveAsk(host, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "shadow", live);
-  check("live direction: a delivered probability just below the threshold reads as not delivered",
-    below !== null && below.probabilities.delivered === 0.49 && !(below.probabilities.delivered >= Catalog.TURN_DELIVERED_THRESHOLD), below && below.probabilities);
+  check("live direction: a delivered probability below the threshold comes back whole and unaltered",
+    below !== null && below.probabilities.delivered === 0.49, below && below.probabilities);
 
   // The kill switch: under off nothing is sent whatever the live list names,
   // and the counter that stood at one above stands at zero here.
@@ -22875,11 +22875,15 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
     timeout: async () => {
       f.setHttpResponse(() => new Promise(() => {}));
       const before = clock.get();
+      // The list is cleared before the call and the timer is selected by its
+      // duration rather than by position, so an orphaned timer a prior driver
+      // left pending cannot be the one this driver resolves.
+      f.sleeps.length = 0;
       const p = askLive();
       await new Promise((r) => setImmediate(r));
-      const timer = f.sleeps.pop();
+      const timer = f.sleeps.find((s) => s.ms === Seam.LIVE_TIMEOUT_MS);
       check("fallback timeout control: the live call started one timer of LIVE_TIMEOUT_MS",
-        timer !== undefined && timer.ms === Seam.LIVE_TIMEOUT_MS, timer && timer.ms);
+        f.sleeps.length === 1 && timer !== undefined, f.sleeps.map((s) => s.ms));
       clock.advance(Seam.LIVE_TIMEOUT_MS);
       timer.resolve();
       const v = await p;
@@ -22913,6 +22917,121 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
   }
   check("fallbacks: no answer line was written for any failed live call",
     journalLinesOfKind(f, "answer").length === 0, journalLinesOfKind(f, "answer"));
+}
+
+// A live answer is returned as soon as the seam settles. Its two journal
+// lines ride a detached chain, as shadowAsk's do: an append rewrites the
+// day's file and queues behind every pending append to it, so an awaited
+// append would hold the hook that asked past the live timer. A held append
+// therefore holds nothing the caller waits on, and a refused one is turned
+// into the day's one decision with the answer already returned whole. The
+// unhandledRejection listener is the instrument for the detached chain: a
+// rejection nothing awaits surfaces there and in no check's own read.
+async function caseLiveAsk_theAnswerReturnsBeforeItsJournalLinesLand(clock) {
+  console.log("\n=== Live path: the answer returns before its journal lines land, and a refused append leaves it whole ===");
+
+  const h = await seedSeamHarness("liveask_journal_held", clock);
+  const liveAsk = await liveAskOf("liveask_journal_held");
+  check("live journal setup: hooks/index.ts exports liveAsk", liveAsk !== null, liveAsk);
+  if (liveAsk === null) return;
+  const live = [Catalog.TURN_DISPOSITION];
+  h.setHttpResponse(jevTurnAnswer(0.7));
+
+  // The fake host member for member, with only the file write held open
+  // until a case releases it: the request, the key read and the override
+  // reads go through unchanged, so what is held is the journal append alone.
+  const inner = fakeHostOf(h);
+  const held = [];
+  const host = {
+    ...inner,
+    writeFile: (p, text) => new Promise((resolve, reject) => {
+      held.push({ path: p, release: () => inner.writeFile(p, text).then(resolve, reject) });
+    }),
+  };
+  const pending = liveAsk(host, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "shadow", live);
+  // Raced against a timer rather than awaited, so a liveAsk that waits on the
+  // held append reads as a red rather than a hung suite. Nothing is released
+  // before this settles, so a liveAsk that won resolved ahead of its call
+  // line's write, whichever of the two the chain reached first.
+  const winner = await Promise.race([
+    pending.then((value) => ({ who: "liveAsk", value })),
+    new Promise((r) => setTimeout(() => r({ who: "timer", value: null }), 50)),
+  ]);
+  check("live journal held: liveAsk resolved with the answer while its call line was still unwritten",
+    winner.who === "liveAsk" && winner.value !== null && winner.value.choice === "delivered" && winner.value.probabilities.delivered === 0.7,
+    winner);
+  // The chain reaches the write a few promise hops after the answer returns.
+  const reachedWrite = await waitUntil(() => held.length === 1);
+  check("live journal held control: the request was answered and the call line's append is held open under the journal path",
+    h.httpCalls.length === 1 && reachedWrite && held.length === 1 && held[0].path.includes(JOURNAL_MARK),
+    { calls: h.httpCalls.length, held: held.map((w) => w.path) });
+  check("live journal held: no line landed before the append was released",
+    journalLines(h).length === 0, journalLines(h).length);
+  if (held.length !== 1) return;
+  // Release the call line. The answer line is queued behind it on the same
+  // path, so it reaches the write only once the call line has landed, and is
+  // then held and released in turn.
+  held.shift().release();
+  const answerReachedWrite = await waitUntil(() => held.length === 1);
+  check("live journal held control: the answer line's append followed the call line's on the same path",
+    answerReachedWrite && held.length === 1 && held[0].path.includes(JOURNAL_MARK), held.map((w) => w.path));
+  if (held.length !== 1) return;
+  held.shift().release();
+  await waitUntil(() => journalLines(h).length === 2);
+  const lines = journalLines(h);
+  check("live journal held: both lines landed once released, the call line first under mode live, the answer joined to it with no Haiku value",
+    lines.length === 2
+      && lines[0].lineKind === "call" && lines[0].mode === "live" && lines[0].site === "turn-disposition" && lines[0].result === "ok"
+      && lines[1].lineKind === "answer" && lines[1].callStampId === lines[0].stampId && lines[1].value === "delivered" && lines[1].haikuValue === null,
+    lines);
+
+  // A refused append. The listener is installed for this leg alone, so what
+  // it reports is what this leg raised.
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const r = await seedSeamHarness("liveask_journal_refused", clock);
+    const rAsk = await liveAskOf("liveask_journal_refused");
+    // On a UTC day of its own: hooks/decision-journal.ts is one module
+    // instance for the whole run, so its once-a-day failure latch is shared
+    // with every other case, and the unwritable-journal case below reads the
+    // day the harness seeds. This leg latches a day no other case reads.
+    clock.advance(400 * 86_400_000);
+    r.setHttpResponse(jevTurnAnswer(0.7));
+    r.setWriteRefusal((path) => path.includes(JOURNAL_MARK));
+    const answer = await rAsk(fakeHostOf(r), "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "shadow", live);
+    await new Promise((res) => setTimeout(res, 20));
+    // The control for the reads below: both appends were attempted and both
+    // turned away, since the answer line is written whether or not the call
+    // line landed.
+    check("live journal refused control: the call and answer appends were attempted and turned away",
+      r.fsWriteRefusals.length === 2 && r.fsWriteRefusals.every((p) => p.includes(JOURNAL_MARK)), r.fsWriteRefusals);
+    check("live journal refused: liveAsk resolved with the answer whole",
+      answer !== null && answer.choice === "delivered" && answer.probabilities.delivered === 0.7, answer);
+    check("live journal refused: no line landed", journalLines(r).length === 0, journalLines(r).length);
+    // The decision the failed write earns is in memory until a persist, and
+    // a turn's end is one. The latch admits one a day, and the first failed
+    // write was this call line's, so the one decision names its site.
+    clock.advance(1000);
+    await driveSeamTurn(r, clock, "t-live-refused", ASK_MARKER_ANSWER);
+    const failures = getDecisions(r).filter((d) => d.action === "journal_write_failed");
+    check("live journal refused: the day's one journal_write_failed decision names the live site",
+      failures.length === 1 && typeof failures[0].detail === "string" && failures[0].detail.startsWith("turn-disposition:"),
+      getDecisions(r).map((d) => [d.action, d.detail]));
+    await new Promise((res) => setImmediate(res));
+    check("live journal refused: no unhandled rejection surfaced from the detached chain",
+      unhandled.length === 0, unhandled.map(String));
+    // The instrument's own control: a rejection nothing awaits, raised here,
+    // is what the listener reports, so the silence above is a read rather
+    // than a listener that cannot speak.
+    Promise.reject(new Error("control: a rejection nothing awaits"));
+    await new Promise((res) => setImmediate(res));
+    check("live journal refused control: the listener reports a rejection nothing awaits",
+      unhandled.length === 1 && String(unhandled[0]).includes("control: a rejection nothing awaits"), unhandled.map(String));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 }
 
 async function caseSeamEachSiteWritesItsCallAndAnswerLines(clock) {

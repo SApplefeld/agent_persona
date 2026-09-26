@@ -223,10 +223,10 @@ const VALID_CONTROLLER_OVERRIDE = {
     JSON.stringify(PROMOTABLE_SET_IDS) === JSON.stringify([TURN_OPEN, TURN_DISPOSITION]), PROMOTABLE_SET_IDS);
   check("Test 2k: every promotable set is a shipped question with fixed option ids",
     PROMOTABLE_SET_IDS.every((id) => QUESTION_SET_IDS.includes(id) && FIXED_OPTION_SETS.includes(id)), PROMOTABLE_SET_IDS);
-  // The threshold is read as at-or-above: a delivered probability equal to it
-  // counts as delivered and one just below it does not.
-  check("Test 2l: the delivered threshold is one half, read as at-or-above",
-    TURN_DELIVERED_THRESHOLD === 0.5 && 0.5 >= TURN_DELIVERED_THRESHOLD && !(0.49 >= TURN_DELIVERED_THRESHOLD), TURN_DELIVERED_THRESHOLD);
+  // The value is a designed copy: the README states it as one half. The
+  // direction of the comparison is pinned on the code that closes a record.
+  check("Test 2l: the delivered threshold is one half",
+    TURN_DELIVERED_THRESHOLD === 0.5, TURN_DELIVERED_THRESHOLD);
 }
 
 // --- Test 3: no override at all resolves to the shipped default, no reason ---

@@ -123,9 +123,12 @@ export const PLAN_SWITCH_NO_MATCH = "no_match";
 export const TURN_OPEN = "turn-open";
 export const TURN_DISPOSITION = "turn-disposition";
 
-// The sets a live list may name, and no other: a live answer is read into a
+// The sets a settings live list may name: a live answer is read into a
 // branch by option id, so only a set whose ids are this catalog's own and
-// whose promotion bar is stated can be named.
+// whose promotion bar is stated is here. The constant enforces nothing by
+// itself. The read that turns the settings value into the list liveAsk is
+// handed is where an id outside this set is dropped, and liveAsk checks
+// membership in that list alone.
 export const PROMOTABLE_SET_IDS: readonly string[] = Object.freeze([TURN_OPEN, TURN_DISPOSITION]);
 
 // Each set's option ids in force, the caller's one constant, offered to Jev
