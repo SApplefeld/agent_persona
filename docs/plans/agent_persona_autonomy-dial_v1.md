@@ -334,6 +334,7 @@ frame), `.kit/injection-ledger.json`, `.kit/injection-ledger.mjs`, `.kit/control
 
 ### 4. The coordinator's instruction and the documents
 Model: sonnet
+Locus: inline
 
 Design point 6, and the documents. The coordinator's instruction gains the `[STARTED]` lead, the
 yes-or-no relay for a `[PROPOSAL]` naming an entry, and the awaiting-yes exception to the
@@ -351,7 +352,7 @@ product documentation with no personal voice.
 Audience: the operator, who knows the fleet and has not read the code; a worker session that
 holds the repository and has no session context.
 Voice: company.
-Fact base: `hooks/index.ts`, `hooks/agent-state.ts`, `bin/supervise.sh`, and this plan's Approach.
+Fact base: `hooks/index.ts`, `hooks/agent-state.ts`, `bin/supervise-holder.sh`, and this plan's Approach.
 
 Must-answer questions. For the operator: what do I say on a persona's thread to change its level;
 what does each level let it do without me; what reaches me at each level and from which thread;
@@ -370,7 +371,7 @@ Acceptance:
   gate; the supervisor model suite reads no instruction text and does not run for it.
 - No em dash in either document's new text.
 
-Files in scope: `bin/supervise.sh` (the coordinator instruction), `.kit/injection-ledger.json`,
+Files in scope: `bin/supervise-holder.sh` (the coordinator instruction), `.kit/injection-ledger.json`,
 `.kit/injection-ledger.mjs` where an anchor moves, `README.md`, `docs/architecture.md`,
 `docs/README.md` (this plan's line moves to the archive list when the plan closes), `docs/security-model.md`.
 
