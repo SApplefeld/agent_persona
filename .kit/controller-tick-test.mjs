@@ -3863,6 +3863,8 @@ async function main() {
     await caseAd2_aNudgeTurnCannotResumeAnAwaitingEntry(clock);
     await caseAd2_theCoordinatorResumesAndADropClearsTheFlag(clock);
     await caseAd2_aRecordThatCannotBeWrittenRefusesTheAdd(clock);
+    await caseAd2_aSaveThatYieldsSendsNoRecord(clock);
+    await caseAd2_aNudgeTurnCannotDropAnAwaitingEntry(clock);
     await caseAd2_descriptionsAndTheStartedLead(clock);
     await caseGl5_anIdlePersonaIsAskedOncePerInterval(clock);
     await caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock);
@@ -24693,16 +24695,22 @@ function ad2CoordinatorRecords(h) {
 }
 
 // The plan's add refused because its record could not be written: the deny
-// names `cause`, the store is byte-identical, the tree holds no such entry,
-// no record reached the coordinator persona, and the turn counts one error.
-async function ad2ExpectNoRecordRefusal(h, tag, cause, turnId, persona = "dev") {
+// names `cause`, the stored tree holds no such entry and no add decision for
+// it, no record reached the coordinator persona, and the turn counts one
+// error. A refusal before any mutation also leaves the store byte-identical;
+// a write that throws after the save rolls the add back and saves again, so
+// `storeUntouched` is false there.
+async function ad2ExpectNoRecordRefusal(h, tag, cause, turnId, persona = "dev", { storeUntouched = true } = {}) {
   const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
   const res = await ad2Add(h);
   check(`${tag}: refused, naming the record that could not be written and the cause`,
     typeof res?.deny === "string" && res.deny.includes(AD2_NO_RECORD_TOKEN) && res.deny.includes(cause) && res?.result === undefined, res);
-  check(`${tag}: the store is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
-  check(`${tag}: the tree holds no new entry`, ad2Entry(h, persona) === undefined && getStateForPersona(h, persona).goals.length === 4,
+  if (storeUntouched) check(`${tag}: the store is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  check(`${tag}: the stored tree holds no new entry`, ad2Entry(h, persona) === undefined && getStateForPersona(h, persona).goals.length === 4,
     getStateForPersona(h, persona).goals.map((g) => g.id));
+  check(`${tag}: the stored decisions carry no add of the entry and neither unprompted decision`,
+    !getStateForPersona(h, persona).decisions.some((d) => (d.action === "add" && d.detail.includes(AD2_TITLE.slice(0, 50))) || d.action === "plan_awaiting_yes" || d.action === "plan_started_unprompted"),
+    getStateForPersona(h, persona).decisions.slice(-5));
   check(`${tag}: no record reached the coordinator persona`, ad2CoordinatorRecords(h).length === 0, ad2CoordinatorRecords(h));
   await closeTurn(h, turnId);
   const errors = getStateForPersona(h, persona).monitor.env.errors;
@@ -24911,7 +24919,8 @@ async function caseAd2_aNudgeTurnCannotResumeAnAwaitingEntry(clock) {
 // The Acceptance's second bullet: an entry awaiting the operator's yes is
 // resumed by goal_resume in a coordinator delivery turn, becoming active with
 // activeGoalId naming it and the flag cleared; and one dropped by goal_edit
-// drop reads abandoned with the reason and the flag cleared.
+// drop in a coordinator delivery turn reads abandoned with the reason and the
+// flag cleared.
 async function caseAd2_theCoordinatorResumesAndADropClearsTheFlag(clock) {
   console.log("\n=== Autonomy dial 2: a coordinator delivery resumes an awaiting entry, and a drop clears the flag ===");
   clock.set(T0);
@@ -24938,6 +24947,10 @@ async function caseAd2_theCoordinatorResumesAndADropClearsTheFlag(clock) {
   await ad2OpenNudge(d, clock, "ad2 drop", "t-nudge");
   await ad2Add(d);
   const dEntry = ad2Entry(d);
+  await closeTurn(d, "t-nudge");
+  await openDeliveryTurn(d, "dev", { text: `The operator said no: goal_edit drop ${dEntry?.id}.`, turnId: "t-coord-drop" });
+  check("ad2 drop setup: the drain submitted the record under the COORDINATOR ground",
+    d.promptSubmits.some((p) => p.startsWith("[COORDINATOR id=dev-coord-open-1-1]")), d.promptSubmits);
   const dropped = await callTool(d, { tool: "mcp__agentic-plugin__goal_edit", nodeId: dEntry?.id, action: "drop", reason: "The operator said no." });
   const after = ad2Entry(d);
   check("ad2 drop: accepted, and the entry reads abandoned with the reason and the flag cleared",
@@ -24974,8 +24987,63 @@ async function caseAd2_aRecordThatCannotBeWrittenRefusesTheAdd(clock) {
   await ad2OpenNudge(w, clock, "ad2 no road write", "t-nudge");
   const realSet = w.fake.store.set;
   w.fake.store.set = (k, v) => (k.startsWith("inbox:coordinator:") ? Promise.reject(new Error("store refused the write")) : realSet(k, v));
-  await ad2ExpectNoRecordRefusal(w, "ad2 no road (the write throws)", "the write to 'coordinator' failed: store refused the write", "t-nudge");
+  await ad2ExpectNoRecordRefusal(w, "ad2 no road (the write throws)", "the write to 'coordinator' failed: store refused the write", "t-nudge", "dev", { storeUntouched: false });
   w.fake.store.set = realSet;
+}
+
+// A save that yields on an unprompted add sends no record: the record goes
+// out only after the entry is saved, so the coordinator's inbox never names
+// an entry the store does not hold. The yield is the epoch one: the stored
+// state names another session at a later epoch, as a takeover leaves it. A
+// commons yield cannot drive this path, since a live rival with the earlier
+// claim on the persona makes the reach rule refuse before the save.
+async function caseAd2_aSaveThatYieldsSendsNoRecord(clock) {
+  console.log("\n=== Autonomy dial 2: an unprompted plan add whose save yields sends no record ===");
+  for (const level of ["plan-and-ask", "plan-and-start"]) {
+    clock.set(T0);
+    const h = await ad2Harness(`ad2_yield_${level}`, { autonomy: level });
+    await ad2OpenNudge(h, clock, `ad2 yield ${level}`, "t-nudge");
+    const taken = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+    taken.dev.activeSessionId = "rival-ad2";
+    taken.dev.epoch += 1;
+    h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(taken));
+    const res = await ad2Add(h);
+    const tag = `ad2 yield ${level}`;
+    check(`${tag}: denied with the held text`, res?.deny === "persona 'dev' is held by a live session; this write was not saved." && res?.result === undefined, res);
+    const state = getStateForPersona(h, "dev");
+    check(`${tag}: the save ran and gave the persona up to the rival`, String(h.fsMap.get(YIELD_LOG_FILE) ?? "").includes("rival-ad2"), h.fsMap.get(YIELD_LOG_FILE));
+    check(`${tag}: no record reached the coordinator persona`, ad2CoordinatorRecords(h).length === 0, ad2CoordinatorRecords(h));
+    check(`${tag}: the stored tree holds no new entry`, ad2Entry(h) === undefined && state.goals.map((g) => g.id).join() === "root-1,plan-a,plan-p,plan-q",
+      state.goals.map((g) => g.id));
+    check(`${tag}: the stored decisions carry no add of the entry and neither unprompted decision`,
+      !state.decisions.some((d) => (d.action === "add" && d.detail.includes(AD2_TITLE.slice(0, 50))) || d.action === "plan_awaiting_yes" || d.action === "plan_started_unprompted"),
+      state.decisions.slice(-5));
+  }
+}
+
+// The Standing Brief Amendment: goal_edit drop of an entry awaiting the
+// operator's yes is refused in a nudge turn, counts one tool error, leaves
+// the store byte-identical, and leaves the entry paused with its flag. The
+// coordinator-turn drop in caseAd2_theCoordinatorResumesAndADropClearsTheFlag
+// is the admitted half.
+async function caseAd2_aNudgeTurnCannotDropAnAwaitingEntry(clock) {
+  console.log("\n=== Autonomy dial 2: a nudge turn cannot drop an entry awaiting the operator's yes ===");
+  clock.set(T0);
+  const h = await ad2Harness("ad2_drop_refused", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(h, clock, "ad2 drop refused", "t-nudge");
+  await ad2Add(h);
+  const entry = ad2Entry(h);
+  check("ad2 drop refused setup: the entry waits with the flag", entry?.awaitingYes === true && entry?.status === "paused", entry);
+  const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_edit", nodeId: entry?.id, action: "drop", reason: "Not worth it." });
+  check("ad2 drop refused: goal_edit drop is refused, naming the operator's word",
+    typeof res?.deny === "string" && res.deny.includes(AD2_RESUME_REFUSED_TOKEN) && res.deny.includes("drop") && res?.result === undefined, res);
+  check("ad2 drop refused: the store is byte-identical", h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  const after = ad2Entry(h);
+  check("ad2 drop refused: the entry stays paused with the awaiting reason and the flag",
+    after?.status === "paused" && after?.blockedReason === AD2_AWAITING_REASON && after?.awaitingYes === true, after);
+  await closeTurn(h, "t-nudge");
+  check("ad2 drop refused: the turn's tool errors are the one denial", getStateForPersona(h, "dev").monitor.env.errors.toolErrorsLastTurn === 1, getStateForPersona(h, "dev").monitor.env.errors);
 }
 
 // [STARTED] joins the leads a coordinator delivery does not count for, and

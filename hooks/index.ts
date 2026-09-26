@@ -527,6 +527,20 @@ function unpromptedPlanRefusedText(cause: string): string {
     "Nothing was added to the goal tree.";
 }
 
+// The refusal goal_add gives when the record could not be written after the
+// entry was saved and the save that takes the entry back out did not land
+// either, so the store may still hold the entry.
+function unpromptedPlanNotUndoneText(cause: string, nodeId: string): string {
+  return `Refused: the record telling the coordinator persona about the plan could not be written: ${cause}. ` +
+    `Taking the entry back out was not saved, so entry ${nodeId} may remain in the store.`;
+}
+
+// The one refusal goal_edit drop gives on an entry awaiting the operator's
+// yes outside a turn the operator or the coordinator persona started.
+const AWAITING_YES_DROP_REFUSED_TEXT =
+  "Refused: this entry waits for the operator's word, and only a turn the operator or the coordinator persona started may drop it. " +
+  "It stays paused until that word reaches you.";
+
 // The record goal_add sends the coordinator persona for a plan the autonomy
 // level admitted outside the operator's and the coordinator persona's turns:
 // a [PROPOSAL] at plan-and-ask, whose entry waits for the operator's yes, and
@@ -8755,9 +8769,10 @@ export const register: Register = async (on, options) => {
       // tells the coordinator persona about it: a [PROPOSAL] at plan-and-ask,
       // where the entry waits paused for the operator's yes, and a [STARTED]
       // at plan-and-start. The road to the coordinator persona is checked
-      // here, with the other refusals, and the record is written before the
-      // tree changes, so an add whose record cannot be written leaves nothing
-      // behind in the tree or the store.
+      // here, with the other refusals. The record goes out only after the
+      // entry is saved, so the coordinator's inbox never names an entry the
+      // store does not hold, and a record that then cannot be written takes
+      // the add back out of the tree and the store.
       const unprompted = kind === "plan" && !turnIsOperatorsOrCoordinators();
       const awaitingYes = unprompted && sess.state.autonomy === "plan-and-ask";
       if (unprompted) {
@@ -8799,16 +8814,13 @@ export const register: Register = async (on, options) => {
         updatedAt: now,
         ...(planPath ? { planPath } : {}),
       };
-      let unpromptedRecordId: string | null = null;
-      if (unprompted) {
-        const recordText = unpromptedPlanRecordText(awaitingYes, sess.persona, newNode.id, newNode.title, planPath);
-        try {
-          unpromptedRecordId = (await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, recordText)).id;
-        } catch (err) {
-          toolErrorsThisTurn++;
-          return { deny: unpromptedPlanRefusedText(`the write to '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`) };
-        }
-      }
+      // What this add changes, so an unprompted add whose save yields or
+      // whose record cannot be written can take it back: the root's fields
+      // where the add reopened it, the active slot before any activation,
+      // and the decision lines the add pushed.
+      const priorActiveGoalId = sess.state.activeGoalId;
+      let reopenedRoot: { status: GoalNode["status"]; blockedReason: string | undefined; updatedAt: number } | null = null;
+      const addDecisions: AgentState["decisions"] = [];
       // A node added directly under a finished root reopens the root, so the
       // tree never holds live work under a root that reads finished. A node
       // added under a plan leaves the root as it was, since a finished plan
@@ -8818,32 +8830,29 @@ export const register: Register = async (on, options) => {
       // children stay finished.
       if (parentId === root.id && (root.status === "complete" || root.status === "abandoned")) {
         const priorStatus = root.status;
+        reopenedRoot = { status: root.status, blockedReason: root.blockedReason, updatedAt: root.updatedAt };
         root.status = "pending";
         root.blockedReason = undefined;
         root.updatedAt = now;
-        sess.state.decisions.push({
+        const reopenDecision: AgentState["decisions"][number] = {
           timestamp: now,
           loop: "goal",
           action: "root_reopened",
           detail: `${root.id} reopened from ${priorStatus} to pending for a new ${kind}`,
-        });
+        };
+        sess.state.decisions.push(reopenDecision);
+        addDecisions.push(reopenDecision);
       }
       sess.state.goals.push(newNode);
 
-      sess.state.decisions.push({
+      const addDecision: AgentState["decisions"][number] = {
         timestamp: now,
         loop: "goal",
         action: "add",
         detail: `${newNode.id} (${kind}) under ${parentId}: "${title.slice(0, 50)}"`,
-      });
-      if (unpromptedRecordId !== null) {
-        sess.state.decisions.push({
-          timestamp: now,
-          loop: "goal",
-          action: awaitingYes ? "plan_awaiting_yes" : "plan_started_unprompted",
-          detail: `${newNode.id}: record ${unpromptedRecordId} to '${coordinatorPersona}'`,
-        });
-      }
+      };
+      sess.state.decisions.push(addDecision);
+      addDecisions.push(addDecision);
 
       // R4: adding a task under the active plan demotes the plan to pending
       // and activates the new task.
@@ -8884,9 +8893,49 @@ export const register: Register = async (on, options) => {
         newNode.updatedAt = now;
         sess.state.activeGoalId = newNode.id;
         activate($, newNode.id, `${newNode.id} added with no active leaf`);
+        // activate() pushes its one decision line last.
+        addDecisions.push(sess.state.decisions[sess.state.decisions.length - 1]);
       }
 
-      const writeOk = await persist($);
+      // Takes this add back out of memory: the node, the root's reopening,
+      // the activation and the decision lines. The session-local nudge
+      // fields activate() reset are left, since this runs on a save that
+      // gave the persona up or before a refusal.
+      const rollBackAdd = (): void => {
+        const at = sess.state.goals.indexOf(newNode);
+        if (at !== -1) sess.state.goals.splice(at, 1);
+        if (reopenedRoot !== null) {
+          root.status = reopenedRoot.status;
+          root.blockedReason = reopenedRoot.blockedReason;
+          root.updatedAt = reopenedRoot.updatedAt;
+        }
+        sess.state.activeGoalId = priorActiveGoalId;
+        for (const d of addDecisions) dropDecision(d);
+      };
+
+      const writeOk = unprompted ? await persistOrRollBack($, rollBackAdd) : await persist($);
+      if (writeOk && unprompted) {
+        const recordText = unpromptedPlanRecordText(awaitingYes, sess.persona, newNode.id, newNode.title, planPath);
+        let recordId: string;
+        try {
+          recordId = (await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, recordText)).id;
+        } catch (err) {
+          toolErrorsThisTurn++;
+          const cause = `the write to '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
+          rollBackAdd();
+          let undone = false;
+          try { undone = await persist($); } catch { /* read below as not undone */ }
+          if (!undone) return { deny: unpromptedPlanNotUndoneText(cause, newNode.id) };
+          return { deny: unpromptedPlanRefusedText(cause) };
+        }
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: awaitingYes ? "plan_awaiting_yes" : "plan_started_unprompted",
+          detail: `${newNode.id}: record ${recordId} to '${coordinatorPersona}'`,
+        });
+        await persist($);
+      }
       if (writeOk) {
         const nextActive = sess.state.activeGoalId
           ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
@@ -8944,6 +8993,10 @@ export const register: Register = async (on, options) => {
         if (node.status !== "pending" && node.status !== "paused" && node.status !== "blocked") {
           toolErrorsThisTurn++;
           return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending, paused, or blocked nodes can be dropped).` };
+        }
+        if (node.awaitingYes && !turnIsOperatorsOrCoordinators()) {
+          toolErrorsThisTurn++;
+          return { deny: AWAITING_YES_DROP_REFUSED_TEXT };
         }
         node.status = "abandoned";
         node.blockedReason = reason || "dropped by operator";
