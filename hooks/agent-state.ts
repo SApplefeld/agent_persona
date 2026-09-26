@@ -90,7 +90,9 @@ export interface GoalNode {
                       // autonomy level outside an operator or coordinator turn:
                       // the entry waits paused for the operator's yes, and
                       // goal_resume refuses it outside those turns. Cleared by
-                      // an allowed goal_resume and by goal_edit drop.
+                      // an allowed goal_resume, by goal_edit drop, by an
+                      // allowed goal_done by name on the entry or a node under
+                      // it, and by completion (clearSettledAwaiting).
 }
 
 export interface EnvErrors {
