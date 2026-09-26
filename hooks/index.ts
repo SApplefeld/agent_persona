@@ -973,6 +973,16 @@ let gitProbeInFlight = false;
 // run on a tick that enters while a fleet read is out.
 let fleetBlockInFlight = false;
 
+// The inbox drain running now, or null. The drain has two callers, the tick
+// and a turn's completion, and ticks overlap besides, so two drains could each
+// read the same pending record before either marks it delivered and submit it
+// twice. A caller that finds one running waits for it rather than starting a
+// second beside it. Where that drain delivered, the caller reports it as its
+// own delivery, so a tick then ends as it would after its own. Where it
+// delivered nothing, the caller runs a drain of its own, because a record
+// can arrive after the running drain read the inbox.
+let drainInFlight: Promise<boolean> | null = null;
+
 // F7: once the cwd is confirmed non-git (exit 128), stop probing for the
 // life of the session. The flag lives in the hook module, not in state.
 let gitUnavailable = false;
@@ -2943,6 +2953,12 @@ export const register: Register = async (on, options) => {
   // earliest entry left after the delete.
   const openTurns = new Map<string, number>();
   const turnIsOpen = () => openTurns.size > 0;
+  // The inbox drain, which the session.start hook defines beside the
+  // controller tick and publishes here so the turn.complete handler can call
+  // it. It is defined there because it uses that hook's `$`, and the loader
+  // refuses a function taking `$` that is declared anywhere but the top level
+  // of the file. Null on a reader session and until session.start has run.
+  let drainInboxNow: (() => Promise<boolean>) | null = null;
   // The published stamp names the earliest turn still open, or null when none
   // is. Both turn handlers derive it through here rather than each writing its
   // own value: a start that simply stamped its own clock would move the stamp
@@ -3546,7 +3562,8 @@ export const register: Register = async (on, options) => {
         "The architect's line back: the session owning the architect persona may answer a persona whose owner sent the architect a record " +
         "that is delivered or answered, and the answer is delivered even if the architect resolves that record with agentic_resolve after sending it. " +
         "A target this session owns is refused, because an owner does not message itself. " +
-        "The owner sees the message on its next quiet tick, and urgent: true breaks into a running turn instead and takes that turn's own " +
+        "The owner sees the message on its next quiet tick, or as its running turn ends, and each further waiting message follows as the " +
+        "previous delivery turn ends. urgent: true breaks into a running turn instead and takes that turn's own " +
         "answer as the reply. What a sent record does between those two moments, and what the sender reads back afterwards, is stated in " +
         "agentic_inbox's description.",
       inputSchema: {
@@ -4197,6 +4214,227 @@ export const register: Register = async (on, options) => {
     // goal tree to classify or actuate against, and the tick's own owner
     // check would return immediately anyway, so the timer itself is skipped.
     if (arming !== "reader") {
+    // The inbox drain, the controller tick's D3 block held in a name so a
+    // turn's completion can run it too: the turn.complete handler calls it
+    // through drainInboxNow once a turn this session saw start has closed and
+    // no other is open, so a burst of records drains at turn pace rather than
+    // one per tick. It returns true where it submitted a record, or where a
+    // drain already running when it was called submitted one. A running
+    // drain holds its place until its submit settles, which the harness
+    // states is when the submitted turn starts or is queued, never when it
+    // ends. So the hold keeps a second drain from submitting beside a prompt
+    // not yet entered, and is gone before the delivered turn can complete.
+    const drainInbox = async (): Promise<boolean> => {
+      while (drainInFlight !== null) {
+        // A running drain that throws is reported by its own caller, so a
+        // waiter reads the throw as nothing delivered and drains itself.
+        try { if (await drainInFlight) return true; } catch { /* reported by the drain's own caller */ }
+      }
+      drainInFlight = drainInboxOnce().finally(() => { drainInFlight = null; });
+      return drainInFlight;
+    };
+    const drainInboxOnce = async (): Promise<boolean> => {
+      // D3: drain operator inbox (one record per call, owner only).
+      // List pending inbox records whose writer may reach this persona
+      // (deliveryGroundIn over one claims read: a reader claim on it, the
+      // coordinator persona owned, a named persona owned when this persona
+      // is the coordinator or the architect, or the architect persona owned
+      // by the writer of an answer agentic_say admitted on the answer leg
+      // and stamped), take the lowest at, mark delivered, submit as a prompt
+      // opening with the provenance label that same read produced.
+      // D5: if a pending record answers the open ask, close the ask first
+      // (ask_answered path) before the general drain.
+      // The open-turn reading is taken here rather than trusted from the
+      // caller. The tick's blocks before this call submit, and a submit
+      // resolves once its turn has started or been queued rather than when
+      // that turn ends, so a turn can have opened underneath them by the time
+      // this line runs. This drain marks
+      // a record delivered and then submits it, and a submit into an open turn
+      // is queued rather than answered, so the record would carry a delivered
+      // stamp with no turn that ever read it. Skipping leaves it pending and
+      // the next quiet tick takes it, which costs one tick and loses nothing.
+      if (sess.isOwner && !turnIsOpen()) {
+        const persona = sess.persona;
+        const store = commonsStoreOf($);
+        const allRecords = await listInboxRecords(store, persona);
+        const pending = allRecords.filter((rec) => rec.status === "pending");
+
+        // D5: check for an answering record that closes the open ask (before general drain)
+        if (sess.state.pendingAskId && pending.length > 0) {
+          const askId = sess.state.pendingAskId;
+          const askRecord = await readAskRecord(store, persona, askId);
+          if (askRecord && askRecord.status === "open") {
+            const answer = pending.find((rec) => rec.answers === askId);
+            if (answer) {
+              // One claims read gates the answer and labels it. A dead
+              // writer's answer is logged here and skipped by the general
+              // drain below; an answer whose writer persona cannot sit
+              // inside the bracket, or whose id or text fails the record
+              // rule, is marked skipped here, once, so the drain never
+              // lists it.
+              const answerGround = deliveryGroundIn(await readAllClaims(store, sess.staleAfterMs), persona, answer.from, coordinatorPersona, deliveryArchitectLine(architectPersona, answer));
+              const answerProblem = deliveryRecordProblem(answer);
+              if ("refused" in answerGround && answerGround.refused === "no_claim") {
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "operator_skipped_no_claim",
+                  detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own${architectLegRefusal})`,
+                });
+              } else if ("refused" in answerGround || answerProblem !== null) {
+                answer.status = "skipped";
+                await store.set(answer.key, { ...answer });
+                sess.state.decisions.push("refused" in answerGround && answerGround.refused === "bad_name"
+                  ? {
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "operator_skipped_bad_name",
+                    detail: `answer at ${answer.key} would be labelled with persona ${JSON.stringify(answerGround.persona)}, which ${answerGround.problem}; marked skipped`,
+                  }
+                  : {
+                    timestamp: Date.now(),
+                    loop: "monitor",
+                    action: "operator_skipped_bad_record",
+                    detail: `answer at ${answer.key}: ${answerProblem}; marked skipped`,
+                  });
+              } else {
+                const answerLabel = answerGround.ground;
+                // Close the ask
+                askRecord.status = "answered";
+                await store.set(askKey(persona, askId), askRecord);
+                // D5b: remember the closed question so the classifier does
+                // not reopen it on this node right away (bullet 2).
+                const askedNodeInbox = sess.state.goals.find((n) => n.id === askRecord.nodeId);
+                if (askedNodeInbox) {
+                  askedNodeInbox.lastAskQuestion = askRecord.question;
+                  askedNodeInbox.lastAskClosedAt = Date.now();
+                }
+                // Mark the answer as delivered
+                answer.status = "delivered";
+                answer.deliveredAt = Date.now();
+                const existing = await store.get(answer.key);
+                if (existing) {
+                  const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+                  parsed.status = "delivered";
+                  parsed.deliveredAt = answer.deliveredAt;
+                  await store.set(answer.key, parsed);
+                }
+                // Clear the pendingAskId
+                sess.state.pendingAskId = undefined;
+                // Deliver the answer as a labelled prompt.
+                // The entry is the one the ask record names, or the active
+                // entry where the record names none. The close moves no
+                // status; see reactivateAskedEntry.
+                const askRecord2 = askRecord; // from outer scope
+                const targetNode = askRecord2?.nodeId
+                  ? sess.state.goals.find((g) => g.id === askRecord2.nodeId)
+                  : null;
+                const activeNode = targetNode || (sess.state.activeGoalId
+                  ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
+                  : null);
+                if (activeNode) reactivateAskedEntry(activeNode);
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "monitor",
+                  action: "ask_answered",
+                  detail: `ask ${askId} closed by record ${answer.id}`,
+                });
+                const answerText = deliveryText(answerLabel, answer.id, answer.text, { answerTo: askRecord.question });
+                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, ground: answerLabel, seatLead: opensWithSeatLead(answer.text), text: answerText });
+                const answerOutcome = await submitExpectedTurn($, expectedTurns, expectedAnswerTurn);
+                if (!answerOutcome.ok) recordFailedDelivery(answer, answerOutcome);
+                await persist($);
+                return true;
+              }
+            }
+          }
+        }
+
+        // General drain (D3)
+        // Filter to writers whose live claims reach this persona, over one
+        // claims read for the whole pending list; the same read yields the
+        // label each deliverable record carries. A record whose writer's
+        // persona cannot sit inside the label's bracket, or whose id or
+        // text fails the record rule, is skipped like a dead writer's,
+        // under its own decision. An answer the ask step above already
+        // marked skipped is not listed again.
+        const withClaim: { rec: InboxRecord; ground: string }[] = [];
+        const withoutClaim: typeof pending = [];
+        const badName: { rec: InboxRecord; persona: string; problem: string }[] = [];
+        const badRecord: { rec: InboxRecord; problem: string }[] = [];
+        const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
+        for (const rec of pending) {
+          if (rec.status !== "pending") continue;
+          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, deliveryArchitectLine(architectPersona, rec));
+          const recordProblem = deliveryRecordProblem(rec);
+          if ("refused" in ground) {
+            if (ground.refused === "no_claim") withoutClaim.push(rec);
+            else badName.push({ rec, persona: ground.persona, problem: ground.problem });
+          } else if (recordProblem !== null) badRecord.push({ rec, problem: recordProblem });
+          else withClaim.push({ rec, ground: ground.ground });
+        }
+        // Round 32/36: mark a dead writer's record skipped once, on its own
+        // key, rather than re-logging the same decision every tick forever -
+        // once `status` is "skipped" it drops out of `pending` above on the
+        // next `listInboxRecords` read, so the record costs one line total.
+        for (const rec of withoutClaim) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_skipped_no_claim",
+            detail: `record ${rec.id} writer ${rec.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own${architectLegRefusal}; marked skipped)`,
+          });
+        }
+        for (const { rec, persona: writerPersona, problem } of badName) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_skipped_bad_name",
+            detail: `record at ${rec.key} would be labelled with persona ${JSON.stringify(writerPersona)}, which ${problem}; marked skipped`,
+          });
+        }
+        for (const { rec, problem } of badRecord) {
+          await store.set(rec.key, { ...rec, status: "skipped" });
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_skipped_bad_record",
+            detail: `record at ${rec.key}: ${problem}; marked skipped`,
+          });
+        }
+        // Take the oldest record with a live claim
+        if (withClaim.length > 0) {
+          withClaim.sort((a, b) => a.rec.at - b.rec.at);
+          const { rec: oldest, ground } = withClaim[0];
+          oldest.status = "delivered";
+          oldest.deliveredAt = Date.now();
+          const existing = await store.get(oldest.key);
+          if (existing) {
+            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
+            parsed.status = "delivered";
+            parsed.deliveredAt = oldest.deliveredAt;
+            await store.set(oldest.key, parsed);
+          }
+          const submittedText = deliveryText(ground, oldest.id, oldest.text);
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_delivered",
+            detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, "plain")}`,
+          });
+          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, ground, seatLead: opensWithSeatLead(oldest.text), text: submittedText });
+          const deliveryOutcome = await submitExpectedTurn($, expectedTurns, expectedDeliveryTurn);
+          if (!deliveryOutcome.ok) recordFailedDelivery(oldest, deliveryOutcome);
+          await persist($);
+          return true; // One record per call
+        }
+      }
+      return false;
+    };
+    drainInboxNow = drainInbox;
+
     // The tick's body, held in a name so that the registration below can run
     // it inside a catch. Every write this body makes reads the persona store
     // first, the store is a file inside a persona's own working directory,
@@ -4950,202 +5188,9 @@ export const register: Register = async (on, options) => {
         }
       }
 
-      // D3: drain operator inbox (one record per tick, owner only).
-      // List pending inbox records whose writer may reach this persona
-      // (deliveryGroundIn over one claims read: a reader claim on it, the
-      // coordinator persona owned, a named persona owned when this persona
-      // is the coordinator or the architect, or the architect persona owned
-      // by the writer of an answer agentic_say admitted on the answer leg
-      // and stamped), take the lowest at, mark delivered, submit as a prompt
-      // opening with the provenance label that same read produced.
-      // D5: if a pending record answers the open ask, close the ask first
-      // (ask_answered path) before the general drain.
-      // The open-turn reading is taken again here rather than trusted from the
-      // top of the tick. The two blocks above submit, and a submit does not
-      // resolve until the session is next idle, so a turn can have opened
-      // underneath either of them by the time this line runs. This drain marks
-      // a record delivered and then submits it, and a submit into an open turn
-      // is queued rather than answered, so the record would carry a delivered
-      // stamp with no turn that ever read it. Skipping leaves it pending and
-      // the next quiet tick takes it, which costs one tick and loses nothing.
-      if (sess.isOwner && !turnIsOpen()) {
-        const persona = sess.persona;
-        const store = commonsStoreOf($);
-        const allRecords = await listInboxRecords(store, persona);
-        const pending = allRecords.filter((rec) => rec.status === "pending");
-
-        // D5: check for an answering record that closes the open ask (before general drain)
-        if (sess.state.pendingAskId && pending.length > 0) {
-          const askId = sess.state.pendingAskId;
-          const askRecord = await readAskRecord(store, persona, askId);
-          if (askRecord && askRecord.status === "open") {
-            const answer = pending.find((rec) => rec.answers === askId);
-            if (answer) {
-              // One claims read gates the answer and labels it. A dead
-              // writer's answer is logged here and skipped by the general
-              // drain below; an answer whose writer persona cannot sit
-              // inside the bracket, or whose id or text fails the record
-              // rule, is marked skipped here, once, so the drain never
-              // lists it.
-              const answerGround = deliveryGroundIn(await readAllClaims(store, sess.staleAfterMs), persona, answer.from, coordinatorPersona, deliveryArchitectLine(architectPersona, answer));
-              const answerProblem = deliveryRecordProblem(answer);
-              if ("refused" in answerGround && answerGround.refused === "no_claim") {
-                sess.state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "monitor",
-                  action: "operator_skipped_no_claim",
-                  detail: `answer ${answer.id} from ${answer.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own${architectLegRefusal})`,
-                });
-              } else if ("refused" in answerGround || answerProblem !== null) {
-                answer.status = "skipped";
-                await store.set(answer.key, { ...answer });
-                sess.state.decisions.push("refused" in answerGround && answerGround.refused === "bad_name"
-                  ? {
-                    timestamp: Date.now(),
-                    loop: "monitor",
-                    action: "operator_skipped_bad_name",
-                    detail: `answer at ${answer.key} would be labelled with persona ${JSON.stringify(answerGround.persona)}, which ${answerGround.problem}; marked skipped`,
-                  }
-                  : {
-                    timestamp: Date.now(),
-                    loop: "monitor",
-                    action: "operator_skipped_bad_record",
-                    detail: `answer at ${answer.key}: ${answerProblem}; marked skipped`,
-                  });
-              } else {
-                const answerLabel = answerGround.ground;
-                // Close the ask
-                askRecord.status = "answered";
-                await store.set(askKey(persona, askId), askRecord);
-                // D5b: remember the closed question so the classifier does
-                // not reopen it on this node right away (bullet 2).
-                const askedNodeInbox = sess.state.goals.find((n) => n.id === askRecord.nodeId);
-                if (askedNodeInbox) {
-                  askedNodeInbox.lastAskQuestion = askRecord.question;
-                  askedNodeInbox.lastAskClosedAt = Date.now();
-                }
-                // Mark the answer as delivered
-                answer.status = "delivered";
-                answer.deliveredAt = Date.now();
-                const existing = await store.get(answer.key);
-                if (existing) {
-                  const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-                  parsed.status = "delivered";
-                  parsed.deliveredAt = answer.deliveredAt;
-                  await store.set(answer.key, parsed);
-                }
-                // Clear the pendingAskId
-                sess.state.pendingAskId = undefined;
-                // Deliver the answer as a labelled prompt.
-                // The entry is the one the ask record names, or the active
-                // entry where the record names none. The close moves no
-                // status; see reactivateAskedEntry.
-                const askRecord2 = askRecord; // from outer scope
-                const targetNode = askRecord2?.nodeId
-                  ? sess.state.goals.find((g) => g.id === askRecord2.nodeId)
-                  : null;
-                const activeNode = targetNode || (sess.state.activeGoalId
-                  ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
-                  : null);
-                if (activeNode) reactivateAskedEntry(activeNode);
-                sess.state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "monitor",
-                  action: "ask_answered",
-                  detail: `ask ${askId} closed by record ${answer.id}`,
-                });
-                const answerText = deliveryText(answerLabel, answer.id, answer.text, { answerTo: askRecord.question });
-                const expectedAnswerTurn = expectTurn({ kind: "delivery", recordId: answer.id, ground: answerLabel, seatLead: opensWithSeatLead(answer.text), text: answerText });
-                const answerOutcome = await submitExpectedTurn($, expectedTurns, expectedAnswerTurn);
-                if (!answerOutcome.ok) recordFailedDelivery(answer, answerOutcome);
-                await persist($);
-                return;
-              }
-            }
-          }
-        }
-
-        // General drain (D3)
-        // Filter to writers whose live claims reach this persona, over one
-        // claims read for the whole pending list; the same read yields the
-        // label each deliverable record carries. A record whose writer's
-        // persona cannot sit inside the label's bracket, or whose id or
-        // text fails the record rule, is skipped like a dead writer's,
-        // under its own decision. An answer the ask step above already
-        // marked skipped is not listed again.
-        const withClaim: { rec: InboxRecord; ground: string }[] = [];
-        const withoutClaim: typeof pending = [];
-        const badName: { rec: InboxRecord; persona: string; problem: string }[] = [];
-        const badRecord: { rec: InboxRecord; problem: string }[] = [];
-        const claims = pending.length > 0 ? await readAllClaims(store, sess.staleAfterMs) : [];
-        for (const rec of pending) {
-          if (rec.status !== "pending") continue;
-          const ground = deliveryGroundIn(claims, persona, rec.from, coordinatorPersona, deliveryArchitectLine(architectPersona, rec));
-          const recordProblem = deliveryRecordProblem(rec);
-          if ("refused" in ground) {
-            if (ground.refused === "no_claim") withoutClaim.push(rec);
-            else badName.push({ rec, persona: ground.persona, problem: ground.problem });
-          } else if (recordProblem !== null) badRecord.push({ rec, problem: recordProblem });
-          else withClaim.push({ rec, ground: ground.ground });
-        }
-        // Round 32/36: mark a dead writer's record skipped once, on its own
-        // key, rather than re-logging the same decision every tick forever -
-        // once `status` is "skipped" it drops out of `pending` above on the
-        // next `listInboxRecords` read, so the record costs one line total.
-        for (const rec of withoutClaim) {
-          await store.set(rec.key, { ...rec, status: "skipped" });
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "operator_skipped_no_claim",
-            detail: `record ${rec.id} writer ${rec.from} holds no live claim that reaches '${persona}' (no reader claim, no '${coordinatorPersona}' persona claim, no named persona of its own${architectLegRefusal}; marked skipped)`,
-          });
-        }
-        for (const { rec, persona: writerPersona, problem } of badName) {
-          await store.set(rec.key, { ...rec, status: "skipped" });
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "operator_skipped_bad_name",
-            detail: `record at ${rec.key} would be labelled with persona ${JSON.stringify(writerPersona)}, which ${problem}; marked skipped`,
-          });
-        }
-        for (const { rec, problem } of badRecord) {
-          await store.set(rec.key, { ...rec, status: "skipped" });
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "operator_skipped_bad_record",
-            detail: `record at ${rec.key}: ${problem}; marked skipped`,
-          });
-        }
-        // Take the oldest record with a live claim
-        if (withClaim.length > 0) {
-          withClaim.sort((a, b) => a.rec.at - b.rec.at);
-          const { rec: oldest, ground } = withClaim[0];
-          oldest.status = "delivered";
-          oldest.deliveredAt = Date.now();
-          const existing = await store.get(oldest.key);
-          if (existing) {
-            const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-            parsed.status = "delivered";
-            parsed.deliveredAt = oldest.deliveredAt;
-            await store.set(oldest.key, parsed);
-          }
-          const submittedText = deliveryText(ground, oldest.id, oldest.text);
-          sess.state.decisions.push({
-            timestamp: Date.now(),
-            loop: "monitor",
-            action: "operator_delivered",
-            detail: `record ${oldest.id} submitted as ${deliveryPrefix(ground, oldest.id, "plain")}`,
-          });
-          const expectedDeliveryTurn = expectTurn({ kind: "delivery", recordId: oldest.id, ground, seatLead: opensWithSeatLead(oldest.text), text: submittedText });
-          const deliveryOutcome = await submitExpectedTurn($, expectedTurns, expectedDeliveryTurn);
-          if (!deliveryOutcome.ok) recordFailedDelivery(oldest, deliveryOutcome);
-          await persist($);
-          return; // One record per tick
-        }
-      }
+      // D3: drain operator inbox, one record per call; drainInbox above
+      // owns the block, and a turn's completion calls it too.
+      if (await drainInbox()) return;
 
       // D4: increment tick index for backoff and cost_summary cadence.
       sess.controllerTickCount = (sess.controllerTickCount ?? 0) + 1;
@@ -7097,7 +7142,8 @@ export const register: Register = async (on, options) => {
     const mapStartedAt = openTurns.get(e.turnId);
     // Closing by id: a completion for a turn this session never saw start
     // removes nothing, so it cannot clear a different turn that is still open.
-    openTurns.delete(e.turnId);
+    // Whether it removed one is what lets the completion drain run below.
+    const removedOwnEntry = openTurns.delete(e.turnId);
     // The compaction boundary step's facts, read together here at the delete
     // and before any await, because the awaits below can let the next
     // turn.start in and that start rewrites every one of them: whether this
@@ -7239,6 +7285,7 @@ export const register: Register = async (on, options) => {
     // kind: the kind is reset by every completion, a subagent's included,
     // while the channel flag survives one, so a turn that is both a nudge and
     // channel-origin would otherwise post the nudge's answer.
+    let submittedReplyBackstop = false;
     if (!skipped && sess.isOwner && completesGateTurn && currentTurnIsChannelOrigin && !replyCalledThisTurn && !isPrimingTurn && !wasNudged && !completesNudgedTurn) {
       try {
         await $.tool.call({ tool: "mcp__plugin_relay_channel-relay__reply", message: e.answer } as any);
@@ -7251,7 +7298,12 @@ export const register: Register = async (on, options) => {
       } catch (directErr) {
         const backstopText = `[REPLY BACKSTOP] Send this exact text to the operator through the reply tool now, unchanged:\n${e.answer}`;
         // A refused re-prompt means both paths failed; nothing more to do
-        // without a live channel, and its entry has left the list.
+        // without a live channel, and its entry has left the list. The
+        // completion drain is skipped on the attempt, whatever its outcome:
+        // a refused one costs the waiting record one tick, while a delivery
+        // queued beside an accepted one would pile into a prompt the turn
+        // matcher cannot read as a delivery.
+        submittedReplyBackstop = true;
         const backstopOutcome = await submitExpectedTurn($, expectedTurns, expectTurn({ kind: "plugin", text: backstopText }));
         if (backstopOutcome.ok) {
           sess.state.decisions.push({
@@ -8098,6 +8150,38 @@ export const register: Register = async (on, options) => {
     // handler has no caller to report. The state stands in memory and the
     // first write that is not refused carries it.
     try { await persist($); } catch { /* persist could not read or write the store; this turn's record waits in memory */ }
+
+    // The completion drain: a turn this session saw start has closed and no
+    // other is open, so the next waiting record is delivered now rather than
+    // at the next tick, and a burst drains one record per turn. It runs after
+    // this handler rather than inside it, so its store reads and its submit
+    // never hold the hook chain the engine awaits before the next turn
+    // starts. A refused submit is recorded inside the drain as at the tick. A
+    // throw out of it is caught here into one decision, and skips it wrote
+    // are saved, since no tick save follows this path.
+    const drain = drainInboxNow;
+    // A completion naming a subagent loop is never the persona's own turn
+    // end, whatever turn id it carries, as at completesGateTurn above.
+    const completesSubagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    if (removedOwnEntry && !completesSubagent && sess.isOwner && !turnOpenAfterDelete && !submittedReplyBackstop && drain !== null) {
+      void Promise.resolve().then(async () => {
+        // The ring is read by identity as well as length, since a save
+        // that trims it swaps the array for a shorter one.
+        const ring = sess.state.decisions;
+        const logged = ring.length;
+        try {
+          if (!(await drain()) && (sess.state.decisions !== ring || sess.state.decisions.length !== logged)) await persist($);
+        } catch (err) {
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "monitor",
+            action: "operator_delivery_error",
+            detail: `the inbox drain at a turn's end stopped: ${safeErrorText(err)}`.slice(0, 200),
+          });
+          try { await persist($); } catch { /* the store refused; the line above waits in memory */ }
+        }
+      });
+    }
 
     return next(e);
   });
@@ -9362,7 +9446,7 @@ export const register: Register = async (on, options) => {
         // carries it.
         try { await persist($); } catch { /* persist could not read or write the store; the entry waits in memory */ }
       }
-      return { result: `Message sent to owner of ${persona} (id: ${id}${urgent ? ", urgent: delivered inside the owner's running turn if one is in flight" : ", delivered on the owner's next quiet tick, or, unless it is labelled COORDINATOR at delivery, into a turn already running once it has waited past the break-in bound; a delivery on the wait alone is not replied to, and the owner closes the record with agentic_resolve"})` };
+      return { result: `Message sent to owner of ${persona} (id: ${id}${urgent ? ", urgent: delivered inside the owner's running turn if one is in flight" : ", delivered on the owner's next quiet tick or as its running turn ends, each further waiting message following as the previous delivery turn ends, or, unless it is labelled COORDINATOR at delivery, into a turn already running once it has waited past the break-in bound; a delivery on the wait alone is not replied to, and the owner closes the record with agentic_resolve"})` };
     }
 
     // D2: Serve agentic_inbox (replies from the owner of a persona)
