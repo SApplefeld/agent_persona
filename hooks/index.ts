@@ -48,13 +48,17 @@ import {
   hasStartableWork,
   holdOf,
   LONG_TERM_GOAL_CAP,
+  AUTONOMY_LEVELS,
+  isAutonomyLevel,
+  AWAITING_YES_REASON,
+  awaitingEntryAtOrAbove,
   reapCompletedGoalTasks,
   MAX_TASKS_PER_GOAL,
   TASK_LIST_MAX_LINES,
   newTaskId,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
-import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, TaskItem } from "./agent-state";
+import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem } from "./agent-state";
 import {
   claimResource,
   readAllClaims,
@@ -458,6 +462,12 @@ function findExpectedTurn(list: ExpectedTurn[], turnText: string): ExpectedTurn 
 // [PROPOSE] turns, counted from monitor.proposal.askedAt.
 export const PROPOSAL_EVERY_MS = 24 * 3_600_000;
 
+// The most times the tick's plan record settle step (step 2c) sends one of
+// goal_add's records again after the coordinator persona's inbox skipped it.
+// A record read back as skipped once its entry has spent this many resends is
+// announced on the persona's own thread instead of being sent again.
+export const PLAN_RECORD_MAX_RESENDS = 3;
+
 // One line of the [KAIZEN] thread message. The text comes out of the
 // persona's store, so its line breaks are folded and it passes through
 // bracketSafeText, which turns '[' and ']' into '(' and ')' so the text
@@ -467,29 +477,56 @@ function kaizenLine(text: string): string {
   return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
 }
 
+// The [PROPOSE] frame's plan-and-ask and plan-and-start instructions: write
+// the plan document and queue it, which sends the coordinator its own
+// [PROPOSAL] or [STARTED] record through goal_add. The frame's own
+// agentic_say send is reserved for proposeFrameNoTreeClause below, the one
+// case goal_add cannot reach, so a goal-tree holder is never told to send
+// both a record through goal_add and a [PROPOSAL] through agentic_say.
+const PROPOSE_FRAME_PLAN_AND_ASK_TEXT = "Write the plan document and queue it with goal_add; the entry waits paused until the operator's yes reaches you. ";
+const PROPOSE_FRAME_PLAN_AND_START_TEXT = "Write the plan document, queue it and start it; the plugin tells the coordinator. ";
+
+// The no-goal-tree fallback at plan-and-ask and plan-and-start: with no tree
+// to queue a plan on, the persona falls back to the same agentic_say send
+// propose always uses, naming both operator turns that can open one.
+function proposeFrameNoTreeClause(coordinatorPersona: string): string {
+  return `With no goal tree, send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL] instead, since only the operator or the coordinator opens a tree. `;
+}
+
 // The [PROPOSE] frame. Each long-term goal's title and objective is text the
 // persona wrote, so each is folded onto one line, cut at the lengths
 // goal_longterm stores, and passed through bracketSafeText, so a stored goal
-// cannot forge a label in the prompt it is spliced into.
-export function proposeFrame(longTermGoals: LongTermGoal[], coordinatorPersona: string): string {
+// cannot forge a label in the prompt it is spliced into. Only at propose does
+// the frame tell the persona to agentic_say its own [PROPOSAL] straight to
+// the coordinator persona. At plan-and-ask and plan-and-start a goal-tree
+// holder is told to queue the plan with goal_add instead, which sends the
+// coordinator its own record; the agentic_say send at those two levels rides
+// only inside the no-goal-tree fallback, the one case goal_add cannot cover.
+export function proposeFrame(longTermGoals: LongTermGoal[], coordinatorPersona: string, level: AutonomyLevel): string {
   const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
   const goalLines = longTermGoals.map((g) =>
     `- ${bracketSafeText(oneLine(String(g?.title ?? "").slice(0, 80)))}: ${bracketSafeText(oneLine(String(g?.objective ?? "").slice(0, 500)))}`).join("\n");
+  const noTreeClause = proposeFrameNoTreeClause(coordinatorPersona);
+  const levelClause = level === "plan-and-ask"
+    ? PROPOSE_FRAME_PLAN_AND_ASK_TEXT + noTreeClause
+    : level === "plan-and-start"
+    ? PROPOSE_FRAME_PLAN_AND_START_TEXT + noTreeClause
+    : `Send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL]. Start none of it yourself. `;
   const proposeText =
     `[PROPOSE] Nothing in your goal tree is active or ready to start, and you hold these long-term goals:\n` +
     goalLines +
     `\nName the single next piece of work toward one of them: what it is, why now, and the repository it belongs in. ` +
-    `Send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL]. ` +
-    `Start none of it yourself. ` +
+    levelClause +
     `If you have no proposal worth making, answer "No proposal." and send nothing.`;
   return proposeText;
 }
 
-// Whether an inbox record's own text opens with one of the two leads a
-// finding or a proposal carries. A lead counts only as the text's first
-// characters, so one quoted further down does not make the record either.
+// Whether an inbox record's own text opens with one of the three leads a
+// finding, a proposal or a report of work started unprompted carries. A lead
+// counts only as the text's first characters, so one quoted further down does
+// not make the record any of them.
 function opensWithSeatLead(text: string): boolean {
-  return text.startsWith("[FINDING]") || text.startsWith("[PROPOSAL]");
+  return text.startsWith("[FINDING]") || text.startsWith("[PROPOSAL]") || text.startsWith("[STARTED]");
 }
 
 // The prompt origin kinds the harness stamps on the operator's own turns:
@@ -503,6 +540,66 @@ const EFFORT_REFUSED_TEXT =
   "Refused: a new effort starts only in a turn the operator or the coordinator persona started, and this turn is neither. " +
   "An act the operator or the coordinator persona directed is retried in a turn one of them opens, not proposed. " +
   "Send any other idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
+
+// The one refusal goal_autonomy gives outside a turn the operator started.
+// A coordinator delivery is refused too, so a level in the store is always
+// one the operator set.
+const AUTONOMY_REFUSED_TEXT =
+  "Refused: the autonomy level is the operator's to set, in a turn the operator starts on this persona's own thread, " +
+  "and this turn is not one. Ask the operator to set it there.";
+
+// The one refusal goal_resume gives on an entry awaiting the operator's yes,
+// or a node under one, outside a turn the operator or the coordinator
+// persona started.
+const AWAITING_YES_RESUME_REFUSED_TEXT =
+  "Refused: this entry waits for the operator's word, or sits under a plan that does, and only a turn the operator or the coordinator persona started may resume it. " +
+  "It stays as it is until that word reaches you.";
+
+// The refusal goal_add gives a plan the autonomy level admitted when the
+// record telling the coordinator persona about it cannot be written. `cause`
+// names which of the three roads failed.
+function unpromptedPlanRefusedText(cause: string): string {
+  return `Refused: the plan was not added, because the record telling the coordinator persona about it could not be written: ${cause}. ` +
+    "Nothing was added to the goal tree.";
+}
+
+// The refusal goal_add gives when the record could not be written after the
+// entry was saved and the save that takes the entry back out did not land
+// either, so the store may still hold the entry.
+function unpromptedPlanNotUndoneText(cause: string, nodeId: string): string {
+  return `Refused: the record telling the coordinator persona about the plan could not be written: ${cause}. ` +
+    `Taking the entry back out was not saved, so entry ${nodeId} may remain in the store.`;
+}
+
+// The one refusal goal_edit drop gives on an entry awaiting the operator's
+// yes outside a turn the operator or the coordinator persona started.
+const AWAITING_YES_DROP_REFUSED_TEXT =
+  "Refused: this entry waits for the operator's word, and only a turn the operator or the coordinator persona started may drop it. " +
+  "It stays paused until that word reaches you.";
+
+// The one refusal goal_done by name gives on an entry awaiting the operator's
+// yes, or on a node under one, outside a turn the operator or the coordinator
+// persona started.
+const AWAITING_YES_DONE_REFUSED_TEXT =
+  "Refused: this entry waits for the operator's word, or sits under a plan that does, and only a turn the operator or the coordinator persona started may complete it. " +
+  "It stays as it is until that word reaches you.";
+
+// The record goal_add sends the coordinator persona for a plan the autonomy
+// level admitted outside the operator's and the coordinator persona's turns:
+// a [PROPOSAL] at plan-and-ask, whose entry waits for the operator's yes, and
+// a [STARTED] at plan-and-start. The plan document clause is left out where
+// the add carried no planPath.
+function unpromptedPlanRecordText(awaitingYes: boolean, persona: string, nodeId: string, title: string, planPath: string | undefined): string {
+  const doc = planPath ? `, plan document ${planPath}` : "";
+  return awaitingYes
+    ? `[PROPOSAL] ${persona} queued plan entry ${nodeId} "${title}"${doc}. It waits paused for the operator's yes. ` +
+      `On a yes, tell ${persona} to goal_resume ${nodeId}; on a no, tell it to goal_edit drop ${nodeId} with the reason.`
+    : `[STARTED] ${persona} queued plan entry ${nodeId} "${title}"${doc} to start on its own, under the plan-and-start autonomy level.`;
+}
+
+// The acts turnMayStartEffort decides. goal_add_plan is the one the
+// autonomy level reaches.
+type EffortAct = "goal_create" | "goal_add_plan" | "goal_longterm" | "goal_done_root" | "goal_resume_awaiting";
 
 // The longest a task's text is kept at store time. task_add cuts here the
 // same way goal_add cuts an objective to 500: at write, with .slice, not by
@@ -588,11 +685,12 @@ function removeExpectedTurn(expectedTurns: ExpectedTurn[], entry: ExpectedTurn):
 
 // Submits the [KAIZEN] thread message, one plugin turn carrying each line
 // kaizenLine made, for what has no coordinator persona to reach: the
-// self-review's unroutable findings and the idle proposal's unroutable
-// resend. It enters the turn in the expected-turn list first, as
-// register()'s expectTurn does. A refused announcement is non-fatal: the
-// decision log still carries each line's cause, and its ledger entry reads
-// delivered. Top level because it takes `dp`.
+// self-review's unroutable findings, the idle proposal's unroutable resend,
+// and goal_add's plan records whose resend is unroutable. It enters the
+// turn in the expected-turn list first, as register()'s expectTurn does. A
+// refused announcement is non-fatal: the decision log still carries each
+// line's cause, and its ledger entry reads delivered. Top level because it
+// takes `dp`.
 async function submitKaizen(dp: any, expectedTurns: ExpectedTurn[], announced: string[]): Promise<void> {
   const kaizenText =
     `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
@@ -1283,6 +1381,59 @@ const TEXT_CUT_MARK = " [cut at the bound]";
 // The most open entries the [GOAL QUEUE] block lists one per line. It rides
 // every external prompt, so past this many the rest are named by count.
 const GOAL_QUEUE_MAX_LINES = 12;
+
+// The [STANDING] block's fixed sentences: the idle order and the line naming
+// the goal tree as the queue. Each is a named literal of its own so the
+// injection ledger can size it. See design point 4.
+const STANDING_IDLE_ORDER_TEXT = "Finish the active entry, then the next queued entry in your goal tree, then your backlog.";
+const STANDING_QUEUE_NAME_TEXT = "Your goal tree is the queue; read it with goal_status.";
+
+// The opening clause every level sentence below shares: the level scopes
+// only what the persona does with work it finds on its own, never a turn the
+// operator opened to ask for something. One owner, spliced into all three,
+// since a phrase three sentences all need is one the injection duplicate
+// check refuses to see written out three times.
+const STANDING_OWN_WORK_LEAD_TEXT = "For work you find on your own, outside the operator's request, ";
+
+// The no-goal-tree fallback at plan-and-ask and plan-and-start: with no tree
+// to queue a plan on, the persona sends a [PROPOSAL] instead, to either turn
+// kind that can open one. One owner, spliced into both.
+const STANDING_NO_TREE_FALLBACK_TEXT = "With no goal tree, send a [PROPOSAL] instead, since only the operator or the coordinator opens a tree.";
+
+// The [STANDING] block's level sentence, one literal per stored autonomy
+// level. `standingLevelSentence` below picks among them, falling to the
+// propose sentence for any value that is not one of the other two: a stored
+// value outside the three normalizes to "propose" at load
+// (isAutonomyLevel/parseState), so this fallback is never reached on a live
+// field, but it keeps an unrecognized value from ever reading as a wider
+// grant than propose.
+const STANDING_LEVEL_PROPOSE_TEXT =
+  `Autonomy: propose. ` +
+  STANDING_OWN_WORK_LEAD_TEXT +
+  `you may only propose: send a [PROPOSAL] record to the coordinator and start nothing until it comes back as a queue entry.`;
+const STANDING_LEVEL_PLAN_AND_ASK_TEXT =
+  `Autonomy: plan and ask. ` +
+  STANDING_OWN_WORK_LEAD_TEXT +
+  `you may write the plan document and queue it with goal_add; it waits paused until the operator's yes reaches you. ` +
+  STANDING_NO_TREE_FALLBACK_TEXT;
+const STANDING_LEVEL_PLAN_AND_START_TEXT =
+  `Autonomy: plan and start. ` +
+  STANDING_OWN_WORK_LEAD_TEXT +
+  `you may write the plan document, queue it and start it; the plugin tells the coordinator. ` +
+  STANDING_NO_TREE_FALLBACK_TEXT;
+
+// The [STANDING] block's one conditional sentence, appended where the
+// controller will start nothing on its own even though the tree still holds
+// open work (hasStartableWork false, openGoals non-empty).
+const STANDING_IDLE_DUTIES_TEXT = "Nothing in your tree starts by itself, so you are idle for these duties.";
+
+// The level sentence for a stored autonomy level, selected so an unrecognized
+// value falls to the propose sentence rather than to a wider one.
+export function standingLevelSentence(level: AutonomyLevel): string {
+  if (level === "plan-and-ask") return STANDING_LEVEL_PLAN_AND_ASK_TEXT;
+  if (level === "plan-and-start") return STANDING_LEVEL_PLAN_AND_START_TEXT;
+  return STANDING_LEVEL_PROPOSE_TEXT;
+}
 
 // A caught error's message as untrusted text: the string carries whatever the
 // filesystem put in it, including a path a persona chose, so it is neutralized
@@ -2994,19 +3145,40 @@ export const register: Register = async (on, options) => {
   // ledgered, so only the first call to the coordinator persona inside a
   // proposal turn is recorded.
   let proposalLedgeredTurnId: string | null = null;
-  // Whether the turn now running may start a new effort: goal_create,
-  // goal_add of a plan, and goal_longterm's add and drop. A priming turn may
-  // not. A turn that matched an expected turn may only where that entry is a
-  // delivery under the coordinator persona's ground whose record opens with
-  // neither [FINDING] nor [PROPOSAL]. Such a turn takes no origin reading,
-  // since the plugin's own submits never pass the prompt.submit hook that
-  // records one. Any other turn may only where the reading it took carries
-  // one of the operator's kinds.
-  const turnMayStartEffort = (): boolean => {
+  // Whether the turn now running may take `act`: goal_create, goal_add of a
+  // plan, goal_longterm's add and drop, goal_done of the root by name, and
+  // goal_resume of an entry awaiting the operator's yes. Every act is allowed
+  // in the operator's own turn and in a coordinator delivery turn. goal_add
+  // of a plan is also allowed in every other turn once the autonomy level is
+  // plan-and-ask or plan-and-start, and the goal_add handler decides what
+  // such an add becomes. Every other act is refused in every other turn.
+  const turnMayStartEffort = (act: EffortAct, autonomy: string = sess.state.autonomy): boolean => {
+    if (turnIsOperatorsOrCoordinators()) return true;
+    return act === "goal_add_plan" && (autonomy === "plan-and-ask" || autonomy === "plan-and-start");
+  };
+  // Whether the turn now running is the operator's own or a coordinator
+  // delivery turn. A coordinator delivery turn is one that matched an
+  // expected-turn entry for a delivery under the coordinator persona's ground
+  // whose record opens with none of [FINDING], [PROPOSAL] and [STARTED], and
+  // is not the priming turn. Such a turn takes no origin reading, since the
+  // plugin's own submits never pass the prompt.submit hook that records one.
+  const turnIsOperatorsOrCoordinators = (): boolean => {
+    if (turnIsOperators()) return true;
+    return !currentTurnIsPriming && currentTurnEntry !== null &&
+      currentTurnEntry.kind === "delivery" && currentTurnEntry.ground === COORDINATOR_GROUND && !currentTurnEntry.seatLead;
+  };
+  // Whether the turn now running is the operator's own, which is the only
+  // turn goal_autonomy may set the level in. It reads as
+  // turnIsOperatorsOrCoordinators with the coordinator branch removed: a
+  // priming turn is not, a turn that matched an expected turn is not
+  // whatever its kind or ground, and any
+  // other turn is only where the reading it took carries one of the
+  // operator's kinds. So a nudge or delivery turn that opens while a channel
+  // prompt's reading still waits for its own turn is not the operator's,
+  // since that turn matched its expected-turn entry.
+  const turnIsOperators = (): boolean => {
     if (currentTurnIsPriming) return false;
-    if (currentTurnEntry !== null) {
-      return currentTurnEntry.kind === "delivery" && currentTurnEntry.ground === COORDINATOR_GROUND && !currentTurnEntry.seatLead;
-    }
+    if (currentTurnEntry !== null) return false;
     return OPERATOR_ORIGIN_KINDS.has(currentTurnOriginKind);
   };
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
@@ -3421,7 +3593,9 @@ export const register: Register = async (on, options) => {
       description:
         "Add a node to the goal tree under parentId. With parentId omitted the parent is the " +
         "active leaf where that leaf is a plan, and the active task's parent otherwise. " +
-        'kind "plan" is refused outside a turn the operator or the coordinator persona started, and a [FINDING] or [PROPOSAL] record never starts such a turn.',
+        'In a turn the operator or the coordinator persona started, kind "plan" is added as any node is, and a [FINDING], [PROPOSAL] or [STARTED] record never starts such a turn. ' +
+        'Outside one, the autonomy level decides kind "plan": at propose it is refused; at plan-and-ask it is added paused, awaiting the operator\'s yes, and a [PROPOSAL] record naming it goes to the coordinator persona; ' +
+        "at plan-and-start it is added to start, and a [STARTED] record naming it goes to the coordinator persona. Where that record cannot be written, the add is refused.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3464,7 +3638,8 @@ export const register: Register = async (on, options) => {
         "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
         "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves any other active entry active. " +
         "The root's own nodeId completes the root once every entry under it is complete or abandoned with at least one complete, in a turn the operator or the coordinator persona opened; that is how a root the planner has planned is closed. " +
-        "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop.",
+        "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop. " +
+        "nodeId naming an entry awaiting the operator's yes, or a node under one, is refused outside a turn the operator or the coordinator persona started.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3493,7 +3668,8 @@ export const register: Register = async (on, options) => {
       name: "goal_resume",
       description:
         "Resume a paused goal leaf and reset its nudge budget. A different active node is paused first, with the reason " +
-        "recorded on it. Owner only.",
+        "recorded on it. Owner only. An entry awaiting the operator's yes, or a node under one, is refused outside a turn the operator or the coordinator persona started, " +
+        "and a call with nodeId omitted passes over them there. A resume allowed in such a turn clears the entry's wait.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3551,7 +3727,8 @@ export const register: Register = async (on, options) => {
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
         "never activated, and refuses any other status; a drop is for work that will not be done, or for a plan queued as paused by mistake that is then added again as pending, and it does not reach the node's children. pause holds an active or pending node with a reason, and goal_resume " +
-        "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only.",
+        "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only. " +
+        "A drop of an entry awaiting the operator's yes is refused outside a turn the operator or the coordinator persona started.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3605,6 +3782,27 @@ export const register: Register = async (on, options) => {
           },
         },
         required: ["action"],
+      },
+    }));
+
+    await registerTool("goal_autonomy", () => $.tool.register({
+      name: "goal_autonomy",
+      description:
+        "Set this persona's autonomy level, which says what it may do with work it found on its own. " +
+        'level "propose": it may only propose work, by sending a [PROPOSAL] record to the coordinator persona. ' +
+        'level "plan-and-ask": it may write a plan document and queue it with goal_add, and the entry waits paused for the operator\'s yes. ' +
+        'level "plan-and-start": it may write a plan document, queue it and start it, and the plugin tells the coordinator persona. ' +
+        "Only the operator's own turn on this persona's thread may call this; every other turn is refused, a coordinator delivery included. " +
+        'The level governs goal_add with kind "plan" and nothing else. goal_status shows the level. Owner only.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          level: {
+            type: "string",
+            description: 'level is "propose", "plan-and-ask" or "plan-and-start".',
+          },
+        },
+        required: ["level"],
       },
     }));
 
@@ -4019,6 +4217,22 @@ export const register: Register = async (on, options) => {
     // Where the read took the catch above, the session is on a default state
     // and the field keeps the store cause that catch set.
     if (startStoreProblem === null) sess.stateNotLoaded = null;
+
+    // parseState reads a stored autonomy level outside AUTONOMY_LEVELS as
+    // "propose" and says nothing, so the raw value is logged here, once per
+    // session start. The later reloads in the same session do not log it
+    // again, but the next launch does while the store still holds the bad
+    // value, since only a saved write replaces it. The
+    // value is store text, so it is serialized, cut and made bracket-safe.
+    const storedAutonomy = (existingPersona as { autonomy?: unknown } | undefined)?.autonomy;
+    if (storedAutonomy !== undefined && !isAutonomyLevel(storedAutonomy)) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "autonomy_invalid",
+        detail: `stored level ${bracketSafeText(String(JSON.stringify(storedAutonomy)).slice(0, 50))} read as propose`,
+      });
+    }
 
     if (startPersonaProblem !== null) {
       sess.state.decisions.push({
@@ -5884,6 +6098,118 @@ export const register: Register = async (on, options) => {
         }
       }
 
+      // 2c. The plan record settle step, for the [PROPOSAL] and [STARTED]
+      // records goal_add sent. It sits ahead of every step that can end the
+      // tick on the tree, so it runs on each quiet owner tick whether or not an
+      // entry is active: a [STARTED] plan is usually the active entry, and the
+      // idle proposal's settle step in 4a never runs while one is. The
+      // coordinator persona and the default persona are skipped, as 4a skips
+      // them. The open-turn reading is taken again here, since the awaits
+      // above leave room for a turn to open, and an agentic_say in it and a
+      // resend below each take the highest inbox sequence under this
+      // session's id.
+      //
+      // An entry whose goal entry no longer needs it leaves the ledger unread:
+      // a [PROPOSAL] once its node is gone or no longer carries awaitingYes,
+      // and a [STARTED] once its node is gone, complete or abandoned. Any
+      // other entry's record is read back. One that reads delivered, answered,
+      // resolved or absent settles the entry, which leaves the ledger. One
+      // that reads skipped is sent again with the same text under this
+      // session, taking the new writer and seq and counting one more resend.
+      // One that reads skipped after PLAN_RECORD_MAX_RESENDS resends, and a
+      // resend the reach rule refuses, have no road: the entry leaves the
+      // ledger, plan_record_unroutable is logged, and the record's text is
+      // announced on this persona's own thread through the [KAIZEN] frame. A
+      // resend whose reach check or store write throws leaves the entry for
+      // the next quiet tick. A turn open by the time a resend would write
+      // stops the step: what it settled so far is still saved and announced,
+      // and the tick then ends, as step 4a ends on a turn it finds open.
+      if (sess.persona !== coordinatorPersona && sess.persona !== "default"
+        && sess.state.monitor.planRecords.length > 0 && !turnIsOpen()) {
+        const ledger = sess.state.monitor.planRecords;
+        const planRecordNow = Date.now();
+        const unroutableLines: string[] = [];
+        let planRecordsChanged = false;
+        let turnOpenedUnderStep = false;
+        const settle = (entry: SentPlanRecord): void => {
+          const at = ledger.indexOf(entry);
+          if (at !== -1) ledger.splice(at, 1);
+          planRecordsChanged = true;
+        };
+        // Settles an entry that has no road left, logs why, and queues its
+        // text for the [KAIZEN] announcement.
+        const settleUnroutable = (entry: SentPlanRecord, recordId: string, why: string): void => {
+          settle(entry);
+          unroutableLines.push(kaizenLine(entry.text));
+          sess.state.decisions.push({
+            timestamp: planRecordNow,
+            loop: "monitor",
+            action: "plan_record_unroutable",
+            detail: `${entry.nodeId}: record ${recordId} to '${coordinatorPersona}' ${why}; announced on this persona's own thread`,
+          });
+        };
+        for (const entry of [...ledger]) {
+          const node = sess.state.goals.find((g) => g.id === entry.nodeId);
+          const needed = !!node && (entry.awaitingYes
+            ? node.awaitingYes === true
+            : node.status !== "complete" && node.status !== "abandoned");
+          if (!needed) {
+            settle(entry);
+            continue;
+          }
+          const rec = await readInboxRecord(commonsStoreOf($), coordinatorPersona, entry.writer, entry.seq);
+          if (rec === null || rec.status === "delivered" || rec.status === "answered" || rec.status === "resolved") {
+            settle(entry);
+            continue;
+          }
+          if (rec.status !== "skipped") continue;
+          if (entry.resends >= PLAN_RECORD_MAX_RESENDS) {
+            settleUnroutable(entry, rec.id, `was skipped after ${entry.resends} resends and is not sent again`);
+            continue;
+          }
+          try {
+            if (!await mayReachPersona(commonsStoreOf($), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
+              settleUnroutable(entry, rec.id, `was skipped and is not sent again: the reach rule refuses this session's write to '${coordinatorPersona}'`);
+              continue;
+            }
+            // Taken once more, since a turn can have opened under the record
+            // read and the reach check.
+            if (turnIsOpen()) {
+              turnOpenedUnderStep = true;
+              break;
+            }
+            const again = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, entry.text);
+            entry.writer = again.writer;
+            entry.seq = again.seq;
+            entry.resends += 1;
+            planRecordsChanged = true;
+            sess.state.decisions.push({
+              timestamp: planRecordNow,
+              loop: "monitor",
+              action: "plan_record_resent",
+              detail: `${entry.nodeId}: record ${again.id} to '${coordinatorPersona}' (sent again, the earlier record ${rec.id} was skipped)`,
+            });
+          } catch (err) {
+            planRecordsChanged = true;
+            sess.state.decisions.push({
+              timestamp: planRecordNow,
+              loop: "monitor",
+              action: "plan_record_resend_failed",
+              detail: `${entry.nodeId}: record ${rec.id} to '${coordinatorPersona}' was skipped and not sent again: ${safeErrorText(err)}`.slice(0, 200),
+            });
+          }
+        }
+        // The ledger is written before the announcement is submitted, since
+        // the submit does not resolve until the session is next idle. A save
+        // that throws still lets the announcement go out, and the settled
+        // ledger waits in memory for the next save.
+        if (planRecordsChanged) {
+          try { await persist($); } catch { /* the store refused; the ledger above waits in memory */ }
+        }
+        if (unroutableLines.length > 0) await submitKaizen($, expectedTurns, unroutableLines);
+        if (turnOpenedUnderStep) return;
+      }
+
       // Get the active node.
       const activeNode = sess.state.activeGoalId
         ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
@@ -6331,7 +6657,7 @@ export const register: Register = async (on, options) => {
             });
           }
           proposal.sent = null;
-          const expectedProposalTurn = expectTurn({ kind: "proposal", text: proposeFrame(sess.state.longTermGoals, coordinatorPersona) });
+          const expectedProposalTurn = expectTurn({ kind: "proposal", text: proposeFrame(sess.state.longTermGoals, coordinatorPersona, sess.state.autonomy) });
           sess.state.updatedAt = proposal.askedAt;
           await persist($);
           const proposalOutcome = await submitExpectedTurn($, expectedTurns, expectedProposalTurn);
@@ -8538,7 +8864,7 @@ export const register: Register = async (on, options) => {
       }
       // A new tree is a new effort, so the turn-origin gate runs before any
       // argument is read.
-      if (!turnMayStartEffort()) {
+      if (!turnMayStartEffort("goal_create")) {
         toolErrorsThisTurn++;
         return { deny: EFFORT_REFUSED_TEXT };
       }
@@ -8681,8 +9007,14 @@ export const register: Register = async (on, options) => {
       const kind = String((e as any).kind || "task").trim() === "plan" ? "plan" : "task";
       // A plan is a new effort, so it passes the turn-origin gate once its
       // kind is known and before anything is written. A task works inside
-      // what the persona already holds and is never gated.
-      if (kind === "plan" && !turnMayStartEffort()) {
+      // what the persona already holds and is never gated. At plan-and-ask
+      // and plan-and-start the gate admits a plan in every turn, and a plan
+      // added outside the operator's and the coordinator persona's turns is
+      // reported to the coordinator persona below.
+      // The level is read once, so the gate and the entry's status below
+      // decide on the same value.
+      const autonomy = sess.state.autonomy;
+      if (kind === "plan" && !turnMayStartEffort("goal_add_plan", autonomy)) {
         toolErrorsThisTurn++;
         return { deny: EFFORT_REFUSED_TEXT };
       }
@@ -8777,6 +9109,34 @@ export const register: Register = async (on, options) => {
         return { deny: "Cannot add a node under a task. The tree is root > plan > task; nothing deeper." };
       }
 
+      // A plan the gate admitted outside the operator's and the coordinator
+      // persona's turns was admitted by the autonomy level, and one record
+      // tells the coordinator persona about it: a [PROPOSAL] at plan-and-ask,
+      // where the entry waits paused for the operator's yes, and a [STARTED]
+      // at plan-and-start. The road to the coordinator persona is checked
+      // here, with the other refusals. The record goes out only after the
+      // entry is saved, so the coordinator's inbox never names an entry the
+      // store does not hold, and a record that then cannot be written takes
+      // the add back out of the tree and the store.
+      const unprompted = kind === "plan" && !turnIsOperatorsOrCoordinators();
+      const awaitingYes = unprompted && autonomy === "plan-and-ask";
+      if (unprompted) {
+        let noRoad: string | null = null;
+        try {
+          if (sess.persona === "default") {
+            noRoad = "the session is on the default persona, which has no road to a coordinator persona";
+          } else if (!await mayReachPersona(commonsStoreOf($), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
+            noRoad = `the reach rule refuses this session's write to '${coordinatorPersona}'`;
+          }
+        } catch (err) {
+          noRoad = `the reach check for '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        if (noRoad !== null) {
+          toolErrorsThisTurn++;
+          return { deny: unpromptedPlanRefusedText(noRoad) };
+        }
+      }
+
       const now = Date.now();
       const newNode: GoalNode = {
         id: `${kind}-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -8784,7 +9144,8 @@ export const register: Register = async (on, options) => {
         kind,
         title: title.slice(0, 80),
         objective: objective.slice(0, 500),
-        status: "pending",
+        status: awaitingYes ? "paused" : "pending",
+        ...(awaitingYes ? { blockedReason: AWAITING_YES_REASON, awaitingYes: true } : {}),
         source: "worker",
         planningRounds: 0,
         consecutiveBlockedPlannings: 0,
@@ -8798,6 +9159,14 @@ export const register: Register = async (on, options) => {
         updatedAt: now,
         ...(planPath ? { planPath } : {}),
       };
+      // What this add changes, so an unprompted add whose save yields or
+      // whose record cannot be written can take it back: the root's fields
+      // where the add reopened it, the active slot before any activation,
+      // and the decision lines the add pushed.
+      const priorActiveGoalId = sess.state.activeGoalId;
+      let reopenedRoot: { status: GoalNode["status"]; blockedReason: string | undefined; updatedAt: number } | null = null;
+      const addDecisions: AgentState["decisions"] = [];
+      let nudgeBefore: { answers: number; resetSinceOpened: boolean; lastNudgeAt: number } | null = null;
       // A node added directly under a finished root reopens the root, so the
       // tree never holds live work under a root that reads finished. A node
       // added under a plan leaves the root as it was, since a finished plan
@@ -8807,24 +9176,29 @@ export const register: Register = async (on, options) => {
       // children stay finished.
       if (parentId === root.id && (root.status === "complete" || root.status === "abandoned")) {
         const priorStatus = root.status;
+        reopenedRoot = { status: root.status, blockedReason: root.blockedReason, updatedAt: root.updatedAt };
         root.status = "pending";
         root.blockedReason = undefined;
         root.updatedAt = now;
-        sess.state.decisions.push({
+        const reopenDecision: AgentState["decisions"][number] = {
           timestamp: now,
           loop: "goal",
           action: "root_reopened",
           detail: `${root.id} reopened from ${priorStatus} to pending for a new ${kind}`,
-        });
+        };
+        sess.state.decisions.push(reopenDecision);
+        addDecisions.push(reopenDecision);
       }
       sess.state.goals.push(newNode);
 
-      sess.state.decisions.push({
+      const addDecision: AgentState["decisions"][number] = {
         timestamp: now,
         loop: "goal",
         action: "add",
         detail: `${newNode.id} (${kind}) under ${parentId}: "${title.slice(0, 50)}"`,
-      });
+      };
+      sess.state.decisions.push(addDecision);
+      addDecisions.push(addDecision);
 
       // R4: adding a task under the active plan demotes the plan to pending
       // and activates the new task.
@@ -8864,18 +9238,72 @@ export const register: Register = async (on, options) => {
         newNode.status = "active";
         newNode.updatedAt = now;
         sess.state.activeGoalId = newNode.id;
+        nudgeBefore = { answers: sess.nudgedAnswersWithoutStatus, resetSinceOpened: countResetSinceNudgeOpened, lastNudgeAt: sess.lastNudgeAt };
         activate($, newNode.id, `${newNode.id} added with no active leaf`);
+        // activate() pushes its one decision line last.
+        addDecisions.push(sess.state.decisions[sess.state.decisions.length - 1]);
       }
 
-      const writeOk = await persist($);
+      // Takes this add back out of memory: the node, the root's reopening,
+      // the activation with the session-local nudge fields activate() reset,
+      // and the decision lines. The active slot goes back only where it names
+      // this entry.
+      const rollBackAdd = (): void => {
+        const at = sess.state.goals.indexOf(newNode);
+        if (at !== -1) sess.state.goals.splice(at, 1);
+        if (reopenedRoot !== null) {
+          root.status = reopenedRoot.status;
+          root.blockedReason = reopenedRoot.blockedReason;
+          root.updatedAt = reopenedRoot.updatedAt;
+        }
+        if (sess.state.activeGoalId === newNode.id) sess.state.activeGoalId = priorActiveGoalId;
+        if (nudgeBefore !== null) {
+          sess.nudgedAnswersWithoutStatus = nudgeBefore.answers;
+          countResetSinceNudgeOpened = nudgeBefore.resetSinceOpened;
+          sess.lastNudgeAt = nudgeBefore.lastNudgeAt;
+        }
+        for (const d of addDecisions) dropDecision(d);
+      };
+
+      const writeOk = unprompted ? await persistOrRollBack($, rollBackAdd) : await persist($);
+      if (writeOk && unprompted) {
+        const recordText = unpromptedPlanRecordText(awaitingYes, sess.persona, newNode.id, newNode.title, planPath);
+        let sent: { id: string; writer: string; seq: number };
+        try {
+          sent = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, recordText);
+        } catch (err) {
+          toolErrorsThisTurn++;
+          const cause = `the write to '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
+          rollBackAdd();
+          let undone = false;
+          try { undone = await persist($); } catch { /* read below as not undone */ }
+          if (!undone) return { deny: unpromptedPlanNotUndoneText(cause, newNode.id) };
+          return { deny: unpromptedPlanRefusedText(cause) };
+        }
+        sess.state.decisions.push({
+          timestamp: now,
+          loop: "goal",
+          action: awaitingYes ? "plan_awaiting_yes" : "plan_started_unprompted",
+          detail: `${newNode.id}: record ${sent.id} to '${coordinatorPersona}'`,
+        });
+        // The record is ledgered so a quiet tick can send it again where the
+        // coordinator persona's inbox skips it; see the plan record settle step.
+        sess.state.monitor.planRecords.push({ nodeId: newNode.id, awaitingYes, text: recordText, writer: sent.writer, seq: sent.seq, resends: 0 });
+        // The entry and the record have both landed, so only this line and the
+        // ledger entry are lost on a failed save.
+        try { await persist($); } catch { /* the add's success stands */ }
+      }
       if (writeOk) {
         const nextActive = sess.state.activeGoalId
           ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
           : null;
+        const told = !unprompted ? ""
+          : awaitingYes ? ` It waits paused for the operator's yes, and a [PROPOSAL] record naming ${newNode.id} went to the coordinator persona.`
+          : ` A [STARTED] record naming ${newNode.id} went to the coordinator persona.`;
         return {
-          result: nextActive
+          result: (nextActive
             ? `Added ${kind} "${title.slice(0, 50)}". Now active: ${nextActive.id} "${nextActive.title}".`
-            : `Added ${kind} "${title.slice(0, 50)}". No active goal; planning or activation will occur at the next tick.`,
+            : `Added ${kind} "${title.slice(0, 50)}". No active goal; planning or activation will occur at the next tick.`) + told,
         };
       }
       toolErrorsThisTurn++;
@@ -8923,8 +9351,14 @@ export const register: Register = async (on, options) => {
           toolErrorsThisTurn++;
           return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending, paused, or blocked nodes can be dropped).` };
         }
+        if (node.awaitingYes && !turnIsOperatorsOrCoordinators()) {
+          toolErrorsThisTurn++;
+          return { deny: AWAITING_YES_DROP_REFUSED_TEXT };
+        }
         node.status = "abandoned";
         node.blockedReason = reason || "dropped by operator";
+        // A dropped entry no longer waits for the operator's yes.
+        node.awaitingYes = undefined;
         node.updatedAt = now;
         sess.state.decisions.push({
           timestamp: now,
@@ -8989,7 +9423,7 @@ export const register: Register = async (on, options) => {
       }
       // Both actions change what the persona works towards, so the
       // turn-origin gate runs before any argument is read.
-      if (!turnMayStartEffort()) {
+      if (!turnMayStartEffort("goal_longterm")) {
         toolErrorsThisTurn++;
         return { deny: EFFORT_REFUSED_TEXT };
       }
@@ -9074,6 +9508,50 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
+    // Serve goal_autonomy: set the persona's autonomy level. The level is the
+    // operator's alone, so the turn gate runs before the owner check and
+    // before the argument is read. A write that is not saved puts the old
+    // level and the decision log back, so what the session holds matches the
+    // store.
+    if (e.tool === "mcp__agentic-plugin__goal_autonomy") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      if (!turnIsOperators()) {
+        toolErrorsThisTurn++;
+        return { deny: AUTONOMY_REFUSED_TEXT };
+      }
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const rawLevel = (e as any).level;
+      const level = typeof rawLevel === "string" ? rawLevel.trim() : "";
+      if (!isAutonomyLevel(level)) {
+        toolErrorsThisTurn++;
+        return { deny: `goal_autonomy requires level to be one of ${AUTONOMY_LEVELS.map((l) => `"${l}"`).join(", ")}.` };
+      }
+      const previous = sess.state.autonomy;
+      sess.state.autonomy = level;
+      const decision: AgentState["decisions"][number] = {
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "autonomy_set",
+        detail: `${previous} -> ${level}`,
+      };
+      sess.state.decisions.push(decision);
+      const writeOk = await persistOrRollBack($, () => {
+        sess.state.autonomy = previous;
+        dropDecision(decision);
+      });
+      if (writeOk) {
+        return { result: `Autonomy level set: ${level} (was ${previous}).` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
     // Serve goal_done (R3: use completeLeaf + activateNext). With no nodeId it
     // completes the active leaf. With a nodeId it completes that entry by
     // name, where the entry is not the root, is not already complete or
@@ -9124,7 +9602,7 @@ export const register: Register = async (on, options) => {
             toolErrorsThisTurn++;
             return { deny: `Cannot complete ${byNameId}: it is the root, status "${named.status}", and no entry under it is complete. A root with nothing done under it is not finished; drop it with goal_create replace: true or add the work.` };
           }
-          if (!turnMayStartEffort()) {
+          if (!turnMayStartEffort("goal_done_root")) {
             toolErrorsThisTurn++;
             return { deny: `Cannot complete ${byNameId}: it is the root, and the root closes only on the operator's or the coordinator persona's word, in a turn one of them opened. Retry in such a turn; this turn was not one.` };
           }
@@ -9158,6 +9636,24 @@ export const register: Register = async (on, options) => {
         if (openChild) {
           toolErrorsThisTurn++;
           return { deny: `Cannot complete ${byNameId}: status is "${named.status}" and its child ${openChild.id} is "${openChild.status}". Complete or drop every child first.` };
+        }
+        // An entry awaiting the operator's yes, or a node under one, completes
+        // by name only in a turn the operator or the coordinator persona
+        // started, since completing it would settle the wait without that
+        // word.
+        const awaitingAbove = awaitingEntryAtOrAbove(sess.state, named);
+        if (awaitingAbove && !turnIsOperatorsOrCoordinators()) {
+          toolErrorsThisTurn++;
+          return { deny: AWAITING_YES_DONE_REFUSED_TEXT };
+        }
+        // An allowed completion under an entry awaiting the operator's yes is
+        // that word on the entry, as an allowed resume is: its flag goes, and
+        // its awaiting reason with it, and it stays paused. A named entry
+        // that is itself awaiting is settled by completeLeaf.
+        if (awaitingAbove && awaitingAbove !== named) {
+          awaitingAbove.awaitingYes = undefined;
+          if (awaitingAbove.blockedReason === AWAITING_YES_REASON) awaitingAbove.blockedReason = undefined;
+          awaitingAbove.updatedAt = Date.now();
         }
         target = named;
       } else {
@@ -9497,9 +9993,12 @@ export const register: Register = async (on, options) => {
         ? ["Long-term goals: (none)"]
         : ["Long-term goals:", ...longTerm.map((g) =>
           `  ${String(g?.id ?? "")} "${oneLine(String(g?.title ?? ""))}": ${oneLine(String(g?.objective ?? ""))}`)];
+      // The autonomy level, on its own line above the long-term goals, and
+      // ahead of the no-tree sentence where there is no tree.
+      const autonomyLine = `Autonomy: ${sess.state.autonomy}`;
       if (!root) {
         // With no tree, the list is shown only where it holds an entry.
-        return { result: longTerm.length === 0 ? "No goal tree exists." : ["No goal tree exists.", ...longTermLines].join("\n") };
+        return { result: [autonomyLine, "No goal tree exists.", ...(longTerm.length === 0 ? [] : longTermLines)].join("\n") };
       }
       const lines: string[] = [];
       const statusOf = (id: string) => {
@@ -9517,7 +10016,7 @@ export const register: Register = async (on, options) => {
         }
       };
       render(root.id, "  ");
-      lines.push(...longTermLines);
+      lines.push(autonomyLine, ...longTermLines);
       return { result: lines.join("\n") };
     }
 
@@ -9532,15 +10031,31 @@ export const register: Register = async (on, options) => {
         return { deny: "goal_resume requires ownership of this persona." };
       }
       const nodeId = String((e as any).nodeId || "").trim();
+      // An entry awaiting the operator's yes, or a node under one, is resumed
+      // only in a turn the operator or the coordinator persona started.
+      // Outside those turns a call naming one is refused, and a call naming
+      // none passes over them to the other paused entries.
+      const mayResumeAwaiting = turnMayStartEffort("goal_resume_awaiting");
       let target: GoalNode | undefined;
       if (nodeId) {
         target = sess.state.goals.find((g) => g.id === nodeId && g.status === "paused");
+        if (target && awaitingEntryAtOrAbove(sess.state, target) && !mayResumeAwaiting) {
+          toolErrorsThisTurn++;
+          return { deny: AWAITING_YES_RESUME_REFUSED_TEXT };
+        }
       } else {
         target = sess.state.goals
-          .filter((g) => g.status === "paused")
+          .filter((g) => g.status === "paused" && (mayResumeAwaiting || awaitingEntryAtOrAbove(sess.state, g) === undefined))
           .sort((a, b) => b.updatedAt - a.updatedAt)[0];
       }
       if (!target) {
+        const passedOver = nodeId ? undefined : sess.state.goals
+          .filter((g) => g.status === "paused")
+          .map((g) => awaitingEntryAtOrAbove(sess.state, g))
+          .find((g) => g !== undefined);
+        if (passedOver) {
+          return { result: `No paused node to resume here: ${passedOver.id} "${passedOver.title}" waits for the operator's word, and so does anything under it.` };
+        }
         return { result: "No paused nodes to resume." };
       }
       // M9: if a different node is active, pause it first (M10: write blockedReason).
@@ -9560,7 +10075,20 @@ export const register: Register = async (on, options) => {
       }
       // M10: clear blockedReason on resume.
       const pausedReason = target.blockedReason || "unknown";
+      // An allowed resume at or under an entry awaiting the operator's yes is
+      // that word on the entry, so the entry's flag goes, and its awaiting
+      // reason with it. An entry above the resumed node stays paused.
+      const awaitingAbove = awaitingEntryAtOrAbove(sess.state, target);
+      const admittedBy = !awaitingAbove ? ""
+        : currentTurnEntry !== null && currentTurnEntry.kind === "delivery" ? `; admitted by coordinator record ${currentTurnEntry.recordId}`
+        : `; admitted by origin ${currentTurnOriginKind}`;
+      if (awaitingAbove && awaitingAbove !== target) {
+        awaitingAbove.awaitingYes = undefined;
+        if (awaitingAbove.blockedReason === AWAITING_YES_REASON) awaitingAbove.blockedReason = undefined;
+        awaitingAbove.updatedAt = Date.now();
+      }
       target.blockedReason = undefined;
+      target.awaitingYes = undefined;
       target.status = "active";
       // A resume lifts a blocked lead whatever paused the entry, since the
       // lead would otherwise hold the idle branch until a working turn that
@@ -9578,7 +10106,7 @@ export const register: Register = async (on, options) => {
         timestamp: Date.now(),
         loop: "goal",
         action: "resume",
-        detail: `Node ${target.id} resumed (paused: ${pausedReason})`,
+        detail: `Node ${target.id} resumed (paused: ${pausedReason}${admittedBy})`,
       });
       if (liftedLead) {
         sess.state.decisions.push({
@@ -10327,6 +10855,28 @@ export const register: Register = async (on, options) => {
         contextBlocks.push(idleBlock);
         try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
       }
+    }
+
+    // --- [STANDING] block: the idle order, the goal tree named as the
+    // queue, and the operator-set autonomy level's sentence. Rides every
+    // external prompt an owner-armed session carries (gated above, at
+    // arming !== "reader", the same gate the goal blocks take), so it
+    // appears whether or not the tree holds an active entry. Design point 4.
+    {
+      const levelSentence = standingLevelSentence(sess.state.autonomy);
+      const idleSentence = !hasStartableWork(sess.state) && openGoals(sess.state).length > 0
+        ? `\n${STANDING_IDLE_DUTIES_TEXT}`
+        : "";
+      const standingBlock =
+        `[STANDING]\n` +
+        STANDING_IDLE_ORDER_TEXT +
+        `\n` +
+        STANDING_QUEUE_NAME_TEXT +
+        `\n` +
+        levelSentence +
+        idleSentence;
+      contextBlocks.push(standingBlock);
+      try { $.ui.log(`Agentic: [STANDING] injected at ${sess.state.autonomy}`); } catch { /* non-fatal */ }
     }
 
     // --- [ENV] block injection (G4: only when notable per plan section 4; push env_inject) ---

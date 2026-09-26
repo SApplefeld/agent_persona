@@ -732,6 +732,11 @@ function makeState(opts = {}) {
   if (opts.longTermGoals) {
     state.longTermGoals = opts.longTermGoals;
   }
+  // The autonomy level, set only where a case passes one, so the default
+  // state keeps the shape of a store written before the level existed.
+  if (opts.autonomy !== undefined) {
+    state.autonomy = opts.autonomy;
+  }
   return state;
 }
 

@@ -86,6 +86,13 @@ export interface GoalNode {
   chapterCount?: number; // Section 2: the number of "### Chapter N" headings the
                       // plan document held at the last read. Written by the
                       // document read at turn end. Unset by the v2-v4 migration.
+  awaitingYes?: boolean; // Set on a plan goal_add queued at the plan-and-ask
+                      // autonomy level outside an operator or coordinator turn:
+                      // the entry waits paused for the operator's yes, and
+                      // goal_resume refuses it outside those turns. Cleared by
+                      // an allowed goal_resume, by goal_edit drop, by an
+                      // allowed goal_done by name on the entry or a node under
+                      // it, and by completion (clearSettledAwaiting).
 }
 
 export interface EnvErrors {
@@ -155,6 +162,25 @@ export interface SentProposal {
   delivered: boolean;
 }
 
+// A [PROPOSAL] or [STARTED] record goal_add sent the coordinator persona for
+// a plan the autonomy level admitted. `awaitingYes` is true for a [PROPOSAL],
+// whose entry waits for the operator's yes, and false for a [STARTED].
+// `writer` and `seq` key the record in the coordinator persona's inbox. The
+// entry leaves the list once its record reads delivered, answered, resolved
+// or absent, once its goal entry no longer needs it, or once a resend has no
+// road. A record read back as skipped is sent again under the live session,
+// and `resends` counts those sends. Once it reaches PLAN_RECORD_MAX_RESENDS
+// in hooks/index.ts, a record read back as skipped is not sent again: the
+// entry leaves the list and its text is announced on the persona's own thread.
+export interface SentPlanRecord {
+  nodeId: string;
+  awaitingYes: boolean;
+  text: string;
+  writer: string;
+  seq: number;
+  resends: number;
+}
+
 // A long-term goal: the idea a persona is working towards. It is held in a
 // list beside the goal tree, not as a node in it, and no tree walker reads
 // that list, so a long-term goal is never activated and never holds a root
@@ -170,6 +196,18 @@ export interface LongTermGoal {
 // The most long-term goals a persona holds at once. The list is shown in a
 // prompt, so it is kept short, and goal_longterm refuses an add past it.
 export const LONG_TERM_GOAL_CAP = 5;
+
+// The persona's autonomy level: what it may do with work it found on its own.
+// The list is closed at these three, in order of widening, and the operator
+// alone sets the level, through goal_autonomy. A store with no level, or with
+// a value outside the list, reads as "propose".
+export const AUTONOMY_LEVELS = ["propose", "plan-and-ask", "plan-and-start"] as const;
+export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
+
+// Whether a stored or supplied value is one of the three levels.
+export function isAutonomyLevel(value: unknown): value is AutonomyLevel {
+  return typeof value === "string" && (AUTONOMY_LEVELS as readonly string[]).includes(value);
+}
 
 // One working item on a goal's task list. The list sits beside the goal tree,
 // never in it: a task names the goal it belongs to by goalId and lives only as
@@ -230,6 +268,9 @@ export interface MonitorState {
     askedAt: number;
     sent: SentProposal | null;
   };
+  // The records goal_add sent for plans the autonomy level admitted, which a
+  // quiet tick reads back while their entries still need them.
+  planRecords: SentPlanRecord[];
   cost: {
     classify: { count: number; estTokens: number };
     reason: { count: number; estTokens: number };
@@ -366,6 +407,7 @@ export interface AgentState {
   tasks: TaskItem[]; // beside the tree, each keyed to a goal; see TaskItem
   activeGoalId: string | null;
   longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
+  autonomy: AutonomyLevel; // set only by goal_autonomy; see AUTONOMY_LEVELS
   monitor: MonitorState;
   nudge: NudgeBudget;
   pendingAskId?: string; // D5: ask-operator wait
@@ -499,6 +541,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
     tasks: [],
     activeGoalId: null,
     longTermGoals: [],
+    autonomy: "propose",
     monitor: {
       sessionStart: now,
       turnCount: 0,
@@ -511,6 +554,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
       },
       selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0, sent: [] },
       proposal: { askedAt: 0, sent: null },
+      planRecords: [],
       cost: {
         classify: { count: 0, estTokens: 0 },
         reason: { count: 0, estTokens: 0 },
@@ -760,6 +804,26 @@ function fillProposal(state: AgentState): void {
   if (!wellFormed) p.sent = null;
 }
 
+// The plan record ledger, filled at every load site that fills the proposal
+// record, with no version bump. A stored value that is not a list reads as an
+// empty one. An entry is kept only where its nodeId, text and writer are
+// strings, its awaitingYes a boolean and its seq a finite number; anything
+// else is dropped. A kept entry whose resends is absent or not a finite
+// number reads as 0 resends.
+function fillPlanRecords(state: AgentState): void {
+  const stored = (state.monitor as { planRecords?: unknown }).planRecords;
+  if (!Array.isArray(stored)) {
+    state.monitor.planRecords = [];
+    return;
+  }
+  state.monitor.planRecords = stored.filter((r): r is SentPlanRecord => {
+    const rec = r as Partial<SentPlanRecord> | null;
+    return !!rec && typeof rec === "object"
+      && typeof rec.nodeId === "string" && typeof rec.text === "string" && typeof rec.writer === "string"
+      && typeof rec.awaitingYes === "boolean" && Number.isFinite(rec.seq);
+  }).map((rec) => (Number.isFinite(rec.resends) ? rec : { ...rec, resends: 0 }));
+}
+
 // The task list, filled at every load exit. A stored value that is not a list
 // reads as an empty one, which is how a store written before the list existed
 // loads. A stored entry is kept only where its id, goalId and text are
@@ -876,6 +940,7 @@ export function parseState(json: string): AgentState {
       tasks: [],
       activeGoalId,
       longTermGoals: [],
+      autonomy: "propose",
       monitor: old.monitor ?? {
         sessionStart: now,
         turnCount: 0,
@@ -889,6 +954,7 @@ export function parseState(json: string): AgentState {
     };
 
     fillProposal(state);
+    fillPlanRecords(state);
     // L10: invariant block runs on both v2 and v3 branches.
     // Section 1: fill/recover runs on every branch's exit; see the function.
     applyPlanRecordOnLoad(state);
@@ -914,8 +980,12 @@ export function parseState(json: string): AgentState {
     if (!Array.isArray(state.longTermGoals)) {
       state.longTermGoals = [];
     }
+    if (!isAutonomyLevel(state.autonomy)) {
+      state.autonomy = "propose";
+    }
     fillTasks(state);
     fillProposal(state);
+    fillPlanRecords(state);
     applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
@@ -957,8 +1027,16 @@ export function parseState(json: string): AgentState {
   if (!Array.isArray(state.longTermGoals)) {
     state.longTermGoals = [];
   }
+  // The autonomy level, filled at the same site with no version bump. A
+  // store with no level, or with a value outside AUTONOMY_LEVELS, reads as
+  // "propose". This function stays silent about it; session.start logs a
+  // stored value outside the list, since only it holds the raw store.
+  if (!isAutonomyLevel(state.autonomy)) {
+    state.autonomy = "propose";
+  }
   fillTasks(state);
   fillProposal(state);
+  fillPlanRecords(state);
 
   // S12: fill selfReview with defaults at the E11 site, no version bump.
   if (!state.monitor.selfReview) {
@@ -1133,6 +1211,40 @@ export function completeLeaf(state: AgentState, id: string, note: string): void 
 
   // H3: Root completion belongs to the controller tick, not the cascade.
   // completeLeaf never touches the root.
+
+  clearSettledAwaiting(state);
+}
+
+// The blockedReason a plan queued at the plan-and-ask autonomy level carries
+// while it waits for the operator's yes.
+export const AWAITING_YES_REASON = "Awaiting the operator's yes";
+
+// The entry awaiting the operator's yes at `node` or above it, or undefined
+// where neither the node nor any ancestor carries awaitingYes. Every gate on
+// such an entry reads this one walk, so a node under the entry is held as the
+// entry is. The walk is bounded by the node count, so a parentId cycle ends
+// it rather than spinning.
+export function awaitingEntryAtOrAbove(state: AgentState, node: GoalNode): GoalNode | undefined {
+  let current: GoalNode | undefined = node;
+  let steps = state.goals.length;
+  while (current) {
+    if (current.awaitingYes) return current;
+    if (current.parentId === null || steps-- <= 0) return undefined;
+    const parentId: string = current.parentId;
+    current = state.goals.find((g) => g.id === parentId);
+  }
+  return undefined;
+}
+
+// A complete node no longer waits for the operator's yes, so its flag goes,
+// and its reason too where the reason is the awaiting one. completeLeaf runs
+// this after every completion, whichever verb or path completed the node.
+export function clearSettledAwaiting(state: AgentState): void {
+  for (const g of state.goals) {
+    if (g.status !== "complete" || !g.awaitingYes) continue;
+    g.awaitingYes = undefined;
+    if (g.blockedReason === AWAITING_YES_REASON) g.blockedReason = undefined;
+  }
 }
 
 // Section 10 fix round: whether a single node is eligible to become the
@@ -1270,7 +1382,10 @@ export function activateNext(state: AgentState, completedId?: string): string | 
           (g) =>
             g.parentId === completed.parentId &&
             g.status === "pending" &&
-            !hasChildren(g.id)
+            !hasChildren(g.id) &&
+            // A node under an entry awaiting the operator's yes starts only
+            // once that entry is resumed.
+            awaitingEntryAtOrAbove(state, g) === undefined
         )
         .sort((a, b) => orderKey(a) - orderKey(b));
       if (siblings.length > 0) {

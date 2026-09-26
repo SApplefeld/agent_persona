@@ -882,16 +882,78 @@ function extractKaizenFrame(src) {
   return record("KAIZEN_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "KAIZEN_FRAME"));
 }
 
+// Splits a `+`-joined chain (the raw source text between an assignment's `=`
+// and its closing `;`) at a bare identifier operand, returning the text
+// before and after it with the neighboring `+` trimmed off each side, so
+// both halves are themselves valid chains literalOfTemplateChain can read.
+// Used where a declared identifier's own text must be spliced back into its
+// exact position in the rendered string, rather than only excluded from it:
+// concatenating "everything before and after" with "the identifier's text"
+// appended at the end reproduces the identifier's characters but not the
+// order the source (and the render) actually put them in.
+function splitChainAtIdentifier(chainSrc, ident, owner) {
+  const re = new RegExp(`\\+\\s*${ident}\\s*\\+`);
+  const m = re.exec(chainSrc);
+  if (!m) throw new Error(`[chain-shape] ${owner}: the identifier \`${ident}\` was not found as a chain operand`);
+  return { before: chainSrc.slice(0, m.index), after: chainSrc.slice(m.index + m[0].length) };
+}
+
 // The [PROPOSE] frame, built by proposeFrame: a chain of template-literal
 // pieces joined by `+`, with `goalLines` spliced whole between the first and
 // the rest. The goal lines are per-goal data the persona wrote and are not
 // sized; `${coordinatorPersona}` is an interpolation and is stripped. The
 // capture is bounded by the statement's own semicolon, so a piece added
 // anywhere in the chain is inside it.
+//
+// The chain also splices `levelClause` whole, a ternary declared just above
+// the frame. Its plan-and-ask and plan-and-start arms are each a `+`-chain of
+// constants already sized elsewhere (PROPOSE_FRAME_PLAN_AND_ASK_TEXT or
+// PROPOSE_FRAME_PLAN_AND_START_TEXT, then the no-goal-tree clause
+// proposeFrameNoTreeClause returns), so this rule only checks their shape rather than sizing them
+// again; a changed identifier or operand order refuses. The propose arm is
+// the one piece nothing else sizes, a plain template literal read from the
+// ternary's own declaration. `levelClause` is spliced at its exact chain
+// position (splitChainAtIdentifier) rather than appended after the rest of
+// the chain, so the recorded text keeps the order the frame actually
+// renders in: at propose, "...belongs in. " then the propose arm then "If
+// you have no proposal...". Appending it after the whole chain instead put
+// the propose arm's text after the frame's closing sentence, which is not
+// what any level ever sends.
 function extractProposeFrame(src) {
   const m = /const proposeText =\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("[PROPOSE] frame not found in hooks/index.ts");
-  return record("PROPOSE_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "PROPOSE_FRAME", ["goalLines"]));
+  const c = /const levelClause = level === "plan-and-ask"\s*\?\s*PROPOSE_FRAME_PLAN_AND_ASK_TEXT \+ noTreeClause\s*:\s*level === "plan-and-start"\s*\?\s*PROPOSE_FRAME_PLAN_AND_START_TEXT \+ noTreeClause\s*:\s*(`[^`]*`);\n/.exec(src);
+  if (!c) throw new Error("[chain-shape] PROPOSE_FRAME: the levelClause ternary was not found in hooks/index.ts in the shape this rule reads");
+  const { before, after } = splitChainAtIdentifier(m[1], "levelClause", "PROPOSE_FRAME");
+  const literal = literalOfTemplateChain(before, "PROPOSE_FRAME before levelClause", ["goalLines"])
+    + literalOfTemplateChain(c[1], "PROPOSE_FRAME levelClause propose arm")
+    + literalOfTemplateChain(after, "PROPOSE_FRAME after levelClause");
+  return record("PROPOSE_FRAME", "hooks/index.ts", literal);
+}
+
+// The no-goal-tree fallback proposeFrame calls at plan-and-ask and
+// plan-and-start: a function returning one template literal, read the way
+// extractNudgeCapAskText reads nudgeCapAskText's body.
+function extractProposeFrameNoTreeClause(src) {
+  const body = functionBody(src, "proposeFrameNoTreeClause");
+  const m = /^\s*return (`[^`]*`);\s*$/.exec(body);
+  if (!m) throw new Error("[chain-shape] PROPOSE_FRAME_NO_TREE_CLAUSE: proposeFrameNoTreeClause's body is not one return of one template literal");
+  return record("PROPOSE_FRAME_NO_TREE_CLAUSE", "hooks/index.ts", literalOfTemplateChain(m[1], "PROPOSE_FRAME_NO_TREE_CLAUSE"));
+}
+
+// A single-line double-quoted top-level constant: the shape
+// extractNudgeStatusLineText and extractNudgeLeadHoldText each read with
+// their own function. This one is shared across the plain double-quoted
+// constants the [STANDING] block and the [PROPOSE] frame add in that same
+// shape, since sharing one reader for one shape used this often is the
+// simplification the header above reserves for a shape repeated often,
+// where a per-shape rule still exists and every entry's name rides in its
+// own error.
+function extractSimpleTextConst(src, name) {
+  const re = new RegExp(`const ${name} =\\s*"([^\\n"]*)";`);
+  const m = re.exec(src);
+  if (!m) throw new Error(`${name} not found in hooks/index.ts as a single-line double-quoted constant`);
+  return record(name, "hooks/index.ts", m[1]);
 }
 
 // The reply backstop: `[REPLY BACKSTOP] Send this exact text...unchanged:
@@ -1037,6 +1099,45 @@ function extractNoGoalBlock(src) {
   return record("NO_GOAL_BLOCK", "hooks/index.ts", literal);
 }
 
+// The [STANDING] block's own frame: the "[STANDING]" header and the two
+// newlines that separate its lines, everything else in the chain being a
+// whole-variable insertion declared here and sized by its own rule instead:
+// the block's two fixed sentences (STANDING_IDLE_ORDER_TEXT,
+// STANDING_QUEUE_NAME_TEXT), the selected level sentence (`levelSentence`,
+// one of the three STANDING_LEVEL_* constants read out by
+// standingLevelSentence), and the conditional idle sentence (`idleSentence`,
+// empty or a leading newline plus STANDING_IDLE_DUTIES_TEXT). Autonomy dial
+// Section 3, design point 4.
+function extractStandingBlock(src) {
+  const m = /const standingBlock =\s*\n([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("standingBlock not found in hooks/index.ts");
+  const literal = literalOfTemplateChain(m[1], "STANDING_BLOCK", ["STANDING_IDLE_ORDER_TEXT", "STANDING_QUEUE_NAME_TEXT", "levelSentence", "idleSentence"]);
+  return record("STANDING_BLOCK", "hooks/index.ts", literal);
+}
+
+// The [STANDING] block's three level sentences. Each opens with
+// STANDING_OWN_WORK_LEAD_TEXT, spliced whole rather than typed three times,
+// and the plan-and-ask and plan-and-start sentences close on
+// STANDING_NO_TREE_FALLBACK_TEXT, spliced whole for the same reason. Both are
+// sized once by their own extractSimpleTextConst rule and declared here, not
+// re-sized, the way NUDGE_STATUS_LINE_TEXT is declared inside the nudge
+// frames that splice it.
+function extractStandingLevelProposeText(src) {
+  const m = /const STANDING_LEVEL_PROPOSE_TEXT =\s*([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("STANDING_LEVEL_PROPOSE_TEXT not found in hooks/index.ts");
+  return record("STANDING_LEVEL_PROPOSE_TEXT", "hooks/index.ts", literalOfTemplateChain(m[1], "STANDING_LEVEL_PROPOSE_TEXT", ["STANDING_OWN_WORK_LEAD_TEXT"]));
+}
+function extractStandingLevelPlanAndAskText(src) {
+  const m = /const STANDING_LEVEL_PLAN_AND_ASK_TEXT =\s*([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("STANDING_LEVEL_PLAN_AND_ASK_TEXT not found in hooks/index.ts");
+  return record("STANDING_LEVEL_PLAN_AND_ASK_TEXT", "hooks/index.ts", literalOfTemplateChain(m[1], "STANDING_LEVEL_PLAN_AND_ASK_TEXT", ["STANDING_OWN_WORK_LEAD_TEXT", "STANDING_NO_TREE_FALLBACK_TEXT"]));
+}
+function extractStandingLevelPlanAndStartText(src) {
+  const m = /const STANDING_LEVEL_PLAN_AND_START_TEXT =\s*([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("STANDING_LEVEL_PLAN_AND_START_TEXT not found in hooks/index.ts");
+  return record("STANDING_LEVEL_PLAN_AND_START_TEXT", "hooks/index.ts", literalOfTemplateChain(m[1], "STANDING_LEVEL_PLAN_AND_START_TEXT", ["STANDING_OWN_WORK_LEAD_TEXT", "STANDING_NO_TREE_FALLBACK_TEXT"]));
+}
+
 function extractEnvBlock(src) {
   const m = /const envBlock = `(\[ENV\][^`]*)`;/.exec(src);
   if (!m) throw new Error("envBlock not found in hooks/index.ts");
@@ -1098,6 +1199,7 @@ const CONTEXT_BLOCKS = {
   goalBlock: "GOAL_TREE_BLOCK",
   queueBlock: "GOAL_QUEUE_BLOCK",
   idleBlock: "NO_GOAL_BLOCK",
+  standingBlock: "STANDING_BLOCK",
   envBlock: "ENV_BLOCK",
   lessonBlock: "LESSON_BLOCK",
   memoryBlock: "MEMORY_BLOCK",
@@ -1463,6 +1565,9 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractFleetNoteComposedProse(tsSrc),
     extractKaizenFrame(tsSrc),
     extractProposeFrame(tsSrc),
+    extractSimpleTextConst(tsSrc, "PROPOSE_FRAME_PLAN_AND_ASK_TEXT"),
+    extractSimpleTextConst(tsSrc, "PROPOSE_FRAME_PLAN_AND_START_TEXT"),
+    extractProposeFrameNoTreeClause(tsSrc),
     extractBackstopFrame(tsSrc),
     extractShutdownFrame(tsSrc),
     extractPlanDocumentLine(tsSrc),
@@ -1470,6 +1575,15 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractGoalTreeBlock(tsSrc),
     extractGoalQueueBlock(tsSrc),
     extractNoGoalBlock(tsSrc),
+    extractSimpleTextConst(tsSrc, "STANDING_IDLE_ORDER_TEXT"),
+    extractSimpleTextConst(tsSrc, "STANDING_QUEUE_NAME_TEXT"),
+    extractSimpleTextConst(tsSrc, "STANDING_OWN_WORK_LEAD_TEXT"),
+    extractSimpleTextConst(tsSrc, "STANDING_NO_TREE_FALLBACK_TEXT"),
+    extractStandingLevelProposeText(tsSrc),
+    extractStandingLevelPlanAndAskText(tsSrc),
+    extractStandingLevelPlanAndStartText(tsSrc),
+    extractSimpleTextConst(tsSrc, "STANDING_IDLE_DUTIES_TEXT"),
+    extractStandingBlock(tsSrc),
     extractEnvBlock(tsSrc),
     extractLessonBlock(tsSrc),
     extractMemoryBlock(tsSrc),

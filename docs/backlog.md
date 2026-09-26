@@ -1,5 +1,26 @@
 # Backlog
 
+## Operator checks owed by the autonomy-dial plan (parked 2026-09-26)
+
+Two live checks only the operator can run, once the autonomy-dial pull request merges and the installed agentic-plugin copy is updated. The plan is at `docs/archive/agent_persona_autonomy-dial_v1.md`, under its Operator Verification. First, tell one worker on its own thread that its autonomy is now plan and start. Its goal status must then show `Autonomy: plan-and-start`, and its next external prompt's `[STANDING]` block must say so. A refusal in that turn reopens the plan's section 1, since a thread message is the operator's own turn. Second, within a day of that worker next running out of work while it holds a long-term goal, one line must arrive on the coordinator's thread naming what it queued to start. Its goal status must show the new entry as `pending` or `active`. Either reading means it worked, since the controller activates a pending entry on its next tick.
+
+## Findings the autonomy-dial finishing pass deferred (found 2026-09-26)
+
+Seven Minors and two measurements from the autonomy-dial plan's finishing reviews, each real and none a defect on a reachable path the plan asked about. Take each as its own small change.
+
+- The `[STANDING]` block reads the level from the session's loaded store. Where the store did not load (`stateNotLoaded`), it prints `propose`. That fails closed and changes no act, but the persona reads a level that may not be its own.
+- A bare `goal_resume` with no `nodeId`, in a turn the operator or the coordinator persona opened, can pick an entry awaiting the operator's yes and settle its wait. The plan reads that turn as the operator's word, but the operator named no entry.
+- The `autonomy_set` decision line records the new level and not the origin kind of the turn that admitted it.
+- Nothing bounds how many plans a persona at `plan-and-ask` or `plan-and-start` adds in one turn, and each unprompted add sends the coordinator persona a record.
+- On the path with no active entry, `prompt.submit` computes `openGoals` and `hasStartableWork` for the goal blocks and again for the `[STANDING]` block.
+- The plan record settle step (tick step 2c in `hooks/index.ts`) reads each record with `readInboxRecord` outside its `try`, so a store read that throws ends the tick rather than logging `plan_record_resend_failed`. The proposal and self-review settle steps share the shape, and the inbox drain earlier in the tick reads the same store first.
+- `fillPlanRecords` in `hooks/agent-state.ts` keeps an entry whose `writer` is empty and whose `seq` is 0, and a tick-suite check pins that. No writer of this ledger produces that form, and step 2c reads it as absent and settles it.
+- Measured with no fix owed: the dial adds 298 to 371 characters to each external prompt, and `goal_add`'s unprompted path reads the commons store four times.
+
+## At plan-and-ask the daily proposal turn can queue a new plan while one already waits for the operator (found 2026-09-26)
+
+The idle proposal ask in `hooks/index.ts` fires when a persona holds long-term goals, nothing in its tree is startable, no turn is open, and `PROPOSAL_EVERY_MS` (24 hours) has passed. It never checks for an entry carrying `awaitingYes`. An entry queued at plan-and-ask waits paused, so `hasStartableWork` stays false and the ask fires again the next day. The `[PROPOSE]` frame at plan-and-ask then tells the persona to write another plan document and queue it with `goal_add`, which adds another paused entry and sends the coordinator another `[PROPOSAL]` record, every day the operator has not answered. Remedy: skip the ask while any open entry carries `awaitingYes`, or while the last unprompted add is still awaiting, with a case in `.kit/controller-tick-test.mjs` for each direction. A prose line in the frame was tried and removed, since nothing enforced it and no clause of the autonomy-dial plan asked for it. Found by the autonomy-dial plan's section 3 review.
+
 ## The tick suite exits 0 when a case hangs on a promise that never settles (found 2026-09-25)
 
 `.kit/controller-tick-test.mjs` runs its cases in one `main()`. A case that awaits a promise nothing will ever settle, such as a handler parked on a store read the case holds and never releases, leaves Node with an empty event loop. The process then exits with code 0 part-way through the suite, printing no FAIL and no final summary line. The inbox-drain plan met it with a draft case: the run stopped after 2169 OK checks of about 4400 and exited 0. A gate that reads only the exit code would take that run as green. Remedy: set `process.exitCode = 1` at the top of `main()` and clear it only after the final summary prints, or check in a `process.on("exit")` handler that `main()` reached its end. Whether the other `.kit/*-test.mjs` suites share the shape is unchecked. Found by the inbox-drain plan's section 1.
@@ -126,7 +147,7 @@ The controller delivers inbox records in age order, one per turn, and the fast l
 
 ## Goal levels: three live checks the operator runs after the merge (found 2026-09-23)
 
-The goal-levels plan (`docs/archive/agent_persona_goal-levels_v1.md`) is complete, and its Operator Verification steps need a live fleet and Discord. First, after the pull request merges, update the installed plugin copy and relaunch each persona's supervisor. Then read the dev-plugin persona's goal status. The two nodes titled "Kaizen: the tree lags the commits" and "Kaizen: turns run past an hour" read `abandoned`, and the steward's thread carries one line for each. A node of either title still `pending` or `active` after that persona's next self-review reopens the work. Second, on a worker's thread, tell it a long-term goal in a sentence. Its goal status then shows the goal under `Long-term goals:`. A refusal naming `[PROPOSAL]` in that turn reopens the work, since a channel turn is the operator's. Third, when a worker next runs out of work while holding a long-term goal, one line arrives on the steward's thread naming a proposal, and the worker starts nothing. A worker that begins the proposed work reopens the work.
+The goal-levels plan (`docs/archive/agent_persona_goal-levels_v1.md`) is complete, and its Operator Verification steps need a live fleet and Discord. First, after the pull request merges, update the installed plugin copy and relaunch each persona's supervisor. Then read the dev-plugin persona's goal status. The two nodes titled "Kaizen: the tree lags the commits" and "Kaizen: turns run past an hour" read `abandoned`, and the steward's thread carries one line for each. A node of either title still `pending` or `active` after that persona's next self-review reopens the work. Second, on a worker's thread, tell it a long-term goal in a sentence. Its goal status then shows the goal under `Long-term goals:`. A refusal naming `[PROPOSAL]` in that turn reopens the work, since a channel turn is the operator's. Third, when a worker at the default `propose` autonomy level next runs out of work while holding a long-term goal, one line arrives on the steward's thread naming a proposal, and the worker starts nothing. A worker that begins the proposed work reopens the work.
 
 ## The supervisor reads the newest root_complete and never a later root_reopened (found 2026-09-23)
 
@@ -179,7 +200,7 @@ The `[GOAL QUEUE]` block in `hooks/index.ts`, added by `docs/archive/agent_perso
 
 ## goal_resume displaces an entry an open ask to the operator holds (found 2026-09-23)
 
-`goal_resume` in `hooks/index.ts` checks ownership and never refuses on `pendingAskId`. The nudge cap, the hourly cost cap, the error streak and the worker's own `ASK:` line each hold an entry by opening an ask, and the entry stays `active`. The persona can still resume a paused entry before the operator answers. That pauses the active entry, which is usually the asked one, activates the resumed one and clears `pendingAskId`, and the ask record stays open in the store unless it was asked on the resumed entry. The queue block's all-paused line tells the persona to ask the operator or the coordinator which entry to release, and to resume one with `goal_resume` on that word. Only that text stands between the persona and a resume, since the tool itself checks nothing. The idle-queue plan states that the operator's word is what unsticks a paused entry. Not done there, because the check belongs to `goal_resume`. Found by that plan's section 1 security review.
+`goal_resume` in `hooks/index.ts` checks ownership and never refuses on `pendingAskId`. The nudge cap, the hourly cost cap, the error streak and the worker's own `ASK:` line each hold an entry by opening an ask, and the entry stays `active`. The persona can still resume a paused entry before the operator answers. That pauses the active entry, which is usually the asked one, activates the resumed one and clears `pendingAskId`, and the ask record stays open in the store unless it was asked on the resumed entry. The queue block's all-paused line tells the persona to ask the operator or the coordinator which entry to release, and to resume one with `goal_resume` on that word. Only that text stands between the persona and a resume, since the tool itself checks nothing about an open ask. The idle-queue plan states that the operator's word is what unsticks a paused entry. Not done there, because the check belongs to `goal_resume`. Found by that plan's section 1 security review.
 
 ## Five repositories the fleet can push to lack a readable review rule (found 2026-09-23)
 
@@ -489,7 +510,7 @@ Not a defect in this repository. The installed plugin cache at `~/.claude/plugin
 
 ## A persona name has no length bound at the validator, so one accepted name can be a megabyte (found 2026-09-19)
 
-`personaNameProblem` (`hooks/operator.ts:142-146`) refuses a non-string, an empty string and a `:`, then delegates to `bracketSafeProblem` (`hooks/operator.ts:103-108`), which refuses `[`, `]`, `,`, and whitespace, control and format characters. Neither bounds the length. An accepted name becomes a key in the watcher's session-memory reading, a key in the persona store, and a field spliced into a submitted prompt. The roster is writable by every persona in the fleet, so the name is attacker-supplied at every one of those.
+`personaNameProblem` (`hooks/operator.ts:143-147`) refuses a non-string, an empty string and a `:`, then delegates to `bracketSafeProblem` (`hooks/operator.ts:104-109`), which refuses `[`, `]`, `,`, and whitespace, control and format characters. Neither bounds the length. An accepted name becomes a key in the watcher's session-memory reading, a key in the persona store, and a field spliced into a submitted prompt. The roster is writable by every persona in the fleet, so the name is attacker-supplied at every one of those.
 
 Section 6 of the steward plan bounded the one site it owns, wrapping the name in `boundedText` where `fleetPromptText` splices it. That closes the prompt line and not the class. The rule's four callers are the tools' `persona` argument, `agentic_identity`, the configured coordinator name and the persona a session starts under, so a bound belongs at the validator rather than at each splice, per the plan's own standing amendment that a guard on a channel is finished only when every producer passes it.
 
@@ -517,7 +538,7 @@ The finding is the asymmetry: one field of the row has the bound and three do no
 
 ## The watcher's reading has no bound while its problem lines do, on two opposite premises about the roster (found 2026-09-19)
 
-`hooks/index.ts:2801` carries forward every key of the previous reading for the life of the session, with no eviction rule. `FLEET_PROBLEM_LINES_MAX` at `hooks/index.ts:1228` cuts the per-entry lines at twenty, and its own reason is that the roster is a file every persona of the fleet can write. Those two reasons cannot both be the file's, and the same function holds them a few hundred lines apart.
+`hooks/index.ts:4977` carries forward every key of the previous reading for the life of the session, with no eviction rule. `FLEET_PROBLEM_LINES_MAX` at `hooks/index.ts:2494` cuts the per-entry lines at twenty, and its own reason is that the roster is a file every persona of the fleet can write. Those two reasons cannot both be the file's, and the same function holds them a few hundred lines apart.
 
 The operator's decision of 2026-09-19, recorded in the steward plan's Standing Brief Amendments and in project memory as `fleet-watcher-decisions-2026-09-19`, settles the eviction half: there is no eviction rule, because the roster is trusted operator machine state, and distrusting the roster is a new plan rather than a fix round. It does not settle the coherence. One file still bounds one list because the roster is untrusted and leaves another unbounded because it is trusted, and a reader cannot tell from the code which premise the next guard should take.
 
@@ -525,7 +546,7 @@ This is a question for a plan rather than a defect to fix. The answer is a singl
 
 ## A persona name is cut to a length bound before it is neutralised, so two names can render as one line (found 2026-09-19)
 
-`fleetPromptText` composes a row's name at `hooks/index.ts:1294` as `bracketSafeText(boundedText(row.name))`. `boundedText` at `hooks/index.ts:521` cuts anything past the free-text bound and appends a fixed cut mark, so two distinct roster names sharing a prefix longer than that bound both render as the same prefix plus the same mark. The cut runs first, so the prompt carries two rows whose head text is identical.
+`fleetPromptText` composes a row's name at `hooks/index.ts:2560` as `bracketSafeText(boundedText(row.name))`. `boundedText` at `hooks/index.ts:1484` cuts anything past the free-text bound and appends a fixed cut mark, so two distinct roster names sharing a prefix longer than that bound both render as the same prefix plus the same mark. The cut runs first, so the prompt carries two rows whose head text is identical.
 
 The cost is a reader who cannot tell which of two personas a line is about, on a prompt whose whole purpose is to name the persona that moved. It is not a forgery: both lines are the plugin's own composed lines and the fields on each are that row's real ones.
 
@@ -547,9 +568,9 @@ The cost lands on `docs/plans/agent_persona_deferred-gate-run_v1.md`, whose whol
 
 ## A persona named after an Object prototype member reads a function out of the state store (found 2026-09-20)
 
-`hooks/index.ts:2336` reads `existing[sess.persona]` straight out of a `JSON.parse` result with no own-property guard, and `hooks/index.ts:2366` repeats the shape. The persona name is outside-supplied text held only to `/^[A-Za-z0-9_-]+$/`, validated at `bin/agentic-common.sh:396` and again at `:448`. That pattern admits `constructor`, `valueOf`, `toString`, `hasOwnProperty` and `__proto__`, so a persona under any of those names resolves to a member of `Object.prototype` rather than to a stored state, and the lookup reads truthy.
+`hooks/index.ts:4100` reads `existing[sess.persona]` straight out of a `JSON.parse` result with no own-property guard, and `hooks/index.ts:4131` repeats the shape. The persona name is outside-supplied text held only to `/^[A-Za-z0-9_-]+$/`, validated by `valid_persona_name` at `bin/agentic-common.sh:584-589`. That pattern admits `constructor`, `valueOf`, `toString`, `hasOwnProperty` and `__proto__`, so a persona under any of those names resolves to a member of `Object.prototype` rather than to a stored state, and the lookup reads truthy.
 
-The session then takes the `existingPersona` branch and calls `parseState(JSON.stringify(existingPersona))` at `hooks/index.ts:2358`. `JSON.stringify` of a function returns `undefined`, so the parse is handed nothing and throws out of `session.start`. A throw there is the failure the comment block at `hooks/index.ts:2295-2306` was written to prevent: the child comes up with no tools registered, no heartbeat and no controller tick, and the refusal is silent from the model's side.
+The session then takes the `existingPersona` branch and calls `parseState(JSON.stringify(existingPersona))` at `hooks/index.ts:4123`. `JSON.stringify` of a function returns `undefined`, so the parse is handed nothing and throws out of `session.start`. A throw there is the failure the comment block at `hooks/index.ts:4067-4078` was written to prevent: the child comes up with no tools registered, no heartbeat and no controller tick, and the refusal is silent from the model's side.
 
 Reaching it needs a persona named after a prototype member, which no fleet entry uses today, so this is a latent defect rather than a live one. Remedy: guard both reads with `Object.hasOwn(existing, sess.persona)`, or reject the reserved names where the persona is validated.
 
@@ -557,9 +578,9 @@ Raised by the round 4 adversarial lens over the decision-seam plan's Section 2 a
 
 ## The shared log append helper serializes nothing, so two overlapping appends drop a line (found 2026-09-20)
 
-`appendLines` at `hooks/index.ts:605-612` appends by reading the whole file and rewriting it, with nothing serializing two calls on one path. Two appends started before either write lands both read the same prior content, and the second write replaces the first, so one line is lost with no error on either path.
+`appendLines` at `hooks/index.ts:1516-1522` appends by reading the whole file and rewriting it, with nothing serializing two calls on one path. Two appends started before either write lands both read the same prior content, and the second write replaces the first, so one line is lost with no error on either path.
 
-Three sites reach it. The channel log's four callers go through the `appendToChannelLog` wrapper at `hooks/index.ts:615`, and both yield-log writers call the helper directly at `:626` and `:1498`. The yield-log pair is the reachable one: `yieldNow` runs on the heartbeat tick and the commons-arbitration branch runs inside a persisted write, and nothing orders those two against each other.
+Five sites reach it. The channel log's four callers go through the `appendToChannelLog` wrapper at `hooks/index.ts:1531`, and both yield-log writers call the helper directly at `:1567` and `:2730`. The mailbox acknowledgement writes through it at `:1750`, and the goal history at `:8913`. The yield-log pair is the reachable one: `yieldNow` runs on the heartbeat tick and the commons-arbitration branch runs inside a persisted write, and nothing orders those two against each other.
 
 The defect predates the decision-seam plan, whose Section 3 generalized the helper to take a path without changing how it writes. That section's allowance for `hooks/index.ts` is three regions, and a chain would change shipped behaviour for four call sites outside them, so it was routed here rather than folded.
 
@@ -569,7 +590,7 @@ Raised by the round 1 blind lens over the decision-seam plan's Section 3 and con
 
 ## The decision seam discards a whole shadow measurement over one unoffered probability key (found 2026-09-20)
 
-`hooks/decision-seam.ts:250` refuses the vendor's answer outright when its probability map carries any key outside the option ids the request offered. The refusal lands as the `parse` failure reason, so the call records no choice, no distribution and no confidence, and the shadow measurement for that tick is lost rather than degraded.
+`hooks/decision-seam.ts:416` refuses the vendor's answer outright when its probability map carries any key outside the option ids the request offered. The refusal lands as the `parse` failure reason, so the call records no choice, no distribution and no confidence, and the shadow measurement for that tick is lost rather than degraded.
 
 The strictness has a real ground, stated in the code's own comment: the request carries the caller's ids and nothing else, so refusing an unoffered key bounds the map and stops a body answering with a hundred thousand keys from reaching a journal line, where one append rewrites the whole day's file. That bound is worth keeping.
 
@@ -593,7 +614,7 @@ Raised by the round 6 adversarial lens over the decision-seam plan's Section 3 a
 
 ## `costEnabled` is read but has no emit path, so a value the operator sets never reaches the plugin (found 2026-09-20)
 
-`costEnabled` is read at `hooks/index.ts:2035` as `cfg.costEnabled !== false`, so a session turns the cost ledger's master switch off only where the settings file's own options object carries `costEnabled: false`. No emitter ever writes that key.
+`costEnabled` is read at `hooks/index.ts:3456` as `cfg.costEnabled !== false`, so a session turns the cost ledger's master switch off only where the settings file's own options object carries `costEnabled: false`. No emitter ever writes that key.
 
 `emit_settings_json` in `bin/agentic-common.sh` carries every other cost option from a `COST_*` environment variable: `costSummaryEveryNTicks`, `costMaxNudgesPerHour`, `costMaxPluginCallsPerHour`, `costBackoffAfterTicks` and `costBackoffMaxMs`. It carries none for `costEnabled`. So an operator setting `COST_ENABLED=false`, or adding a roster field meant to carry it, has nothing for the value to travel on. It never reaches a launched child, and every session runs with the ledger's caps and its idle skip on.
 
@@ -671,4 +692,12 @@ The `prompt.submit` hook in `hooks/index.ts` builds `[GOAL TREE]` from the activ
 
 The task-list plan (`docs/archive/agent_persona_task-list_spec_v1.md`) is complete, and two items wait on the operator. First, a live check the test harness cannot make. In a live persona on a non-plan goal, add three items with `task_add`, send an operator prompt, and confirm a `[TASK LIST]` block follows the `[GOAL TREE]` block, open items first. Then mark all three done and confirm the block suggests `goal_done` without closing the goal. A missing block or an auto-closed goal reopens the work.
 
-Second, a call on the block's length. It is kept shorter than the `[GOAL TREE]` block beside it, so beside a typical goal block of about 375 characters it shows about three items. The rest are counted in its last line, and a hidden item cannot be marked done by id until earlier ones finish. The recommendation is to keep the exact bound the plan's Intent states. The alternative is a floor, `Math.max(goalBlock.length, N)` at the `taskListBlock` call site in `hooks/index.ts`.
+Second, a call on the block's length. It is kept shorter than the `[GOAL TREE]` block beside it, so beside a typical goal block of about 375 characters it shows about three items. The rest are counted in its last line, and a hidden item cannot be marked done by id until earlier ones finish. Decided 2026-09-26 by the operator on the relay thread: the goal-length budget comes out. A short goal can carry a long list, so the block keeps only `TASK_LIST_MAX_LINES` (12) and `TASK_TEXT_MAX_CHARS` (200). `prompt.submit` stops passing the goal block's length to `taskListBlock`, and the budget test case retires. It runs as a small fix once the autonomy-dial plan closes, before the goal-every-turn plan.
+
+## goal_longterm and goal_add keep an unsaved change in memory after a save that yields (found 2026-09-26)
+
+The `goal_longterm` handler in `hooks/index.ts` saves with a bare `persist($)` and reports "this write was not saved" when the save yields to another live session. The added or dropped long-term goal and its decision line stay in the session's memory anyway. The next write that does land then carries a change the tool told the persona had failed. The `goal_autonomy` handler beside it avoids this by saving through `persistOrRollBack` with a rollback that restores the old value and drops the decision line. The autonomy-dial plan's first section surfaced the difference.
+
+`goal_add` has the same gap on every path but one. Its unprompted plan add, the one outside the operator's and the coordinator persona's turns, saves through `persistOrRollBack` since the autonomy-dial plan's second section, because a record to the coordinator persona must never name an entry the store lacks. Every other `goal_add`, a task or a plan added in the operator's or the coordinator persona's turn, still saves with a bare `persist($)`, so a yield leaves the new node in memory while the tool reports it was not saved.
+
+Remedy: save `goal_longterm` and the remaining `goal_add` paths through `persistOrRollBack`, restoring what each changed and dropping its decision lines on a save that does not land, with a tick-suite case for each yield. The unprompted plan add's `rollBackAdd` in `hooks/index.ts` is the pattern for `goal_add`.

@@ -79,6 +79,11 @@ declare module 'claude-code' {
       /** reason says why it is dropped, and is recorded. Required for drop. */
       reason?: string
     }
+    /** Set this persona's autonomy level, which says what it may do with work it found on its own. level "propose": it may only propose work, by sending a [PROPOSAL] record to the coordinator persona. level "plan-and-ask": it may write a plan document and queue it with goal_add, and the entry waits paused for the operator's yes. level "plan-and-start": it may write a plan document, queue it and start it, and the plugin tells the coordinator persona. Only the operator's own turn on this persona's thread may call this; every other turn is refused, a coordinator delivery included. The level governs goal_add with kind "plan" and nothing else. goal_status shows the level. Owner only. */
+    "mcp__agentic-plugin__goal_autonomy": {
+      /** level is "propose", "plan-and-ask" or "plan-and-start". */
+      level: string
+    }
     /** Add a working item to the active goal's task list, a lighter tier below the goal tree, scoped to whichever goal is active right now. Refused with no active goal, at the per-goal cap, or under a plan run, where the plan document's own chapters are already the task list. Completing the goal clears its tasks; finishing every task never completes the goal by itself. */
     "mcp__agentic-plugin__task_add": {
       /** text is the working item, one line. */

@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 7550,
-      "words": 1333
+      "chars": 8989,
+      "words": 1591
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
@@ -140,6 +140,24 @@
       "words": 75
     },
     {
+      "name": "PROPOSE_FRAME_PLAN_AND_ASK_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 113,
+      "words": 19
+    },
+    {
+      "name": "PROPOSE_FRAME_PLAN_AND_START_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 82,
+      "words": 14
+    },
+    {
+      "name": "PROPOSE_FRAME_NO_TREE_CLAUSE",
+      "file": "hooks/index.ts",
+      "chars": 188,
+      "words": 32
+    },
+    {
       "name": "REPLY_BACKSTOP_FRAME",
       "file": "hooks/index.ts",
       "chars": 93,
@@ -194,6 +212,60 @@
       "words": 80
     },
     {
+      "name": "STANDING_IDLE_ORDER_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 89,
+      "words": 16
+    },
+    {
+      "name": "STANDING_QUEUE_NAME_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 54,
+      "words": 10
+    },
+    {
+      "name": "STANDING_OWN_WORK_LEAD_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 63,
+      "words": 11
+    },
+    {
+      "name": "STANDING_NO_TREE_FALLBACK_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 102,
+      "words": 18
+    },
+    {
+      "name": "STANDING_LEVEL_PROPOSE_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 140,
+      "words": 24
+    },
+    {
+      "name": "STANDING_LEVEL_PLAN_AND_ASK_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 138,
+      "words": 24
+    },
+    {
+      "name": "STANDING_LEVEL_PLAN_AND_START_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 116,
+      "words": 20
+    },
+    {
+      "name": "STANDING_IDLE_DUTIES_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 72,
+      "words": 14
+    },
+    {
+      "name": "STANDING_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 13,
+      "words": 1
+    },
+    {
       "name": "ENV_BLOCK",
       "file": "hooks/index.ts",
       "chars": 79,
@@ -232,14 +304,14 @@
     {
       "name": "goal_add_description",
       "file": "hooks/index.ts",
-      "chars": 659,
-      "words": 108
+      "chars": 1053,
+      "words": 175
     },
     {
       "name": "goal_done_description",
       "file": "hooks/index.ts",
-      "chars": 1223,
-      "words": 221
+      "chars": 1371,
+      "words": 246
     },
     {
       "name": "goal_status_description",
@@ -250,8 +322,8 @@
     {
       "name": "goal_resume_description",
       "file": "hooks/index.ts",
-      "chars": 233,
-      "words": 40
+      "chars": 479,
+      "words": 84
     },
     {
       "name": "supervisor_shutdown_description",
@@ -268,14 +340,20 @@
     {
       "name": "goal_edit_description",
       "file": "hooks/index.ts",
-      "chars": 700,
-      "words": 124
+      "chars": 822,
+      "words": 145
     },
     {
       "name": "goal_longterm_description",
       "file": "hooks/index.ts",
       "chars": 805,
       "words": 151
+    },
+    {
+      "name": "goal_autonomy_description",
+      "file": "hooks/index.ts",
+      "chars": 736,
+      "words": 119
     },
     {
       "name": "task_add_description",
