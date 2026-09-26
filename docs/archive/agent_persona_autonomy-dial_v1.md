@@ -1,6 +1,6 @@
 # Autonomy dial
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -81,13 +81,13 @@ Provenance: distilled from the operator's brief of 2026-09-22 and the architect'
 
 ## Related plans
 
-- `docs/plans/agent_persona_goal-levels_v1.md` (Ready, waits on keeper-park). Section 4 builds the
+- `agent_persona_goal-levels_v1.md` (Complete, archived). Section 4 builds the
   turn-origin capture and `turnMayStartEffort`, which this plan's section 2 extends, and section 5
   builds the idle proposal, whose frame this plan's section 3 branches on the level. Section 3
   builds `goal_longterm` beside which the dial tool registers.
-- `docs/archive/agent_persona_idle-queue_v1.md` (Complete, archived). Its `hasStartableWork` is what the standing
+- `agent_persona_idle-queue_v1.md` (Complete, archived). Its `hasStartableWork` is what the standing
   block reads to choose its idle sentence.
-- `docs/plans/agent_persona_security-model_v1.md` (Ready). The dial is a store field, and the
+- `agent_persona_security-model_v1.md` (Complete, archived). The dial is a store field, and the
   persona store is writable by any process under the operator's account, which that model
   accepts. This plan adds no guard on the file.
 
@@ -574,3 +574,41 @@ Round 1 (Workflow `wf_69b37729-e29`, fable at high, capacity "scoped 50% ... -> 
 Add-decision, adversarial Major (spec-traceable after the operator's ruling): ledger `goal_add`'s two records and resend a skipped one on a quiet tick; serves the Intent's "waits for the operator's word in fact"; adds a mechanism, a third settle ledger beside the finder's and the proposal turn's; about 40 lines plus tick cases. The single-finding judge ruled ASK, and the operator answered yes on the relay ("Agreed. Do option one, please.").
 Advisory dispositions: the security Major on the coordinator instruction's provenance sentence is refused on relevance (`docs/security-model.md:38`, "one persona acting against another" is out of consideration). Security and performance Minors go to `docs/backlog.md` at close. Goal read: ASKED-BUT-UNBUILT empty; three declares and two asks, the asks for the close-out.
 Next: build the resend, run the adversarial lens over its delta, then documentation curation and the close.
+
+### Chapter 5 - 2026-09-26
+Completed: finishing-work
+Implemented By: main session; implementer-opus built the plan record resend (one dispatch, resumed once after an expired login and once for its fix round); docs-curator curated the documents
+Metrics: review rounds 2, closed approved-with-concerns (round 2, its Major fixed with a red-then-green proof); provenance 0 spec-traceable, 1 fix-introduced, 1 new-requirement, rulings (1 refused, 1 declared, 1 asked); advisory: 7 findings, 0 fixed, 5 deferred, 1 refused, 1 covered; NEEDS_CONTEXT 0; escalations 1 (the resend ask, answered yes); consults 0
+Recap: Goal: "When this is done, every persona carries one operator-set autonomy level, closed at three values, that says what it may do with work it found on its own, and every external prompt carries a standing block that states the idle order, names the goal tree as the queue, and states that level in one sentence. The plugin's gate on starting a new effort reads the same field the block prints, so the written permission and the enforced one cannot drift apart. It matters because today the standing duty "finish the active work, then the queued work, then the backlog" lives only in memory files of two seats, nothing re-injects it after a compaction, and the operator can widen a persona's autonomy only by rewriting doctrine that applies to every persona at once."
+
+What it does now. Each persona's store holds an `autonomy` field, one of `propose`, `plan-and-ask` and `plan-and-start`, read as `propose` where absent. Only `goal_autonomy` sets it, and only in a turn the operator opened. `goal_status` shows it on an `Autonomy:` line. The gate on `goal_add` of a plan reads it. At `propose` a plan add outside the operator's and the coordinator persona's turns is refused. At `plan-and-ask` it becomes a paused entry awaiting the operator's yes, with a `[PROPOSAL]` record to the coordinator. At `plan-and-start` it becomes an entry queued to start, with a `[STARTED]` record. The persona cannot resume, drop or complete an awaiting entry itself. A skipped record is sent again on a quiet tick, up to three times, and after that is announced on the persona's own thread. Every external prompt of a non-reader session carries a `[STANDING]` block with the idle order, the goal tree named as the queue, and the level's sentence, and the daily `[PROPOSE]` frame carries its own level sentence.
+
+Refinements in the finishing pass: the resend of skipped records, built on the operator's yes; the coordinator instruction no longer calls a queued plan started; the docs now name the open-ask condition on a plan-and-start start, the default-persona and reach-rule refusals before any write, and the awaiting-yes exception to the queue-mistake row.
+
+Operator-pending: the two live checks under Operator Verification, filed in `docs/backlog.md` as "Operator checks owed by the autonomy-dial plan". The goal read also asks the operator to confirm two items the sections added under their Standing Brief Amendments: the reach check with its save-then-undo path on an unprompted add, and the refusals of `goal_edit drop` and `goal_done` by name on an awaiting entry. Both are built and tested.
+Decisions / Surprises:
+- Base ref `b374ffb`, the origin/main tip merged into this branch at `2099297` to bring main's task-list work in, so the review scope is the dial's own changes. The merge kept both sides in seven files. The controller suite then went red on five store-version pins that main's version-5 migration made stale, fixed at `b57a2cc`.
+- Add-decision (adversarial round 1 Major, new-requirement, single-finding ruling ASK, the operator answered yes on the relay): ledger `goal_add`'s `[PROPOSAL]` and `[STARTED]` records and send a skipped one again on a quiet tick; serves the Intent's "waits for the operator's word in fact"; adds a mechanism, a third settle ledger beside the finder's and the proposal turn's; about 150 lines in `hooks/` plus nine tick cases; not building it leaves an entry paused for a yes nobody was asked for after a persona restart. Commit `32f1930`.
+- Round 2 Major (adversarial, on the resend delta): a record skipped on every tick when two personas read claims with different staleness limits, one new inbox record per quiet tick. The fleet launches every persona with the same 90-second limit (`bin/agentic-common.sh:260`), so the trigger needs a hand override. Declared and fixed with a cap, `PLAN_RECORD_MAX_RESENDS = 3`, after which the record takes the existing unroutable announcement.
+- The round 2 fixes are the reviewer's own proposed fixes, each with a red-then-green probe, so no third round ran. The author re-read `.kit/scratch/autonomy-dial/finishing/fix-round-2.diff` against the review.
+- Drift: the curator returned seven deviations, documented as built, and one mistake, the coordinator instruction's "started it on its own" for a record that says queued to start. That text was fixed at `a684761`, and the injection ledger and the architecture doc's size figures moved by 131 characters to match. The curator also moved 23 drifted file:line citations. Two pre-existing backlog claims it flagged were corrected: the `appendLines` call count and the persona-name check site.
+- The earlier fix rounds' "ledger unchanged" check compared the committed ledger with itself, since `.kit/injection-ledger.mjs` prints to stdout and never writes the file. Regenerated properly at close, the coordinator instruction was the only change.
+- Correction to Interim board 1: the whole gate at `2099297` ran 28 suites, not 29, and 27 of them exited 0, the controller suite the one red. The roster in `.kit/scratch/autonomy-dial/finishing/gate/summary-2099297.txt` matches this close's 28 runs.
+- Goal read: nothing promised is unbuilt. It noted a tension: the Intent says the level "is read by exactly two things", and the `[PROPOSE]` frame, which section 3 asks for, is a third reader.
+Assumptions:
+- declared 2026-09-26 (goal read, finishing): the awaiting-yes hold over nodes under an awaiting entry, serving the Intent's "the persona cannot resume it itself"; the no-tree fallback sentence in the `[STANDING]` block and the frame; the coordinator's drop-and-re-add relay for a yes that reaches a busy worker.
+- declared 2026-09-26 (round 2 review, finishing): a skipped plan record is sent again at most three times; reversal: `PLAN_RECORD_MAX_RESENDS` in `hooks/index.ts`.
+Review Findings: review: finishing adversarial + security + performance + prose at fable, Workflow (high), `wf_69b37729-e29`, after "fable capacity: scoped 50% ... -> dispatch"; single-finding and relevance rulings and the goal read at fable, Agent tool; round 2 adversarial at fable, Workflow (high), `wf_66ec2bd0-d09`, after "fable capacity: scoped 0%, 7d 0%, 5h 2% (account 7, fetched 80s ago) -> dispatch". The tree was unchanged across each round: the porcelain capture before and after matched. Partial-substitution reading not taken on the Workflow transcripts.
+- Round 1 adversarial APPROVED_WITH_CONCERNS: the resend Major (above); Minors on the `[STANDING]` block's unloaded-store level and a bare `goal_resume` settling an awaiting entry, deferred; the awaitingYes comment's clears and the README's "next otherwise", fixed at `dba482f`.
+- Round 1 security ADVISORY: Major on the coordinator instruction's provenance sentence, refused on relevance (`docs/security-model.md:38`, one persona acting against another is out of consideration); Minors on the `autonomy_set` line's missing origin and unbounded unprompted adds, deferred; the skipped-record Minor, covered by the resend.
+- Round 1 performance CLEAR: three Minors, deferred or recorded with no fix.
+- Round 1 prose CHANGES_REQUIRED: the README's "next otherwise" contradicted creation-time ordering, and the no-tree fallback was missing. Both were fixed at `dba482f`, with four reasons split out of their rule's clause.
+- Round 2 adversarial APPROVED_WITH_CONCERNS: the cap Major (above); five Minors fixed (the unguarded save, the fall-through after an open-turn stop, the paused `[STARTED]` control, a third pin of the `[KAIZEN]` frame, and an architecture sentence implying the first send checks reach); two left, in the backlog entry "Findings the autonomy-dial finishing pass deferred".
+Stamps: adjudicated 0; no memory record shaped a line this pass wrote.
+Gate: whole gate on SCOTT-CLAUDE, started 2026-09-26T14:39:01Z and ended 14:50:42Z, in the autonomy-dial worktree at a684761 plus this close-out's uncommitted docs (this Chapter, the archive move, the backlog entries, the index refresh and the goal-every-turn plan's citation). origin/main had not advanced past b374ffb at a fetch just before. The pre-run poll showed no foreign test runner, only the fleet's own supervisors. 28 runs, 28 exit 0, read from each run's own exit code in `.kit/scratch/autonomy-dial/finishing/gate/summary.txt`, runner exit 0. npx tsc --noEmit exit 0; npx tsc -p tsconfig.json exit 0; the 18 `.kit/*-test.mjs` suites exit 0, controller-tick-test 4946 OK / 0 FAIL with its log ending `PASS: 0 failure(s)`, against 4887 OK at the merge fix `b57a2cc`; check-loader-rule and injection-ledger exit 0; the six shell suites exit 0, supervisor-model-test the longest at 377s. The injection ledger regenerated at `a684761` matches the committed file. Deferred, not passed: the five live suites and the natural-exit suites, which need every supervisor stopped, under the gate policy of 2026-09-18 to `docs/plans/agent_persona_deferred-gate-run_v1.md`. The contention lane is deferred with them. Test delta over the finishing pass: 9 cases added, 0 retired, and the first build's ledger checks edited to carry the resend count.
+Next: none, the plan is complete
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-26T14:37:36Z on SCOTT-CLAUDE in the autonomy-dial worktree; exit 2
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

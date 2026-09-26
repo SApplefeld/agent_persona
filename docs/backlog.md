@@ -1,5 +1,22 @@
 # Backlog
 
+## Operator checks owed by the autonomy-dial plan (parked 2026-09-26)
+
+Two live checks only the operator can run, once the autonomy-dial pull request merges and the installed agentic-plugin copy is updated. The plan is at `docs/archive/agent_persona_autonomy-dial_v1.md`, under its Operator Verification. First, tell one worker on its own thread that its autonomy is now plan and start. Its goal status must then show `Autonomy: plan-and-start`, and its next external prompt's `[STANDING]` block must say so. A refusal in that turn reopens the plan's section 1, since a thread message is the operator's own turn. Second, within a day of that worker next running out of work while it holds a long-term goal, one line must arrive on the coordinator's thread naming what it queued to start. Its goal status must show the new entry as `pending` or `active`. Either reading means it worked, since the controller activates a pending entry on its next tick.
+
+## Findings the autonomy-dial finishing pass deferred (found 2026-09-26)
+
+Seven Minors and two measurements from the autonomy-dial plan's finishing reviews, each real and none a defect on a reachable path the plan asked about. Take each as its own small change.
+
+- The `[STANDING]` block reads the level from the session's loaded store. Where the store did not load (`stateNotLoaded`), it prints `propose`. That fails closed and changes no act, but the persona reads a level that may not be its own.
+- A bare `goal_resume` with no `nodeId`, in a turn the operator or the coordinator persona opened, can pick an entry awaiting the operator's yes and settle its wait. The plan reads that turn as the operator's word, but the operator named no entry.
+- The `autonomy_set` decision line records the new level and not the origin kind of the turn that admitted it.
+- Nothing bounds how many plans a persona at `plan-and-ask` or `plan-and-start` adds in one turn, and each unprompted add sends the coordinator persona a record.
+- On the path with no active entry, `prompt.submit` computes `openGoals` and `hasStartableWork` for the goal blocks and again for the `[STANDING]` block.
+- The plan record settle step (tick step 2c in `hooks/index.ts`) reads each record with `readInboxRecord` outside its `try`, so a store read that throws ends the tick rather than logging `plan_record_resend_failed`. The proposal and self-review settle steps share the shape, and the inbox drain earlier in the tick reads the same store first.
+- `fillPlanRecords` in `hooks/agent-state.ts` keeps an entry whose `writer` is empty and whose `seq` is 0, and a tick-suite check pins that. No writer of this ledger produces that form, and step 2c reads it as absent and settles it.
+- Measured with no fix owed: the dial adds 298 to 371 characters to each external prompt, and `goal_add`'s unprompted path reads the commons store four times.
+
 ## At plan-and-ask the daily proposal turn can queue a new plan while one already waits for the operator (found 2026-09-26)
 
 The idle proposal ask in `hooks/index.ts` fires when a persona holds long-term goals, nothing in its tree is startable, no turn is open, and `PROPOSAL_EVERY_MS` (24 hours) has passed. It never checks for an entry carrying `awaitingYes`. An entry queued at plan-and-ask waits paused, so `hasStartableWork` stays false and the ask fires again the next day. The `[PROPOSE]` frame at plan-and-ask then tells the persona to write another plan document and queue it with `goal_add`, which adds another paused entry and sends the coordinator another `[PROPOSAL]` record, every day the operator has not answered. Remedy: skip the ask while any open entry carries `awaitingYes`, or while the last unprompted add is still awaiting, with a case in `.kit/controller-tick-test.mjs` for each direction. A prose line in the frame was tried and removed, since nothing enforced it and no clause of the autonomy-dial plan asked for it. Found by the autonomy-dial plan's section 3 review.
@@ -675,7 +692,7 @@ The `prompt.submit` hook in `hooks/index.ts` builds `[GOAL TREE]` from the activ
 
 The task-list plan (`docs/archive/agent_persona_task-list_spec_v1.md`) is complete, and two items wait on the operator. First, a live check the test harness cannot make. In a live persona on a non-plan goal, add three items with `task_add`, send an operator prompt, and confirm a `[TASK LIST]` block follows the `[GOAL TREE]` block, open items first. Then mark all three done and confirm the block suggests `goal_done` without closing the goal. A missing block or an auto-closed goal reopens the work.
 
-Second, a call on the block's length. It is kept shorter than the `[GOAL TREE]` block beside it, so beside a typical goal block of about 375 characters it shows about three items. The rest are counted in its last line, and a hidden item cannot be marked done by id until earlier ones finish. The recommendation is to keep the exact bound the plan's Intent states. The alternative is a floor, `Math.max(goalBlock.length, N)` at the `taskListBlock` call site in `hooks/index.ts`.
+Second, a call on the block's length. It is kept shorter than the `[GOAL TREE]` block beside it, so beside a typical goal block of about 375 characters it shows about three items. The rest are counted in its last line, and a hidden item cannot be marked done by id until earlier ones finish. Decided 2026-09-26 by the operator on the relay thread: the goal-length budget comes out. A short goal can carry a long list, so the block keeps only `TASK_LIST_MAX_LINES` (12) and `TASK_TEXT_MAX_CHARS` (200). `prompt.submit` stops passing the goal block's length to `taskListBlock`, and the budget test case retires. It runs as a small fix once the autonomy-dial plan closes, before the goal-every-turn plan.
 
 ## goal_longterm and goal_add keep an unsaved change in memory after a save that yields (found 2026-09-26)
 
