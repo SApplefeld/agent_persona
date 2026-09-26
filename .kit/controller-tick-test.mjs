@@ -25308,15 +25308,15 @@ async function caseAut_aStoreWrittenBeforeTheLevelLoadsAsPropose() {
   const v4 = makeState({ now: T0 });
   check("aut load: the seeded v4 state carries no level (the instrument)", !("autonomy" in v4), Object.keys(v4));
   const fromV4 = parseState(JSON.stringify(v4));
-  check("aut load, v4: propose and version 4", fromV4.autonomy === "propose" && fromV4.version === 4, { level: fromV4.autonomy, version: fromV4.version });
+  check("aut load, v4: propose and version 5", fromV4.autonomy === "propose" && fromV4.version === 5, { level: fromV4.autonomy, version: fromV4.version });
   const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
-  check("aut load, v3: propose and version 4", fromV3.autonomy === "propose" && fromV3.version === 4, { level: fromV3.autonomy, version: fromV3.version });
+  check("aut load, v3: propose and version 5", fromV3.autonomy === "propose" && fromV3.version === 5, { level: fromV3.autonomy, version: fromV3.version });
   const fromV2 = parseState(JSON.stringify({ version: 2, persona: "default", activeSessionId: "s-2", epoch: 1, memory: [], goal: null, decisions: [], createdAt: T0, updatedAt: T0 }));
-  check("aut load, v2: propose and version 4", fromV2.autonomy === "propose" && fromV2.version === 4, { level: fromV2.autonomy, version: fromV2.version });
+  check("aut load, v2: propose and version 5", fromV2.autonomy === "propose" && fromV2.version === 5, { level: fromV2.autonomy, version: fromV2.version });
   for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
     const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
     const parsed = parseState(text);
-    check(`aut load, fixture ${name}: propose and version 4`, !text.includes("autonomy") && parsed.autonomy === "propose" && parsed.version === 4, { level: parsed.autonomy, version: parsed.version });
+    check(`aut load, fixture ${name}: propose and version 5`, !text.includes("autonomy") && parsed.autonomy === "propose" && parsed.version === 5, { level: parsed.autonomy, version: parsed.version });
   }
   for (const level of AUT_LEVELS) {
     check(`aut load: a held ${level} loads as it was`, parseState(JSON.stringify(makeState({ now: T0, autonomy: level }))).autonomy === level);
