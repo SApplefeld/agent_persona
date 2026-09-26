@@ -24362,7 +24362,7 @@ async function caseTaskList_appearsForNonPlanAbsentOtherwise(clock) {
 async function caseTaskList_openBeforeDoneEachInAddedAtOrder(clock) {
   console.log("\n=== Section 3 (task-list): open tasks come first, each block in addedAt order, done tasks crossed off ===");
   clock.set(T0);
-  const goals = taskListGoals();
+  const goals = roomyTaskListGoals();
   const tasks = [
     taskEntry("tk-done-1", "g-task", { done: true, addedAt: T0, doneAt: T0 + 1000 }),
     taskEntry("tk-open-2", "g-task", { addedAt: T0 + 2000 }),
@@ -24418,7 +24418,7 @@ async function caseTaskList_capsAtMaxLinesWithATailCount(clock) {
 async function caseTaskList_allDoneClosingLinePromptsGoalDoneWithoutCompletingIt(clock) {
   console.log("\n=== Section 3 (task-list): all tasks done prompts goal_done in the closing line, and completes nothing ===");
   clock.set(T0);
-  const goals = taskListGoals();
+  const goals = roomyTaskListGoals();
   const tasks = [
     taskEntry("tk-1", "g-task", { done: true, addedAt: T0, doneAt: T0 + 1000 }),
     taskEntry("tk-2", "g-task", { done: true, addedAt: T0 + 1000, doneAt: T0 + 2000 }),
@@ -24534,6 +24534,14 @@ async function caseTaskList_staysShorterThanTheGoalBlock(clock) {
     block.length < goalBlock.length, { task: block.length, goal: goalBlock.length });
   const lines = block.split("\n").filter((l) => l.startsWith("- "));
   check(`task list budget: fewer than ${maxLines} lines show beside a short goal block`, lines.length < maxLines, lines.length);
+  check("task list budget: at least one line still shows beside the short goal block", lines.length > 0, lines.length);
+  // The most lines that fit: showing the next task's line as well would
+  // make the block at least as long as the goal block. Its tail count keeps
+  // the same number of digits either way, so the next line's length plus
+  // its newline is the whole difference.
+  const nextLine = `- tk-${lines.length}: working item number ${lines.length} with a little detail`;
+  check("task list budget: one more line would not have fit",
+    block.length + 1 + nextLine.length >= goalBlock.length, { task: block.length, next: nextLine.length, goal: goalBlock.length });
   check("task list budget: the lines shown are the earliest open tasks, in order",
     lines.every((l, i) => l.startsWith(`- tk-${i}: `)), lines);
   const hidden = maxLines - lines.length;
@@ -24545,6 +24553,18 @@ async function caseTaskList_staysShorterThanTheGoalBlock(clock) {
   const roomyLines = roomyBlock.split("\n").filter((l) => l.startsWith("- "));
   check(`task list budget: beside a long goal block all ${maxLines} lines show with no tail`,
     roomyLines.length === maxLines && !roomyBlock.includes("...and "), roomyLines.length);
+
+  // The cap and the budget together: past TASK_LIST_MAX_LINES tasks beside
+  // the short goal block, the tail counts the tasks either one left out.
+  const extra = 3;
+  const moreTasks = Array.from({ length: maxLines + extra }, (_, i) =>
+    taskEntry(`tk-${i}`, "g-task", { text: `working item number ${i} with a little detail`, addedAt: T0 + i * 1000 }));
+  const { blocks: bothBlocks } = await taskListSubmit("tasklist_budget_and_cap", taskListGoals(), moreTasks, "g-task");
+  const bothBlock = bothBlocks.find((b) => b.includes("[TASK LIST]")) || "";
+  const bothLines = bothBlock.split("\n").filter((l) => l.startsWith("- "));
+  const bothHidden = maxLines + extra - bothLines.length;
+  check("task list budget and cap: the tail counts every task past the lines shown, all open",
+    bothLines.length > 0 && bothLines.length < maxLines && bothBlock.includes(`...and ${bothHidden} more (${bothHidden} open)`), bothBlock);
 }
 
 // Only the active goal's tasks appear, not another goal's, even when both
@@ -24554,7 +24574,7 @@ async function caseTaskList_onlyTheActiveGoalsTasksAppear(clock) {
   clock.set(T0);
   const goals = [
     makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
-    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+    makeGoalNode({ id: "g-active", parentId: "g-root", kind: "task", status: "active", maxRounds: 10, objective: ROOMY_OBJECTIVE }),
     makeGoalNode({ id: "g-other", parentId: "g-root", kind: "task", status: "paused", maxRounds: 10 }),
   ];
   const tasks = [taskEntry("tk-mine", "g-active"), taskEntry("tk-theirs", "g-other")];
