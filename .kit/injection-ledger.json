@@ -137,13 +137,7 @@
       "name": "PROPOSE_FRAME",
       "file": "hooks/index.ts",
       "chars": 420,
-      "words": 74
-    },
-    {
-      "name": "PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT",
-      "file": "hooks/index.ts",
-      "chars": 86,
-      "words": 15
+      "words": 75
     },
     {
       "name": "PROPOSE_FRAME_PLAN_AND_ASK_TEXT",
@@ -156,6 +150,18 @@
       "file": "hooks/index.ts",
       "chars": 82,
       "words": 14
+    },
+    {
+      "name": "PROPOSE_FRAME_ASK_AWAITING_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 100,
+      "words": 17
+    },
+    {
+      "name": "PROPOSE_FRAME_NO_TREE_CLAUSE",
+      "file": "hooks/index.ts",
+      "chars": 188,
+      "words": 32
     },
     {
       "name": "REPLY_BACKSTOP_FRAME",
@@ -224,16 +230,22 @@
       "words": 10
     },
     {
-      "name": "STANDING_LEVEL_PROPOSE_TEXT",
+      "name": "STANDING_OWN_WORK_LEAD_TEXT",
       "file": "hooks/index.ts",
-      "chars": 145,
-      "words": 25
+      "chars": 63,
+      "words": 11
     },
     {
       "name": "STANDING_NO_TREE_FALLBACK_TEXT",
       "file": "hooks/index.ts",
-      "chars": 83,
-      "words": 15
+      "chars": 102,
+      "words": 18
+    },
+    {
+      "name": "STANDING_LEVEL_PROPOSE_TEXT",
+      "file": "hooks/index.ts",
+      "chars": 140,
+      "words": 24
     },
     {
       "name": "STANDING_LEVEL_PLAN_AND_ASK_TEXT",

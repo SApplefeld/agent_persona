@@ -467,41 +467,50 @@ function kaizenLine(text: string): string {
   return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
 }
 
-// The [PROPOSE] frame's level clause at plan-and-ask and plan-and-start,
-// which replaces the propose level's "Start none of it yourself." sentence.
-// Design point 5. Each is a named literal so the ledger can size it. Both
-// close on the same no-goal-tree fallback clause, given one owner
-// (PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT) rather than a second copy, on the
-// same ground as STANDING_NO_TREE_FALLBACK_TEXT above.
-const PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT = "With no goal tree, send the [PROPOSAL] instead, since only the operator opens a tree. ";
-const PROPOSE_FRAME_PLAN_AND_ASK_TEXT =
-  `Write the plan document and queue it with goal_add; the entry waits paused until the operator's yes reaches you. ` +
-  PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT;
-const PROPOSE_FRAME_PLAN_AND_START_TEXT =
-  `Write the plan document, queue it and start it; the plugin tells the coordinator. ` +
-  PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT;
+// The [PROPOSE] frame's plan-and-ask and plan-and-start instructions: write
+// the plan document and queue it, which sends the coordinator its own
+// [PROPOSAL] or [STARTED] record through goal_add. The frame's own
+// agentic_say send is reserved for proposeFrameNoTreeClause below, the one
+// case goal_add cannot reach, so a goal-tree holder is never told to send
+// both a record through goal_add and a [PROPOSAL] through agentic_say.
+const PROPOSE_FRAME_PLAN_AND_ASK_TEXT = "Write the plan document and queue it with goal_add; the entry waits paused until the operator's yes reaches you. ";
+const PROPOSE_FRAME_PLAN_AND_START_TEXT = "Write the plan document, queue it and start it; the plugin tells the coordinator. ";
+
+// At plan-and-ask only: an entry that already waits for the operator's yes
+// means a second proposal would queue behind it, so the frame tells the
+// persona to hold rather than add another. Text only; no gate enforces it.
+const PROPOSE_FRAME_ASK_AWAITING_TEXT = `If an entry of yours already waits for the operator's yes, answer "No proposal." and queue nothing. `;
+
+// The no-goal-tree fallback at plan-and-ask and plan-and-start: with no tree
+// to queue a plan on, the persona falls back to the same agentic_say send
+// propose always uses, naming both operator turns that can open one.
+function proposeFrameNoTreeClause(coordinatorPersona: string): string {
+  return `With no goal tree, send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL] instead, since only the operator or the coordinator opens a tree. `;
+}
 
 // The [PROPOSE] frame. Each long-term goal's title and objective is text the
 // persona wrote, so each is folded onto one line, cut at the lengths
 // goal_longterm stores, and passed through bracketSafeText, so a stored goal
-// cannot forge a label in the prompt it is spliced into. The level clause is
-// "Start none of it yourself. " only at propose, which keeps the frame
-// byte-identical to before this section at that level; at the other two
-// levels it is replaced by the level's own sentence above.
+// cannot forge a label in the prompt it is spliced into. Only at propose does
+// the frame tell the persona to agentic_say its own [PROPOSAL] straight to
+// the coordinator persona. At plan-and-ask and plan-and-start a goal-tree
+// holder is told to queue the plan with goal_add instead, which sends the
+// coordinator its own record; the agentic_say send at those two levels rides
+// only inside the no-goal-tree fallback, the one case goal_add cannot cover.
 export function proposeFrame(longTermGoals: LongTermGoal[], coordinatorPersona: string, level: AutonomyLevel): string {
   const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
   const goalLines = longTermGoals.map((g) =>
     `- ${bracketSafeText(oneLine(String(g?.title ?? "").slice(0, 80)))}: ${bracketSafeText(oneLine(String(g?.objective ?? "").slice(0, 500)))}`).join("\n");
+  const noTreeClause = proposeFrameNoTreeClause(coordinatorPersona);
   const levelClause = level === "plan-and-ask"
-    ? PROPOSE_FRAME_PLAN_AND_ASK_TEXT
+    ? PROPOSE_FRAME_PLAN_AND_ASK_TEXT + PROPOSE_FRAME_ASK_AWAITING_TEXT + noTreeClause
     : level === "plan-and-start"
-    ? PROPOSE_FRAME_PLAN_AND_START_TEXT
-    : `Start none of it yourself. `;
+    ? PROPOSE_FRAME_PLAN_AND_START_TEXT + noTreeClause
+    : `Send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL]. Start none of it yourself. `;
   const proposeText =
     `[PROPOSE] Nothing in your goal tree is active or ready to start, and you hold these long-term goals:\n` +
     goalLines +
     `\nName the single next piece of work toward one of them: what it is, why now, and the repository it belongs in. ` +
-    `Send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL]. ` +
     levelClause +
     `If you have no proposal worth making, answer "No proposal." and send nothing.`;
   return proposeText;
@@ -1300,6 +1309,18 @@ const GOAL_QUEUE_MAX_LINES = 12;
 const STANDING_IDLE_ORDER_TEXT = "Finish the active entry, then the next queued entry in your goal tree, then your backlog.";
 const STANDING_QUEUE_NAME_TEXT = "Your goal tree is the queue; read it with goal_status.";
 
+// The opening clause every level sentence below shares: the level scopes
+// only what the persona does with work it finds on its own, never a turn the
+// operator opened to ask for something. One owner, spliced into all three,
+// since a phrase three sentences all need is one the injection duplicate
+// check refuses to see written out three times.
+const STANDING_OWN_WORK_LEAD_TEXT = "For work you find on your own, outside the operator's request, ";
+
+// The no-goal-tree fallback at plan-and-ask and plan-and-start: with no tree
+// to queue a plan on, the persona sends a [PROPOSAL] instead, to either turn
+// kind that can open one. One owner, spliced into both.
+const STANDING_NO_TREE_FALLBACK_TEXT = "With no goal tree, send a [PROPOSAL] instead, since only the operator or the coordinator opens a tree.";
+
 // The [STANDING] block's level sentence, one literal per stored autonomy
 // level. `standingLevelSentence` below picks among them, falling to the
 // propose sentence for any value that is not one of the other two: a stored
@@ -1307,20 +1328,19 @@ const STANDING_QUEUE_NAME_TEXT = "Your goal tree is the queue; read it with goal
 // (isAutonomyLevel/parseState), so this fallback is never reached on a live
 // field, but it keeps an unrecognized value from ever reading as a wider
 // grant than propose.
-//
-// The plan-and-ask and plan-and-start sentences both close on the same
-// no-goal-tree fallback clause, so that clause is its own named literal
-// with one owner (STANDING_NO_TREE_FALLBACK_TEXT) rather than a second copy:
-// a sentence two sentences both need is one the injection duplicate check
-// refuses to see written out twice.
 const STANDING_LEVEL_PROPOSE_TEXT =
-  "Autonomy: propose. You may propose work only: send a [PROPOSAL] record to the coordinator and start nothing until it comes back as a queue entry.";
-const STANDING_NO_TREE_FALLBACK_TEXT = "With no goal tree, send a [PROPOSAL] instead, since only the operator opens a tree.";
+  `Autonomy: propose. ` +
+  STANDING_OWN_WORK_LEAD_TEXT +
+  `you may only propose: send a [PROPOSAL] record to the coordinator and start nothing until it comes back as a queue entry.`;
 const STANDING_LEVEL_PLAN_AND_ASK_TEXT =
-  `Autonomy: plan and ask. You may write the plan document and queue it with goal_add; it waits paused until the operator's yes reaches you. ` +
+  `Autonomy: plan and ask. ` +
+  STANDING_OWN_WORK_LEAD_TEXT +
+  `you may write the plan document and queue it with goal_add; it waits paused until the operator's yes reaches you. ` +
   STANDING_NO_TREE_FALLBACK_TEXT;
 const STANDING_LEVEL_PLAN_AND_START_TEXT =
-  `Autonomy: plan and start. You may write the plan document, queue it and start it; the plugin tells the coordinator. ` +
+  `Autonomy: plan and start. ` +
+  STANDING_OWN_WORK_LEAD_TEXT +
+  `you may write the plan document, queue it and start it; the plugin tells the coordinator. ` +
   STANDING_NO_TREE_FALLBACK_TEXT;
 
 // The [STANDING] block's one conditional sentence, appended where the
@@ -1330,7 +1350,7 @@ const STANDING_IDLE_DUTIES_TEXT = "Nothing in your tree starts by itself, so you
 
 // The level sentence for a stored autonomy level, selected so an unrecognized
 // value falls to the propose sentence rather than to a wider one.
-function standingLevelSentence(level: AutonomyLevel): string {
+export function standingLevelSentence(level: AutonomyLevel): string {
   if (level === "plan-and-ask") return STANDING_LEVEL_PLAN_AND_ASK_TEXT;
   if (level === "plan-and-start") return STANDING_LEVEL_PLAN_AND_START_TEXT;
   return STANDING_LEVEL_PROPOSE_TEXT;

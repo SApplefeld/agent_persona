@@ -25378,41 +25378,30 @@ async function caseAd2_descriptionsAndTheStartedLead(clock) {
 // Autonomy dial 3: the standing block and the proposal frame
 // ============================================================
 
-// This level's [STANDING] block sentence, verbatim from design point 4.
-const AD3_STANDING_LEVEL_TEXT = {
-  "propose": "Autonomy: propose. You may propose work only: send a [PROPOSAL] record to the coordinator and start nothing until it comes back as a queue entry.",
-  "plan-and-ask": "Autonomy: plan and ask. You may write the plan document and queue it with goal_add; it waits paused until the operator's yes reaches you. With no goal tree, send a [PROPOSAL] instead, since only the operator opens a tree.",
-  "plan-and-start": "Autonomy: plan and start. You may write the plan document, queue it and start it; the plugin tells the coordinator. With no goal tree, send a [PROPOSAL] instead, since only the operator opens a tree.",
-};
 const AD3_STANDING_IDLE_ORDER = "Finish the active entry, then the next queued entry in your goal tree, then your backlog.";
 const AD3_STANDING_QUEUE_NAME = "Your goal tree is the queue; read it with goal_status.";
 const AD3_STANDING_IDLE_DUTIES = "Nothing in your tree starts by itself, so you are idle for these duties.";
 
-// This level's [PROPOSE] frame clause, verbatim from design point 5.
-const AD3_PROPOSE_CLAUSE = {
-  "propose": "Start none of it yourself. ",
-  "plan-and-ask": "Write the plan document and queue it with goal_add; the entry waits paused until the operator's yes reaches you. With no goal tree, send the [PROPOSAL] instead, since only the operator opens a tree. ",
-  "plan-and-start": "Write the plan document, queue it and start it; the plugin tells the coordinator. With no goal tree, send the [PROPOSAL] instead, since only the operator opens a tree. ",
+// The level name and the "own work" scope every level sentence carries,
+// checked as tokens a reader acts on rather than a second copy of the
+// sentence: the exact sentence is compared against standingLevelSentence's
+// own return (the constant, not a copy of its text) in the one case that
+// needs the whole sentence, the block's slot check below.
+const AD3_LEVEL_NAME_TOKEN = {
+  "propose": "Autonomy: propose.",
+  "plan-and-ask": "Autonomy: plan and ask.",
+  "plan-and-start": "Autonomy: plan and start.",
 };
-
-// The propose-level [PROPOSE] frame this section must leave byte-identical,
-// over ad3ProposeHarness's own seeded long-term goal (ltgEntry's default
-// objective) and its default coordinatorPersona ("coordinator", since no
-// case here configures one).
-const AD3_PROPOSE_EXPECTED_AT_PROPOSE =
-  "[PROPOSE] Nothing in your goal tree is active or ready to start, and you hold these long-term goals:\n" +
-  "- Held goal: Held goal, as the operator put it\n" +
-  "Name the single next piece of work toward one of them: what it is, why now, and the repository it belongs in. " +
-  "Send it with agentic_say to the coordinator persona, persona set to coordinator, with the text opening [PROPOSAL]. " +
-  "Start none of it yourself. " +
-  "If you have no proposal worth making, answer \"No proposal.\" and send nothing.";
+const AD3_OWN_WORK_TOKEN = "on your own";
 
 // A started owner session of the default persona over `goals`, with one
 // long-term goal (lt-held) and `autonomy` in the stored state, seeded and
 // driven the way autHarness and ad2Harness are. `envErrors` seeds
 // monitor.env.errors.consecutiveErrorTurns before session.start, so a case
 // that needs the [ENV] block present (to pin the [STANDING] block's position
-// ahead of it) can force one without waiting on a real error streak.
+// ahead of it) can force one without waiting on a real error streak. `h.mod`
+// carries the loaded module, the way gl5Harness exposes it, so a case can
+// read standingLevelSentence's own return instead of a copy of its text.
 async function ad3Harness(caseName, { autonomy, goals = gl4Tree(), envErrors = 0 } = {}) {
   const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
   const activeGoalId = goals.find((g) => g.status === "active")?.id ?? null;
@@ -25425,6 +25414,7 @@ async function ad3Harness(caseName, { autonomy, goals = gl4Tree(), envErrors = 0
     claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
   });
   await h.handlers["session.start"](h.fake, {}, () => {});
+  h.mod = await loadModule(caseName);
   return h;
 }
 
@@ -25459,8 +25449,10 @@ async function ad3ProposeHarness(caseName, autonomy) {
 
 // Acceptance bullet 1 and 5: an external prompt at each level carries one
 // [STANDING] block, its third sentence (the fourth line, after the header)
-// naming that level verbatim, after the goal blocks and before [ENV]. Over
-// gl4Tree's active leaf the block carries no idle sentence.
+// naming that level, after the goal blocks and before [ENV]. Over gl4Tree's
+// active leaf the block carries no idle sentence. Line 4 is compared against
+// standingLevelSentence's own return, the constant the block is built from,
+// rather than a copy of its text typed here.
 async function caseAd3_standingBlockAtEachLevel(clock) {
   console.log("\n=== Autonomy dial 3: the [STANDING] block names each level, after the goal blocks and before [ENV] ===");
   for (const level of AUT_LEVELS) {
@@ -25473,7 +25465,9 @@ async function caseAd3_standingBlockAtEachLevel(clock) {
     check(`ad3 standing ${level}: line 1 is the header`, lines[0] === "[STANDING]", standingBlocks[0]);
     check(`ad3 standing ${level}: line 2 is the idle order`, lines[1] === AD3_STANDING_IDLE_ORDER, standingBlocks[0]);
     check(`ad3 standing ${level}: line 3 names the goal tree as the queue`, lines[2] === AD3_STANDING_QUEUE_NAME, standingBlocks[0]);
-    check(`ad3 standing ${level}: line 4 is this level's sentence verbatim`, lines[3] === AD3_STANDING_LEVEL_TEXT[level], standingBlocks[0]);
+    check(`ad3 standing ${level}: line 4 is standingLevelSentence(level)'s own return`, lines[3] === h.mod.standingLevelSentence(level), standingBlocks[0]);
+    check(`ad3 standing ${level}: line 4 names the level and the own-work scope`,
+      lines[3].includes(AD3_LEVEL_NAME_TOKEN[level]) && lines[3].includes(AD3_OWN_WORK_TOKEN), standingBlocks[0]);
     check(`ad3 standing ${level}: no idle sentence over an active entry`, lines.length === 4, standingBlocks[0]);
     const goalIdx = blocks.findIndex((b) => b.startsWith("[GOAL TREE]"));
     const standingIdx = blocks.findIndex((b) => b.startsWith("[STANDING]"));
@@ -25533,12 +25527,17 @@ async function caseAd3_readerSessionCarriesNoBlock(clock) {
     ownerBlocks.some((b) => b.startsWith("[STANDING]")), ownerBlocks);
 }
 
-// Acceptance bullet 3, the nudge half: the controller's own $.prompt.submit
-// calls (a nudge among them) bypass the prompt.submit hook this block rides,
-// so the text a nudge actually sends carries no [STANDING] block. The
-// control leg is an external prompt in the same harness, which does.
+// The Tests line's "a nudge turn carries none". This cannot go red on a
+// change to the prompt.submit handler itself: the nudge frame text
+// (nudgeText) is built directly by the controller and handed straight to
+// $.prompt.submit, and the harness's fake prompt.submit is never invoked for
+// it, per the Vocabulary paragraph's engine assumption that the plugin's own
+// submits bypass the prompt.submit hook this block rides. What the case does
+// catch is the nudge frame's own text carrying a stray "[STANDING]" string.
+// The control leg is an external prompt in the same harness, which does
+// carry the block, through the real hook.
 async function caseAd3_nudgeTurnCarriesNoBlock(clock) {
-  console.log("\n=== Autonomy dial 3: a nudge turn carries no [STANDING] block ===");
+  console.log("\n=== Autonomy dial 3: the nudge frame text carries no [STANDING] string ===");
   clock.set(T0);
   const h = await ad3Harness("ad3_nudge", { autonomy: "plan-and-ask", goals: gl4Tree() });
   const controlBlocks = await ad3OpenExternalPrompt(h, { turnId: "t-control" });
@@ -25550,14 +25549,22 @@ async function caseAd3_nudgeTurnCarriesNoBlock(clock) {
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
   check("ad3 nudge setup: the tick sent a nudge", getState(h).decisions.some((d) => d.action === "nudge_sent"), getState(h).decisions.map((d) => d.action));
-  check("ad3 nudge: the submitted nudge text carries no [STANDING] block",
+  check("ad3 nudge: the nudge frame text carries no [STANDING] string",
     !h.promptSubmits.some((p) => p.includes("[STANDING]")), h.promptSubmits);
 }
 
-// Acceptance bullet 4: the [PROPOSE] turn at each level carries that level's
-// sentence, and stays byte-identical to before this section at propose.
+// Acceptance bullet 4, and the fix for the double send a goal-tree holder
+// produced under the original wording: at propose the frame sends its own
+// [PROPOSAL] with agentic_say and never mentions goal_add; at plan-and-ask
+// and plan-and-start a goal-tree holder is told to queue with goal_add
+// instead, which sends the coordinator its own record, and the frame's
+// agentic_say send appears only inside the no-goal-tree fallback, the one
+// case goal_add cannot reach. Checked on the tokens a reader acts on rather
+// than a byte-for-byte copy of the frame: no whole-frame pin already existed
+// in this suite for the propose-level text to compare against, so propose is
+// pinned by tokens here too rather than a new whole-string copy.
 async function caseAd3_proposeFrameAtEachLevel(clock) {
-  console.log("\n=== Autonomy dial 3: the [PROPOSE] frame carries the level's clause, and is byte-identical at propose ===");
+  console.log("\n=== Autonomy dial 3: the [PROPOSE] frame sends once per level, never through both goal_add and agentic_say ===");
   for (const level of AUT_LEVELS) {
     clock.set(T0);
     const h = await ad3ProposeHarness(`ad3_propose_${level}`, level);
@@ -25565,11 +25572,30 @@ async function caseAd3_proposeFrameAtEachLevel(clock) {
     fireTick(h);
     check(`ad3 propose ${level}: the tick submits one [PROPOSE] turn`, await waitUntil(() => gl5Proposes(h).length === 1), h.promptSubmits);
     const text = gl5Proposes(h)[0];
-    check(`ad3 propose ${level}: carries this level's clause verbatim`, text.includes(AD3_PROPOSE_CLAUSE[level]), text);
+    check(`ad3 propose ${level}: keeps the goal-naming sentence and the no-proposal close`,
+      text.includes("Name the single next piece of work") && text.includes('answer "No proposal." and send nothing.'), text);
+
     if (level === "propose") {
-      check("ad3 propose propose: the frame is byte-identical to before this section", text === AD3_PROPOSE_EXPECTED_AT_PROPOSE, text);
+      check("ad3 propose propose: carries the propose close", text.includes("Start none of it yourself."), text);
+      check("ad3 propose propose: carries the agentic_say [PROPOSAL] send", text.includes("agentic_say") && text.includes("[PROPOSAL]"), text);
+      check("ad3 propose propose: carries no goal_add", !text.includes("goal_add"), text);
+      continue;
+    }
+
+    const noTreeIdx = text.indexOf("With no goal tree");
+    check(`ad3 propose ${level}: carries "queue it"`, text.includes("queue it"), text);
+    check(`ad3 propose ${level}: carries the no-tree agentic_say fallback`,
+      noTreeIdx >= 0 && text.includes("agentic_say") && text.includes("[PROPOSAL]"), text);
+    check(`ad3 propose ${level}: carries no propose-only close`, !text.includes("Start none"), text);
+    check(`ad3 propose ${level}: the agentic_say send appears only inside the no-tree clause`,
+      noTreeIdx > 0 && !text.slice(0, noTreeIdx).includes("agentic_say"), text);
+    if (level === "plan-and-ask") {
+      check("ad3 propose plan-and-ask: carries goal_add", text.includes("goal_add"), text);
+      check("ad3 propose plan-and-ask: names the operator's yes", text.includes("operator's yes"), text);
+      check("ad3 propose plan-and-ask: carries the no-second-proposal sentence",
+        text.includes("already waits for the operator's yes") && text.includes("queue nothing"), text);
     } else {
-      check(`ad3 propose ${level}: the propose-only sentence is gone`, !text.includes("Start none of it yourself."), text);
+      check("ad3 propose plan-and-start: carries start", text.includes("queue it and start it"), text);
     }
   }
 }
@@ -25577,14 +25603,17 @@ async function caseAd3_proposeFrameAtEachLevel(clock) {
 // The Tests line's extension: a level change made mid-session (goal_autonomy
 // in a channel turn) is named by the next external prompt's block, since the
 // harness loads state at session.start and this drives the change through
-// the real handler rather than re-seeding the store.
+// the real handler rather than re-seeding the store. Checked on the level
+// name and the "on your own" scope, the tokens a reader acts on, rather than
+// a copy of the level sentence's text.
 async function caseAd3_levelChangeMidSessionUpdatesTheBlock(clock) {
   console.log("\n=== Autonomy dial 3: a level change made mid-session is named by the next external prompt's block ===");
   clock.set(T0);
   const h = await ad3Harness("ad3_level_change", { autonomy: "propose", goals: gl4Tree() });
   const before = await ad3OpenExternalPrompt(h, { turnId: "t-before" });
   const beforeStanding = before.find((b) => b.startsWith("[STANDING]")) || "";
-  check("ad3 level change setup: the block names propose before the change", beforeStanding.includes(AD3_STANDING_LEVEL_TEXT["propose"]), beforeStanding);
+  check("ad3 level change setup: the block names propose and the own-work scope before the change",
+    beforeStanding.includes(AD3_LEVEL_NAME_TOKEN["propose"]) && beforeStanding.includes(AD3_OWN_WORK_TOKEN), beforeStanding);
 
   const res = await callTool(h, { tool: AUT_TOOL, level: "plan-and-ask" });
   check("ad3 level change: goal_autonomy is accepted in this channel turn", res?.deny === undefined, res);
@@ -25592,7 +25621,8 @@ async function caseAd3_levelChangeMidSessionUpdatesTheBlock(clock) {
 
   const after = await ad3OpenExternalPrompt(h, { turnId: "t-after" });
   const afterStanding = after.find((b) => b.startsWith("[STANDING]")) || "";
-  check("ad3 level change: the next external prompt's block names plan-and-ask", afterStanding.includes(AD3_STANDING_LEVEL_TEXT["plan-and-ask"]), afterStanding);
+  check("ad3 level change: the next external prompt's block names plan-and-ask, the own-work scope and goal_add",
+    afterStanding.includes(AD3_LEVEL_NAME_TOKEN["plan-and-ask"]) && afterStanding.includes(AD3_OWN_WORK_TOKEN) && afterStanding.includes("goal_add"), afterStanding);
   await closeTurn(h, "t-after");
 }
 
