@@ -25592,8 +25592,6 @@ async function caseAd3_proposeFrameAtEachLevel(clock) {
     if (level === "plan-and-ask") {
       check("ad3 propose plan-and-ask: carries goal_add", text.includes("goal_add"), text);
       check("ad3 propose plan-and-ask: names the operator's yes", text.includes("operator's yes"), text);
-      check("ad3 propose plan-and-ask: carries the no-second-proposal sentence",
-        text.includes("already waits for the operator's yes") && text.includes("queue nothing"), text);
     } else {
       check("ad3 propose plan-and-start: carries start", text.includes("queue it and start it"), text);
     }

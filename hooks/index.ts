@@ -476,11 +476,6 @@ function kaizenLine(text: string): string {
 const PROPOSE_FRAME_PLAN_AND_ASK_TEXT = "Write the plan document and queue it with goal_add; the entry waits paused until the operator's yes reaches you. ";
 const PROPOSE_FRAME_PLAN_AND_START_TEXT = "Write the plan document, queue it and start it; the plugin tells the coordinator. ";
 
-// At plan-and-ask only: an entry that already waits for the operator's yes
-// means a second proposal would queue behind it, so the frame tells the
-// persona to hold rather than add another. Text only; no gate enforces it.
-const PROPOSE_FRAME_ASK_AWAITING_TEXT = `If an entry of yours already waits for the operator's yes, answer "No proposal." and queue nothing. `;
-
 // The no-goal-tree fallback at plan-and-ask and plan-and-start: with no tree
 // to queue a plan on, the persona falls back to the same agentic_say send
 // propose always uses, naming both operator turns that can open one.
@@ -503,7 +498,7 @@ export function proposeFrame(longTermGoals: LongTermGoal[], coordinatorPersona: 
     `- ${bracketSafeText(oneLine(String(g?.title ?? "").slice(0, 80)))}: ${bracketSafeText(oneLine(String(g?.objective ?? "").slice(0, 500)))}`).join("\n");
   const noTreeClause = proposeFrameNoTreeClause(coordinatorPersona);
   const levelClause = level === "plan-and-ask"
-    ? PROPOSE_FRAME_PLAN_AND_ASK_TEXT + PROPOSE_FRAME_ASK_AWAITING_TEXT + noTreeClause
+    ? PROPOSE_FRAME_PLAN_AND_ASK_TEXT + noTreeClause
     : level === "plan-and-start"
     ? PROPOSE_FRAME_PLAN_AND_START_TEXT + noTreeClause
     : `Send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL]. Start none of it yourself. `;

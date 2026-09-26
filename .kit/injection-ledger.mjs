@@ -908,9 +908,8 @@ function splitChainAtIdentifier(chainSrc, ident, owner) {
 // The chain also splices `levelClause` whole, a ternary declared just above
 // the frame. Its plan-and-ask and plan-and-start arms are each a `+`-chain of
 // constants already sized elsewhere (PROPOSE_FRAME_PLAN_AND_ASK_TEXT or
-// PROPOSE_FRAME_PLAN_AND_START_TEXT, PROPOSE_FRAME_ASK_AWAITING_TEXT at
-// plan-and-ask only, and the no-goal-tree clause proposeFrameNoTreeClause
-// returns), so this rule only checks their shape rather than sizing them
+// PROPOSE_FRAME_PLAN_AND_START_TEXT, then the no-goal-tree clause
+// proposeFrameNoTreeClause returns), so this rule only checks their shape rather than sizing them
 // again; a changed identifier or operand order refuses. The propose arm is
 // the one piece nothing else sizes, a plain template literal read from the
 // ternary's own declaration. `levelClause` is spliced at its exact chain
@@ -923,7 +922,7 @@ function splitChainAtIdentifier(chainSrc, ident, owner) {
 function extractProposeFrame(src) {
   const m = /const proposeText =\s*([\s\S]*?);\n/.exec(src);
   if (!m) throw new Error("[PROPOSE] frame not found in hooks/index.ts");
-  const c = /const levelClause = level === "plan-and-ask"\s*\?\s*PROPOSE_FRAME_PLAN_AND_ASK_TEXT \+ PROPOSE_FRAME_ASK_AWAITING_TEXT \+ noTreeClause\s*:\s*level === "plan-and-start"\s*\?\s*PROPOSE_FRAME_PLAN_AND_START_TEXT \+ noTreeClause\s*:\s*(`[^`]*`);\n/.exec(src);
+  const c = /const levelClause = level === "plan-and-ask"\s*\?\s*PROPOSE_FRAME_PLAN_AND_ASK_TEXT \+ noTreeClause\s*:\s*level === "plan-and-start"\s*\?\s*PROPOSE_FRAME_PLAN_AND_START_TEXT \+ noTreeClause\s*:\s*(`[^`]*`);\n/.exec(src);
   if (!c) throw new Error("[chain-shape] PROPOSE_FRAME: the levelClause ternary was not found in hooks/index.ts in the shape this rule reads");
   const { before, after } = splitChainAtIdentifier(m[1], "levelClause", "PROPOSE_FRAME");
   const literal = literalOfTemplateChain(before, "PROPOSE_FRAME before levelClause", ["goalLines"])
@@ -954,19 +953,6 @@ function extractSimpleTextConst(src, name) {
   const re = new RegExp(`const ${name} =\\s*"([^\\n"]*)";`);
   const m = re.exec(src);
   if (!m) throw new Error(`${name} not found in hooks/index.ts as a single-line double-quoted constant`);
-  return record(name, "hooks/index.ts", m[1]);
-}
-
-// The backtick counterpart to extractSimpleTextConst, for a constant whose
-// text carries a literal double quote (a quoted sentence inside the
-// sentence): a double-quoted source literal cannot hold one without an
-// escape, and this ledger's simple double-quoted reader does not decode an
-// escape mid-capture, so the constant is written as a plain backtick
-// template instead.
-function extractSimpleTemplateConst(src, name) {
-  const re = new RegExp(`const ${name} = \`([^\`]*)\`;`);
-  const m = re.exec(src);
-  if (!m) throw new Error(`${name} not found in hooks/index.ts as a single-line backtick constant`);
   return record(name, "hooks/index.ts", m[1]);
 }
 
@@ -1563,7 +1549,6 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractProposeFrame(tsSrc),
     extractSimpleTextConst(tsSrc, "PROPOSE_FRAME_PLAN_AND_ASK_TEXT"),
     extractSimpleTextConst(tsSrc, "PROPOSE_FRAME_PLAN_AND_START_TEXT"),
-    extractSimpleTemplateConst(tsSrc, "PROPOSE_FRAME_ASK_AWAITING_TEXT"),
     extractProposeFrameNoTreeClause(tsSrc),
     extractBackstopFrame(tsSrc),
     extractShutdownFrame(tsSrc),

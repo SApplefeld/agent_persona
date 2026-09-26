@@ -188,26 +188,33 @@ Line numbers move, so find each site by the names given.
    before `[ENV]`. It is three sentences. The first is the idle order:
    "Finish the active entry, then the next queued entry in your goal tree, then your backlog." The
    second names the queue: "Your goal tree is the queue; read it with goal_status." The third is
-   the level's sentence, which the ledger holds as one literal per level. At `propose`:
-   "Autonomy: propose. You may propose work only: send a
-   [PROPOSAL] record to the coordinator and start nothing until it comes back as a queue entry."
-   At `plan-and-ask`: "Autonomy: plan and ask. You may write the plan document and queue it with
-   goal_add; it waits paused until the operator's yes reaches you. With no goal tree, send a
-   [PROPOSAL] instead, since only the operator opens a tree." At `plan-and-start`: "Autonomy: plan
-   and start. You may write the plan document, queue it and start it; the plugin tells the
-   coordinator. With no goal tree, send a [PROPOSAL] instead, since only the operator opens a
-   tree." Where `hasStartableWork` is false and `openGoals` is not empty, the
+   the level's sentence, which the ledger holds as one literal per level. Each opens by scoping
+   the level to work the persona finds on its own, since the block also rides the operator's own
+   turns, where the level does not bind. At `propose`: "Autonomy: propose. For work you find on
+   your own, outside the operator's request, you may only propose: send a [PROPOSAL] record to
+   the coordinator and start nothing until it comes back as a queue entry." At `plan-and-ask`:
+   "Autonomy: plan and ask. For work you find on your own, outside the operator's request, you
+   may write the plan document and queue it with goal_add; it waits paused until the operator's
+   yes reaches you. With no goal tree, send a [PROPOSAL] instead, since only the operator or the
+   coordinator opens a tree." At `plan-and-start`: "Autonomy: plan and start. For work you find
+   on your own, outside the operator's request, you may write the plan document, queue it and
+   start it; the plugin tells the coordinator. With no goal tree, send a [PROPOSAL] instead,
+   since only the operator or the coordinator opens a tree." Where `hasStartableWork` is false
+   and `openGoals` is not empty, the
    block adds one sentence: "Nothing in your tree starts by itself, so you are idle for these
    duties." A tree holding only complete or abandoned entries has an empty `openGoals` and gets no
    idle sentence. The two fixed sentences, the three level sentences and the idle sentence are one
-   ledger entry each.
-5. The `[PROPOSE]` frame the goal-levels plan builds branches on the level in one sentence, held
-   as one more literal per level. The level sentence replaces the frame's sentence that tells the
-   persona to start none of it, which stays only at `propose`. At `propose` the frame reads as
-   goal-levels states. At `plan-and-ask` it tells the persona to write the plan document and queue
-   it with `goal_add`, and that the entry waits for the operator's yes. At `plan-and-start` it
-   tells the persona to write the plan document, queue it and start it. At both, where the
-   persona holds no tree, the sentence tells it to send a `[PROPOSAL]` instead.
+   ledger entry each, and a clause two level sentences share (the own-work opening, the no-tree
+   close) is one literal of its own with one ledger entry, since the duplicate check refuses the
+   same text written twice.
+5. The `[PROPOSE]` frame the goal-levels plan builds branches on the level, held as one more
+   literal per level. At `propose` the frame reads as goal-levels states: send the `[PROPOSAL]`
+   with `agentic_say` and start none of it. At `plan-and-ask` it tells the persona to write the
+   plan document and queue it with `goal_add`, and that the entry waits for the operator's yes.
+   At `plan-and-start` it tells the persona to write the plan document, queue it and start it. At
+   both, the frame's own `agentic_say` send rides only in the no-tree clause, where the persona
+   holds no tree and sends the `[PROPOSAL]` instead, since `goal_add` already sends the
+   coordinator a record for a queued plan.
 6. The coordinator's instruction gains the `[STARTED]` lead: tell the operator in one line which
    persona started what, and note it on the board. For a `[PROPOSAL]` that names a `planPath` and
    an entry id, the operator's yes is relayed as a coordinator record telling the worker to
@@ -495,6 +502,36 @@ Gate: targeted lane at section close, measured 2026-09-26T03:15:08Z to 03:16:58Z
 Next: 3. The standing block and the proposal frame
 Commit Model: Branch-and-PR
 Delta: measured 2026-09-26T03:17:13Z on SCOTT-CLAUDE in the autonomy-dial worktree; exit 2
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 3 - 2026-09-26
+Completed: 3. The standing block and the proposal frame
+Implemented By: implementer-sonnet (one dispatch, resumed for fix round 1); the orchestrator made the round 2 removal inline
+Metrics: review rounds 2, closed major-closed; provenance 2 spec-traceable, 0 fix-introduced, 3 new-requirement, rulings (0 refused, 1 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- Section open: adds the [STANDING] block to every external prompt of a non-reader session and gives the [PROPOSE] frame one level sentence per level; serves the Goal's "every external prompt carries a standing block that states the idle order, names the goal tree as the queue, and states that level in one sentence"; adds no mechanism beyond design points 4 and 5 (one block assembly, one frame branch); about 60 lines in hooks/index.ts plus ledger rules and tests; not building it leaves the level enforced by the gate with nothing telling the persona what it may do.
+- Round 1 Major (adversarial and blind, trace section 3 acceptance "The [PROPOSE] turn at each level carries that level's sentence" and design point 5's "send a [PROPOSAL] instead"; spec-traceable): at plan-and-ask and plan-and-start the frame drops its own agentic_say send sentence except as the no-tree fallback, so a persona with a tree queues with goal_add only and goal_add's record is the one the coordinator gets; serves design point 5 and the Intent's "the gate does what the sentence says"; adds no mechanism (the frame's text composition per level); about 15 lines; not doing it has a persona at plan-and-ask send two records for one plan, and at plan-and-start a request for work already started.
+- Round 1 Major (adversarial, trace section 3 Tests "lock the [PROPOSE] frame's sentence at each level"; spec-traceable): replace the byte-for-byte frame pins with checks on the tokens a reader acts on at each level, plus the propose frame's "Start none of it yourself." and its agentic_say send; serves that Tests line without pinning wording the implementer chose; adds no mechanism; test-only, about 30 lines; not doing it turns the suite red on any rewording nothing else depends on.
+- Round 1 Minor fix (blind), frame text only: at plan-and-ask the frame adds that where an entry of the persona's already waits for the operator's yes, it answers "No proposal."; serves the Intent's "An entry queued at plan and ask waits for the operator's word in fact"; adds no mechanism (a sentence; no guard in the ask gate); 1 line; not doing it leaves a daily plan document and paused entry while the first waits.
+- Round 1 Major (blind, orchestrator-traced: no bullet; new-requirement; ruled ACCEPT-AND-DECLARE by the scope adjudicator at fable on the Goal's "what it may do with work it found on its own", bound acceptance bullet 1's slot): scope the three [STANDING] level sentences to work the persona finds on its own, outside the operator's request, and say the no-tree clause's "only the operator or the coordinator opens a tree"; serves that Goal sentence and the Intent's "the gate does what the sentence says"; adds no mechanism (three literals and one clause reworded); about 4 lines plus ledger and checks; not doing it has the block tell the persona, in the operator's own turn, that it may only propose, and that an entry the operator added waits paused. The finding's alternative (inject on controller turns instead) was REFUSED on acceptance bullet 3.
+- Reversal: round 2 showed the fourth line above traced to nothing. The Intent clause it cited says a persona cannot resume its own awaiting entry and is silent on repeat proposals. The orchestrator withdrew that sentence, its ledger rule, the extractor only it used, and its check. The repeat-proposal concern went to `docs/backlog.md` with a gate-side remedy.
+- Deviation, recorded in the spec: design point 4's quoted level sentences now carry the own-work opening and the "operator or the coordinator" no-tree clause, and design point 5 now says the frame's agentic_say send rides only in the no-tree clause at the two non-propose levels. Both are edits to the Approach, above `## Chapters`, made to match what shipped. The Section 3 entry in `Standing Brief Amendments` is the ruling's record.
+- Ledger shape: a clause two level sentences share is one literal with one entry (`STANDING_OWN_WORK_LEAD_TEXT`, `STANDING_NO_TREE_FALLBACK_TEXT`), since the duplicate check refuses the same text twice. The frame's no-tree clause is a function, `proposeFrameNoTreeClause`, because it names the coordinator persona. `standingLevelSentence` is exported for the slot check.
+- Merge note for finishing: main carries a `[TASK LIST]` block (PR 110) in the same `prompt.submit` handler, so the order of `[TASK LIST]` beside `[STANDING]` is settled at the merge.
+Assumptions:
+- assumed 2026-09-26 (default, section 3): the [PROPOSE] frame's plan-and-ask and plan-and-start sentences, which design point 5 describes without quoting, read "Write the plan document and queue it with goal_add; the entry waits paused until the operator's yes reaches you." and "Write the plan document, queue it and start it; the plugin tells the coordinator." Reversal: the two `PROPOSE_FRAME_*_TEXT` constants in `hooks/index.ts`.
+Review Findings: round 1: adversarial and blind at opus, effort high, Workflow on the Reviewer Dispatch template (wf_378ac7ab-d2b), since the writer tier is sonnet. Round 2: adversarial at sonnet, effort high, Workflow (wf_11f92e6c-b1a). Advisory lenses not dispatched: the delta adds fixed text and two in-memory reads on the once-per-turn prompt path, with no input handling, spawn, store query or per-tool-call path. Tree unchanged across each round: the porcelain capture was empty before and after.
+- Round 1, adversarial CHANGES_REQUIRED and blind CHANGES_REQUIRED. Major (both lenses, spec-traceable): the frame at plan-and-ask and plan-and-start still told the persona to send its own [PROPOSAL] beside goal_add's record. Fixed in fix round 1. Major (adversarial, spec-traceable): the frame tests pinned wording the implementer chose. Fixed in fix round 1. Major (blind, orchestrator-traced, new-requirement): the level sentence was unscoped and rode the operator's own turns. Held; the scope adjudicator at fable ruled ACCEPT-AND-DECLARE, after "fable capacity: scoped 48%, 7d 38%, 5h 4% (account 4, fetched 178s ago) -> dispatch"; GROUNDS checked on the plan (the Goal sentence exists verbatim; bullets 1 and 3 exist and cover the subject); fixed in fix round 1.
+- Round 2, adversarial CHANGES_REQUIRED. Two Majors, trace none, new-requirement: the plan-and-ask "No proposal." sentence nothing asked for, and the check pinning it. Not held for a judge, because the orchestrator's own re-trace agreed the sentence traced to nothing: the lines were withdrawn, which is the finding's own remedy and adds nothing. Below the fix-delta bar (a removal, no outward action, no new module), so no third round was owed; author re-read of `.kit/scratch/autonomy-dial/section-3/close-pass.diff`.
+- The orchestrator's red probe on fix round 1, since the implementer's red-first was a crash on a missing export: the plan-and-ask double-send restored and one own-work opening dropped turned exactly the two meant checks red (exit 2); restored from a copy, cmp identical, porcelain unchanged.
+- Minors: 13 recorded; 8 fixed in fix round 1, 1 of them upgraded on a stated consequence (the ledger joined the propose arm after the frame's closing sentence, hiding it from the duplicate check); 1 moot (round 2's "queue nothing" against "send nothing" wording, gone with the sentence); 1 routed to `docs/backlog.md` (repeat plan-and-ask proposals while one waits); 3 left. Left: a non-owner owner-armed session reads the level from its session-start snapshot, as design point 4 asks the block to share the goal blocks' gate and those read the same snapshot; the idle sentence's "these duties", which is design point 4's own text and whose referent is the block's idle order; round 2's note that the nudge-turn test cannot exercise the hook bypass, which that test's comment already states.
+Stamps: adjudicated 0 from `memq unstamped --since 3h`, which printed no read stamp in the window and so is an absence of evidence. Owed a hand walk: one record shaped a line this section wrote, `a-doubled-backslash-never-reaches-the-shell` (operator tier), surfaced by the recognition nudge when a shell-quoted edit lost its escapes; the edit moved into a script file. Stamped 1.
+Gate: targeted lane at section close, measured 2026-09-26T04:43:21Z to 04:45:11Z on SCOTT-CLAUDE in the autonomy-dial worktree at 4701a46 plus the uncommitted round 2 removal. `npx tsc --noEmit` exit 0; `node .kit/tool-description-length-test.mjs` exit 0; `node .kit/injection-duplicate-test.mjs` exit 0; `node .kit/controller-tick-test.mjs` exit 0, 4781 OK, 0 FAIL, ending `PASS: 0 failure(s)`. Baseline on the same lane: 4725 OK, 0 FAIL at ca0f6da (Chapter 2's close). The orchestrator re-ran each stage's gate: 4767 at first green (03:54:10Z to 03:56:07Z), 4782 after fix round 1 (04:29:10Z to 04:30:58Z). Contention: a foreign claude-kit `node tools/probe-corpus/run.mjs` (PID 13136) was live during the fix round 1 and close runs, both of which passed. Wall clock 1m50s against 1m50s at Chapter 2's close. Test delta: 6 `caseAd3_` cases added, 0 retired, 0 existing checks edited. Each pins one requirement: one [STANDING] block at each level, in the slot before [ENV], its third line the level's sentence (Acceptance 1); the idle sentence on an all-paused tree and not on an active or empty tree (Acceptance 2); no block for a reader, with an owner control leg (Acceptance 3); no [STANDING] in the nudge frame text, with a control leg (Acceptance 3, resting on the engine's bypass of the hook for the plugin's own submits); the [PROPOSE] frame's sentence at each level, with the agentic_say send only in the no-tree clause at the two non-propose levels (Acceptance 4); a level set mid-session shows in the next prompt's block (the Tests line's stale-level clause). 0 added tests spawn a process, since the harness runs in process.
+Next: 4. The coordinator's instruction and the documents
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-26T04:46:11Z on SCOTT-CLAUDE in the autonomy-dial worktree; exit 2
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```

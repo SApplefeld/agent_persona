@@ -152,12 +152,6 @@
       "words": 14
     },
     {
-      "name": "PROPOSE_FRAME_ASK_AWAITING_TEXT",
-      "file": "hooks/index.ts",
-      "chars": 100,
-      "words": 17
-    },
-    {
       "name": "PROPOSE_FRAME_NO_TREE_CLAUSE",
       "file": "hooks/index.ts",
       "chars": 188,
