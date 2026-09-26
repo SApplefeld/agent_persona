@@ -28,7 +28,7 @@ Alternatives refused, one line each:
 - A results file in the plugin repository: the check is a property of a machine and its installed build, not of the source tree, and a canary should not need a commit to record a run.
 - One script per caller for the recap: the skill and the plugin's automatic block would drift; one script prints a machine header and a human digest, and each caller reads its half.
 
-Rulings after the spec shipped: none yet. Each is appended here dated, and the Chapter that lands it names it as drift.
+Rulings after the spec shipped: on 2026-09-25 the operator ruled items 0 to 3 under Decisions as recommended, on the relay thread, in one word covering all four. Both arming stages are open. Each later ruling is appended here dated, and the Chapter that lands it names it as drift.
 
 Provenance: distilled by the architect persona from the assistant persona's relayed brief (record ARCHITECT-3e1be2f1-6f7a-42f6-bb1f-2cedc3afd862-1), the assistant persona's runbook and first-run results at `D:/personas/ASSISTANT/docs/claude-code-upgrade-check.md`, and a read of the plugin's claim path, prompt.submit injection, transcript records and CLI subcommands, on 2026-09-25 in session 1e18cd68.
 
@@ -36,7 +36,7 @@ Provenance: distilled by the architect persona from the assistant persona's rela
 
 Written to the recommendations. An item reading `Ruled: pending` parks the sections its stage names; nothing lands by silence. The evidence block sits at the end of this section.
 
-**Item 0. The two skills ship in agentic-plugin, under a new `skills/` directory at the plugin root.** Ruled: pending.
+**Item 0. The two skills ship in agentic-plugin, under a new `skills/` directory at the plugin root.** Ruled: as recommended, 2026-09-25.
 
 - Situation. The plugin ships no skills today, and the check's runbook lives in one persona's docs folder. Claude Code discovers a plugin's skills from `skills/<name>/SKILL.md` under the plugin root, the layout the kit plugin already uses, and `claude plugin validate` reads them.
 - Decision. Where the two skills live.
@@ -44,7 +44,7 @@ Written to the recommendations. An item reading `Ruled: pending` parks the secti
 - Options. (a) agentic-plugin `skills/`. (Recommended.) (b) The kit. Cost: the kit would carry a plugin's private check and a dependency on its types. (c) A persona's docs folder. Cost: not installed anywhere, followed by hand.
 - Unanswered: sections 1 and 2 stay parked.
 
-**Item 1. The plugin records the previous session's id in the persona's store at claim time, and the recap reads that lineage.** Ruled: pending.
+**Item 1. The plugin records the previous session's id in the persona's store at claim time, and the recap reads that lineage.** Ruled: as recommended, 2026-09-25.
 
 - Situation. The claim path computes the outgoing session's id and writes it only into a decision log string. Nothing on disk names the previous session as a field, and the supervisor's `child-<n>/handle.json` trail is cleared once an exit is accounted. Two personas can share a working directory, so their transcripts share one folder.
 - Decision. Whether the recap's source is a `previousSessionIds` field the plugin writes, or a heuristic over the transcript folder.
@@ -52,7 +52,7 @@ Written to the recommendations. An item reading `Ruled: pending` parks the secti
 - Options. (a) The field, a ring of the last three ids, newest first, written at every claim site, with the heuristic kept only as a labelled fallback for a store written before this plan. (Recommended.) (b) The heuristic alone. Cost: wrong-persona recaps in a shared directory.
 - Unanswered: sections 3 to 6 stay parked.
 
-**Item 2. The automatic recap is on by default, gated so an idle stretch injects nothing.** Ruled: pending.
+**Item 2. The automatic recap is on by default, gated so an idle stretch injects nothing.** Ruled: as recommended, 2026-09-25.
 
 - Situation. The operator wants the skill on demand and "possibly" an automatic version. The plugin's first prompt after a launch is the supervisor's priming turn, and prompt.submit already appends context blocks there. A hook has ten seconds; the script reads bounded tails of at most two transcripts, so five seconds is its ceiling.
 - Decision. Whether the block is injected automatically, and under what gate.
@@ -60,7 +60,7 @@ Written to the recommendations. An item reading `Ruled: pending` parks the secti
 - Options. (a) A `restartRecap` setting, `auto` by default, `skill` to disable, and under `auto` the block is injected at the priming turn only where the previous session's last record is within 24 hours and either the store holds an active goal or the last operator message is within 6 hours; both windows are named constants. (Recommended.) (b) Skill only. Cost: the failure recurs until someone remembers. (c) Always. Cost: stale context on quiet launches.
 - Unanswered: sections 3 to 6 stay parked.
 
-**Item 3. Results live beside the fleet roster, one markdown table and one JSON lines file, appended per run.** Ruled: pending.
+**Item 3. Results live beside the fleet roster, one markdown table and one JSON lines file, appended per run.** Ruled: as recommended, 2026-09-25.
 
 - Situation. The first run's results sit in the assistant persona's docs folder. The check is a property of the machine and its installed build. The roster file, `fleetRoster` in each persona's settings, names the fleet's directory, `D:/personas` on the fleet machine.
 - Decision. Where a run's rows are written.
