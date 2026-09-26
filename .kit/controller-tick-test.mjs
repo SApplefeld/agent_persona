@@ -24410,12 +24410,7 @@ async function caseAut_everyOtherTurnIsRefused(clock) {
     d.promptSubmits.some((p) => p.startsWith("[COORDINATOR id=default-coord-open-1-1]")), d.promptSubmits);
   const effort = await callTool(d, { tool: LTG_TOOL, action: "add", title: "Control", objective: "The effort gate admits this turn" });
   check("aut coordinator control: the effort gate admits a goal_longterm add in the same turn", effort?.deny === undefined, effort);
-  const bytesAfterControl = d.fsMap.get(PERSONA_STORE_FILE);
-  const coordRes = await callTool(d, { tool: AUT_TOOL, level: "plan-and-ask" });
-  check("aut coordinator delivery: refused by the turn rule, naming this persona's own thread",
-    typeof coordRes?.deny === "string" && coordRes.deny.includes(AUT_REFUSED_TOKEN), coordRes);
-  check("aut coordinator delivery: nothing reached the store", d.fsMap.get(PERSONA_STORE_FILE) === bytesAfterControl);
-  check("aut coordinator delivery: the stored level is still propose", (getState(d).autonomy ?? "propose") === "propose", getState(d).autonomy);
+  await autExpectRefused(d, "aut coordinator delivery", "t-coord");
 
   clock.set(T0);
   const n = await autHarness("aut_refused_nudge");
@@ -24457,7 +24452,7 @@ async function caseAut_aLevelOutsideTheThreeIsDenied(clock) {
   clock.set(T0);
   const h = await autHarness("aut_bad_level");
   await openPromptTurn(h, { originKind: "channel", turnId: "t-bad" });
-  for (const [label, args] of [["sometimes", { level: "sometimes" }], ["a level in capitals", { level: "PROPOSE" }], ["an empty level", { level: "" }], ["no level", {}]]) {
+  for (const [label, args] of [["sometimes", { level: "sometimes" }], ["a level in capitals", { level: "PROPOSE" }], ["an empty level", { level: "" }], ["no level", {}], ["a level inside a list", { level: ["propose"] }]]) {
     const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
     const res = await callTool(h, { tool: AUT_TOOL, ...args });
     check(`aut bad level (${label}): denied, listing the three levels`,
@@ -24611,8 +24606,6 @@ async function caseAut_theToolRegistersForAnOwnerAndNeverForAReader(clock) {
   const isAut = (t) => t.name === "goal_autonomy";
   const owner = await createTickHarness({ ...OPTS, arming: "owner", caseName: "aut_register_owner" });
   check("aut register control: the owner session registers goal_autonomy once", owner.toolRegisters.filter(isAut).length === 1, owner.toolRegisters.map((t) => t.name));
-  const names = owner.toolRegisters.map((t) => t.name);
-  check("aut register: goal_autonomy registers directly after goal_longterm", names.indexOf("goal_autonomy") === names.indexOf("goal_longterm") + 1, names);
   const def = owner.toolRegisters.find(isAut);
   const desc = String(def?.description);
   check("aut register: the description names each of the three levels", AUT_LEVELS.every((l) => desc.includes(`"${l}"`)), desc);

@@ -660,3 +660,9 @@ The coordinator role instruction in `bin/supervise.sh` says "A prompt labelled [
 ## Plan B: the task-to-goal promotion seam (surfaced 2026-09-24)
 
 The task-list tier (`docs/plans/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion leave one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, authored by the ARCHITECT persona and coordinated with the ASSISTANT persona's discussion through the coordinator seat, owns the whole promotion design. The task-list spec names the seam in its Open Questions and cross-references Plan B when it lands. It also depends on the turn-record field, which the ASSISTANT discussion's ruling defines and which is out of scope for the task-list spec.
+
+## goal_longterm keeps an unsaved change in memory after a save that yields (found 2026-09-26)
+
+The `goal_longterm` handler in `hooks/index.ts` saves with a bare `persist($)` and reports "this write was not saved" when the save yields to another live session. The added or dropped long-term goal and its decision line stay in the session's memory anyway. The next write that does land then carries a change the tool told the persona had failed. The `goal_autonomy` handler beside it avoids this by saving through `persistOrRollBack` with a rollback that restores the old value and drops the decision line. The autonomy-dial plan's first section surfaced the difference.
+
+Remedy: save `goal_longterm` through `persistOrRollBack`, restoring the list and dropping its decision on a save that does not land, with a tick-suite case for the yield.

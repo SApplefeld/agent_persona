@@ -3930,7 +3930,9 @@ export const register: Register = async (on, options) => {
 
     // parseState reads a stored autonomy level outside AUTONOMY_LEVELS as
     // "propose" and says nothing, so the raw value is logged here, once per
-    // session. The later reloads of the same store do not log it again. The
+    // session start. The later reloads in the same session do not log it
+    // again, but the next launch does while the store still holds the bad
+    // value, since only a saved write replaces it. The
     // value is store text, so it is serialized, cut and made bracket-safe.
     const storedAutonomy = (existingPersona as { autonomy?: unknown } | undefined)?.autonomy;
     if (storedAutonomy !== undefined && !isAutonomyLevel(storedAutonomy)) {
@@ -9014,7 +9016,8 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
-      const level = String((e as any).level || "").trim();
+      const rawLevel = (e as any).level;
+      const level = typeof rawLevel === "string" ? rawLevel.trim() : "";
       if (!isAutonomyLevel(level)) {
         toolErrorsThisTurn++;
         return { deny: `goal_autonomy requires level to be one of ${AUTONOMY_LEVELS.map((l) => `"${l}"`).join(", ")}.` };
