@@ -218,6 +218,12 @@ Line numbers move, so find each site by the names given.
    gate's excluded-lead list beside `[FINDING]` and `[PROPOSAL]`. No tool checks which lead a
    persona's own `agentic_say` opens with, and this plan adds no such check.
 
+## Standing Brief Amendments
+
+- Section 2: a plan add that sends a `[PROPOSAL]` or `[STARTED]` record sends it only after the entry is saved, so the coordinator's inbox never holds a record naming an entry the store does not hold.
+- Section 2: `goal_edit drop` on an entry awaiting the operator's yes is refused outside a turn the operator or the coordinator persona started, and allowed in those turns.
+- Section 4: `docs/security-model.md` is in scope. Its sentences on the effort gate are rewritten to match the code: the gate reads the operator-set level for `goal_add` of a plan and nothing else, it decides five acts, the evidence-not-instruction rule is what defends a plan add a nudge turn makes at `plan-and-ask` or `plan-and-start`, and `goal_add` writes `[PROPOSAL]` and `[STARTED]` records through `sendPluginRecord` without a tool call.
+
 ## Sections of Work
 
 The four sections run in order as commits on one work branch cut from `origin/main`, named by the
@@ -358,7 +364,7 @@ Acceptance:
 
 Files in scope: `bin/supervise.sh` (the coordinator instruction), `.kit/injection-ledger.json`,
 `.kit/injection-ledger.mjs` where an anchor moves, `README.md`, `docs/architecture.md`,
-`docs/README.md` (this plan's line moves to the archive list when the plan closes).
+`docs/README.md` (this plan's line moves to the archive list when the plan closes), `docs/security-model.md`.
 
 ## Out of Scope
 
@@ -452,3 +458,10 @@ Delta: measured 2026-09-26T01:31:19Z on SCOTT-CLAUDE in the autonomy-dial worktr
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-09-26
+- Section 2 (The gate reads the dial): first green committed as 6802bed and pushed. Review round 1 ran at fable through the Agent tool at frontmatter effort (adversarial, blind, security, performance). Its fix round is in flight. Sections 3 and 4 are not started.
+- Live dispatch: implementer-opus, resumed for fix round 1. It was asked to save before sending the [PROPOSAL] or [STARTED] record, rolling the add back on a save that yields or a send that throws, and to refuse goal_edit drop on an entry awaiting the operator's yes outside operator and coordinator turns, each watched red first.
+- Gate baseline: targeted lane at 6802bed content, measured 2026-09-26T01:55:39Z to 01:57:29Z on SCOTT-CLAUDE in the autonomy-dial worktree with the process-list poll clear. tsc, tool-description-length and injection-duplicate exit 0; controller exit 0, 4637 OK, 0 FAIL.
+- Rulings adopted since the last boundary, by the scope adjudicator at fable: the record-before-save Major ACCEPT-AND-DECLARE, the drop Major ACCEPT-AND-DECLARE, and the security-model finding's relevance CONFIRM. The first two are the Section 2 entries in Standing Brief Amendments. The third adds `docs/security-model.md` to section 4.
+- Next, per section: section 2 verifies the fix round, runs round 2 (one lens, adversarial at opus, high effort, through Workflow), runs the Minor close pass and the close gate, and writes Chapter 2. Then section 3.
