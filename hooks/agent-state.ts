@@ -258,6 +258,16 @@ function isTurnRecordStatus(value: unknown): value is TurnRecordStatus {
 // is a step of, where the message stepped one. planPath names the plan document
 // the turn wrote, and taskId the task the record became. turnId is absent at the
 // open, since the record opens before the turn it belongs to has an id.
+//
+// The last two fields carry the record's own unsettled journal outcome rather
+// than anything about the intention. openStampId is the stamp id of the
+// turn-open call that opened or continued this record, present exactly while
+// that call's record_delivered_within outcome is still unwritten: the writer
+// clears it as it writes, which is what holds one call to one outcome line. A
+// record continued by a later call carries the later stamp, and the earlier
+// call's outcome is stranded, which the journal's readers tolerate.
+// outcomeTurns counts the persona's own turn completions since that call, which
+// is what the outcome's "within three turns" is measured over.
 export interface TurnRecord {
   id: string;
   text: string;
@@ -268,6 +278,8 @@ export interface TurnRecord {
   planPath?: string;
   taskId?: string;
   closedAt?: number;
+  openStampId?: string;
+  outcomeTurns?: number;
 }
 
 // The most records the store holds at once, counting only the closed ones: the
@@ -943,7 +955,13 @@ function fillTurnRecords(state: AgentState): void {
       && (record.goalId === undefined || typeof record.goalId === "string")
       && (record.planPath === undefined || typeof record.planPath === "string")
       && (record.taskId === undefined || typeof record.taskId === "string")
-      && (record.closedAt === undefined || Number.isFinite(record.closedAt));
+      && (record.closedAt === undefined || Number.isFinite(record.closedAt))
+      // The outcome pair is validated as strictly as closedAt, and for the
+      // same reason: a count the plugin cannot compare against the threshold
+      // leaves an outcome that is never written, and a stamp id that is not a
+      // string names no call line.
+      && (record.openStampId === undefined || typeof record.openStampId === "string")
+      && (record.outcomeTurns === undefined || Number.isFinite(record.outcomeTurns));
   }).map((record) => {
     const cut = clampTurnRecordText(record.text);
     return cut === record.text ? record : { ...record, text: cut };
