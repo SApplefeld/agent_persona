@@ -237,6 +237,60 @@ export function newTaskId(now: number): string {
   return `tk-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// What a turn record can be. The set is closed at these five. "open" is the
+// live intention a message arrived with; the other four are closed states a
+// record never leaves. "delivered" is the turn that answered it, "superseded"
+// a later message that replaced it, "expired" the timeout below, and
+// "promoted" a record that became a goal entry or a task.
+export const TURN_RECORD_STATUSES = ["open", "delivered", "superseded", "expired", "promoted"] as const;
+export type TurnRecordStatus = (typeof TURN_RECORD_STATUSES)[number];
+
+// Whether a stored or supplied value is one of the five statuses.
+function isTurnRecordStatus(value: unknown): value is TurnRecordStatus {
+  return typeof value === "string" && (TURN_RECORD_STATUSES as readonly string[]).includes(value);
+}
+
+// One message held as an intention. A record sits beside the goal tree and
+// never in it: nothing that reads `goals`, the idle branch and the nudge among
+// them, sees a record, so a record is never scored, budgeted or nudged. At most
+// one record is open at a time, which enforceInvariants repairs on load, and a
+// record that is not open is closed for good. goalId names the entry the record
+// is a step of, where the message stepped one. planPath names the plan document
+// the turn wrote, and taskId the task the record became. turnId is absent at the
+// open, since the record opens before the turn it belongs to has an id.
+export interface TurnRecord {
+  id: string;
+  text: string;
+  openedAt: number;
+  status: TurnRecordStatus;
+  turnId?: string;
+  goalId?: string;
+  planPath?: string;
+  taskId?: string;
+  closedAt?: number;
+}
+
+// The most records the store holds at once, counting only the closed ones: the
+// cap never drops an open record.
+export const TURN_RECORDS_MAX = 20;
+
+// How long an open record stands before the reap expires it. A day, because an
+// idle open record costs nothing while it stands (it is never nudged, and it is
+// a durable compaction boundary) and holds a stale intention against every
+// later message once its turn is long past.
+export const TURN_RECORD_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+// The most characters a record's text carries. The text is an excerpt of the
+// message or one line naming what it asked, so it is cut rather than refused.
+export const TURN_RECORD_TEXT_MAX = 80;
+
+// A record id, minted in the goal nodes' shape: a prefix, the clock in base 36,
+// and a random tail. The "tr-" prefix is one no goal node, long-term goal or
+// task carries, so a record id never reads as a goal id or a task id.
+export function newTurnRecordId(now: number): string {
+  return `tr-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export interface MonitorState {
   sessionStart: number;
   turnCount: number;
@@ -398,13 +452,14 @@ export interface FleetHealthMemo {
 }
 
 export interface AgentState {
-  version: 5;
+  version: 6;
   persona: string;
   activeSessionId: string;
   epoch: number;
   memory: MemoryEntry[];
   goals: GoalNode[];
   tasks: TaskItem[]; // beside the tree, each keyed to a goal; see TaskItem
+  turnRecords: TurnRecord[]; // beside the tree, one message each; see TurnRecord
   activeGoalId: string | null;
   longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
   autonomy: AutonomyLevel; // set only by goal_autonomy; see AUTONOMY_LEVELS
@@ -532,13 +587,14 @@ export function holdOf(state: AgentState, now: number): HoldReason | null {
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
   return {
-    version: 5,
+    version: 6,
     persona,
     activeSessionId: sessionId,
     epoch: 1,
     memory: [],
     goals: [],
     tasks: [],
+    turnRecords: [],
     activeGoalId: null,
     longTermGoals: [],
     autonomy: "propose",
@@ -844,6 +900,40 @@ function fillTasks(state: AgentState): void {
   });
 }
 
+// The turn records, filled at every load exit. A stored value that is not a
+// list reads as an empty one, which is how a store written before the records
+// existed loads. A stored entry is kept only where its id and text are strings,
+// its status one of the five, its openedAt a number, and each of turnId, goalId,
+// planPath and taskId absent or a string with closedAt absent or a finite
+// number; anything else is dropped. openedAt is read as a number rather than a
+// finite one because the reap owns the non-finite case: a record whose clock
+// reads as infinity is expired there rather than lost here, so the store the
+// plugin cannot make sense of still shows the operator that a message arrived.
+// The text is cut to its maximum on the way in, since a store the plugin did
+// not write can carry any length.
+function fillTurnRecords(state: AgentState): void {
+  const stored = (state as { turnRecords?: unknown }).turnRecords;
+  if (!Array.isArray(stored)) {
+    state.turnRecords = [];
+    return;
+  }
+  state.turnRecords = stored.filter((r): r is TurnRecord => {
+    const record = r as Partial<TurnRecord> | null;
+    return !!record && typeof record === "object"
+      && typeof record.id === "string" && typeof record.text === "string"
+      && isTurnRecordStatus(record.status) && typeof record.openedAt === "number"
+      && (record.turnId === undefined || typeof record.turnId === "string")
+      && (record.goalId === undefined || typeof record.goalId === "string")
+      && (record.planPath === undefined || typeof record.planPath === "string")
+      && (record.taskId === undefined || typeof record.taskId === "string")
+      && (record.closedAt === undefined || Number.isFinite(record.closedAt));
+  }).map((record) => (
+    record.text.length > TURN_RECORD_TEXT_MAX
+      ? { ...record, text: record.text.slice(0, TURN_RECORD_TEXT_MAX) }
+      : record
+  ));
+}
+
 export function parseState(json: string): AgentState {
   const parsed = JSON.parse(json);
 
@@ -931,13 +1021,14 @@ export function parseState(json: string): AgentState {
     }
 
     const state: AgentState = {
-      version: 5,
+      version: 6,
       persona: old.persona,
       activeSessionId: old.activeSessionId,
       epoch: old.epoch,
       memory: old.memory ?? [],
       goals,
       tasks: [],
+      turnRecords: [],
       activeGoalId,
       longTermGoals: [],
       autonomy: "propose",
@@ -964,7 +1055,8 @@ export function parseState(json: string): AgentState {
 
   if (parsed.version === 3) {
     // v3 to v4 migration: add env to monitor. The v4 to v5 step, the task
-    // list, is the fillTasks call below.
+    // list, is the fillTasks call below, and the v5 to v6 step, the turn
+    // records, is the fillTurnRecords call beside it.
     const state = parsed as unknown as AgentState;
     if (!state.monitor.env) {
       state.monitor.env = {
@@ -973,7 +1065,7 @@ export function parseState(json: string): AgentState {
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       };
     }
-    state.version = 5;
+    state.version = 6;
     if (!state.nudge) {
       state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
     }
@@ -984,6 +1076,7 @@ export function parseState(json: string): AgentState {
       state.autonomy = "propose";
     }
     fillTasks(state);
+    fillTurnRecords(state);
     fillProposal(state);
     fillPlanRecords(state);
     applyPlanRecordOnLoad(state);
@@ -998,7 +1091,14 @@ export function parseState(json: string): AgentState {
     parsed.version = 5;
   }
 
-  if (parsed.version !== 5) {
+  // v5 to v6 migration: add the turn records, which fillTurnRecords below seeds
+  // empty on a store that lacks them. Everything else a v5 store holds is
+  // already the v6 shape.
+  if (parsed.version === 5) {
+    parsed.version = 6;
+  }
+
+  if (parsed.version !== 6) {
     throw new Error(`Unsupported AgentState version: ${parsed.version}`);
   }
 
@@ -1035,6 +1135,7 @@ export function parseState(json: string): AgentState {
     state.autonomy = "propose";
   }
   fillTasks(state);
+  fillTurnRecords(state);
   fillProposal(state);
   fillPlanRecords(state);
 
@@ -1149,6 +1250,25 @@ function enforceInvariants(state: AgentState): void {
   // The load-time backstop for the task reap; persist runs the same reap on
   // every store write.
   reapCompletedGoalTasks(state);
+
+  // The record layer holds at most one open record, so openTurnRecord has one
+  // answer at every read. A store carrying two, which a crash between an open
+  // and the write that superseded the previous one leaves behind, keeps the
+  // newest by openedAt and supersedes the rest, since the newest is the
+  // intention the persona is working on. A record with no usable openedAt sorts
+  // oldest, so a usable one is kept over it.
+  const now = Date.now();
+  const openRecords = state.turnRecords.filter((r) => r.status === "open");
+  if (openRecords.length > 1) {
+    const newest = openRecords.reduce((a, b) => (turnRecordOrder(b) >= turnRecordOrder(a) ? b : a));
+    state.turnRecords = state.turnRecords.map((r) => (
+      r.status === "open" && r !== newest ? { ...r, status: "superseded" as const, closedAt: now } : r
+    ));
+  }
+
+  // The load-time backstop for the record reap; persist runs the same reap on
+  // every store write.
+  reapTurnRecords(state, now);
 }
 
 // Drops every task whose goal is closed: complete or abandoned, a closed set of
@@ -1161,6 +1281,47 @@ export function reapCompletedGoalTasks(state: AgentState): void {
     state.goals.filter((g) => g.status !== "complete" && g.status !== "abandoned").map((g) => g.id),
   );
   state.tasks = state.tasks.filter((t) => open.has(t.goalId));
+}
+
+// The one open record, or null where none is open. The record layer holds at
+// most one, which enforceInvariants repairs on every load, so the first open
+// record is the only one.
+export function openTurnRecord(state: AgentState): TurnRecord | null {
+  return state.turnRecords.find((r) => r.status === "open") ?? null;
+}
+
+// Where a record sorts by age. A record whose openedAt is not a finite number
+// sorts as the oldest there is, since a clock the plugin cannot read is no
+// evidence of recency: the reap expires such a record and the cap drops it
+// first.
+function turnRecordOrder(record: TurnRecord): number {
+  return Number.isFinite(record.openedAt) ? record.openedAt : 0;
+}
+
+// Expires the stale open record and caps the closed ones. An open record whose
+// openedAt is older than TURN_RECORD_TIMEOUT_MS, or is not a finite number,
+// becomes "expired" with its closedAt at `now`, so a long-dead intention stops
+// reading as live. Expiry never deletes a record; the cap is what deletes, and
+// it drops only records that are not open, oldest-opened first, so an open
+// record stands however many closed ones sit beside it. Only state.turnRecords
+// changes. Called by persist before each store write, so a record that timed
+// out mid-session expires at that write, and by enforceInvariants on every load.
+export function reapTurnRecords(state: AgentState, now: number): void {
+  const aged = state.turnRecords.map((record) => {
+    if (record.status !== "open") return record;
+    const stale = !Number.isFinite(record.openedAt) || now - record.openedAt >= TURN_RECORD_TIMEOUT_MS;
+    return stale ? { ...record, status: "expired" as const, closedAt: now } : record;
+  });
+  const closed = aged.filter((r) => r.status !== "open");
+  if (closed.length <= TURN_RECORDS_MAX) {
+    state.turnRecords = aged;
+    return;
+  }
+  const dropped = new Set(
+    [...closed].sort((a, b) => turnRecordOrder(a) - turnRecordOrder(b))
+      .slice(0, closed.length - TURN_RECORDS_MAX),
+  );
+  state.turnRecords = aged.filter((r) => !dropped.has(r));
 }
 
 // --- Pure helpers for goal-tree operations (R3) ---

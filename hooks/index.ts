@@ -56,6 +56,8 @@ import {
   MAX_TASKS_PER_GOAL,
   TASK_LIST_MAX_LINES,
   newTaskId,
+  reapTurnRecords,
+  openTurnRecord,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem } from "./agent-state";
@@ -2630,6 +2632,12 @@ export const persist = async (dp: any, rollBackOnYield?: () => void): Promise<bo
   // at the write, rather than at the next load: a long-lived session never
   // reloads, and its closed goal's tasks would otherwise stay in its state.
   reapCompletedGoalTasks(sess.state);
+
+  // A record whose timeout passed since the last write expires here too, at the
+  // write, for the same reason: a long-lived session never reloads, so a load
+  // reap alone would leave a day-old intention reading as open in its state and
+  // in every write it made.
+  reapTurnRecords(sess.state, Date.now());
 
   // Item 5 (Bounded store): cap the decision log and memory at push time,
   // not only when the file happens to be parsed at a session load - a
@@ -9986,11 +9994,22 @@ export const register: Register = async (on, options) => {
       // The autonomy level, on its own line above the long-term goals, and
       // ahead of the no-tree sentence where there is no tree.
       const autonomyLine = `Autonomy: ${sess.state.autonomy}`;
+      // The open turn record, on one line above everything else, so the
+      // operator sees the intention the plugin is holding without reading the
+      // store. A record is not a goal entry, so it sits outside the tree. There
+      // is no line at all where no record is open, which is the usual case
+      // between turns. The text prints on one line and through String, as the
+      // long-term lines do, so a malformed stored entry prints as a blank
+      // rather than throwing goal_status for the whole persona.
+      const openRecord = openTurnRecord(sess.state);
+      const recordLines = openRecord === null
+        ? []
+        : [`Turn record: ${String(openRecord.status)} ${oneLine(String(openRecord.text ?? ""))}`];
       if (!root) {
         // With no tree, the list is shown only where it holds an entry.
-        return { result: [autonomyLine, "No goal tree exists.", ...(longTerm.length === 0 ? [] : longTermLines)].join("\n") };
+        return { result: [...recordLines, autonomyLine, "No goal tree exists.", ...(longTerm.length === 0 ? [] : longTermLines)].join("\n") };
       }
-      const lines: string[] = [];
+      const lines: string[] = [...recordLines];
       const statusOf = (id: string) => {
         const n = sess.state.goals.find((g) => g.id === id)!;
         return `[${n.status}] ${n.id} (${n.kind}) "${n.title}"`;

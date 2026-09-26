@@ -3836,6 +3836,8 @@ async function main() {
     await caseLtg_aNonOwnerIsRefused(clock);
     await caseLtg_aStoreWrittenBeforeTheListLoadsEmpty();
     await caseTasks_aGoalCompletedMidSessionLosesItsTasksAtTheWrite(clock);
+    await caseTurnRecords_goalStatusShowsTheOpenRecordAboveTheTree(clock);
+    await caseTurnRecords_aStaleOpenRecordExpiresAtTheWrite(clock);
     await caseTaskAdd_thePlanHolderGateBothDirections(clock);
     await caseTaskDone_refusesAnIdOutsideTheActiveGoal(clock);
     await caseTaskVerbs_noActiveGoalRefusesAllThree(clock);
@@ -23845,24 +23847,24 @@ async function caseLtg_aNonOwnerIsRefused(clock) {
 // for a v4 store, a v3 store, both committed v4 fixtures, and a stored value
 // that is not a list. A held list loads as it was, and a new state starts
 // empty. Section 2 (task verbs): this is also the suite's one explicit v4
-// seed once makeState defaults to a native v5 store, so it doubles as the
-// tick-harness-level check that a v4 store's task list also loads at 5,
-// empty, through the same call.
+// seed, makeState defaulting to a native current-version store, so it doubles
+// as the tick-harness-level check that a v4 store's task list also loads
+// empty through the same call.
 async function caseLtg_aStoreWrittenBeforeTheListLoadsEmpty() {
   console.log("\n=== Goal levels 3: a store written before the list loads with an empty list ===");
   const v4 = makeState({ now: T0, version: 4 });
   check("ltg load: the seeded v4 state carries no list (the instrument)", !("longTermGoals" in v4), Object.keys(v4));
   check("ltg load: the seeded v4 state carries no tasks key (the instrument)", !("tasks" in v4), Object.keys(v4));
   const fromV4 = parseState(JSON.stringify(v4));
-  check("ltg load, v4: an empty list and version 5", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 5, { list: fromV4.longTermGoals, version: fromV4.version });
+  check("ltg load, v4: an empty list and version 6", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 6, { list: fromV4.longTermGoals, version: fromV4.version });
   check("ltg load, v4: the task list also loads at 5, empty", Array.isArray(fromV4.tasks) && fromV4.tasks.length === 0, fromV4.tasks);
   const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
-  check("ltg load, v3: an empty list and version 5", Array.isArray(fromV3.longTermGoals) && fromV3.longTermGoals.length === 0 && fromV3.version === 5, { list: fromV3.longTermGoals, version: fromV3.version });
+  check("ltg load, v3: an empty list and version 6", Array.isArray(fromV3.longTermGoals) && fromV3.longTermGoals.length === 0 && fromV3.version === 6, { list: fromV3.longTermGoals, version: fromV3.version });
   for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
     const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
     const parsed = parseState(text);
-    check(`ltg load, fixture ${name}: an empty list and version 5`,
-      !text.includes("longTermGoals") && Array.isArray(parsed.longTermGoals) && parsed.longTermGoals.length === 0 && parsed.version === 5, { list: parsed.longTermGoals, version: parsed.version });
+    check(`ltg load, fixture ${name}: an empty list and version 6`,
+      !text.includes("longTermGoals") && Array.isArray(parsed.longTermGoals) && parsed.longTermGoals.length === 0 && parsed.version === 6, { list: parsed.longTermGoals, version: parsed.version });
   }
   const fromNull = parseState(JSON.stringify({ ...makeState({ now: T0 }), longTermGoals: null }));
   check("ltg load: a stored value that is not a list reads as an empty list", Array.isArray(fromNull.longTermGoals) && fromNull.longTermGoals.length === 0, fromNull.longTermGoals);
@@ -23890,7 +23892,7 @@ async function caseTasks_aGoalCompletedMidSessionLosesItsTasksAtTheWrite(clock) 
   const task = (id, goalId) => ({ id, goalId, text: `work ${id}`, done: false, addedAt: T0 });
   const tasks = [task("tk-a", "g-done"), task("tk-b", "g-done"), task("tk-p", "g-paused")];
   const h = await createTickHarness({ ...OPTS, caseName: "tasks_reap_on_persist", skipSessionStart: true });
-  seedPersonaStore(h, { ...makeState({ now: T0, goals, activeGoalId: "g-done" }), version: 5, tasks });
+  seedPersonaStore(h, { ...makeState({ now: T0, goals, activeGoalId: "g-done" }), version: 6, tasks });
   h.storeMap.set(`commons:${SESSION_ID}`, {
     sessionId: SESSION_ID,
     lastSeen: T0,
@@ -23913,6 +23915,106 @@ async function caseTasks_aGoalCompletedMidSessionLosesItsTasksAtTheWrite(clock) 
     written !== null && !written.tasks.some((t) => t.goalId === "g-done"), written && written.tasks);
   check("tasks reap on persist: that write keeps the paused goal's task",
     written !== null && written.tasks.length === 1 && written.tasks[0].id === "tk-p", written && written.tasks);
+}
+
+// ============================================================
+// Turn records: the store layer through a real session
+// ============================================================
+
+// A started owner session over `goals` and `turnRecords`, the shape ltgHarness
+// and tasksHarness give their cases, so a real session load runs under every
+// call here too.
+async function recordsHarness(caseName, goals, turnRecords) {
+  const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true });
+  const state = makeState({
+    now: T0,
+    goals,
+    activeGoalId: goals.find((g) => g.status === "active")?.id ?? null,
+    turnRecords,
+  });
+  seedPersonaStore(h, state);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  h.resetFsWrites();
+  return h;
+}
+
+const recordsTree = () => [
+  makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
+  makeGoalNode({ id: "g-leaf", parentId: "g-root", kind: "task", status: "active", maxRounds: 10 }),
+];
+
+// goal_status prints the open record on one line above the tree, so the
+// operator reads the intention the plugin is holding without opening the store.
+// Where no record is open, and that is the usual case between turns, there is
+// no such line at all: the control below is the same call over a store with no
+// records, which must print the tree it printed before the record layer existed.
+async function caseTurnRecords_goalStatusShowsTheOpenRecordAboveTheTree(clock) {
+  console.log("\n=== Turn records: goal_status shows the open record above the tree ===");
+  clock.set(T0);
+  const open = { id: "tr-1", text: "Ship the record layer", openedAt: T0, status: "open" };
+  const h = await recordsHarness("records_status_open", recordsTree(), [open]);
+  const shown = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
+  const lines = String(shown?.result).split("\n");
+  check("records status: the first line names the open record's status and text, and the tree follows",
+    lines[0] === "Turn record: open Ship the record layer" && lines[1].includes("g-root") && lines[2].includes("g-leaf"), lines);
+
+  const closed = await recordsHarness("records_status_closed", recordsTree(), [
+    { id: "tr-2", text: "Already answered", openedAt: T0, status: "delivered", closedAt: T0 + 5 },
+  ]);
+  const closedShown = await callTool(closed, { tool: "mcp__agentic-plugin__goal_status" });
+  const closedLines = String(closedShown?.result).split("\n");
+  check("records status: a store whose records are all closed prints no record line",
+    !closedLines.some((l) => l.startsWith("Turn record:")) && closedLines[0].includes("g-root"), closedLines);
+
+  const none = await recordsHarness("records_status_none", recordsTree(), []);
+  const noneShown = await callTool(none, { tool: "mcp__agentic-plugin__goal_status" });
+  const noneLines = String(noneShown?.result).split("\n");
+  check("records status: a store with no records prints no record line (the control)",
+    !noneLines.some((l) => l.startsWith("Turn record:")) && noneLines[0].includes("g-root"), noneLines);
+}
+
+// The record reap runs on the persist path. A session that has been up longer
+// than the timeout writes the record expired, with no load in between: a reap
+// that ran only at a load would leave a day-old intention reading as open in
+// the session's state and in every write it made until the next launch. The
+// control is the same call a minute after the open, which writes it open.
+async function caseTurnRecords_aStaleOpenRecordExpiresAtTheWrite(clock) {
+  console.log("\n=== Turn records: a stale open record expires at the write ===");
+  const timeout = AgentState.TURN_RECORD_TIMEOUT_MS;
+  const writtenRecords = (h) => {
+    const writes = h.fsWrites.filter((w) => w.path === PERSONA_STORE_FILE);
+    if (writes.length === 0) return null;
+    return JSON.parse(writes[writes.length - 1].content).default.turnRecords;
+  };
+
+  clock.set(T0);
+  const h = await recordsHarness("records_expire_at_write", recordsTree(), [
+    { id: "tr-1", text: "A question from a day ago", openedAt: T0, status: "open" },
+  ]);
+  check("records expire: the session starts holding the record open (the instrument)",
+    getState(h).turnRecords.length === 1 && getState(h).turnRecords[0].status === "open", getState(h).turnRecords);
+  clock.set(T0 + timeout);
+  const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  const stale = writtenRecords(h);
+  check("records expire: the write that follows the timeout holds the record expired with its closedAt",
+    done?.deny === undefined && stale !== null && stale.length === 1
+    && stale[0].status === "expired" && stale[0].closedAt === T0 + timeout, { done, records: stale });
+
+  clock.set(T0);
+  const young = await recordsHarness("records_open_at_write", recordsTree(), [
+    { id: "tr-1", text: "A question from a minute ago", openedAt: T0, status: "open" },
+  ]);
+  clock.set(T0 + 60_000);
+  const youngDone = await callTool(young, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  const kept = writtenRecords(young);
+  check("records expire: a write inside the timeout holds the record open with no closedAt (the control)",
+    youngDone?.deny === undefined && kept !== null && kept.length === 1
+    && kept[0].status === "open" && kept[0].closedAt === undefined, { done: youngDone, records: kept });
 }
 
 // ============================================================
@@ -25287,15 +25389,15 @@ async function caseAut_aStoreWrittenBeforeTheLevelLoadsAsPropose() {
   const v4 = makeState({ now: T0 });
   check("aut load: the seeded v4 state carries no level (the instrument)", !("autonomy" in v4), Object.keys(v4));
   const fromV4 = parseState(JSON.stringify(v4));
-  check("aut load, v4: propose and version 5", fromV4.autonomy === "propose" && fromV4.version === 5, { level: fromV4.autonomy, version: fromV4.version });
+  check("aut load, v4: propose and version 6", fromV4.autonomy === "propose" && fromV4.version === 6, { level: fromV4.autonomy, version: fromV4.version });
   const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
-  check("aut load, v3: propose and version 5", fromV3.autonomy === "propose" && fromV3.version === 5, { level: fromV3.autonomy, version: fromV3.version });
+  check("aut load, v3: propose and version 6", fromV3.autonomy === "propose" && fromV3.version === 6, { level: fromV3.autonomy, version: fromV3.version });
   const fromV2 = parseState(JSON.stringify({ version: 2, persona: "default", activeSessionId: "s-2", epoch: 1, memory: [], goal: null, decisions: [], createdAt: T0, updatedAt: T0 }));
-  check("aut load, v2: propose and version 5", fromV2.autonomy === "propose" && fromV2.version === 5, { level: fromV2.autonomy, version: fromV2.version });
+  check("aut load, v2: propose and version 6", fromV2.autonomy === "propose" && fromV2.version === 6, { level: fromV2.autonomy, version: fromV2.version });
   for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
     const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
     const parsed = parseState(text);
-    check(`aut load, fixture ${name}: propose and version 5`, !text.includes("autonomy") && parsed.autonomy === "propose" && parsed.version === 5, { level: parsed.autonomy, version: parsed.version });
+    check(`aut load, fixture ${name}: propose and version 6`, !text.includes("autonomy") && parsed.autonomy === "propose" && parsed.version === 6, { level: parsed.autonomy, version: parsed.version });
   }
   for (const level of AUT_LEVELS) {
     check(`aut load: a held ${level} loads as it was`, parseState(JSON.stringify(makeState({ now: T0, autonomy: level }))).autonomy === level);
@@ -26934,11 +27036,11 @@ async function caseGl5_theFrameNeutralizesStoredGoalText(clock) {
 }
 
 // A store written before the proposal record existed loads with askedAt 0 and
-// sent null, at version 5, on the v4 and v3 paths and for a malformed value.
+// sent null, at version 6, on the v4 and v3 paths and for a malformed value.
 async function caseGl5_theProposalRecordBackfills() {
   console.log("\n=== Goal levels 5: the proposal record is filled on load ===");
-  // Section 2 (task verbs): makeState now seeds a native v5 store by default,
-  // so this base is a v5 store missing the record, not a v4 one; the fill
+  // Section 2 (task verbs): makeState seeds a native current-version store by
+  // default, so this base is a current store missing the record, not a v4 one; the fill
   // this case pins runs at every load exit regardless of version (fillProposal,
   // agent-state.ts), and caseLtg_aStoreWrittenBeforeTheListLoadsEmpty is the
   // suite's one remaining explicit v4 seed.
@@ -26952,8 +27054,8 @@ async function caseGl5_theProposalRecordBackfills() {
     ["a malformed value", malformed],
   ]) {
     const parsed = parseState(JSON.stringify(stored));
-    check(`gl5 backfill (${label}): askedAt 0, sent null, version 5`,
-      JSON.stringify(parsed.monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }) && parsed.version === 5, parsed.monitor.proposal);
+    check(`gl5 backfill (${label}): askedAt 0, sent null, version 6`,
+      JSON.stringify(parsed.monitor.proposal) === JSON.stringify({ askedAt: 0, sent: null }) && parsed.version === 6, parsed.monitor.proposal);
   }
   // A stored entry is kept only where every field has its type; any other
   // object reads as nothing sent, and askedAt is kept.
@@ -27388,7 +27490,7 @@ async function casePr_aTickStoppedOnAnOpenTurnRunsNoLaterStep(clock) {
 }
 
 // A store written before the ledger existed loads with an empty list, at
-// version 5, on the v5, v3 and v2 paths and for a value that is not a list.
+// version 6, on the v6, v3 and v2 paths and for a value that is not a list.
 // A malformed entry is dropped and a well-formed one kept.
 async function casePr_theLedgerBackfills() {
   console.log("\n=== Plan records: the ledger is filled on load ===");
@@ -27404,8 +27506,8 @@ async function casePr_theLedgerBackfills() {
     ["a value that is not a list", malformed],
   ]) {
     const parsed = parseState(JSON.stringify(stored));
-    check(`pr backfill (${label}): an empty ledger, version 5`,
-      JSON.stringify(parsed.monitor.planRecords) === "[]" && parsed.version === 5, parsed.monitor.planRecords);
+    check(`pr backfill (${label}): an empty ledger, version 6`,
+      JSON.stringify(parsed.monitor.planRecords) === "[]" && parsed.version === 6, parsed.monitor.planRecords);
   }
   const good = { nodeId: "plan-w", awaitingYes: true, text: "[PROPOSAL] x", writer: "w", seq: 2 };
   const mixed = makeState({ now: T0 });
