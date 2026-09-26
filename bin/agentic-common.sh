@@ -93,20 +93,40 @@ JEV_PROMOTABLE_SET_IDS=(turn-open turn-disposition)
 
 # --- jev_live_to_array_json ---
 # Usage: jev_live_to_array_json <caller-name> <comma-separated ids>
-# Trims each comma-separated member of the given value the way the plugin's
-# own jevLive read trims a settings-file member, drops a member left blank by
-# a stray comma or by whitespace-only input, and refuses with an ERROR line
-# naming <caller-name> and returns 1 where a trimmed member is not one of
-# JEV_PROMOTABLE_SET_IDS. A quote or a control character always misses that
-# fixed set, so this membership check is also the hostile-boundary guard: no
-# member printed by this function can ever be anything but one of the two
-# literal ids, so nothing it prints can break out of the JSON string
-# emit_settings_json splices it into. On success prints the surviving members
-# as a comma-separated, double-quoted list ready to sit inside a JSON array's
-# brackets (e.g. "turn-open","turn-disposition"), or prints nothing where
-# every member trimmed away.
+# Refuses the whole raw value, before any split runs, where it carries a
+# control character other than a tab: `read -ra` below stops at the first
+# newline regardless of IFS, since that is its record separator and not a
+# field one, so a value carrying one would have silently dropped everything
+# past it and let the membership check below run on a truncated string
+# instead of failing on the character that broke it. That is the reason this
+# guard exists at all. A tab is the one control character it excepts, since
+# padding a member with one costs nothing and is trimmed away below anyway.
+# Every other control character is refused alongside the newline, a carriage
+# return, a vertical tab and a form feed among them.
+# Trims each comma-separated member of the given value in ASCII whitespace
+# only. That is the subset of the plugin's own jevLive-read trim() a POSIX
+# shell can strip; the plugin's trim() also strips the Unicode spaces (U+00A0,
+# U+FEFF, U+2028 and the rest), so a member hand-edited into a settings file
+# can be kept by the plugin where the same padding would have been refused
+# here. Drops a member left blank by a stray comma or by whitespace-only
+# input, and refuses with an ERROR line naming <caller-name> and returns 1
+# where a trimmed member is not one of JEV_PROMOTABLE_SET_IDS. A quote always
+# misses that fixed set, so this membership check is also the
+# hostile-boundary guard: no member printed by this function can ever be
+# anything but one of the two literal ids, so nothing it prints can break out
+# of the JSON string emit_settings_json splices it into. On success prints
+# the surviving members as a comma-separated, double-quoted list ready to sit
+# inside a JSON array's brackets (e.g. "turn-open","turn-disposition"), or
+# prints nothing where every member trimmed away.
 jev_live_to_array_json() {
   local caller="$1" raw="$2" id trimmed candidate known out="" first=1
+  local cntrl_guard="${raw//$'\t'/}"
+  case "$cntrl_guard" in
+    *[[:cntrl:]]*)
+      echo "ERROR: $caller: JEV_LIVE must not hold a control character" >&2
+      return 1
+      ;;
+  esac
   local IFS=','
   local -a parts
   read -ra parts <<< "$raw"
@@ -527,7 +547,7 @@ const fail = (msg) => { console.error("ERROR: ensure_settings_jev_live: " + file
 const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const ids = JSON.parse(idsJson);
 let s;
-try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
 if (!plain(s)) fail("is not a JSON object");
 let changed = false;
 if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }

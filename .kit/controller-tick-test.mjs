@@ -7420,20 +7420,58 @@ async function caseJevLive_invalidIdsAreDroppedAndLoggedAtRegister(clock) {
     decisions.filter((d) => d.action === "jev_live_invalid").length === 1 && !!drop && drop.detail.includes("bogus") && drop.detail.includes("7") && !drop.detail.includes("turn-disposition"),
     decisions.map((d) => d.action));
 
+  // session.start fires again on a plugin reload while register()'s own
+  // closure lives on, the same shape count_session_restart drives above for
+  // the idle count. Firing it a second time on the existing closure must not
+  // push a second jev_live_invalid, since the drop it logs is fixed at
+  // register() and nothing about a reload changes it.
+  const startH = h.handlers["session.start"];
+  await startH(h.fake, {}, async () => ({}));
+  const decisionsAfterReload = getStateForPersona(h, "default")?.decisions || [];
+  check("jevLive mixed: a second session.start in the same process logs no second jev_live_invalid",
+    decisionsAfterReload.filter((d) => d.action === "jev_live_invalid").length === 1,
+    decisionsAfterReload.filter((d) => d.action === "jev_live_invalid"));
+
   const hAbsent = await createTickHarness({ ...OPTS, caseName: "jevlive_absent" });
   const absentDecisions = getStateForPersona(hAbsent, "default")?.decisions || [];
+  check("jevLive absent: persona start actually ran (a persona_claim decision is present)",
+    absentDecisions.some((d) => d.action === "persona_claim"), absentDecisions.map((d) => d.action));
   check("jevLive absent: a missing key reads as empty, with no jev_live_invalid decision",
     !absentDecisions.some((d) => d.action === "jev_live_invalid"), absentDecisions.map((d) => d.action));
 
   const hNonArray = await createTickHarness({ ...OPTS, caseName: "jevlive_nonarray", jevLive: "turn-disposition" });
   const nonArrayDecisions = getStateForPersona(hNonArray, "default")?.decisions || [];
+  check("jevLive non-array: persona start actually ran (a persona_claim decision is present)",
+    nonArrayDecisions.some((d) => d.action === "persona_claim"), nonArrayDecisions.map((d) => d.action));
   check("jevLive non-array: a non-array value reads as empty, with no jev_live_invalid decision",
     !nonArrayDecisions.some((d) => d.action === "jev_live_invalid"), nonArrayDecisions.map((d) => d.action));
 
   const hClean = await createTickHarness({ ...OPTS, caseName: "jevlive_clean", jevLive: ["turn-open", "turn-disposition"] });
   const cleanDecisions = getStateForPersona(hClean, "default")?.decisions || [];
+  check("jevLive clean: persona start actually ran (a persona_claim decision is present)",
+    cleanDecisions.some((d) => d.action === "persona_claim"), cleanDecisions.map((d) => d.action));
   check("jevLive clean: every member in the promotable set logs no jev_live_invalid decision",
     !cleanDecisions.some((d) => d.action === "jev_live_invalid"), cleanDecisions.map((d) => d.action));
+
+  // The dropped half above never proves the kept half correct: a filter that
+  // kept nothing (a missing kept.push, or a trim/compare inversion) still
+  // logs one jev_live_invalid decision naming "bogus" and "7" and not
+  // "turn-disposition", so every assertion above would stay green while
+  // every promotion silently failed. filterJevLive is called directly, over
+  // the module the mixed case already loaded, to pin what it keeps as well
+  // as what it drops.
+  const mixedMod = await loadModule("jevlive_mixed");
+  const mixedFiltered = mixedMod.filterJevLive(["turn-disposition", "bogus", 7]);
+  check("jevLive mixed: filterJevLive keeps the one promotable id and drops the other two",
+    JSON.stringify(mixedFiltered.kept) === JSON.stringify(["turn-disposition"]) && mixedFiltered.dropped.length === 2 && mixedFiltered.dropped.includes("bogus") && mixedFiltered.dropped.includes("7"),
+    mixedFiltered);
+  const cleanFiltered = mixedMod.filterJevLive(["turn-open", "turn-disposition"]);
+  check("jevLive clean: filterJevLive keeps both promotable ids and drops none",
+    JSON.stringify(cleanFiltered.kept) === JSON.stringify(["turn-open", "turn-disposition"]) && cleanFiltered.dropped.length === 0,
+    cleanFiltered);
+  const absentFiltered = mixedMod.filterJevLive(undefined);
+  check("jevLive absent: filterJevLive over a missing value keeps and drops nothing",
+    absentFiltered.kept.length === 0 && absentFiltered.dropped.length === 0, absentFiltered);
   clock.set(T0);
 }
 

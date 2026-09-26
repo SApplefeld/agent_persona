@@ -104,6 +104,15 @@
       "title": "Jev shadow mode",
       "description": "off or shadow, and shadow is the default. shadow has the decision seam put each closed question the plugin already asks Haiku to Jev as well, beside it, and write the answer to the decision journal, acting on nothing it gets back. off makes no such call and writes no journal line. The supervisor refuses any other value rather than writing it, so a typo stops that launch instead of quietly disabling the seam."
     },
+    "jevLive": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "title": "Jev live questions",
+      "description": "Question-set ids, each one of PROMOTABLE_SET_IDS, naming which question may read Jev's live answer through liveAsk instead of always shadowing it. Empty by default: no question is live. An id outside the promotable set is dropped, logged as one jev_live_invalid decision naming it."
+    },
     "reconcileEveryMs": {
       "type": "number",
       "default": 14400000,

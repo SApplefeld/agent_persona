@@ -719,3 +719,33 @@ Remedy: add a TypeSafe entry under `## Trust boundaries` (line 43) stating what 
 The extraction was not taken in the goal-every-turn plan's section 3 because that section's own text states `shadowAsk` is untouched, and a shared helper cannot be introduced without editing it.
 
 Remedy: one private `journalResult(host, site, stampId, questionSetId, mode, result, haikuValue)` in `hooks/index.ts` that both wrappers call, taken in a change that is already allowed to touch `shadowAsk`. Keep the two callers' own difference outside it: `shadowAsk` fires the helper detached and `liveAsk` fires it detached as well, so the helper itself awaits its two writes and neither caller does.
+
+## Thirteen plugin options are read without being declared in the manifest (found 2026-09-26)
+
+`.claude-plugin/plugin.json` declares 22 fields under `userConfig`. `hooks/index.ts` reads 35 `cfg.*` options. The thirteen it reads undeclared are `breakInAfterMs`, `costBackoffAfterTicks`, `costBackoffMaxMs`, `costEnabled`, `costMaxNudgesPerHour`, `costMaxPluginCallsPerHour`, `costSummaryEveryNTicks`, `operatorRecordTtlMs`, `selfReviewDebounceTurns`, `selfReviewEveryTurns`, `selfReviewMaxPerHour`, `selfReviewStreak` and `urgentCheckMinMs`. The counts come from `Object.keys(manifest.userConfig).length` and a sorted unique grep of `cfg.` over that file.
+
+The engine's own type file states that `register(on, options)` receives the values of the fields its manifest's `userConfig` declares, defaults filled in, and that stored options are validated against the declared type before the module loads. Read strictly, that makes all thirteen reads permanently undefined, so the cost layer, the self-review layer, the urgent break-in floor and the operator record lifetime would each run on their code fallbacks with no settings value able to move them.
+
+What is established and what is not. That the declared path works is confirmed: a live session with `heartbeatMs` in `pluginConfigs` changed the heartbeat cadence, which the operator memory `plugin-options-come-from-settings-pluginconfigs` records, and `heartbeatMs` is declared. Whether an undeclared key reaches `register` is not established either way from this repository. No suite can settle it, because every suite passes its own options object straight to `register` and so bypasses the manifest entirely.
+
+The goal-every-turn plan's section 2 declared its own new key rather than joining this set, so nothing here blocks that plan. What is owed is the reading itself, because the answer decides whether four shipped features are configurable or silently fixed.
+
+Remedy: settle the delivery rule once, by writing a settings file that sets one undeclared numeric option to a value whose effect is observable and reading whether the behaviour moves, then either declare all thirteen under `userConfig` or delete the reads and their README rows. Do not infer it from the type file's docstring alone, which is documentation rather than the engine's behaviour.
+
+## The settings helpers spawn four unbounded node processes on the launch path (found 2026-09-26)
+
+The provided-settings branch of `bin/supervise.sh` calls four helpers in `bin/agentic-common.sh` that each run a `node -e` script over the same settings file, and two more read values back. So four to six node processes run before the child starts, the count depending on which of the two Jev variables the launch environment sets. None of the six carries a timeout. A settings file on a stalled or contended filesystem therefore blocks the launch at a point where the supervisor has written no heartbeat yet, so the keeper sees a launch that neither starts nor fails.
+
+The two Jev helpers cost nothing on a launch that names neither value: `ensure_settings_jev_mode` and `ensure_settings_jev_live` each return in bash before reaching their `node -e`, so the default fleet pays no spawn for either. The other four spawn unconditionally, and each parses and re-serializes the whole file independently.
+
+Remedy: one bounded wrapper shared by all four helpers, so a hang becomes a named refusal the keeper can act on rather than an indefinite wait. Folding the helpers into fewer node processes is the separate and larger change; the timeout is the part that turns a hang into a signal.
+
+## The settings helpers write a predictable temp path a link could redirect (found 2026-09-26)
+
+Seven helpers in `bin/agentic-common.sh` rewrite a settings file by writing `<file>.tmp-<pid>` beside it and renaming. The run directory those files sit in is modifiable by Authenticated Users under the accepted risk recorded in `docs/security-model.md`, and Node's `writeFileSync` follows an existing link. So a process that is not the operator, which that accepted risk already admits can write under `D:/`, could pre-create that predictable path as a link and have the supervisor write settings JSON to a path of its choosing under the operator's account, including outside `D:/` where that class otherwise cannot reach.
+
+Exploitability is low rather than nil, and the reason is the one thing worth re-reading before acting: creating a symbolic link on Windows normally needs a privilege a service account does not hold. So this is a gap in a guard rather than a live path, and the accepted risk it leans on is the one the security model already records.
+
+It is pre-existing across all seven helpers rather than introduced by any one of them, which is why it sits here rather than in the section that added the seventh.
+
+Remedy: create the temp file with exclusive intent, `fs.openSync(tmp, "wx")`, in one shared place all seven use, so an existing path at that name is a refusal rather than a followed link. The same shared place is where the timeout the entry above asks for belongs, so the two are one change.

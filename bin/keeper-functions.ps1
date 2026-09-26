@@ -214,7 +214,9 @@ JEV_MODE environment variables, each present only where the entry carries the fi
 array of question-set ids rather than a scalar, so it does not ride that same field map: a
 non-empty array becomes JEV_LIVE as its members joined with a comma, since the shell halves that
 read JEV_LIVE split on commas, and PowerShell's own [string] cast on an array joins with $OFS
-(a space by default) instead. A missing required field, or an args element that is --prompt or
+(a space by default) instead. A jevLive field present and not a JSON array is thrown rather than
+read as empty, naming the roster path, the persona and the field, the same rule Read-KeeperRoster
+holds 'enabled' to. A missing required field, or an args element that is --prompt or
 starts with --prompt=, is a thrown error naming the roster path, because the roster launches every
 persona passive and a prompt is not a thing a boot-time relaunch may carry.
 
@@ -271,6 +273,15 @@ function Build-SupervisorInvocation {
     # halves split JEV_LIVE on commas, so a space-joined value would read back
     # as one bogus id and refuse the launch. An empty or absent array carries
     # nothing, the same "not set" state the loop above gives every other field.
+    # A present field that is not an array, the likely typo of writing
+    # jevLive as a bare string by analogy with the scalar jevMode beside it,
+    # is thrown rather than silently dropped, the same rule Read-KeeperRoster
+    # holds 'enabled' to: a field of the wrong type is told that instead of
+    # being read as absent.
+    $jevLiveProperty = $Entry.PSObject.Properties['jevLive']
+    if ($null -ne $jevLiveProperty -and $null -ne $jevLiveProperty.Value -and $jevLiveProperty.Value -isnot [System.Array]) {
+        throw "roster '$RosterPath' entry '$name' has a 'jevLive' field that is not a JSON array: write jevLive as an array, e.g. [`"turn-disposition`"]"
+    }
     if ($Entry.jevLive -is [System.Array] -and $Entry.jevLive.Count -gt 0) {
         $environment['JEV_LIVE'] = ($Entry.jevLive | ForEach-Object { [string]$_ }) -join ','
     }

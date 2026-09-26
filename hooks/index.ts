@@ -3105,6 +3105,41 @@ function readStatusLine(text: unknown): { state: "working" | "blocked" | "waitin
 const roundSummaryText = (state: AgentState, g: GoalNode): string =>
   isPlanEntry(state, g) ? "plan entry, no round budget" : `round ${g.completedRounds}/${g.maxRounds}`;
 
+/**
+ * The registration-time jevLive read's own filter, pulled out of register()
+ * so a test can drive it directly and see both halves of what it decides:
+ * which ids liveAsk may act on, and which the manifest value carried but
+ * this dropped. Trims each string member the way the settings file's own
+ * shell producer trims a comma-separated JEV_LIVE before writing the array,
+ * and drops a member that is not a string or is not one of
+ * PROMOTABLE_SET_IDS, rather than reaching a branch that would otherwise
+ * treat an unpromoted question as safe to act on live. A missing or
+ * non-array `raw` reads as no members either way, never a thrown error.
+ *
+ * Exported so the test suite can call it directly; register() still holds
+ * the one call this filter feeds, so nothing about the registration read
+ * changes.
+ */
+export function filterJevLive(raw: unknown): { kept: readonly string[]; dropped: readonly string[] } {
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (typeof entry !== "string") {
+        dropped.push(String(entry));
+        continue;
+      }
+      const trimmed = entry.trim();
+      if (PROMOTABLE_SET_IDS.includes(trimmed)) {
+        kept.push(trimmed);
+      } else {
+        dropped.push(trimmed);
+      }
+    }
+  }
+  return { kept, dropped };
+}
+
 export const register: Register = async (on, options) => {
   // --- Identity: a durable persona is the key, not the session. ---
   // Session vars live in the module-scope `sess` object so persist() and
@@ -3576,32 +3611,13 @@ export const register: Register = async (on, options) => {
 
   // jevLive names, by question-set id, which of PROMOTABLE_SET_IDS's
   // questions may read Jev's live answer through liveAsk instead of always
-  // shadowing it. A missing or non-array value reads as empty, the same
-  // "nothing promoted" state a fresh install starts from. Each member is
-  // trimmed the way the settings file's own shell producer trims a
-  // comma-separated JEV_LIVE before writing the array, and a member outside
-  // the promotable set, or one that is not a string, is dropped rather than
-  // reaching a branch that would otherwise treat an unpromoted question as
-  // safe to act on live. What got dropped is held here, at module scope,
-  // because registration runs before any store is loaded and so has nowhere
-  // to log a decision; session.start below logs it once the state exists.
-  const jevLiveDropped: string[] = [];
-  const jevLiveRaw = cfg.jevLive;
-  const jevLive: readonly string[] = Array.isArray(jevLiveRaw)
-    ? jevLiveRaw.reduce<string[]>((kept, entry) => {
-        if (typeof entry !== "string") {
-          jevLiveDropped.push(String(entry));
-          return kept;
-        }
-        const trimmed = entry.trim();
-        if (PROMOTABLE_SET_IDS.includes(trimmed)) {
-          kept.push(trimmed);
-        } else {
-          jevLiveDropped.push(trimmed);
-        }
-        return kept;
-      }, [])
-    : [];
+  // shadowing it. filterJevLive holds the filter itself; what it drops is
+  // held here, at register's own scope, because registration runs before any
+  // store is loaded and so has nowhere to log a decision, and session.start
+  // below logs it once the state exists.
+  const jevLiveFiltered = filterJevLive(cfg.jevLive);
+  const jevLive = jevLiveFiltered.kept;
+  let jevLiveDropped = jevLiveFiltered.dropped;
 
   // --- session.start: register tools, claim or join the persona ---
   // The one session.start registration in this file. An "off" session logs
@@ -4371,7 +4387,9 @@ export const register: Register = async (on, options) => {
 
     // jevLive was filtered at registration, above the state this decision
     // needs, so the drop is logged here instead, once per session start,
-    // the same lag autonomy_invalid takes for the same reason.
+    // the same lag autonomy_invalid takes for the same reason. Cleared after
+    // logging, like startPersonaProblem below, so a second session.start in
+    // the same process (a plugin reload fires one) does not log it again.
     if (jevLiveDropped.length > 0) {
       sess.state.decisions.push({
         timestamp: Date.now(),
@@ -4379,6 +4397,7 @@ export const register: Register = async (on, options) => {
         action: "jev_live_invalid",
         detail: `jevLive dropped ${bracketSafeText(JSON.stringify(jevLiveDropped).slice(0, 50))}`,
       });
+      jevLiveDropped = [];
     }
 
     if (startPersonaProblem !== null) {
