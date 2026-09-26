@@ -1172,6 +1172,23 @@ function extractMemoryBlock(src) {
   return record("MEMORY_BLOCK", "hooks/index.ts", m[1]);
 }
 
+// The [TASK LIST] block, built by the exported pure function taskListBlock
+// rather than assembled inline at its push site the way the other context
+// blocks are. Its body mixes filters, a map and two ternaries around its
+// template pieces, a shape the chain readers above do not parse, so this
+// rule reads every string and template literal in the function body instead
+// (as extractFleetPromptLineLiterals does for fleetPromptText's composed
+// lines), each interpolation already stripped by record() below. That
+// undercounts nothing sizeable: what a literal-collecting scan cannot
+// reach is prose reaching the function through a name or a call, and this
+// function's own body carries none.
+function extractTaskListBlock(src) {
+  const body = functionBody(src, "taskListBlock");
+  const literals = collectStringLiterals(body).filter((s) => s.length > 0);
+  if (literals.length === 0) throw new Error("taskListBlock composes no string literal; the rule no longer reads the function it was written for");
+  return record("TASK_LIST_BLOCK", "hooks/index.ts", literals.join("\n"));
+}
+
 // --- Structural check: every context block the prompt.submit hook pushes.
 // The identifier each `contextBlocks.push(<identifier>)` names, mapped to
 // the ledger entry whose rule sizes that identifier's literal text. A push
@@ -1186,6 +1203,7 @@ const CONTEXT_BLOCKS = {
   envBlock: "ENV_BLOCK",
   lessonBlock: "LESSON_BLOCK",
   memoryBlock: "MEMORY_BLOCK",
+  taskListText: "TASK_LIST_BLOCK",
 };
 
 function checkContextBlocks(src, entryNames) {
@@ -1569,6 +1587,7 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractEnvBlock(tsSrc),
     extractLessonBlock(tsSrc),
     extractMemoryBlock(tsSrc),
+    extractTaskListBlock(tsSrc),
     ...extractToolDescriptions(tsSrc),
   ];
   const entryNames = new Set(entries.map((e) => e.name));

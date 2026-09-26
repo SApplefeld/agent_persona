@@ -176,7 +176,7 @@ Audience: a developer of the agent_persona plugin who knows the goal tree, the s
 
 ## Related
 - `docs/plans/agent_persona_boundary-compaction_spec_v1.md` (Plan A): the banking step whose predicate section 5 extends.
-- `docs/plans/agent_persona_task-list_spec_v1.md`: the `tasks` field, the store sibling for section 1, and the promotion seam this plan owns.
+- `docs/archive/agent_persona_task-list_spec_v1.md`: the `tasks` field, the store sibling for section 1, and the promotion seam this plan owns.
 - `docs/plans/agent_persona_autonomy-dial_v1.md`: the level section 6 reads and the `goal_add` path it reuses.
 - `docs/archive/agent_persona_nudge-state_v1.md`: the hold and the status lines; its `continued_unprompted` question stays its own.
 - `docs/archive/agent_persona_decision-seam_v1.md`: the seam whose contract section 3 amends.

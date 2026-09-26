@@ -84,6 +84,18 @@ declare module 'claude-code' {
       /** level is "propose", "plan-and-ask" or "plan-and-start". */
       level: string
     }
+    /** Add a working item to the active goal's task list, a lighter tier below the goal tree, scoped to whichever goal is active right now. Refused with no active goal, at the per-goal cap, or under a plan run, where the plan document's own chapters are already the task list. Completing the goal clears its tasks; finishing every task never completes the goal by itself. */
+    "mcp__agentic-plugin__task_add": {
+      /** text is the working item, one line. */
+      text: string
+    }
+    /** Mark one task of the active goal's task list done, by id. An id not under the active goal is refused as unknown. Once every task of the active goal is done, the result suggests goal_done, but never completes the goal by itself. */
+    "mcp__agentic-plugin__task_done": {
+      /** id names the task to complete, as task_add returned it. */
+      id: string
+    }
+    /** Remove every task of the active goal's task list, whether done or not. Other goals' tasks are untouched. Refused with no active goal. The goal itself is not touched: completing it clears its tasks automatically, so this is for dropping a list mid-goal rather than for closing the goal. */
+    "mcp__agentic-plugin__task_clear": {}
     /** Add a memory entry to this persona's durable store. Use for facts, preferences, or lessons the worker should remember across sessions. Distill to one clear, self-contained statement. */
     "mcp__agentic-plugin__memory_add": {
       /** A short, self-contained statement (one fact, preference, or lesson). */
