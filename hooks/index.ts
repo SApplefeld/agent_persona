@@ -58,7 +58,7 @@ import {
   newTaskId,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
-import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, TaskItem } from "./agent-state";
+import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem } from "./agent-state";
 import {
   claimResource,
   readAllClaims,
@@ -462,6 +462,12 @@ function findExpectedTurn(list: ExpectedTurn[], turnText: string): ExpectedTurn 
 // [PROPOSE] turns, counted from monitor.proposal.askedAt.
 export const PROPOSAL_EVERY_MS = 24 * 3_600_000;
 
+// The most times the tick's plan record settle step (step 2c) sends one of
+// goal_add's records again after the coordinator persona's inbox skipped it.
+// A record read back as skipped once its entry has spent this many resends is
+// announced on the persona's own thread instead of being sent again.
+export const PLAN_RECORD_MAX_RESENDS = 3;
+
 // One line of the [KAIZEN] thread message. The text comes out of the
 // persona's store, so its line breaks are folded and it passes through
 // bracketSafeText, which turns '[' and ']' into '(' and ')' so the text
@@ -679,11 +685,12 @@ function removeExpectedTurn(expectedTurns: ExpectedTurn[], entry: ExpectedTurn):
 
 // Submits the [KAIZEN] thread message, one plugin turn carrying each line
 // kaizenLine made, for what has no coordinator persona to reach: the
-// self-review's unroutable findings and the idle proposal's unroutable
-// resend. It enters the turn in the expected-turn list first, as
-// register()'s expectTurn does. A refused announcement is non-fatal: the
-// decision log still carries each line's cause, and its ledger entry reads
-// delivered. Top level because it takes `dp`.
+// self-review's unroutable findings, the idle proposal's unroutable resend,
+// and goal_add's plan records whose resend is unroutable. It enters the
+// turn in the expected-turn list first, as register()'s expectTurn does. A
+// refused announcement is non-fatal: the decision log still carries each
+// line's cause, and its ledger entry reads delivered. Top level because it
+// takes `dp`.
 async function submitKaizen(dp: any, expectedTurns: ExpectedTurn[], announced: string[]): Promise<void> {
   const kaizenText =
     `[KAIZEN] Send each line below to the operator through the reply tool as written, then continue your work:\n` +
@@ -6091,6 +6098,118 @@ export const register: Register = async (on, options) => {
         }
       }
 
+      // 2c. The plan record settle step, for the [PROPOSAL] and [STARTED]
+      // records goal_add sent. It sits ahead of every step that can end the
+      // tick on the tree, so it runs on each quiet owner tick whether or not an
+      // entry is active: a [STARTED] plan is usually the active entry, and the
+      // idle proposal's settle step in 4a never runs while one is. The
+      // coordinator persona and the default persona are skipped, as 4a skips
+      // them. The open-turn reading is taken again here, since the awaits
+      // above leave room for a turn to open, and an agentic_say in it and a
+      // resend below each take the highest inbox sequence under this
+      // session's id.
+      //
+      // An entry whose goal entry no longer needs it leaves the ledger unread:
+      // a [PROPOSAL] once its node is gone or no longer carries awaitingYes,
+      // and a [STARTED] once its node is gone, complete or abandoned. Any
+      // other entry's record is read back. One that reads delivered, answered,
+      // resolved or absent settles the entry, which leaves the ledger. One
+      // that reads skipped is sent again with the same text under this
+      // session, taking the new writer and seq and counting one more resend.
+      // One that reads skipped after PLAN_RECORD_MAX_RESENDS resends, and a
+      // resend the reach rule refuses, have no road: the entry leaves the
+      // ledger, plan_record_unroutable is logged, and the record's text is
+      // announced on this persona's own thread through the [KAIZEN] frame. A
+      // resend whose reach check or store write throws leaves the entry for
+      // the next quiet tick. A turn open by the time a resend would write
+      // stops the step: what it settled so far is still saved and announced,
+      // and the tick then ends, as step 4a ends on a turn it finds open.
+      if (sess.persona !== coordinatorPersona && sess.persona !== "default"
+        && sess.state.monitor.planRecords.length > 0 && !turnIsOpen()) {
+        const ledger = sess.state.monitor.planRecords;
+        const planRecordNow = Date.now();
+        const unroutableLines: string[] = [];
+        let planRecordsChanged = false;
+        let turnOpenedUnderStep = false;
+        const settle = (entry: SentPlanRecord): void => {
+          const at = ledger.indexOf(entry);
+          if (at !== -1) ledger.splice(at, 1);
+          planRecordsChanged = true;
+        };
+        // Settles an entry that has no road left, logs why, and queues its
+        // text for the [KAIZEN] announcement.
+        const settleUnroutable = (entry: SentPlanRecord, recordId: string, why: string): void => {
+          settle(entry);
+          unroutableLines.push(kaizenLine(entry.text));
+          sess.state.decisions.push({
+            timestamp: planRecordNow,
+            loop: "monitor",
+            action: "plan_record_unroutable",
+            detail: `${entry.nodeId}: record ${recordId} to '${coordinatorPersona}' ${why}; announced on this persona's own thread`,
+          });
+        };
+        for (const entry of [...ledger]) {
+          const node = sess.state.goals.find((g) => g.id === entry.nodeId);
+          const needed = !!node && (entry.awaitingYes
+            ? node.awaitingYes === true
+            : node.status !== "complete" && node.status !== "abandoned");
+          if (!needed) {
+            settle(entry);
+            continue;
+          }
+          const rec = await readInboxRecord(commonsStoreOf($), coordinatorPersona, entry.writer, entry.seq);
+          if (rec === null || rec.status === "delivered" || rec.status === "answered" || rec.status === "resolved") {
+            settle(entry);
+            continue;
+          }
+          if (rec.status !== "skipped") continue;
+          if (entry.resends >= PLAN_RECORD_MAX_RESENDS) {
+            settleUnroutable(entry, rec.id, `was skipped after ${entry.resends} resends and is not sent again`);
+            continue;
+          }
+          try {
+            if (!await mayReachPersona(commonsStoreOf($), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
+              settleUnroutable(entry, rec.id, `was skipped and is not sent again: the reach rule refuses this session's write to '${coordinatorPersona}'`);
+              continue;
+            }
+            // Taken once more, since a turn can have opened under the record
+            // read and the reach check.
+            if (turnIsOpen()) {
+              turnOpenedUnderStep = true;
+              break;
+            }
+            const again = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, entry.text);
+            entry.writer = again.writer;
+            entry.seq = again.seq;
+            entry.resends += 1;
+            planRecordsChanged = true;
+            sess.state.decisions.push({
+              timestamp: planRecordNow,
+              loop: "monitor",
+              action: "plan_record_resent",
+              detail: `${entry.nodeId}: record ${again.id} to '${coordinatorPersona}' (sent again, the earlier record ${rec.id} was skipped)`,
+            });
+          } catch (err) {
+            planRecordsChanged = true;
+            sess.state.decisions.push({
+              timestamp: planRecordNow,
+              loop: "monitor",
+              action: "plan_record_resend_failed",
+              detail: `${entry.nodeId}: record ${rec.id} to '${coordinatorPersona}' was skipped and not sent again: ${safeErrorText(err)}`.slice(0, 200),
+            });
+          }
+        }
+        // The ledger is written before the announcement is submitted, since
+        // the submit does not resolve until the session is next idle. A save
+        // that throws still lets the announcement go out, and the settled
+        // ledger waits in memory for the next save.
+        if (planRecordsChanged) {
+          try { await persist($); } catch { /* the store refused; the ledger above waits in memory */ }
+        }
+        if (unroutableLines.length > 0) await submitKaizen($, expectedTurns, unroutableLines);
+        if (turnOpenedUnderStep) return;
+      }
+
       // Get the active node.
       const activeNode = sess.state.activeGoalId
         ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
@@ -9149,9 +9268,9 @@ export const register: Register = async (on, options) => {
       const writeOk = unprompted ? await persistOrRollBack($, rollBackAdd) : await persist($);
       if (writeOk && unprompted) {
         const recordText = unpromptedPlanRecordText(awaitingYes, sess.persona, newNode.id, newNode.title, planPath);
-        let recordId: string;
+        let sent: { id: string; writer: string; seq: number };
         try {
-          recordId = (await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, recordText)).id;
+          sent = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, recordText);
         } catch (err) {
           toolErrorsThisTurn++;
           const cause = `the write to '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -9165,9 +9284,13 @@ export const register: Register = async (on, options) => {
           timestamp: now,
           loop: "goal",
           action: awaitingYes ? "plan_awaiting_yes" : "plan_started_unprompted",
-          detail: `${newNode.id}: record ${recordId} to '${coordinatorPersona}'`,
+          detail: `${newNode.id}: record ${sent.id} to '${coordinatorPersona}'`,
         });
-        // The entry and the record have both landed, so only this line is lost on a failed save.
+        // The record is ledgered so a quiet tick can send it again where the
+        // coordinator persona's inbox skips it; see the plan record settle step.
+        sess.state.monitor.planRecords.push({ nodeId: newNode.id, awaitingYes, text: recordText, writer: sent.writer, seq: sent.seq, resends: 0 });
+        // The entry and the record have both landed, so only this line and the
+        // ledger entry are lost on a failed save.
         try { await persist($); } catch { /* the add's success stands */ }
       }
       if (writeOk) {

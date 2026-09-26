@@ -162,6 +162,25 @@ export interface SentProposal {
   delivered: boolean;
 }
 
+// A [PROPOSAL] or [STARTED] record goal_add sent the coordinator persona for
+// a plan the autonomy level admitted. `awaitingYes` is true for a [PROPOSAL],
+// whose entry waits for the operator's yes, and false for a [STARTED].
+// `writer` and `seq` key the record in the coordinator persona's inbox. The
+// entry leaves the list once its record reads delivered, answered, resolved
+// or absent, once its goal entry no longer needs it, or once a resend has no
+// road. A record read back as skipped is sent again under the live session,
+// and `resends` counts those sends. Once it reaches PLAN_RECORD_MAX_RESENDS
+// in hooks/index.ts, a record read back as skipped is not sent again: the
+// entry leaves the list and its text is announced on the persona's own thread.
+export interface SentPlanRecord {
+  nodeId: string;
+  awaitingYes: boolean;
+  text: string;
+  writer: string;
+  seq: number;
+  resends: number;
+}
+
 // A long-term goal: the idea a persona is working towards. It is held in a
 // list beside the goal tree, not as a node in it, and no tree walker reads
 // that list, so a long-term goal is never activated and never holds a root
@@ -249,6 +268,9 @@ export interface MonitorState {
     askedAt: number;
     sent: SentProposal | null;
   };
+  // The records goal_add sent for plans the autonomy level admitted, which a
+  // quiet tick reads back while their entries still need them.
+  planRecords: SentPlanRecord[];
   cost: {
     classify: { count: number; estTokens: number };
     reason: { count: number; estTokens: number };
@@ -532,6 +554,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
       },
       selfReview: { count: 0, lastAt: 0, turnsSince: 0, windowStart: 0, pendingPeriodic: false, lastInjectAt: 0, sent: [] },
       proposal: { askedAt: 0, sent: null },
+      planRecords: [],
       cost: {
         classify: { count: 0, estTokens: 0 },
         reason: { count: 0, estTokens: 0 },
@@ -781,6 +804,26 @@ function fillProposal(state: AgentState): void {
   if (!wellFormed) p.sent = null;
 }
 
+// The plan record ledger, filled at every load site that fills the proposal
+// record, with no version bump. A stored value that is not a list reads as an
+// empty one. An entry is kept only where its nodeId, text and writer are
+// strings, its awaitingYes a boolean and its seq a finite number; anything
+// else is dropped. A kept entry whose resends is absent or not a finite
+// number reads as 0 resends.
+function fillPlanRecords(state: AgentState): void {
+  const stored = (state.monitor as { planRecords?: unknown }).planRecords;
+  if (!Array.isArray(stored)) {
+    state.monitor.planRecords = [];
+    return;
+  }
+  state.monitor.planRecords = stored.filter((r): r is SentPlanRecord => {
+    const rec = r as Partial<SentPlanRecord> | null;
+    return !!rec && typeof rec === "object"
+      && typeof rec.nodeId === "string" && typeof rec.text === "string" && typeof rec.writer === "string"
+      && typeof rec.awaitingYes === "boolean" && Number.isFinite(rec.seq);
+  }).map((rec) => (Number.isFinite(rec.resends) ? rec : { ...rec, resends: 0 }));
+}
+
 // The task list, filled at every load exit. A stored value that is not a list
 // reads as an empty one, which is how a store written before the list existed
 // loads. A stored entry is kept only where its id, goalId and text are
@@ -911,6 +954,7 @@ export function parseState(json: string): AgentState {
     };
 
     fillProposal(state);
+    fillPlanRecords(state);
     // L10: invariant block runs on both v2 and v3 branches.
     // Section 1: fill/recover runs on every branch's exit; see the function.
     applyPlanRecordOnLoad(state);
@@ -941,6 +985,7 @@ export function parseState(json: string): AgentState {
     }
     fillTasks(state);
     fillProposal(state);
+    fillPlanRecords(state);
     applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
@@ -991,6 +1036,7 @@ export function parseState(json: string): AgentState {
   }
   fillTasks(state);
   fillProposal(state);
+  fillPlanRecords(state);
 
   // S12: fill selfReview with defaults at the E11 site, no version bump.
   if (!state.monitor.selfReview) {
