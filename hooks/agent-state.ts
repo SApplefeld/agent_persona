@@ -171,6 +171,18 @@ export interface LongTermGoal {
 // prompt, so it is kept short, and goal_longterm refuses an add past it.
 export const LONG_TERM_GOAL_CAP = 5;
 
+// The persona's autonomy level: what it may do with work it found on its own.
+// The list is closed at these three, in order of widening, and the operator
+// alone sets the level, through goal_autonomy. A store with no level, or with
+// a value outside the list, reads as "propose".
+export const AUTONOMY_LEVELS = ["propose", "plan-and-ask", "plan-and-start"] as const;
+export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
+
+// Whether a stored or supplied value is one of the three levels.
+export function isAutonomyLevel(value: unknown): value is AutonomyLevel {
+  return typeof value === "string" && (AUTONOMY_LEVELS as readonly string[]).includes(value);
+}
+
 export interface MonitorState {
   sessionStart: number;
   turnCount: number;
@@ -337,6 +349,7 @@ export interface AgentState {
   goals: GoalNode[];
   activeGoalId: string | null;
   longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
+  autonomy: AutonomyLevel; // set only by goal_autonomy; see AUTONOMY_LEVELS
   monitor: MonitorState;
   nudge: NudgeBudget;
   pendingAskId?: string; // D5: ask-operator wait
@@ -469,6 +482,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
     goals: [],
     activeGoalId: null,
     longTermGoals: [],
+    autonomy: "propose",
     monitor: {
       sessionStart: now,
       turnCount: 0,
@@ -825,6 +839,7 @@ export function parseState(json: string): AgentState {
       goals,
       activeGoalId,
       longTermGoals: [],
+      autonomy: "propose",
       monitor: old.monitor ?? {
         sessionStart: now,
         turnCount: 0,
@@ -862,6 +877,9 @@ export function parseState(json: string): AgentState {
     if (!Array.isArray(state.longTermGoals)) {
       state.longTermGoals = [];
     }
+    if (!isAutonomyLevel(state.autonomy)) {
+      state.autonomy = "propose";
+    }
     fillProposal(state);
     applyPlanRecordOnLoad(state);
     enforceInvariants(state);
@@ -896,6 +914,13 @@ export function parseState(json: string): AgentState {
   // before it existed, with no version bump.
   if (!Array.isArray(state.longTermGoals)) {
     state.longTermGoals = [];
+  }
+  // The autonomy level, filled at the same site with no version bump. A
+  // store with no level, or with a value outside AUTONOMY_LEVELS, reads as
+  // "propose". This function stays silent about it; session.start logs a
+  // stored value outside the list, since only it holds the raw store.
+  if (!isAutonomyLevel(state.autonomy)) {
+    state.autonomy = "propose";
   }
   fillProposal(state);
 

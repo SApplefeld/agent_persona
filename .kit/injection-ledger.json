@@ -272,6 +272,12 @@
       "words": 151
     },
     {
+      "name": "goal_autonomy_description",
+      "file": "hooks/index.ts",
+      "chars": 736,
+      "words": 119
+    },
+    {
       "name": "memory_add_description",
       "file": "hooks/index.ts",
       "chars": 243,

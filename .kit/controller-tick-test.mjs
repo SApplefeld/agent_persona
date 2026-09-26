@@ -3848,6 +3848,15 @@ async function main() {
     await caseGl4_eachReadingBindsToItsPromptText(clock);
     await caseGl4_aMatchedEntryIgnoresAPendingOperatorReading(clock);
     await caseGl4_notLoadedComesBeforeTheGate(clock);
+    await caseAut_anOperatorTurnSetsTheLevel(clock);
+    await caseAut_everyOtherTurnIsRefused(clock);
+    await caseAut_aLevelOutsideTheThreeIsDenied(clock);
+    await caseAut_aNonOwnerAndAnUnloadedStoreAreRefused(clock);
+    await caseAut_aWriteThatYieldsLeavesTheOldLevel(clock);
+    await caseAut_aStoreWrittenBeforeTheLevelLoadsAsPropose();
+    await caseAut_anInvalidStoredLevelIsLoggedOnce(clock);
+    await caseAut_theLevelSurvivesGoalCreateAndARestart(clock);
+    await caseAut_theToolRegistersForAnOwnerAndNeverForAReader(clock);
     await caseGl5_anIdlePersonaIsAskedOncePerInterval(clock);
     await caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock);
     await caseGl5_theProposalIsLedgeredAndSettles(clock);
@@ -20257,7 +20266,7 @@ async function caseSection6_owner_matchesTheFullExistingShape(clock) {
   console.log("\n=== Section 6 owner control: every tool and both clock timers still register, matching today ===");
   clock.set(T0);
   const h = await createTickHarness({ ...OPTS, arming: "owner", caseName: "s6_owner_control" });
-  check("s6 owner: sixteen tools registered", h.toolRegisters.length === 16, h.toolRegisters.map((t) => t.name));
+  check("s6 owner: seventeen tools registered", h.toolRegisters.length === 17, h.toolRegisters.map((t) => t.name));
   check("s6 owner: two clock callbacks (heartbeat, controller tick)", h.clockEveryCallbacks.length === 2, h.clockEveryCallbacks.length);
   const entry = h.storeMap.get(`commons:${SESSION_ID}`);
   check("s6 owner: commons entry holds persona:default (ownership taken)", !!entry && entry.claims.some((c) => c.resource === "persona:default"), entry);
@@ -23623,8 +23632,8 @@ async function caseLtg_anAddReturnsAnIdAndGoalStatusShowsIt(clock) {
   await openPromptTurn(h);
   const empty = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
   const emptyLines = String(empty?.result).split("\n");
-  check("ltg add: before any add, the last line under the tree is the heading with (none)",
-    emptyLines.length === 3 && emptyLines[2] === "Long-term goals: (none)", emptyLines);
+  check("ltg add: before any add, the lines under the tree are the autonomy level, then the heading with (none)",
+    emptyLines.length === 4 && emptyLines[2] === "Autonomy: propose" && emptyLines[3] === "Long-term goals: (none)", emptyLines);
   const treeBefore = JSON.stringify({ goals: getState(h).goals, activeGoalId: getState(h).activeGoalId });
 
   const res = await callTool(h, { tool: LTG_TOOL, action: "add", title: "A fleet that runs itself", objective: "Every persona keeps its own queue moving." });
@@ -23643,9 +23652,9 @@ async function caseLtg_anAddReturnsAnIdAndGoalStatusShowsIt(clock) {
 
   const shown = await callTool(h, { tool: "mcp__agentic-plugin__goal_status" });
   const lines = String(shown?.result).split("\n");
-  check("ltg add: goal_status prints the tree, then the heading, then the entry on one line",
-    lines.length === 4 && lines[0].includes("root-1") && lines[1].includes("plan-1") &&
-    lines[2] === "Long-term goals:" && lines[3] === `  ${id} "A fleet that runs itself": Every persona keeps its own queue moving.`, lines);
+  check("ltg add: goal_status prints the tree, then the autonomy level, then the heading, then the entry on one line",
+    lines.length === 5 && lines[0].includes("root-1") && lines[1].includes("plan-1") && lines[2] === "Autonomy: propose" &&
+    lines[3] === "Long-term goals:" && lines[4] === `  ${id} "A fleet that runs itself": Every persona keeps its own queue moving.`, lines);
 }
 
 // goal_status with no tree keeps its existing text where the list is empty,
@@ -23656,13 +23665,13 @@ async function caseLtg_goalStatusWithNoTree(clock) {
   clock.set(T0);
   const bare = await ltgHarness("ltg_status_no_tree", [], []);
   const bareRes = await callTool(bare, { tool: "mcp__agentic-plugin__goal_status" });
-  check("ltg no tree, empty list: the existing text and nothing else", bareRes?.result === "No goal tree exists.", bareRes);
+  check("ltg no tree, empty list: the autonomy level, then the existing text and nothing else", bareRes?.result === "Autonomy: propose\nNo goal tree exists.", bareRes);
 
   clock.set(T0);
   const held = await ltgHarness("ltg_status_no_tree_held", [], [ltgEntry("lt-a", "Alpha", "first\nsecond\r\nthird")]);
   const heldRes = await callTool(held, { tool: "mcp__agentic-plugin__goal_status" });
-  check("ltg no tree, one held: the existing text, then the heading and the entry on one line",
-    heldRes?.result === 'No goal tree exists.\nLong-term goals:\n  lt-a "Alpha": first second third', heldRes);
+  check("ltg no tree, one held: the autonomy level, the existing text, then the heading and the entry on one line",
+    heldRes?.result === 'Autonomy: propose\nNo goal tree exists.\nLong-term goals:\n  lt-a "Alpha": first second third', heldRes);
 }
 
 // The Acceptance's refusals, each read by the rule that refused it: a sixth
@@ -24306,6 +24315,317 @@ async function caseGl4_notLoadedComesBeforeTheGate(clock) {
   check("gl4 not loaded: goal_create with no turn open names the unread store", readsAsNotLoaded(created?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), created);
   const lt = await callTool(h, { tool: LTG_TOOL, action: "add", title: "A goal", objective: "An objective" });
   check("gl4 not loaded: goal_longterm with no turn open names the unread store", readsAsNotLoaded(lt?.deny, NOT_LOADED_STORE_CAUSE_TOKEN), lt);
+}
+
+// ============================================================
+// Autonomy dial 1: the level in the store and the tool that sets it
+// ============================================================
+
+const AUT_TOOL = "mcp__agentic-plugin__goal_autonomy";
+const AUT_LEVELS = ["propose", "plan-and-ask", "plan-and-start"];
+// The token every goal_autonomy turn refusal carries, and no other refusal.
+const AUT_REFUSED_TOKEN = "this persona's own thread";
+
+// A started owner session over `goals` (gl4Tree by default) with one
+// long-term goal, and `autonomy` in the stored state where the case passes
+// one. Passing none seeds a store written before the level existed.
+async function autHarness(caseName, { autonomy, goals = gl4Tree(), extraOpts = {} } = {}) {
+  const h = await createTickHarness({ ...OPTS, ...extraOpts, caseName, skipSessionStart: true });
+  const activeGoalId = goals.find((g) => g.status === "active")?.id ?? null;
+  const state = makeState({ now: T0, goals, activeGoalId, longTermGoals: [ltgEntry("lt-held", "Held goal")], autonomy });
+  seedPersonaStore(h, state);
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  return h;
+}
+
+// The Acceptance's first bullet, the admitted half: in a channel turn the
+// call sets the field, logs autonomy_set with the old and new levels, returns
+// the new level, counts no tool error, and goal_status prints the level on
+// its own line between the tree and the long-term goals. The other three
+// operator origin kinds admit it too.
+async function caseAut_anOperatorTurnSetsTheLevel(clock) {
+  console.log("\n=== Autonomy dial 1: goal_autonomy in an operator turn sets the level ===");
+  clock.set(T0);
+  const h = await autHarness("aut_channel_sets");
+  await openPromptTurn(h, { originKind: "channel", text: "Set your autonomy to plan and ask.", turnId: "t-ch" });
+  const res = await callTool(h, { tool: AUT_TOOL, level: "plan-and-ask" });
+  check("aut channel: accepted, and the result names the new level", res?.deny === undefined && String(res?.result).includes("plan-and-ask"), res);
+  const state = getState(h);
+  check("aut channel: the stored level is plan-and-ask", state.autonomy === "plan-and-ask", state.autonomy);
+  const set = state.decisions.filter((d) => d.action === "autonomy_set");
+  check("aut channel: one autonomy_set decision naming propose and plan-and-ask",
+    set.length === 1 && set[0].loop === "goal" && set[0].detail.includes("propose") && set[0].detail.includes("plan-and-ask"), set);
+  const lines = String((await callTool(h, { tool: "mcp__agentic-plugin__goal_status" }))?.result).split("\n");
+  const at = lines.indexOf("Autonomy: plan-and-ask");
+  check("aut channel: goal_status prints Autonomy: plan-and-ask on its own line, after the tree and right above the long-term goals",
+    at > 0 && lines[at - 1].includes("plan-q") && lines[at + 1] === "Long-term goals:", lines);
+  await closeTurn(h, "t-ch");
+  check("aut channel: the turn counts no tool error", getState(h).monitor.env.errors.toolErrorsLastTurn === 0, getState(h).monitor.env.errors);
+
+  for (const kind of ["composer", "bridge", "sdk"]) {
+    clock.set(T0);
+    const k = await autHarness(`aut_operator_${kind}`);
+    await openPromptTurn(k, { originKind: kind, turnId: `t-${kind}` });
+    const r = await callTool(k, { tool: AUT_TOOL, level: "plan-and-start" });
+    check(`aut operator ${kind}: accepted and stored`, r?.deny === undefined && getState(k).autonomy === "plan-and-start", { r, level: getState(k).autonomy });
+  }
+}
+
+// Calls goal_autonomy in the turn now open and reads it as refused by the
+// turn rule: the one refusal naming this persona's own thread, the store
+// byte-identical, the stored level still propose. Then the turn closes and
+// its tool errors are that one denial.
+async function autExpectRefused(h, tag, turnId) {
+  const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  const res = await callTool(h, { tool: AUT_TOOL, level: "plan-and-ask" });
+  check(`${tag}: refused by the turn rule, naming this persona's own thread`,
+    typeof res?.deny === "string" && res.deny.includes(AUT_REFUSED_TOKEN) && res.deny.includes("operator's to set") && res?.result === undefined, res);
+  check(`${tag}: nothing reached the store`, h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  check(`${tag}: the stored level is still propose`, getState(h).autonomy === undefined || getState(h).autonomy === "propose", getState(h).autonomy);
+  await closeTurn(h, turnId);
+  const errors = getState(h).monitor.env.errors;
+  check(`${tag}: the turn's tool errors are the one denial`, errors.toolErrorsLastTurn === 1, errors);
+  check(`${tag}: after the turn the stored level is propose`, (getState(h).autonomy ?? "propose") === "propose", getState(h).autonomy);
+}
+
+// The Acceptance's first bullet, the refused half: a COORDINATOR delivery,
+// a nudge turn, a priming turn, a nudge turn opened while a channel prompt's
+// reading still waits, and a turn of a kind that is not the operator's. The
+// delivery is one the effort gate admits, shown by a goal_longterm add in the
+// same turn landing, so the refusal is the autonomy rule's own. The nudge
+// after a channel prompt is followed by that channel prompt's own turn,
+// which is admitted, so the reading was there and the entry rule refused.
+async function caseAut_everyOtherTurnIsRefused(clock) {
+  console.log("\n=== Autonomy dial 1: goal_autonomy is refused in every turn but the operator's ===");
+
+  clock.set(T0);
+  const d = await autHarness("aut_refused_coordinator");
+  await openDeliveryTurn(d, "default", { text: "Set your autonomy to plan and ask.", turnId: "t-coord" });
+  check("aut coordinator setup: the drain submitted the record under the COORDINATOR ground",
+    d.promptSubmits.some((p) => p.startsWith("[COORDINATOR id=default-coord-open-1-1]")), d.promptSubmits);
+  const effort = await callTool(d, { tool: LTG_TOOL, action: "add", title: "Control", objective: "The effort gate admits this turn" });
+  check("aut coordinator control: the effort gate admits a goal_longterm add in the same turn", effort?.deny === undefined, effort);
+  const bytesAfterControl = d.fsMap.get(PERSONA_STORE_FILE);
+  const coordRes = await callTool(d, { tool: AUT_TOOL, level: "plan-and-ask" });
+  check("aut coordinator delivery: refused by the turn rule, naming this persona's own thread",
+    typeof coordRes?.deny === "string" && coordRes.deny.includes(AUT_REFUSED_TOKEN), coordRes);
+  check("aut coordinator delivery: nothing reached the store", d.fsMap.get(PERSONA_STORE_FILE) === bytesAfterControl);
+  check("aut coordinator delivery: the stored level is still propose", (getState(d).autonomy ?? "propose") === "propose", getState(d).autonomy);
+
+  clock.set(T0);
+  const n = await autHarness("aut_refused_nudge");
+  n.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(n, clock, 50);
+  check("aut nudge setup: the tick sent a nudge", getState(n).decisions.some((x) => x.action === "nudge_sent"), getState(n).decisions.map((x) => x.action));
+  await openQueuedTurn(n, "t-nudge");
+  await autExpectRefused(n, "aut nudge turn", "t-nudge");
+
+  clock.set(T0);
+  const p = await autHarness("aut_refused_priming");
+  await openPromptTurn(p, { originKind: "sdk", text: "[SUPERVISOR-PRIMING] You run as the persona's worker.", turnId: "t-prime" });
+  await autExpectRefused(p, "aut priming turn", "t-prime");
+
+  clock.set(T0);
+  const c = await autHarness("aut_refused_nudge_after_channel");
+  c.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await c.handlers["prompt.submit"](c.fake, { text: "How is it going?", origin: { kind: "channel" } }, async (core) => ({ text: core.text, context: core.context }));
+  await tickAndSettle(c, clock, 50);
+  check("aut nudge-after-channel setup: the tick sent a nudge", getState(c).decisions.some((x) => x.action === "nudge_sent"), getState(c).decisions.map((x) => x.action));
+  await openQueuedTurn(c, "t-nudge-ch");
+  await autExpectRefused(c, "aut nudge after a channel prompt", "t-nudge-ch");
+  await gl4Start(c, "t-ch", "How is it going?");
+  const chRes = await callTool(c, { tool: AUT_TOOL, level: "plan-and-ask" });
+  check("aut nudge-after-channel control: the channel prompt's own turn is admitted", chRes?.deny === undefined && getState(c).autonomy === "plan-and-ask", chRes);
+
+  clock.set(T0);
+  const o = await autHarness("aut_refused_origin_peer");
+  await openPromptTurn(o, { originKind: "peer", text: "A peer prompt.", turnId: "t-peer" });
+  await autExpectRefused(o, "aut peer origin turn", "t-peer");
+}
+
+// The Acceptance's second bullet: a level outside the three is denied, the
+// denial lists all three, and the store is untouched.
+async function caseAut_aLevelOutsideTheThreeIsDenied(clock) {
+  console.log("\n=== Autonomy dial 1: a level outside the three is denied and the denial lists the three ===");
+  clock.set(T0);
+  const h = await autHarness("aut_bad_level");
+  await openPromptTurn(h, { originKind: "channel", turnId: "t-bad" });
+  for (const [label, args] of [["sometimes", { level: "sometimes" }], ["a level in capitals", { level: "PROPOSE" }], ["an empty level", { level: "" }], ["no level", {}]]) {
+    const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+    const res = await callTool(h, { tool: AUT_TOOL, ...args });
+    check(`aut bad level (${label}): denied, listing the three levels`,
+      typeof res?.deny === "string" && AUT_LEVELS.every((l) => res.deny.includes(`"${l}"`)) && !res.deny.includes(AUT_REFUSED_TOKEN), res);
+    check(`aut bad level (${label}): the store is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  }
+}
+
+// Owner only, as goal_longterm is: a reading session in an operator turn is
+// refused with the held text and writes nothing. And a session whose store
+// did not load names that before the turn rule, with no turn open.
+async function caseAut_aNonOwnerAndAnUnloadedStoreAreRefused(clock) {
+  console.log("\n=== Autonomy dial 1: a non-owner and an unloaded store are refused by their own rules ===");
+  clock.set(T0);
+  const r = await seedReaderHarness("aut_reader", T0, "owner-aut", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  await openPromptTurn(r);
+  const storeBefore = r.fsMap.get(PERSONA_STORE_FILE);
+  r.fsWrites.length = 0;
+  const res = await callTool(r, { tool: AUT_TOOL, level: "plan-and-ask" });
+  check("aut non-owner: refused with the held deny text", res?.deny === SHUTDOWN_HELD_DENY && res?.result === undefined, res);
+  check("aut non-owner: no write reached any file", r.fsWrites.length === 0, r.fsWrites.map((w) => w.path));
+  check("aut non-owner: the store file is byte-identical", r.fsMap.get(PERSONA_STORE_FILE) === storeBefore);
+
+  clock.set(T0);
+  const seeded = { fsMap: new Map(), storeMap: new Map() };
+  seeded.fsMap.set(PERSONA_STORE_FILE, "{ not a store");
+  const u = await relaunchStewardHarness("aut_not_loaded", seeded, { ...OPTS, caseName: "aut_not_loaded" });
+  const nl = await callTool(u, { tool: AUT_TOOL, level: "plan-and-ask" });
+  check("aut not loaded: with no turn open the unread store is named, not the turn rule", readsAsNotLoaded(nl?.deny, NOT_LOADED_STORE_CAUSE_TOKEN) && !String(nl?.deny).includes(AUT_REFUSED_TOKEN), nl);
+}
+
+// A write that gives the persona up still writes the store, from persist's
+// commons branch. The level and the autonomy_set line go back before that
+// write, so the store the yield leaves carries neither.
+async function caseAut_aWriteThatYieldsLeavesTheOldLevel(clock) {
+  console.log("\n=== Autonomy dial 1: a write that gives the persona up leaves the old level in the store ===");
+  clock.set(T0);
+  const h = await autHarness("aut_yield");
+  await openPromptTurn(h, { originKind: "channel", turnId: "t-yield" });
+  h.storeMap.set("commons:rival-aut", { sessionId: "rival-aut", lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 600_000 }] });
+  const res = await callTool(h, { tool: AUT_TOOL, level: "plan-and-start" });
+  check("aut yield: denied with the held text", res?.deny === SHUTDOWN_HELD_DENY, res);
+  const state = getState(h);
+  check("aut yield: the write ran and gave the persona up", state.decisions.some((x) => x.action === "persona_yield_commons"), state.decisions.map((x) => x.action));
+  check("aut yield: the stored level is propose", state.autonomy === "propose", state.autonomy);
+  check("aut yield: the store carries no autonomy_set line", !state.decisions.some((x) => x.action === "autonomy_set"), state.decisions.map((x) => x.action));
+}
+
+// The Acceptance's third bullet, the parse half: a store written before the
+// level loads as propose at version 4, from a v4, a v3 and a v2 store and
+// both committed v4 fixtures; a held level loads as it was; a value outside
+// the three reads as propose with nothing logged by the parse; a new state
+// starts at propose.
+async function caseAut_aStoreWrittenBeforeTheLevelLoadsAsPropose() {
+  console.log("\n=== Autonomy dial 1: a store written before the level loads as propose ===");
+  const v4 = makeState({ now: T0 });
+  check("aut load: the seeded v4 state carries no level (the instrument)", !("autonomy" in v4), Object.keys(v4));
+  const fromV4 = parseState(JSON.stringify(v4));
+  check("aut load, v4: propose and version 4", fromV4.autonomy === "propose" && fromV4.version === 4, { level: fromV4.autonomy, version: fromV4.version });
+  const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
+  check("aut load, v3: propose and version 4", fromV3.autonomy === "propose" && fromV3.version === 4, { level: fromV3.autonomy, version: fromV3.version });
+  const fromV2 = parseState(JSON.stringify({ version: 2, persona: "default", activeSessionId: "s-2", epoch: 1, memory: [], goal: null, decisions: [], createdAt: T0, updatedAt: T0 }));
+  check("aut load, v2: propose and version 4", fromV2.autonomy === "propose" && fromV2.version === 4, { level: fromV2.autonomy, version: fromV2.version });
+  for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
+    const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+    const parsed = parseState(text);
+    check(`aut load, fixture ${name}: propose and version 4`, !text.includes("autonomy") && parsed.autonomy === "propose" && parsed.version === 4, { level: parsed.autonomy, version: parsed.version });
+  }
+  for (const level of AUT_LEVELS) {
+    check(`aut load: a held ${level} loads as it was`, parseState(JSON.stringify(makeState({ now: T0, autonomy: level }))).autonomy === level);
+  }
+  for (const bad of ["sometimes", null, 3, ["plan-and-start"]]) {
+    const parsed = parseState(JSON.stringify(makeState({ now: T0, autonomy: bad })));
+    check(`aut load: a stored ${JSON.stringify(bad)} reads as propose, and the parse logs nothing`,
+      parsed.autonomy === "propose" && !parsed.decisions.some((x) => x.action === "autonomy_invalid"), { level: parsed.autonomy, decisions: parsed.decisions });
+  }
+  const fresh = AgentState.createDefaultState("someone", "s-1");
+  check("aut load: a new state starts at propose", fresh.autonomy === "propose", fresh.autonomy);
+  check("aut load: AUTONOMY_LEVELS is the three levels in order", JSON.stringify(AgentState.AUTONOMY_LEVELS) === JSON.stringify(AUT_LEVELS), AgentState.AUTONOMY_LEVELS);
+}
+
+// The Acceptance's third bullet, the session half: a store holding
+// "sometimes" starts as propose and logs autonomy_invalid once, naming the
+// value. The first write puts propose in the store, so a restart over that
+// store logs nothing more.
+async function caseAut_anInvalidStoredLevelIsLoggedOnce(clock) {
+  console.log("\n=== Autonomy dial 1: a stored level outside the three is logged once ===");
+  clock.set(T0);
+  const h = await autHarness("aut_invalid", { autonomy: "sometimes" });
+  await openPromptTurn(h, { originKind: "composer", turnId: "t-inv" });
+  const shown = String((await callTool(h, { tool: "mcp__agentic-plugin__goal_status" }))?.result).split("\n");
+  check("aut invalid: goal_status reads the level as propose", shown.includes("Autonomy: propose"), shown);
+  await closeTurn(h, "t-inv");
+  const state = getState(h);
+  const invalid = state.decisions.filter((x) => x.action === "autonomy_invalid");
+  check("aut invalid: one autonomy_invalid decision naming the stored value", invalid.length === 1 && invalid[0].detail.includes('"sometimes"'), invalid);
+  check("aut invalid: the store now holds propose", state.autonomy === "propose", state.autonomy);
+
+  clock.set(T0 + 60_000);
+  const restarted = await relaunchStewardHarness("aut_invalid_restart", h, { ...OPTS, caseName: "aut_invalid_restart" });
+  await openPromptTurn(restarted, { originKind: "composer", turnId: "t-inv2" });
+  await closeTurn(restarted, "t-inv2");
+  const after = getState(restarted).decisions.filter((x) => x.action === "autonomy_invalid");
+  check("aut invalid: a restart over the store adds no second autonomy_invalid", after.length === 1, after);
+
+  clock.set(T0);
+  const clean = await autHarness("aut_invalid_control", { autonomy: "plan-and-ask" });
+  await openPromptTurn(clean, { originKind: "composer", turnId: "t-inv3" });
+  await closeTurn(clean, "t-inv3");
+  check("aut invalid control: a held valid level logs no autonomy_invalid",
+    !getState(clean).decisions.some((x) => x.action === "autonomy_invalid") && getState(clean).autonomy === "plan-and-ask", getState(clean).decisions.map((x) => x.action));
+}
+
+// The Tests line: plan-and-start survives goal_create, whether it replaces an
+// unfinished tree, replaces a finished one, or creates the first, and a
+// session started afterwards over the store it left shows it.
+async function caseAut_theLevelSurvivesGoalCreateAndARestart(clock) {
+  console.log("\n=== Autonomy dial 1: plan-and-start survives goal_create and a restart ===");
+  let lastStore = null;
+  for (const [label, goals, extra] of [
+    ["replacing an unfinished tree", gl4Tree(), { replace: true }],
+    ["replacing a finished tree", gtc4Tree("complete"), {}],
+    ["creating the first tree", [], {}],
+  ]) {
+    clock.set(T0);
+    const h = await autHarness(`aut_survives_${label.replace(/\W+/g, "_")}`, { autonomy: "plan-and-start", goals });
+    await openPromptTurn(h, { originKind: "channel", turnId: "t-create" });
+    const res = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "Something new", ...extra });
+    const state = getState(h);
+    const tag = `aut survives (${label})`;
+    check(`${tag}: goal_create is accepted and the tree is the new root`,
+      res?.deny === undefined && state.goals.length === 1 && state.goals[0].objective === "Something new", { res, goals: state.goals });
+    check(`${tag}: the stored level is still plan-and-start`, state.autonomy === "plan-and-start", state.autonomy);
+    lastStore = h;
+  }
+
+  clock.set(T0 + 60_000);
+  const restarted = await relaunchStewardHarness("aut_survives_restart", lastStore, { ...OPTS, caseName: "aut_survives_restart" });
+  const shown = String((await callTool(restarted, { tool: "mcp__agentic-plugin__goal_status" }))?.result).split("\n");
+  check("aut survives restart: goal_status in the new session shows plan-and-start", shown.includes("Autonomy: plan-and-start"), shown);
+}
+
+// The Acceptance's fourth bullet: the tool never registers in a reader-armed
+// session. The predicate is a registered name equal to goal_autonomy, over
+// every registration the session made; the owner session is the control that
+// shows the same predicate matching. The owner's registration carries the
+// three levels, the operator's turn and the one act the level governs.
+async function caseAut_theToolRegistersForAnOwnerAndNeverForAReader(clock) {
+  console.log("\n=== Autonomy dial 1: goal_autonomy registers for an owner and never for a reader ===");
+  clock.set(T0);
+  const isAut = (t) => t.name === "goal_autonomy";
+  const owner = await createTickHarness({ ...OPTS, arming: "owner", caseName: "aut_register_owner" });
+  check("aut register control: the owner session registers goal_autonomy once", owner.toolRegisters.filter(isAut).length === 1, owner.toolRegisters.map((t) => t.name));
+  const names = owner.toolRegisters.map((t) => t.name);
+  check("aut register: goal_autonomy registers directly after goal_longterm", names.indexOf("goal_autonomy") === names.indexOf("goal_longterm") + 1, names);
+  const def = owner.toolRegisters.find(isAut);
+  const desc = String(def?.description);
+  check("aut register: the description names each of the three levels", AUT_LEVELS.every((l) => desc.includes(`"${l}"`)), desc);
+  check("aut register: the description says only the operator's own turn may call it", desc.includes("Only the operator's own turn"), desc);
+  check("aut register: the description ties the level to goal_add with kind plan and nothing else", desc.includes('goal_add with kind "plan" and nothing else'), desc);
+  check("aut register: the schema declares level alone and requires it",
+    JSON.stringify(Object.keys(def?.inputSchema?.properties ?? {})) === JSON.stringify(["level"]) &&
+    JSON.stringify(def?.inputSchema?.required) === JSON.stringify(["level"]), def?.inputSchema);
+
+  clock.set(T0);
+  const reader = await createTickHarness({ ...OPTS, arming: "reader", caseName: "aut_register_reader" });
+  check("aut register: the reader session registered tools, so the predicate read a real list", reader.toolRegisters.length > 0, reader.toolRegisters.length);
+  check("aut register: no reader registration is goal_autonomy", !reader.toolRegisters.some(isAut), reader.toolRegisters.map((t) => t.name));
 }
 
 // ============================================================

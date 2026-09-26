@@ -48,6 +48,8 @@ import {
   hasStartableWork,
   holdOf,
   LONG_TERM_GOAL_CAP,
+  AUTONOMY_LEVELS,
+  isAutonomyLevel,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
@@ -499,6 +501,13 @@ const EFFORT_REFUSED_TEXT =
   "Refused: a new effort starts only in a turn the operator or the coordinator persona started, and this turn is neither. " +
   "An act the operator or the coordinator persona directed is retried in a turn one of them opens, not proposed. " +
   "Send any other idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
+
+// The one refusal goal_autonomy gives outside a turn the operator started.
+// A coordinator delivery is refused too, so a level in the store is always
+// one the operator set.
+const AUTONOMY_REFUSED_TEXT =
+  "Refused: the autonomy level is the operator's to set, in a turn the operator starts on this persona's own thread, " +
+  "and this turn is not one. Ask the operator to set it there.";
 
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
 
@@ -2927,6 +2936,19 @@ export const register: Register = async (on, options) => {
     }
     return OPERATOR_ORIGIN_KINDS.has(currentTurnOriginKind);
   };
+  // Whether the turn now running is the operator's own, which is the only
+  // turn goal_autonomy may set the level in. It reads as turnMayStartEffort
+  // with the coordinator branch removed: a priming turn is not, a turn that
+  // matched an expected turn is not whatever its kind or ground, and any
+  // other turn is only where the reading it took carries one of the
+  // operator's kinds. So a nudge or delivery turn that opens while a channel
+  // prompt's reading still waits for its own turn is not the operator's,
+  // since that turn matched its expected-turn entry.
+  const turnIsOperators = (): boolean => {
+    if (currentTurnIsPriming) return false;
+    if (currentTurnEntry !== null) return false;
+    return OPERATOR_ORIGIN_KINDS.has(currentTurnOriginKind);
+  };
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
   // anywhere during the current turn. Reset at turn.start, set by tool.call.
   let replyCalledThisTurn = false;
@@ -3526,6 +3548,27 @@ export const register: Register = async (on, options) => {
       },
     }));
 
+    await registerTool("goal_autonomy", () => $.tool.register({
+      name: "goal_autonomy",
+      description:
+        "Set this persona's autonomy level, which says what it may do with work it found on its own. " +
+        'level "propose": it may only propose work, by sending a [PROPOSAL] record to the coordinator persona. ' +
+        'level "plan-and-ask": it may write a plan document and queue it with goal_add, and the entry waits paused for the operator\'s yes. ' +
+        'level "plan-and-start": it may write a plan document, queue it and start it, and the plugin tells the coordinator persona. ' +
+        "Only the operator's own turn on this persona's thread may call this; every other turn is refused, a coordinator delivery included. " +
+        'The level governs goal_add with kind "plan" and nothing else. goal_status shows the level. Owner only.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          level: {
+            type: "string",
+            description: 'level is "propose", "plan-and-ask" or "plan-and-start".',
+          },
+        },
+        required: ["level"],
+      },
+    }));
+
     await registerTool("memory_add", () => $.tool.register({
       name: "memory_add",
       description:
@@ -3884,6 +3927,20 @@ export const register: Register = async (on, options) => {
     // Where the read took the catch above, the session is on a default state
     // and the field keeps the store cause that catch set.
     if (startStoreProblem === null) sess.stateNotLoaded = null;
+
+    // parseState reads a stored autonomy level outside AUTONOMY_LEVELS as
+    // "propose" and says nothing, so the raw value is logged here, once per
+    // session. The later reloads of the same store do not log it again. The
+    // value is store text, so it is serialized, cut and made bracket-safe.
+    const storedAutonomy = (existingPersona as { autonomy?: unknown } | undefined)?.autonomy;
+    if (storedAutonomy !== undefined && !isAutonomyLevel(storedAutonomy)) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "autonomy_invalid",
+        detail: `stored level ${bracketSafeText(String(JSON.stringify(storedAutonomy)).slice(0, 50))} read as propose`,
+      });
+    }
 
     if (startPersonaProblem !== null) {
       sess.state.decisions.push({
@@ -8939,6 +8996,49 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
+    // Serve goal_autonomy: set the persona's autonomy level. The level is the
+    // operator's alone, so the turn gate runs before the owner check and
+    // before the argument is read. A write that is not saved puts the old
+    // level and the decision log back, so what the session holds matches the
+    // store.
+    if (e.tool === "mcp__agentic-plugin__goal_autonomy") {
+      if (sess.stateNotLoaded !== null) {
+        toolErrorsThisTurn++;
+        return { deny: stateNotLoadedText(sess.stateNotLoaded) };
+      }
+      if (!turnIsOperators()) {
+        toolErrorsThisTurn++;
+        return { deny: AUTONOMY_REFUSED_TEXT };
+      }
+      if (!sess.isOwner) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      }
+      const level = String((e as any).level || "").trim();
+      if (!isAutonomyLevel(level)) {
+        toolErrorsThisTurn++;
+        return { deny: `goal_autonomy requires level to be one of ${AUTONOMY_LEVELS.map((l) => `"${l}"`).join(", ")}.` };
+      }
+      const previous = sess.state.autonomy;
+      sess.state.autonomy = level;
+      const decision: AgentState["decisions"][number] = {
+        timestamp: Date.now(),
+        loop: "goal",
+        action: "autonomy_set",
+        detail: `${previous} -> ${level}`,
+      };
+      sess.state.decisions.push(decision);
+      const writeOk = await persistOrRollBack($, () => {
+        sess.state.autonomy = previous;
+        dropDecision(decision);
+      });
+      if (writeOk) {
+        return { result: `Autonomy level set: ${level} (was ${previous}).` };
+      }
+      toolErrorsThisTurn++;
+      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+    }
+
     // Serve goal_done (R3: use completeLeaf + activateNext). With no nodeId it
     // completes the active leaf. With a nodeId it completes that entry by
     // name, where the entry is not the root, is not already complete or
@@ -9220,9 +9320,12 @@ export const register: Register = async (on, options) => {
         ? ["Long-term goals: (none)"]
         : ["Long-term goals:", ...longTerm.map((g) =>
           `  ${String(g?.id ?? "")} "${oneLine(String(g?.title ?? ""))}": ${oneLine(String(g?.objective ?? ""))}`)];
+      // The autonomy level, on its own line above the long-term goals, and
+      // ahead of the no-tree sentence where there is no tree.
+      const autonomyLine = `Autonomy: ${sess.state.autonomy}`;
       if (!root) {
         // With no tree, the list is shown only where it holds an entry.
-        return { result: longTerm.length === 0 ? "No goal tree exists." : ["No goal tree exists.", ...longTermLines].join("\n") };
+        return { result: [autonomyLine, "No goal tree exists.", ...(longTerm.length === 0 ? [] : longTermLines)].join("\n") };
       }
       const lines: string[] = [];
       const statusOf = (id: string) => {
@@ -9240,7 +9343,7 @@ export const register: Register = async (on, options) => {
         }
       };
       render(root.id, "  ");
-      lines.push(...longTermLines);
+      lines.push(autonomyLine, ...longTermLines);
       return { result: lines.join("\n") };
     }
 

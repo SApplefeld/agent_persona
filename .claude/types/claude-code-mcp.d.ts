@@ -79,6 +79,11 @@ declare module 'claude-code' {
       /** reason says why it is dropped, and is recorded. Required for drop. */
       reason?: string
     }
+    /** Set this persona's autonomy level, which says what it may do with work it found on its own. level "propose": it may only propose work, by sending a [PROPOSAL] record to the coordinator persona. level "plan-and-ask": it may write a plan document and queue it with goal_add, and the entry waits paused for the operator's yes. level "plan-and-start": it may write a plan document, queue it and start it, and the plugin tells the coordinator persona. Only the operator's own turn on this persona's thread may call this; every other turn is refused, a coordinator delivery included. The level governs goal_add with kind "plan" and nothing else. goal_status shows the level. Owner only. */
+    "mcp__agentic-plugin__goal_autonomy": {
+      /** level is "propose", "plan-and-ask" or "plan-and-start". */
+      level: string
+    }
     /** Add a memory entry to this persona's durable store. Use for facts, preferences, or lessons the worker should remember across sessions. Distill to one clear, self-contained statement. */
     "mcp__agentic-plugin__memory_add": {
       /** A short, self-contained statement (one fact, preference, or lesson). */
