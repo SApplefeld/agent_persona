@@ -210,10 +210,13 @@ because bash is the consumer of these two and a Windows spelling of the rundir r
 relative path. The args field is passed as written, since the keeper does not know what a flag it
 has no row for means. model, effort, controllerTickMs, coordinatorPersona, architectPersona, fleetRoster and
 jevMode become the MODEL, EFFORT, controllerTickMs, COORDINATOR_PERSONA, ARCHITECT_PERSONA, FLEET_ROSTER and
-JEV_MODE environment variables, each present only where the entry carries the field. A missing
-required field, or an args element that is --prompt or starts with --prompt=, is a thrown error
-naming the roster path, because the roster launches every persona passive and a prompt is not a
-thing a boot-time relaunch may carry.
+JEV_MODE environment variables, each present only where the entry carries the field. jevLive is an
+array of question-set ids rather than a scalar, so it does not ride that same field map: a
+non-empty array becomes JEV_LIVE as its members joined with a comma, since the shell halves that
+read JEV_LIVE split on commas, and PowerShell's own [string] cast on an array joins with $OFS
+(a space by default) instead. A missing required field, or an args element that is --prompt or
+starts with --prompt=, is a thrown error naming the roster path, because the roster launches every
+persona passive and a prompt is not a thing a boot-time relaunch may carry.
 
 Returns a hashtable: Arguments is a string array; Environment is an ordered hashtable.
 #>
@@ -262,6 +265,14 @@ function Build-SupervisorInvocation {
         $value = $Entry.$field
         if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $environment[$map[$field]] = [string]$value
+    }
+    # jevLive is array-valued, so it cannot ride $map's loop above: a [string]
+    # cast on an array joins with $OFS, a space by default, and both shell
+    # halves split JEV_LIVE on commas, so a space-joined value would read back
+    # as one bogus id and refuse the launch. An empty or absent array carries
+    # nothing, the same "not set" state the loop above gives every other field.
+    if ($Entry.jevLive -is [System.Array] -and $Entry.jevLive.Count -gt 0) {
+        $environment['JEV_LIVE'] = ($Entry.jevLive | ForEach-Object { [string]$_ }) -join ','
     }
     return @{ Arguments = $arguments.ToArray(); Environment = $environment }
 }

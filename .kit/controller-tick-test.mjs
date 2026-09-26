@@ -3699,6 +3699,7 @@ async function main() {
     await caseSection4_channelOriginPromptCarriesNoLabel(clock);
     await caseSection4_badWriterPersonaNameIsRefusedByItsOwnRule(clock);
     await caseSection4_startPersonaNameIsCheckedAtRegister(clock);
+    await caseJevLive_invalidIdsAreDroppedAndLoggedAtRegister(clock);
     await caseSection4_continuationLinesAreQuoted(clock);
     await caseSection4_subagentLeftRecordIsDrainedOnTheNextTick(clock);
     await caseInboxDrain_threeRecordsDrainAtTurnPace(clock);
@@ -7402,6 +7403,38 @@ async function caseSection4_startPersonaNameIsCheckedAtRegister(clock) {
   check("section4 start name control: a valid name registers as itself with no refusal",
     !!devState && devState.activeSessionId === SESSION_ID && !devState.decisions.some((d) => d.action === "persona_name_refused"), devState?.decisions.map((d) => d.action));
   clock.set(now);
+}
+
+// jevLive is filtered against PROMOTABLE_SET_IDS at register, the same
+// moment the persona name and the stored autonomy level are checked, and any
+// member it drops is logged once at session.start under jev_live_invalid,
+// the same lag autonomy_invalid takes for the same reason (register runs
+// before the state jev_live_invalid needs to log against is loaded).
+async function caseJevLive_invalidIdsAreDroppedAndLoggedAtRegister(clock) {
+  console.log("\n=== jevLive: an id outside the promotable set, and a non-string member, are dropped and logged once ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "jevlive_mixed", jevLive: ["turn-disposition", "bogus", 7] });
+  const decisions = getStateForPersona(h, "default")?.decisions || [];
+  const drop = decisions.find((d) => d.action === "jev_live_invalid");
+  check("jevLive mixed: one jev_live_invalid decision fires, naming what was dropped and not the kept id",
+    decisions.filter((d) => d.action === "jev_live_invalid").length === 1 && !!drop && drop.detail.includes("bogus") && drop.detail.includes("7") && !drop.detail.includes("turn-disposition"),
+    decisions.map((d) => d.action));
+
+  const hAbsent = await createTickHarness({ ...OPTS, caseName: "jevlive_absent" });
+  const absentDecisions = getStateForPersona(hAbsent, "default")?.decisions || [];
+  check("jevLive absent: a missing key reads as empty, with no jev_live_invalid decision",
+    !absentDecisions.some((d) => d.action === "jev_live_invalid"), absentDecisions.map((d) => d.action));
+
+  const hNonArray = await createTickHarness({ ...OPTS, caseName: "jevlive_nonarray", jevLive: "turn-disposition" });
+  const nonArrayDecisions = getStateForPersona(hNonArray, "default")?.decisions || [];
+  check("jevLive non-array: a non-array value reads as empty, with no jev_live_invalid decision",
+    !nonArrayDecisions.some((d) => d.action === "jev_live_invalid"), nonArrayDecisions.map((d) => d.action));
+
+  const hClean = await createTickHarness({ ...OPTS, caseName: "jevlive_clean", jevLive: ["turn-open", "turn-disposition"] });
+  const cleanDecisions = getStateForPersona(hClean, "default")?.decisions || [];
+  check("jevLive clean: every member in the promotable set logs no jev_live_invalid decision",
+    !cleanDecisions.some((d) => d.action === "jev_live_invalid"), cleanDecisions.map((d) => d.action));
+  clock.set(T0);
 }
 
 // A multi-line text is submitted with every line after the first quoted, so

@@ -253,9 +253,9 @@ const decisionCases = [
 // ---------------------------------------------------------------------------------------------
 const rosterFile = path.join(tmp, 'roster.json');
 fs.writeFileSync(rosterFile, JSON.stringify([
-  { name: 'full', workdir: 'D:/scratch/full work', permissionMode: 'bypassPermissions', rundir: 'D:/scratch/full/run', channelName: 'chan-full', model: 'opus', effort: 'high', controllerTickMs: 60000, coordinatorPersona: 'coordinator', architectPersona: 'architect', fleetRoster: 'D:/scratch/fleet.json', jevMode: 'shadow', args: ['--no-channel', '--dev'], enabled: true },
+  { name: 'full', workdir: 'D:/scratch/full work', permissionMode: 'bypassPermissions', rundir: 'D:/scratch/full/run', channelName: 'chan-full', model: 'opus', effort: 'high', controllerTickMs: 60000, coordinatorPersona: 'coordinator', architectPersona: 'architect', fleetRoster: 'D:/scratch/fleet.json', jevMode: 'shadow', jevLive: ['turn-open', 'turn-disposition'], args: ['--no-channel', '--dev'], enabled: true },
   { name: 'minimal', workdir: 'D:/scratch/minimal', permissionMode: 'acceptEdits', enabled: true },
-  { name: 'partial', workdir: 'D:/scratch/partial', permissionMode: 'acceptEdits', coordinatorPersona: 'steward', enabled: true },
+  { name: 'partial', workdir: 'D:/scratch/partial', permissionMode: 'acceptEdits', coordinatorPersona: 'steward', jevLive: [], enabled: true },
   { name: 'prompted', workdir: 'D:/scratch/p', permissionMode: 'acceptEdits', args: ['--prompt', 'hello'], enabled: true },
   { name: 'prompted-eq', workdir: 'D:/scratch/p', permissionMode: 'acceptEdits', args: ['--prompt=hello'], enabled: true },
   { name: 'noworkdir', permissionMode: 'acceptEdits', enabled: true },
@@ -323,7 +323,7 @@ test('build: a full entry maps every roster field in the supervisor argument ord
   // does not catch a row added to $map alone: the fixture would then not carry
   // that field, the builder skips a field the entry lacks, and this expectation
   // stays green. A new row means a new fixture field and a new key here too.
-  assert.deepEqual(r.Environment, { MODEL: 'opus', EFFORT: 'high', controllerTickMs: '60000', COORDINATOR_PERSONA: 'coordinator', ARCHITECT_PERSONA: 'architect', FLEET_ROSTER: 'D:/scratch/fleet.json', JEV_MODE: 'shadow' });
+  assert.deepEqual(r.Environment, { MODEL: 'opus', EFFORT: 'high', controllerTickMs: '60000', COORDINATOR_PERSONA: 'coordinator', ARCHITECT_PERSONA: 'architect', FLEET_ROSTER: 'D:/scratch/fleet.json', JEV_MODE: 'shadow', JEV_LIVE: 'turn-open,turn-disposition' });
 });
 test('build: a minimal entry yields the three positional arguments and an empty environment', () => {
   const r = build('minimal');

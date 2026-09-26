@@ -141,6 +141,7 @@ import {
   PLAN_HEALTH_SET_IDS,
   PLAN_HEALTH_STATE_CLOSING,
   PLAN_HEALTH_STATE_RECENT,
+  PROMOTABLE_SET_IDS,
   resolverOf,
 } from "./question-catalog";
 // The decision seam, which puts the same closed question to Jev that the four
@@ -3573,6 +3574,35 @@ export const register: Register = async (on, options) => {
   // folds any value outside "off" and "shadow" to "off" on its own.
   const jevMode = typeof cfg.jevMode === "string" ? cfg.jevMode : "shadow";
 
+  // jevLive names, by question-set id, which of PROMOTABLE_SET_IDS's
+  // questions may read Jev's live answer through liveAsk instead of always
+  // shadowing it. A missing or non-array value reads as empty, the same
+  // "nothing promoted" state a fresh install starts from. Each member is
+  // trimmed the way the settings file's own shell producer trims a
+  // comma-separated JEV_LIVE before writing the array, and a member outside
+  // the promotable set, or one that is not a string, is dropped rather than
+  // reaching a branch that would otherwise treat an unpromoted question as
+  // safe to act on live. What got dropped is held here, at module scope,
+  // because registration runs before any store is loaded and so has nowhere
+  // to log a decision; session.start below logs it once the state exists.
+  const jevLiveDropped: string[] = [];
+  const jevLiveRaw = cfg.jevLive;
+  const jevLive: readonly string[] = Array.isArray(jevLiveRaw)
+    ? jevLiveRaw.reduce<string[]>((kept, entry) => {
+        if (typeof entry !== "string") {
+          jevLiveDropped.push(String(entry));
+          return kept;
+        }
+        const trimmed = entry.trim();
+        if (PROMOTABLE_SET_IDS.includes(trimmed)) {
+          kept.push(trimmed);
+        } else {
+          jevLiveDropped.push(trimmed);
+        }
+        return kept;
+      }, [])
+    : [];
+
   // --- session.start: register tools, claim or join the persona ---
   // The one session.start registration in this file. An "off" session logs
   // its tier here and does nothing else; every other tier runs the body.
@@ -4336,6 +4366,18 @@ export const register: Register = async (on, options) => {
         loop: "goal",
         action: "autonomy_invalid",
         detail: `stored level ${bracketSafeText(String(JSON.stringify(storedAutonomy)).slice(0, 50))} read as propose`,
+      });
+    }
+
+    // jevLive was filtered at registration, above the state this decision
+    // needs, so the drop is logged here instead, once per session start,
+    // the same lag autonomy_invalid takes for the same reason.
+    if (jevLiveDropped.length > 0) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "jev_live_invalid",
+        detail: `jevLive dropped ${bracketSafeText(JSON.stringify(jevLiveDropped).slice(0, 50))}`,
       });
     }
 
