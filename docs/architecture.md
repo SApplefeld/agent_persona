@@ -210,7 +210,7 @@ A plan entry keeps its own tracker. Where the active goal or an ancestor carries
 
 A goal's completion reaps its tasks. `reapCompletedGoalTasks` drops every entry whose goal is complete, abandoned or absent from the tree. `persist` calls it before each write, and `enforceInvariants` calls it on each load. So every path that closes a goal clears that goal's list without the path knowing the list exists. The authority does not run the other way: all tasks done produces a suggestion to call `goal_done` and never a completion.
 
-`taskListBlock` in `hooks/index.ts` is the one producer of the `[TASK LIST]` block. The `prompt.submit` hook pushes it into `contextBlocks` right after `[GOAL TREE]`, inside the same active-node branch. It does so only when `planHolderOf` finds no plan entry and the active goal holds at least one entry. The plugin's own `$.prompt.submit` calls bypass that hook, so a nudge or delivery turn carries no block. The reader guard returns before `contextBlocks` exists, so a reader session never builds it.
+`taskListBlock` in `hooks/index.ts` is the one producer of the `[TASK LIST]` block. The `prompt.submit` hook pushes it into `contextBlocks` right after `[GOAL TREE]`, inside the same active-node branch. It does so only when `planHolderOf` finds no plan entry and the active goal holds at least one entry. The hook passes the length of the `[GOAL TREE]` block it has just built, and `taskListBlock` shows only as many lines as keep its own block shorter. The plugin's own `$.prompt.submit` calls bypass that hook, so a nudge or delivery turn carries no block. The reader guard returns before `contextBlocks` exists, so a reader session never builds it.
 
 Every id and text is sliced to `TASK_ID_MAX_CHARS` or `TASK_TEXT_MAX_CHARS`, folded to one line, then passed through `bracketSafeText`. That is the guard the `[PROPOSE]` frame applies to a long-term goal's text. The injection ledger sizes the block as `TASK_LIST_BLOCK`, reading every literal in `taskListBlock`'s body.
 
@@ -220,7 +220,7 @@ Three files write text into a child session that nobody typed: `bin/supervise-ho
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 55 entries totalling 42,828 characters. Eleven entries come from `bin/supervise-holder.sh` and total 20,961, two come from `bin/supervise.sh` and total 292, and forty-two come from `hooks/index.ts` and total 21,575, of which the nineteen registered tool descriptions are 15,715.
+`.kit/injection-ledger.json` is the committed size baseline, 55 entries totalling 42,829 characters. Eleven entries come from `bin/supervise-holder.sh` and total 20,961, two come from `bin/supervise.sh` and total 292, and forty-two come from `hooks/index.ts` and total 21,576, of which the nineteen registered tool descriptions are 15,715.
 
 | What a launch reads | Characters |
 |---|---|

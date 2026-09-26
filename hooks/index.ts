@@ -522,6 +522,13 @@ export const TASK_ID_MAX_CHARS = 64;
 // function decides only how to render it, never mutating a task or
 // completing the goal.
 //
+// The block is kept shorter than `maxChars`, which the caller sets to the
+// length of the [GOAL TREE] block it sits beside, so the list stays
+// lighter than the goal block. It shows the most lines, up to
+// TASK_LIST_MAX_LINES, whose whole block fits under that length, and
+// counts the rest in the "...and N more" line. Where not even the header,
+// the verb line and the count fit, it still returns that zero-line block.
+//
 // A task's id and text are read back out of the persona's store file, and
 // the goal id is spliced into the header and the all-done line, so all
 // three pass through the same guard proposeFrame applies to a long-term
@@ -532,38 +539,42 @@ export const TASK_ID_MAX_CHARS = 64;
 // [COORDINATOR id=x] once spliced into this prompt. Task text is capped at
 // TASK_TEXT_MAX_CHARS; a task's id and the goal id are capped at
 // TASK_ID_MAX_CHARS.
-export function taskListBlock(tasks: TaskItem[], goalId: string): string | null {
+export function taskListBlock(tasks: TaskItem[], goalId: string, maxChars: number): string | null {
   if (tasks.length === 0) return null;
   const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
-  const guard = (text: string, maxChars: number) => bracketSafeText(oneLine(text.slice(0, maxChars)));
+  const guard = (text: string, cap: number) => bracketSafeText(oneLine(text.slice(0, cap)));
   const open = tasks.filter((t) => !t.done).sort((a, b) => a.addedAt - b.addedAt);
   const done = tasks.filter((t) => t.done).sort((a, b) => a.addedAt - b.addedAt);
   const ordered = [...open, ...done];
-  const shown = ordered.slice(0, TASK_LIST_MAX_LINES);
-  const hidden = ordered.slice(shown.length);
-  const hiddenOpenCount = hidden.filter((t) => !t.done).length;
-  const taskLines = shown
-    .map((t) => {
-      const id = guard(t.id, TASK_ID_MAX_CHARS);
-      const text = guard(t.text, TASK_TEXT_MAX_CHARS);
-      return t.done ? `- ${id} (done): ~~${text}~~` : `- ${id}: ${text}`;
-    })
-    .join("\n");
-  const tailLine = hidden.length > 0
-    ? `\n...and ${hidden.length} more${hiddenOpenCount > 0 ? ` (${hiddenOpenCount} open)` : ""}`
-    : "";
+  const lines = ordered.slice(0, TASK_LIST_MAX_LINES).map((t) => {
+    const id = guard(t.id, TASK_ID_MAX_CHARS);
+    const text = guard(t.text, TASK_TEXT_MAX_CHARS);
+    return t.done ? `- ${id} (done): ~~${text}~~` : `- ${id}: ${text}`;
+  });
   const safeGoalId = guard(goalId, TASK_ID_MAX_CHARS);
   const closeLine = open.length === 0
     ? `\nEvery task under ${safeGoalId} is done; consider closing the goal with goal_done.`
     : "";
-  return (
-    `[TASK LIST] ${safeGoalId}\n` +
-    taskLines +
-    tailLine +
-    `\n` +
-    `Drive this list with task_add, task_done <id> and task_clear.` +
-    closeLine
-  );
+  const compose = (shownCount: number) => {
+    const hidden = ordered.slice(shownCount);
+    const hiddenOpenCount = hidden.filter((t) => !t.done).length;
+    const tailLine = hidden.length > 0
+      ? `${shownCount > 0 ? "\n" : ""}...and ${hidden.length} more${hiddenOpenCount > 0 ? ` (${hiddenOpenCount} open)` : ""}`
+      : "";
+    return (
+      `[TASK LIST] ${safeGoalId}\n` +
+      lines.slice(0, shownCount).join("\n") +
+      tailLine +
+      `\n` +
+      `Drive this list with task_add, task_done <id> and task_clear.` +
+      closeLine
+    );
+  };
+  for (let shownCount = lines.length; shownCount > 0; shownCount--) {
+    const block = compose(shownCount);
+    if (block.length < maxChars) return block;
+  }
+  return compose(0);
 }
 
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
@@ -10270,7 +10281,7 @@ export const register: Register = async (on, options) => {
       // agree on when a plan node's chapters are the goal's tracker instead.
       if (!planHolderOf(sess.state, activeNode)) {
         const activeTasks = sess.state.tasks.filter((t) => t.goalId === activeNode.id);
-        const taskListText = taskListBlock(activeTasks, activeNode.id);
+        const taskListText = taskListBlock(activeTasks, activeNode.id, goalBlock.length);
         if (taskListText) {
           contextBlocks.push(taskListText);
           try { $.ui.log(`Agentic: [TASK LIST] injected for ${activeNode.id}`); } catch { /* non-fatal */ }

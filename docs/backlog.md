@@ -341,6 +341,8 @@ command, so the next hunt should keep the suite's own unpiped exit code beside t
 
 `.kit/plan-record-unit-test.mjs` died the same way on 2026-09-21, one run of six lanes under a heavy-process claim: `PASS: 0 failure(s)` then the same assertion and exit 127, with the rerun a moment later exiting 0. Second suite in the class, so the shape is the process teardown rather than either suite.
 
+`.kit/cost-migration-test.mjs` died the same way twice on 2026-09-25, during the task-list plan's section gates, each time printing its pass line and then exiting 127 on the same assertion. Four isolated reruns exited 0, and the suite imports only `hooks/agent-state.ts`. Third suite in the class.
+
 ## Suite hardening
 
 _No open items. Resolved items are archived in `docs/archive/backlog-2026-09-11.md`._
@@ -648,3 +650,7 @@ The coordinator role instruction in `bin/supervise.sh` says "A prompt labelled [
 ## Plan B: the task-to-goal promotion seam (surfaced 2026-09-24)
 
 The task-list tier (`docs/plans/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion leave one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, authored by the ARCHITECT persona and coordinated with the ASSISTANT persona's discussion through the coordinator seat, owns the whole promotion design. The task-list spec names the seam in its Open Questions and cross-references Plan B when it lands. It also depends on the turn-record field, which the ASSISTANT discussion's ruling defines and which is out of scope for the task-list spec.
+
+## The [GOAL TREE] block splices stored goal text with no label guard (found 2026-09-25)
+
+The `prompt.submit` hook in `hooks/index.ts` builds `[GOAL TREE]` from the active goal's objective, the parent and active titles, the pending siblings' titles and the last note. It slices the titles but folds no line breaks and applies no `bracketSafeText`, and the objective and the note reach the block as stored. A persona can write any of that text through `goal_add` or a `goal_done` note, so text it read as data can come back as a labelled line in its own prompt. The `[TASK LIST]` block beside it guards every stored field with the slice, `oneLine` and `bracketSafeText` chain in `taskListBlock`. The task-list plan's finishing security review found the gap, which predates that plan. Remedy: route the goal block's stored fields through the same guard, with a forgery pin like the task-list cases in `.kit/controller-tick-test.mjs`.
