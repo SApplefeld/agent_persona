@@ -24542,10 +24542,10 @@ async function caseTaskList_idAndGoalIdCutAtTaskIdMaxChars(clock) {
 }
 
 // No length budget: the [TASK LIST] block shows up to TASK_LIST_MAX_LINES
-// lines whatever the length of the [GOAL TREE] block beside it, decided by
-// the operator on 2026-09-26. Under the harness's short objective a full
-// list of TASK_LIST_MAX_LINES tasks shows every line with no tail, and past
-// the cap the tail counts only the tasks the cap left out.
+// lines whatever the length of the [GOAL TREE] block beside it. Under the
+// harness's short objective a full list of TASK_LIST_MAX_LINES tasks shows
+// every line with no tail, and past the cap the tail counts only the tasks
+// the cap left out.
 async function caseTaskList_showsUpToTheCapBesideAShortGoalBlock(clock) {
   console.log("\n=== Task-list budget removal: the [TASK LIST] block shows up to TASK_LIST_MAX_LINES lines beside a short [GOAL TREE] block ===");
   clock.set(T0);
