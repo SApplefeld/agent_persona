@@ -536,11 +536,10 @@ function unpromptedPlanNotUndoneText(cause: string, nodeId: string): string {
 }
 
 // The one refusal goal_edit drop gives on an entry awaiting the operator's
-// yes, or a node under one, outside a turn the operator or the coordinator
-// persona started.
+// yes outside a turn the operator or the coordinator persona started.
 const AWAITING_YES_DROP_REFUSED_TEXT =
-  "Refused: this entry waits for the operator's word, or sits under a plan that does, and only a turn the operator or the coordinator persona started may drop it. " +
-  "It stays as it is until that word reaches you.";
+  "Refused: this entry waits for the operator's word, and only a turn the operator or the coordinator persona started may drop it. " +
+  "It stays paused until that word reaches you.";
 
 // The one refusal goal_done by name gives on an entry awaiting the operator's
 // yes, or on a node under one, outside a turn the operator or the coordinator
@@ -2985,9 +2984,9 @@ export const register: Register = async (on, options) => {
   // of a plan is also allowed in every other turn once the autonomy level is
   // plan-and-ask or plan-and-start, and the goal_add handler decides what
   // such an add becomes. Every other act is refused in every other turn.
-  const turnMayStartEffort = (act: EffortAct): boolean => {
+  const turnMayStartEffort = (act: EffortAct, autonomy: string = sess.state.autonomy): boolean => {
     if (turnIsOperatorsOrCoordinators()) return true;
-    return act === "goal_add_plan" && sess.state.autonomy !== "propose";
+    return act === "goal_add_plan" && (autonomy === "plan-and-ask" || autonomy === "plan-and-start");
   };
   // Whether the turn now running is the operator's own or a coordinator
   // delivery turn. A coordinator delivery turn is one that matched an
@@ -3561,7 +3560,7 @@ export const register: Register = async (on, options) => {
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
         "never activated, and refuses any other status; a drop is for work that will not be done, or for a plan queued as paused by mistake that is then added again as pending, and it does not reach the node's children. pause holds an active or pending node with a reason, and goal_resume " +
         "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only. " +
-        "A drop of an entry awaiting the operator's yes, or of a node under one, is refused outside a turn the operator or the coordinator persona started.",
+        "A drop of an entry awaiting the operator's yes is refused outside a turn the operator or the coordinator persona started.",
       inputSchema: {
         type: "object",
         properties: {
@@ -8679,7 +8678,10 @@ export const register: Register = async (on, options) => {
       // and plan-and-start the gate admits a plan in every turn, and a plan
       // added outside the operator's and the coordinator persona's turns is
       // reported to the coordinator persona below.
-      if (kind === "plan" && !turnMayStartEffort("goal_add_plan")) {
+      // The level is read once, so the gate and the entry's status below
+      // decide on the same value.
+      const autonomy = sess.state.autonomy;
+      if (kind === "plan" && !turnMayStartEffort("goal_add_plan", autonomy)) {
         toolErrorsThisTurn++;
         return { deny: EFFORT_REFUSED_TEXT };
       }
@@ -8784,7 +8786,7 @@ export const register: Register = async (on, options) => {
       // store does not hold, and a record that then cannot be written takes
       // the add back out of the tree and the store.
       const unprompted = kind === "plan" && !turnIsOperatorsOrCoordinators();
-      const awaitingYes = unprompted && sess.state.autonomy === "plan-and-ask";
+      const awaitingYes = unprompted && autonomy === "plan-and-ask";
       if (unprompted) {
         let noRoad: string | null = null;
         try {
@@ -9012,7 +9014,7 @@ export const register: Register = async (on, options) => {
           toolErrorsThisTurn++;
           return { deny: `Cannot drop ${nodeId}: status is "${node.status}" (only pending, paused, or blocked nodes can be dropped).` };
         }
-        if (awaitingEntryAtOrAbove(sess.state, node) && !turnIsOperatorsOrCoordinators()) {
+        if (node.awaitingYes && !turnIsOperatorsOrCoordinators()) {
           toolErrorsThisTurn++;
           return { deny: AWAITING_YES_DROP_REFUSED_TEXT };
         }
@@ -9302,9 +9304,19 @@ export const register: Register = async (on, options) => {
         // by name only in a turn the operator or the coordinator persona
         // started, since completing it would settle the wait without that
         // word.
-        if (awaitingEntryAtOrAbove(sess.state, named) && !turnIsOperatorsOrCoordinators()) {
+        const awaitingAbove = awaitingEntryAtOrAbove(sess.state, named);
+        if (awaitingAbove && !turnIsOperatorsOrCoordinators()) {
           toolErrorsThisTurn++;
           return { deny: AWAITING_YES_DONE_REFUSED_TEXT };
+        }
+        // An allowed completion under an entry awaiting the operator's yes is
+        // that word on the entry, as an allowed resume is: its flag goes, and
+        // its awaiting reason with it, and it stays paused. A named entry
+        // that is itself awaiting is settled by completeLeaf.
+        if (awaitingAbove && awaitingAbove !== named) {
+          awaitingAbove.awaitingYes = undefined;
+          if (awaitingAbove.blockedReason === AWAITING_YES_REASON) awaitingAbove.blockedReason = undefined;
+          awaitingAbove.updatedAt = Date.now();
         }
         target = named;
       } else {
@@ -9558,6 +9570,13 @@ export const register: Register = async (on, options) => {
           .sort((a, b) => b.updatedAt - a.updatedAt)[0];
       }
       if (!target) {
+        const passedOver = nodeId ? undefined : sess.state.goals
+          .filter((g) => g.status === "paused")
+          .map((g) => awaitingEntryAtOrAbove(sess.state, g))
+          .find((g) => g !== undefined);
+        if (passedOver) {
+          return { result: `No paused node to resume here: ${passedOver.id} "${passedOver.title}" waits for the operator's word, and so does anything under it.` };
+        }
         return { result: "No paused nodes to resume." };
       }
       // M9: if a different node is active, pause it first (M10: write blockedReason).
@@ -9581,6 +9600,9 @@ export const register: Register = async (on, options) => {
       // that word on the entry, so the entry's flag goes, and its awaiting
       // reason with it. An entry above the resumed node stays paused.
       const awaitingAbove = awaitingEntryAtOrAbove(sess.state, target);
+      const admittedBy = !awaitingAbove ? ""
+        : currentTurnEntry !== null && currentTurnEntry.kind === "delivery" ? `; admitted by coordinator record ${currentTurnEntry.recordId}`
+        : `; admitted by origin ${currentTurnOriginKind}`;
       if (awaitingAbove && awaitingAbove !== target) {
         awaitingAbove.awaitingYes = undefined;
         if (awaitingAbove.blockedReason === AWAITING_YES_REASON) awaitingAbove.blockedReason = undefined;
@@ -9605,7 +9627,7 @@ export const register: Register = async (on, options) => {
         timestamp: Date.now(),
         loop: "goal",
         action: "resume",
-        detail: `Node ${target.id} resumed (paused: ${pausedReason})`,
+        detail: `Node ${target.id} resumed (paused: ${pausedReason}${admittedBy})`,
       });
       if (liftedLead) {
         sess.state.decisions.push({

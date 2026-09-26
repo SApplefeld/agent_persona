@@ -3869,6 +3869,7 @@ async function main() {
     await caseAd2_aFailedRecordRollsBackAReopenAndAnActivation(clock);
     await caseAd2_aTaskUnderAnAwaitingEntryCannotSettleIt(clock);
     await caseAd2_nothingUnderAnAwaitingEntryStartsByItself(clock);
+    await caseAd2_aBareResumeNamesThePassedOverEntry(clock);
     await caseAd2_descriptionsAndTheStartedLead(clock);
     await caseGl5_anIdlePersonaIsAskedOncePerInterval(clock);
     await caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock);
@@ -24919,6 +24920,9 @@ async function caseAd2_aNudgeTurnCannotResumeAnAwaitingEntry(clock) {
   check("ad2 resume control: in a channel turn a no-nodeId resume takes the most recent paused entry, the flagged one, and clears the flag",
     op?.deny === undefined && resumed?.status === "active" && resumed?.awaitingYes === undefined && resumed?.blockedReason === undefined &&
     getStateForPersona(c, "dev").activeGoalId === resumed?.id, { op, resumed });
+  check("ad2 resume control: the resume decision names the channel origin that admitted it",
+    getStateForPersona(c, "dev").decisions.some((d) => d.action === "resume" && d.detail.includes(resumed?.id) && d.detail.includes("origin channel")),
+    getStateForPersona(c, "dev").decisions.filter((d) => d.action === "resume"));
   await closeTurn(c, "t-ch");
 }
 
@@ -24943,6 +24947,9 @@ async function caseAd2_theCoordinatorResumesAndADropClearsTheFlag(clock) {
   const resumed = ad2Entry(h);
   const state = getStateForPersona(h, "dev");
   check("ad2 coordinator resume: accepted", res?.deny === undefined, res);
+  check("ad2 coordinator resume: the resume decision names the coordinator record that admitted it",
+    getStateForPersona(h, "dev").decisions.some((d) => d.action === "resume" && d.detail.includes(entry?.id) && d.detail.includes("coordinator record dev-coord-open-1-1")),
+    getStateForPersona(h, "dev").decisions.filter((d) => d.action === "resume"));
   check("ad2 coordinator resume: the entry is active, activeGoalId names it, and the flag and the reason are cleared",
     resumed?.status === "active" && state.activeGoalId === resumed?.id && resumed?.awaitingYes === undefined && resumed?.blockedReason === undefined, { resumed, active: state.activeGoalId });
   await closeTurn(h, "t-coord");
@@ -25111,8 +25118,20 @@ async function caseAd2_goalDoneByNameOnAnAwaitingEntry(clock) {
   await openDeliveryTurn(k, "dev", { text: `The operator says the task is done: goal_done ${kTask?.id}.`, turnId: "t-coord" });
   const kDone = await callTool(k, { tool: DONE, nodeId: kTask?.id, note: "done on the operator's word" });
   const kPlan = ad2Entry(k);
-  check("ad2 done cascade: accepted, the plan the cascade completed reads complete with the flag cleared",
-    kDone?.deny === undefined && kPlan?.status === "complete" && kPlan?.awaitingYes === undefined, { kDone, kPlan });
+  check("ad2 done cascade: accepted, the plan the cascade completed reads complete with the flag and the awaiting reason cleared",
+    kDone?.deny === undefined && kPlan?.status === "complete" && kPlan?.awaitingYes === undefined && kPlan?.blockedReason !== AD2_AWAITING_REASON, { kDone, kPlan });
+
+  // completeLeaf itself settles a flagged plan its cascade completes: the
+  // flag and the awaiting reason both go. Read on a hand-built tree, since
+  // every goal verb clears the wait before it completes a node under it.
+  const tree = makeState({ now: T0, goals: gtc4Tree("pending", [
+    { id: "plan-w", parentId: "root-1", kind: "plan", status: "paused", title: "Plan w", blockedReason: AD2_AWAITING_REASON, awaitingYes: true },
+    { id: "task-w", parentId: "plan-w", kind: "task", status: "active", title: "Task w" },
+  ]), activeGoalId: "task-w" });
+  AgentState.completeLeaf(tree, "task-w", "done");
+  const planW = tree.goals.find((g) => g.id === "plan-w");
+  check("ad2 completeLeaf: the cascaded plan reads complete with the flag and the awaiting reason cleared",
+    planW?.status === "complete" && planW?.awaitingYes === undefined && planW?.blockedReason === undefined, planW);
 }
 
 // Major review item: a record that cannot be written at plan-and-start, on a
@@ -25223,18 +25242,20 @@ async function caseAd2_aTaskUnderAnAwaitingEntryCannotSettleIt(clock) {
     cHeld?.awaitingYes === undefined && cHeld?.blockedReason !== AD2_AWAITING_REASON && cHeld?.status === "paused", cHeld);
   const cDone = await callTool(c, { tool: DONE, note: "finished" });
   const cEntry = ad2Entry(c);
-  check("ad2 task path coordinator step 4: goal_done completes the task and the cascade completes the entry, clearing its flag and its awaiting reason",
+  check("ad2 task path coordinator step 4: goal_done completes the task and the cascade completes the entry",
     cDone?.deny === undefined && cEntry?.status === "complete" && cEntry?.awaitingYes === undefined && cEntry?.blockedReason !== AD2_AWAITING_REASON, { cDone, cEntry });
   await closeTurn(c, "t-coord");
 }
 
-// The controller's own activation passes over a node under an awaiting
-// entry: in a coordinator delivery turn a task under the entry completes by
-// name with nothing else active, and the next activation takes plan-q, not
-// the sibling task still under the entry. A nudge-turn drop of a task under
-// the entry is refused by the same rule.
+// A nudge-turn drop of a task under an awaiting entry is allowed, since the
+// drop gate reads the dropped node alone, and leaves the entry paused with
+// its flag. In a coordinator delivery turn a task under the entry completing
+// by name clears the entry's wait, so the entry stays paused with no flag and
+// no awaiting reason, and the sibling task under it is then the next leaf.
+// activateNext passing over a sibling still under an awaiting entry is read
+// on a hand-built tree, since every goal verb clears the wait first.
 async function caseAd2_nothingUnderAnAwaitingEntryStartsByItself(clock) {
-  console.log("\n=== Autonomy dial 2: nothing under an awaiting entry starts by itself, and a drop under it is refused ===");
+  console.log("\n=== Autonomy dial 2: a drop under an awaiting entry, and a completion under it clearing the wait ===");
   const EDIT = "mcp__agentic-plugin__goal_edit";
   const DONE = "mcp__agentic-plugin__goal_done";
   clock.set(T0);
@@ -25244,14 +25265,14 @@ async function caseAd2_nothingUnderAnAwaitingEntryStartsByItself(clock) {
   const entry = ad2Entry(h);
   await callTool(h, { tool: AD2_ADD, kind: "task", parentId: entry?.id, title: "Task one", objective: "One is done" });
   await callTool(h, { tool: AD2_ADD, kind: "task", parentId: entry?.id, title: "Task two", objective: "Two is done" });
+  await callTool(h, { tool: AD2_ADD, kind: "task", parentId: entry?.id, title: "Task three", objective: "Three is done" });
   const t1 = getStateForPersona(h, "dev").goals.find((g) => g.title === "Task one");
   const t2 = getStateForPersona(h, "dev").goals.find((g) => g.title === "Task two");
-  const bytes = h.fsMap.get(PERSONA_STORE_FILE);
-  const drop = await callTool(h, { tool: EDIT, nodeId: t2?.id, action: "drop", reason: "Not needed." });
-  check("ad2 drop under: a nudge-turn drop of a task under the entry is refused, naming the operator's word",
-    typeof drop?.deny === "string" && drop.deny.includes(AD2_RESUME_REFUSED_TOKEN) && drop?.result === undefined, drop);
-  check("ad2 drop under: the store is byte-identical and the task still pending",
-    h.fsMap.get(PERSONA_STORE_FILE) === bytes && getStateForPersona(h, "dev").goals.find((g) => g.id === t2?.id)?.status === "pending");
+  const t3 = getStateForPersona(h, "dev").goals.find((g) => g.title === "Task three");
+  const drop = await callTool(h, { tool: EDIT, nodeId: t3?.id, action: "drop", reason: "Not needed." });
+  check("ad2 drop under: a nudge-turn drop of a task under the entry is allowed and the task reads abandoned",
+    drop?.deny === undefined && getStateForPersona(h, "dev").goals.find((g) => g.id === t3?.id)?.status === "abandoned", drop);
+  check("ad2 drop under: the entry stays paused with its flag", ad2Entry(h)?.status === "paused" && ad2Entry(h)?.awaitingYes === true, ad2Entry(h));
   await callTool(h, { tool: EDIT, nodeId: "plan-a", action: "pause", reason: "set aside" });
   await closeTurn(h, "t-nudge");
   check("ad2 sibling setup: nothing is active", getStateForPersona(h, "dev").activeGoalId === null, getStateForPersona(h, "dev").activeGoalId);
@@ -25259,10 +25280,41 @@ async function caseAd2_nothingUnderAnAwaitingEntryStartsByItself(clock) {
   const done = await callTool(h, { tool: DONE, nodeId: t1?.id, note: "done" });
   const state = getStateForPersona(h, "dev");
   check("ad2 sibling: task one completes by name in the coordinator turn", done?.deny === undefined && state.goals.find((g) => g.id === t1?.id)?.status === "complete", done);
-  check("ad2 sibling: task two under the entry stays pending, and the activation takes plan-q",
-    state.goals.find((g) => g.id === t2?.id)?.status === "pending" && state.activeGoalId === "plan-q", { active: state.activeGoalId, goals: state.goals.map((g) => [g.id, g.status]) });
-  check("ad2 sibling: the entry stays paused with its flag", ad2Entry(h)?.status === "paused" && ad2Entry(h)?.awaitingYes === true, ad2Entry(h));
+  check("ad2 sibling: the entry stays paused, with its flag and its awaiting reason cleared",
+    ad2Entry(h)?.status === "paused" && ad2Entry(h)?.awaitingYes === undefined && ad2Entry(h)?.blockedReason !== AD2_AWAITING_REASON, ad2Entry(h));
+  check("ad2 sibling: with the wait cleared, the sibling task two is the next leaf activated",
+    state.activeGoalId === t2?.id && state.goals.find((g) => g.id === t2?.id)?.status === "active", { active: state.activeGoalId, goals: state.goals.map((g) => [g.id, g.status]) });
   await closeTurn(h, "t-coord");
+
+  // activateNext passes over a pending sibling still under an awaiting
+  // entry and takes the walk's next leaf.
+  const tree = makeState({ now: T0, goals: gtc4Tree("pending", [
+    { id: "plan-w", parentId: "root-1", kind: "plan", status: "paused", title: "Plan w", blockedReason: AD2_AWAITING_REASON, awaitingYes: true },
+    { id: "task-1", parentId: "plan-w", kind: "task", status: "complete", title: "Task 1" },
+    { id: "task-2", parentId: "plan-w", kind: "task", status: "pending", title: "Task 2" },
+    { id: "plan-n", parentId: "root-1", kind: "plan", status: "pending", title: "Plan n" },
+  ]), activeGoalId: null });
+  const next = AgentState.activateNext(tree, "task-1");
+  check("ad2 activateNext: a sibling under an awaiting entry is passed over for the walk's next leaf",
+    next === "plan-n" && tree.goals.find((g) => g.id === "task-2")?.status === "pending", { next, goals: tree.goals.map((g) => [g.id, g.status]) });
+}
+
+// A no-nodeId goal_resume in a nudge turn, where the only paused entry is
+// one awaiting the operator's yes, names that entry and the operator's word.
+async function caseAd2_aBareResumeNamesThePassedOverEntry(clock) {
+  console.log("\n=== Autonomy dial 2: a no-nodeId resume with only an awaiting entry paused names it ===");
+  clock.set(T0);
+  const goals = gtc4Tree("pending", [{ id: "plan-a", parentId: "root-1", kind: "plan", status: "active", title: "Plan a" }]);
+  const h = await ad2Harness("ad2_bare_resume_named", { autonomy: "plan-and-ask", goals });
+  await ad2OpenNudge(h, clock, "ad2 bare resume named", "t-nudge");
+  await ad2Add(h);
+  const entry = ad2Entry(h);
+  const res = await callTool(h, { tool: AD2_RESUME });
+  check("ad2 bare resume named: the result names the passed-over entry and the operator's word",
+    res?.deny === undefined && String(res?.result).includes(entry?.id) && String(res?.result).includes("operator's word"), res);
+  check("ad2 bare resume named: the entry stays paused with its flag and plan-a stays active",
+    ad2Entry(h)?.status === "paused" && ad2Entry(h)?.awaitingYes === true && getStateForPersona(h, "dev").activeGoalId === "plan-a", ad2Entry(h));
+  await closeTurn(h, "t-nudge");
 }
 
 // The Standing Brief Amendment: goal_edit drop of an entry awaiting the
@@ -25306,9 +25358,6 @@ async function caseAd2_descriptionsAndTheStartedLead(clock) {
   for (const name of ["goal_edit", "goal_done"]) {
     check(`ad2 descriptions: ${name} states a refusal for an entry awaiting the operator's yes`,
       desc(name).includes("awaiting the operator's yes") && /refused/i.test(desc(name)), desc(name));
-  }
-  for (const name of ["goal_resume", "goal_edit", "goal_done"]) {
-    check(`ad2 descriptions: ${name} names a node under such an entry`, desc(name).includes("node under"), desc(name));
   }
 
   clock.set(T0);
