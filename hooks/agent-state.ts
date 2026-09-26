@@ -86,6 +86,11 @@ export interface GoalNode {
   chapterCount?: number; // Section 2: the number of "### Chapter N" headings the
                       // plan document held at the last read. Written by the
                       // document read at turn end. Unset by the v2-v4 migration.
+  awaitingYes?: boolean; // Set on a plan goal_add queued at the plan-and-ask
+                      // autonomy level outside an operator or coordinator turn:
+                      // the entry waits paused for the operator's yes, and
+                      // goal_resume refuses it outside those turns. Cleared by
+                      // an allowed goal_resume and by goal_edit drop.
 }
 
 export interface EnvErrors {

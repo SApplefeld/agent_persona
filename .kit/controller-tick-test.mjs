@@ -3857,6 +3857,13 @@ async function main() {
     await caseAut_anInvalidStoredLevelIsLoggedOnce(clock);
     await caseAut_theLevelSurvivesGoalCreateAndARestart(clock);
     await caseAut_theToolRegistersForAnOwnerAndNeverForAReader(clock);
+    await caseAd2_aNudgeTurnAtEachLevel(clock);
+    await caseAd2_aChannelTurnAtEachLevel(clock);
+    await caseAd2_theLevelReachesNoOtherAct(clock);
+    await caseAd2_aNudgeTurnCannotResumeAnAwaitingEntry(clock);
+    await caseAd2_theCoordinatorResumesAndADropClearsTheFlag(clock);
+    await caseAd2_aRecordThatCannotBeWrittenRefusesTheAdd(clock);
+    await caseAd2_descriptionsAndTheStartedLead(clock);
     await caseGl5_anIdlePersonaIsAskedOncePerInterval(clock);
     await caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock);
     await caseGl5_theProposalIsLedgeredAndSettles(clock);
@@ -24619,6 +24626,378 @@ async function caseAut_theToolRegistersForAnOwnerAndNeverForAReader(clock) {
   const reader = await createTickHarness({ ...OPTS, arming: "reader", caseName: "aut_register_reader" });
   check("aut register: the reader session registered tools, so the predicate read a real list", reader.toolRegisters.length > 0, reader.toolRegisters.length);
   check("aut register: no reader registration is goal_autonomy", !reader.toolRegisters.some(isAut), reader.toolRegisters.map((t) => t.name));
+}
+
+// ============================================================
+// Autonomy dial 2: the gate reads the dial
+// ============================================================
+
+const AD2_ADD = "mcp__agentic-plugin__goal_add";
+const AD2_RESUME = "mcp__agentic-plugin__goal_resume";
+const AD2_TITLE = "A plan found alone";
+const AD2_PLAN_PATH = "docs/plans/found-alone.md";
+const AD2_AWAITING_REASON = "Awaiting the operator's yes";
+// The goal-levels refusal, verbatim, which the propose level keeps.
+const AD2_EFFORT_REFUSED =
+  "Refused: a new effort starts only in a turn the operator or the coordinator persona started, and this turn is neither. " +
+  "An act the operator or the coordinator persona directed is retried in a turn one of them opens, not proposed. " +
+  "Send any other idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
+// The token the awaiting-yes resume refusal carries, and no other refusal.
+const AD2_RESUME_REFUSED_TOKEN = "this entry waits for the operator's word";
+// The token every refusal of a plan whose record cannot be written carries.
+const AD2_NO_RECORD_TOKEN = "the record telling the coordinator persona about it could not be written";
+
+// A started owner session of `persona` ("dev" by default, whose coordinator
+// persona is "coordinator") over gl4Tree, where plan-a is active and plan-p
+// is paused, at `autonomy`.
+async function ad2Harness(caseName, { autonomy, persona = "dev" } = {}) {
+  const h = await createTickHarness({ ...OPTS, caseName, persona, skipSessionStart: true });
+  const state = makeState({ now: T0, goals: gl4Tree(), activeGoalId: "plan-a", longTermGoals: [ltgEntry("lt-held", "Held goal")], autonomy });
+  state.persona = persona;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ [persona]: state }));
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: `persona:${persona}`, claimedAt: T0 - 2000 }],
+  });
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  return h;
+}
+
+// Sends a nudge on plan-a and opens its turn, as the gl4 nudge cases do.
+async function ad2OpenNudge(h, clock, tag, turnId, persona = "dev") {
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check(`${tag} setup: the tick sent a nudge`, getStateForPersona(h, persona).decisions.some((d) => d.action === "nudge_sent"),
+    getStateForPersona(h, persona).decisions.map((d) => d.action));
+  // The session's own claim is refreshed to the advanced clock, as the
+  // heartbeat keeps a live session's claim, so the reach rule reads it live.
+  // The tick's claims read may already have collected the stale entry, so
+  // the entry is written whole.
+  h.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: Date.now(), claims: [{ resource: `persona:${persona}`, claimedAt: T0 - 2000 }] });
+  await openQueuedTurn(h, turnId);
+}
+
+function ad2Add(h, extra = {}) {
+  return callTool(h, { tool: AD2_ADD, kind: "plan", title: AD2_TITLE, objective: "The plan is done", planPath: AD2_PLAN_PATH, ...extra });
+}
+
+function ad2Entry(h, persona = "dev") {
+  return getStateForPersona(h, persona).goals.find((g) => g.title === AD2_TITLE);
+}
+
+// Every record in any coordinator-persona inbox, keyed.
+function ad2CoordinatorRecords(h) {
+  return [...h.storeMap.entries()].filter(([k]) => k.startsWith("inbox:coordinator:")).map(([k, v]) => ({ key: k, ...v }));
+}
+
+// The plan's add refused because its record could not be written: the deny
+// names `cause`, the store is byte-identical, the tree holds no such entry,
+// no record reached the coordinator persona, and the turn counts one error.
+async function ad2ExpectNoRecordRefusal(h, tag, cause, turnId, persona = "dev") {
+  const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  const res = await ad2Add(h);
+  check(`${tag}: refused, naming the record that could not be written and the cause`,
+    typeof res?.deny === "string" && res.deny.includes(AD2_NO_RECORD_TOKEN) && res.deny.includes(cause) && res?.result === undefined, res);
+  check(`${tag}: the store is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  check(`${tag}: the tree holds no new entry`, ad2Entry(h, persona) === undefined && getStateForPersona(h, persona).goals.length === 4,
+    getStateForPersona(h, persona).goals.map((g) => g.id));
+  check(`${tag}: no record reached the coordinator persona`, ad2CoordinatorRecords(h).length === 0, ad2CoordinatorRecords(h));
+  await closeTurn(h, turnId);
+  const errors = getStateForPersona(h, persona).monitor.env.errors;
+  check(`${tag}: the turn's tool errors are the one denial`, errors.toolErrorsLastTurn === 1, errors);
+  check(`${tag}: after the turn the tree still holds no new entry`, ad2Entry(h, persona) === undefined, getStateForPersona(h, persona).goals.map((g) => g.id));
+}
+
+// Cases 1 to 3, and case 7: a turn neither the operator nor the coordinator
+// persona started, at each level. propose refuses with the goal-levels text.
+// plan-and-ask leaves the entry paused with the flag and sends one
+// [PROPOSAL]. plan-and-start sends one [STARTED] and leaves the entry to the
+// handler's own activation: pending under the active plan-a, and active on
+// a tree with no active leaf. A priming turn at plan-and-start reads as the
+// nudge turn does.
+async function caseAd2_aNudgeTurnAtEachLevel(clock) {
+  console.log("\n=== Autonomy dial 2: a plan added in a nudge turn at each level ===");
+
+  clock.set(T0);
+  const p = await ad2Harness("ad2_nudge_propose", { autonomy: "propose" });
+  await ad2OpenNudge(p, clock, "ad2 nudge propose", "t-nudge");
+  const bytesBefore = p.fsMap.get(PERSONA_STORE_FILE);
+  const refused = await ad2Add(p);
+  check("ad2 nudge propose: refused with the goal-levels text unchanged", refused?.deny === AD2_EFFORT_REFUSED && refused?.result === undefined, refused);
+  check("ad2 nudge propose: the store is byte-identical", p.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  check("ad2 nudge propose: no record reached the coordinator persona", ad2CoordinatorRecords(p).length === 0, ad2CoordinatorRecords(p));
+  await closeTurn(p, "t-nudge");
+  check("ad2 nudge propose: the turn's tool errors are the one denial", getStateForPersona(p, "dev").monitor.env.errors.toolErrorsLastTurn === 1, getStateForPersona(p, "dev").monitor.env.errors);
+  check("ad2 nudge propose: the tree holds no new entry", ad2Entry(p) === undefined);
+
+  clock.set(T0);
+  const a = await ad2Harness("ad2_nudge_ask", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(a, clock, "ad2 nudge plan-and-ask", "t-nudge");
+  const asked = await ad2Add(a);
+  check("ad2 nudge plan-and-ask: accepted, and the result says it waits for the operator's yes",
+    asked?.deny === undefined && String(asked?.result).includes("waits paused for the operator's yes"), asked);
+  const entry = ad2Entry(a);
+  check("ad2 nudge plan-and-ask: the entry is paused with the awaiting reason and the flag",
+    entry?.status === "paused" && entry?.blockedReason === AD2_AWAITING_REASON && entry?.awaitingYes === true, entry);
+  check("ad2 nudge plan-and-ask: plan-a stays the active entry", getStateForPersona(a, "dev").activeGoalId === "plan-a", getStateForPersona(a, "dev").activeGoalId);
+  const askRecords = ad2CoordinatorRecords(a);
+  check("ad2 nudge plan-and-ask: one [PROPOSAL] record in the coordinator's inbox names the entry id, the title and the planPath",
+    askRecords.length === 1 && askRecords[0].key === `inbox:coordinator:${SESSION_ID}:1` && askRecords[0].text.startsWith("[PROPOSAL]") &&
+    askRecords[0].text.includes(entry?.id) && askRecords[0].text.includes(AD2_TITLE) && askRecords[0].text.includes(AD2_PLAN_PATH) &&
+    askRecords[0].kind === "say" && askRecords[0].status === "pending", askRecords);
+  const awaiting = getStateForPersona(a, "dev").decisions.filter((d) => d.action === "plan_awaiting_yes");
+  check("ad2 nudge plan-and-ask: one plan_awaiting_yes decision naming the entry", awaiting.length === 1 && awaiting[0].detail.includes(entry?.id), awaiting);
+  check("ad2 nudge plan-and-ask: no plan_started_unprompted decision", !getStateForPersona(a, "dev").decisions.some((d) => d.action === "plan_started_unprompted"));
+  await closeTurn(a, "t-nudge");
+  check("ad2 nudge plan-and-ask: the turn counts no tool error", getStateForPersona(a, "dev").monitor.env.errors.toolErrorsLastTurn === 0, getStateForPersona(a, "dev").monitor.env.errors);
+  // A tick after the turn does not activate the waiting entry.
+  clock.advance(10_000);
+  await tickAndSettle(a, clock, 50);
+  check("ad2 nudge plan-and-ask: a tick after the turn leaves the entry paused with the flag",
+    ad2Entry(a)?.status === "paused" && ad2Entry(a)?.awaitingYes === true, ad2Entry(a));
+
+  clock.set(T0);
+  const s = await ad2Harness("ad2_nudge_start", { autonomy: "plan-and-start" });
+  await ad2OpenNudge(s, clock, "ad2 nudge plan-and-start", "t-nudge");
+  const started = await ad2Add(s);
+  check("ad2 nudge plan-and-start: accepted, and the result names the [STARTED] record",
+    started?.deny === undefined && String(started?.result).includes("[STARTED]"), started);
+  const sEntry = ad2Entry(s);
+  check("ad2 nudge plan-and-start: the entry is pending under the active plan-a, with no flag",
+    sEntry?.status === "pending" && sEntry?.awaitingYes === undefined && sEntry?.blockedReason === undefined, sEntry);
+  const sRecords = ad2CoordinatorRecords(s);
+  check("ad2 nudge plan-and-start: one [STARTED] record in the coordinator's inbox names the entry id, the title and the planPath",
+    sRecords.length === 1 && sRecords[0].text.startsWith("[STARTED]") &&
+    sRecords[0].text.includes(sEntry?.id) && sRecords[0].text.includes(AD2_TITLE) && sRecords[0].text.includes(AD2_PLAN_PATH), sRecords);
+  const unprompted = getStateForPersona(s, "dev").decisions.filter((d) => d.action === "plan_started_unprompted");
+  check("ad2 nudge plan-and-start: one plan_started_unprompted decision naming the entry", unprompted.length === 1 && unprompted[0].detail.includes(sEntry?.id), unprompted);
+  await closeTurn(s, "t-nudge");
+  check("ad2 nudge plan-and-start: the turn counts no tool error", getStateForPersona(s, "dev").monitor.env.errors.toolErrorsLastTurn === 0, getStateForPersona(s, "dev").monitor.env.errors);
+
+  // The same level over no active leaf: the handler's own activation makes
+  // the entry active in the same turn. The add carries no planPath, so the
+  // record carries no plan document clause.
+  clock.set(T0);
+  const sa = await ad2Harness("ad2_nudge_start_active", { autonomy: "plan-and-start" });
+  await ad2OpenNudge(sa, clock, "ad2 nudge plan-and-start, no active leaf", "t-nudge");
+  const paused = await callTool(sa, { tool: "mcp__agentic-plugin__goal_edit", nodeId: "plan-a", action: "pause", reason: "set aside" });
+  check("ad2 nudge plan-and-start, no active leaf setup: plan-a is paused and nothing is active",
+    paused?.deny === undefined && getStateForPersona(sa, "dev").activeGoalId === null, paused);
+  const startedActive = await ad2Add(sa, { planPath: undefined });
+  const saEntry = ad2Entry(sa);
+  check("ad2 nudge plan-and-start, no active leaf: the entry is active and activeGoalId names it",
+    startedActive?.deny === undefined && saEntry?.status === "active" && getStateForPersona(sa, "dev").activeGoalId === saEntry?.id, { startedActive, saEntry });
+  const saRecords = ad2CoordinatorRecords(sa);
+  check("ad2 nudge plan-and-start, no active leaf: one [STARTED] record naming the entry, with no plan document clause",
+    saRecords.length === 1 && saRecords[0].text.startsWith("[STARTED]") && saRecords[0].text.includes(saEntry?.id) && !saRecords[0].text.includes("plan document"), saRecords);
+
+  // Case 7: a priming turn at plan-and-start.
+  clock.set(T0);
+  const pr = await ad2Harness("ad2_priming_start", { autonomy: "plan-and-start" });
+  await openPromptTurn(pr, { originKind: "sdk", text: "[SUPERVISOR-PRIMING] You run as the persona's worker.", turnId: "t-prime" });
+  const primed = await ad2Add(pr);
+  const prEntry = ad2Entry(pr);
+  check("ad2 priming plan-and-start: accepted and the entry is pending with no flag",
+    primed?.deny === undefined && prEntry?.status === "pending" && prEntry?.awaitingYes === undefined, { primed, prEntry });
+  const prRecords = ad2CoordinatorRecords(pr);
+  check("ad2 priming plan-and-start: one [STARTED] record naming the entry",
+    prRecords.length === 1 && prRecords[0].text.startsWith("[STARTED]") && prRecords[0].text.includes(prEntry?.id), prRecords);
+  check("ad2 priming plan-and-start: one plan_started_unprompted decision",
+    getStateForPersona(pr, "dev").decisions.filter((d) => d.action === "plan_started_unprompted").length === 1);
+}
+
+// Cases 4 to 6: a channel turn at each level creates the entry as goal-levels
+// does, pending under the active plan-a, and sends nothing.
+async function caseAd2_aChannelTurnAtEachLevel(clock) {
+  console.log("\n=== Autonomy dial 2: a plan added in a channel turn at each level is created and sends nothing ===");
+  for (const level of AUT_LEVELS) {
+    clock.set(T0);
+    const h = await ad2Harness(`ad2_channel_${level}`, { autonomy: level });
+    await openPromptTurn(h, { originKind: "channel", text: "Queue this plan.", turnId: "t-ch" });
+    const res = await ad2Add(h);
+    const entry = ad2Entry(h);
+    const tag = `ad2 channel ${level}`;
+    check(`${tag}: accepted, and the result names no record`,
+      res?.deny === undefined && !String(res?.result).includes("[PROPOSAL]") && !String(res?.result).includes("[STARTED]"), res);
+    check(`${tag}: the entry is pending with no flag and no reason`,
+      entry?.status === "pending" && entry?.awaitingYes === undefined && entry?.blockedReason === undefined, entry);
+    check(`${tag}: nothing reached the coordinator persona`, ad2CoordinatorRecords(h).length === 0, ad2CoordinatorRecords(h));
+    check(`${tag}: neither unprompted decision is logged`,
+      !getStateForPersona(h, "dev").decisions.some((d) => d.action === "plan_awaiting_yes" || d.action === "plan_started_unprompted"));
+    await closeTurn(h, "t-ch");
+    check(`${tag}: the turn counts no tool error`, getStateForPersona(h, "dev").monitor.env.errors.toolErrorsLastTurn === 0, getStateForPersona(h, "dev").monitor.env.errors);
+  }
+}
+
+// Case 8: the level reaches goal_add of a plan and nothing else, so
+// goal_create and goal_longterm add stay refused in a nudge turn at
+// plan-and-start, with the goal-levels text.
+async function caseAd2_theLevelReachesNoOtherAct(clock) {
+  console.log("\n=== Autonomy dial 2: goal_create and goal_longterm add stay refused in a nudge turn at plan-and-start ===");
+  clock.set(T0);
+  const h = await ad2Harness("ad2_other_acts", { autonomy: "plan-and-start" });
+  await ad2OpenNudge(h, clock, "ad2 other acts", "t-nudge");
+  const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  const created = await callTool(h, { tool: "mcp__agentic-plugin__goal_create", objective: "A new effort", replace: true });
+  check("ad2 other acts: goal_create is refused with the goal-levels text", created?.deny === AD2_EFFORT_REFUSED, created);
+  const lt = await callTool(h, { tool: LTG_TOOL, action: "add", title: "A new direction", objective: "Somewhere new" });
+  check("ad2 other acts: goal_longterm add is refused with the goal-levels text", lt?.deny === AD2_EFFORT_REFUSED, lt);
+  check("ad2 other acts: the store is byte-identical", h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  await closeTurn(h, "t-nudge");
+  const state = getStateForPersona(h, "dev");
+  check("ad2 other acts: the turn's tool errors are the two denials", state.monitor.env.errors.toolErrorsLastTurn === 2, state.monitor.env.errors);
+  check("ad2 other acts: the tree and the long-term list are the seeded ones",
+    state.goals.map((g) => g.id).join() === "root-1,plan-a,plan-p,plan-q" && state.longTermGoals.map((g) => g.id).join() === "lt-held",
+    { goals: state.goals.map((g) => g.id), lt: state.longTermGoals });
+}
+
+// Cases 9 and 10: in a nudge turn, goal_resume on the flagged entry is
+// refused and leaves it paused with the flag, and goal_resume with no nodeId
+// passes over it to the older unflagged paused plan-p. The control is an
+// operator turn, where the same no-nodeId call keeps today's selection, the
+// most recently updated paused entry, which is the flagged one, and clears
+// its flag.
+async function caseAd2_aNudgeTurnCannotResumeAnAwaitingEntry(clock) {
+  console.log("\n=== Autonomy dial 2: a nudge turn cannot resume an entry awaiting the operator's yes ===");
+  clock.set(T0);
+  const h = await ad2Harness("ad2_resume_refused", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(h, clock, "ad2 resume refused", "t-nudge");
+  const added = await ad2Add(h);
+  const entry = ad2Entry(h);
+  check("ad2 resume refused setup: the entry is paused with the flag", added?.deny === undefined && entry?.awaitingYes === true && entry?.status === "paused", { added, entry });
+  const bytesBefore = h.fsMap.get(PERSONA_STORE_FILE);
+  const res = await callTool(h, { tool: AD2_RESUME, nodeId: entry?.id });
+  check("ad2 resume refused: goal_resume on the flagged entry is refused, naming the operator's word",
+    typeof res?.deny === "string" && res.deny.includes(AD2_RESUME_REFUSED_TOKEN) && res?.result === undefined, res);
+  check("ad2 resume refused: the store is byte-identical", h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  const after = ad2Entry(h);
+  check("ad2 resume refused: the entry stays paused with the awaiting reason and the flag",
+    after?.status === "paused" && after?.blockedReason === AD2_AWAITING_REASON && after?.awaitingYes === true, after);
+  check("ad2 resume refused: plan-a stays active", getStateForPersona(h, "dev").activeGoalId === "plan-a", getStateForPersona(h, "dev").activeGoalId);
+
+  // Case 10, in the same turn: the flagged entry is the most recently
+  // updated paused one, so today's selection would take it.
+  const flaggedAt = after?.updatedAt ?? 0;
+  const planP = getStateForPersona(h, "dev").goals.find((g) => g.id === "plan-p");
+  check("ad2 resume no nodeId setup: the flagged entry is newer than the unflagged plan-p", flaggedAt > (planP?.updatedAt ?? Infinity), { flaggedAt, planP: planP?.updatedAt });
+  const bare = await callTool(h, { tool: AD2_RESUME });
+  check("ad2 resume no nodeId: accepted and resumes plan-p", bare?.deny === undefined && String(bare?.result).includes("plan-p"), bare);
+  const state = getStateForPersona(h, "dev");
+  check("ad2 resume no nodeId: plan-p is active and activeGoalId names it",
+    state.activeGoalId === "plan-p" && state.goals.find((g) => g.id === "plan-p")?.status === "active", state.goals.map((g) => [g.id, g.status]));
+  check("ad2 resume no nodeId: the flagged entry is still paused with the flag", ad2Entry(h)?.status === "paused" && ad2Entry(h)?.awaitingYes === true, ad2Entry(h));
+  await closeTurn(h, "t-nudge");
+  check("ad2 resume refused: the turn's tool errors are the one denial", getStateForPersona(h, "dev").monitor.env.errors.toolErrorsLastTurn === 1, getStateForPersona(h, "dev").monitor.env.errors);
+
+  // The control, over a fresh harness so the flagged entry is the most
+  // recently updated paused one: an operator turn keeps today's no-nodeId
+  // selection.
+  clock.set(T0);
+  const c = await ad2Harness("ad2_resume_control", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(c, clock, "ad2 resume control", "t-nudge");
+  await ad2Add(c);
+  await closeTurn(c, "t-nudge");
+  await openPromptTurn(c, { originKind: "channel", text: "Go ahead with it.", turnId: "t-ch" });
+  const op = await callTool(c, { tool: AD2_RESUME });
+  const resumed = ad2Entry(c);
+  check("ad2 resume control: in a channel turn a no-nodeId resume takes the most recent paused entry, the flagged one, and clears the flag",
+    op?.deny === undefined && resumed?.status === "active" && resumed?.awaitingYes === undefined && resumed?.blockedReason === undefined &&
+    getStateForPersona(c, "dev").activeGoalId === resumed?.id, { op, resumed });
+  await closeTurn(c, "t-ch");
+}
+
+// The Acceptance's second bullet: an entry awaiting the operator's yes is
+// resumed by goal_resume in a coordinator delivery turn, becoming active with
+// activeGoalId naming it and the flag cleared; and one dropped by goal_edit
+// drop reads abandoned with the reason and the flag cleared.
+async function caseAd2_theCoordinatorResumesAndADropClearsTheFlag(clock) {
+  console.log("\n=== Autonomy dial 2: a coordinator delivery resumes an awaiting entry, and a drop clears the flag ===");
+  clock.set(T0);
+  const h = await ad2Harness("ad2_coordinator_resume", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(h, clock, "ad2 coordinator resume", "t-nudge");
+  await ad2Add(h);
+  const entry = ad2Entry(h);
+  await closeTurn(h, "t-nudge");
+  check("ad2 coordinator resume setup: the entry waits with the flag", entry?.awaitingYes === true && entry?.status === "paused", entry);
+  await openDeliveryTurn(h, "dev", { text: `The operator said yes: goal_resume ${entry?.id}.`, turnId: "t-coord" });
+  check("ad2 coordinator resume setup: the drain submitted the record under the COORDINATOR ground",
+    h.promptSubmits.some((p) => p.startsWith("[COORDINATOR id=dev-coord-open-1-1]")), h.promptSubmits);
+  const res = await callTool(h, { tool: AD2_RESUME, nodeId: entry?.id });
+  const resumed = ad2Entry(h);
+  const state = getStateForPersona(h, "dev");
+  check("ad2 coordinator resume: accepted", res?.deny === undefined, res);
+  check("ad2 coordinator resume: the entry is active, activeGoalId names it, and the flag and the reason are cleared",
+    resumed?.status === "active" && state.activeGoalId === resumed?.id && resumed?.awaitingYes === undefined && resumed?.blockedReason === undefined, { resumed, active: state.activeGoalId });
+  await closeTurn(h, "t-coord");
+  check("ad2 coordinator resume: the turn counts no tool error", getStateForPersona(h, "dev").monitor.env.errors.toolErrorsLastTurn === 0, getStateForPersona(h, "dev").monitor.env.errors);
+
+  clock.set(T0);
+  const d = await ad2Harness("ad2_drop", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(d, clock, "ad2 drop", "t-nudge");
+  await ad2Add(d);
+  const dEntry = ad2Entry(d);
+  const dropped = await callTool(d, { tool: "mcp__agentic-plugin__goal_edit", nodeId: dEntry?.id, action: "drop", reason: "The operator said no." });
+  const after = ad2Entry(d);
+  check("ad2 drop: accepted, and the entry reads abandoned with the reason and the flag cleared",
+    dropped?.deny === undefined && after?.status === "abandoned" && after?.blockedReason === "The operator said no." && after?.awaitingYes === undefined, { dropped, after });
+}
+
+// A plan the level admitted whose record cannot be written is refused, with
+// nothing left in the tree or the store: the session on the default persona,
+// the reach rule refusing, and the write throwing, at plan-and-ask, and the
+// reach rule refusing at plan-and-start. The channel turn over the same
+// default-persona store is the control that the add itself would land.
+async function caseAd2_aRecordThatCannotBeWrittenRefusesTheAdd(clock) {
+  console.log("\n=== Autonomy dial 2: a plan whose record cannot be written is refused and leaves nothing ===");
+
+  clock.set(T0);
+  const def = await ad2Harness("ad2_no_road_default", { autonomy: "plan-and-ask", persona: "default" });
+  await ad2OpenNudge(def, clock, "ad2 no road default", "t-nudge", "default");
+  await ad2ExpectNoRecordRefusal(def, "ad2 no road (default persona)", "the default persona", "t-nudge", "default");
+  await openPromptTurn(def, { originKind: "channel", text: "Queue this plan.", turnId: "t-ch" });
+  const control = await ad2Add(def);
+  check("ad2 no road (default persona) control: the same add in a channel turn lands", control?.deny === undefined && ad2Entry(def, "default")?.status === "pending", control);
+  await closeTurn(def, "t-ch");
+
+  for (const level of ["plan-and-ask", "plan-and-start"]) {
+    clock.set(T0);
+    const r = await ad2Harness(`ad2_no_road_reach_${level}`, { autonomy: level });
+    await ad2OpenNudge(r, clock, `ad2 no road reach ${level}`, "t-nudge");
+    r.storeMap.delete(`commons:${SESSION_ID}`);
+    await ad2ExpectNoRecordRefusal(r, `ad2 no road (reach refused, ${level})`, "the reach rule refuses this session's write to 'coordinator'", "t-nudge");
+  }
+
+  clock.set(T0);
+  const w = await ad2Harness("ad2_no_road_write", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(w, clock, "ad2 no road write", "t-nudge");
+  const realSet = w.fake.store.set;
+  w.fake.store.set = (k, v) => (k.startsWith("inbox:coordinator:") ? Promise.reject(new Error("store refused the write")) : realSet(k, v));
+  await ad2ExpectNoRecordRefusal(w, "ad2 no road (the write throws)", "the write to 'coordinator' failed: store refused the write", "t-nudge");
+  w.fake.store.set = realSet;
+}
+
+// [STARTED] joins the leads a coordinator delivery does not count for, and
+// the two descriptions state what this section adds.
+async function caseAd2_descriptionsAndTheStartedLead(clock) {
+  console.log("\n=== Autonomy dial 2: the goal_add and goal_resume descriptions, and the [STARTED] lead ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "ad2_descriptions" });
+  const desc = (name) => h.toolRegisters.find((t) => t.name === name)?.description || "";
+  const add = desc("goal_add");
+  check("ad2 descriptions: goal_add names each of the three levels", AUT_LEVELS.every((l) => add.includes(l)), add);
+  check("ad2 descriptions: goal_add names the paused wait and the two records", add.includes("paused") && add.includes("[PROPOSAL]") && add.includes("[STARTED]"), add);
+  const resume = desc("goal_resume");
+  check("ad2 descriptions: goal_resume states the refusal for an entry awaiting the operator's yes",
+    resume.includes("awaiting the operator's yes") && /refused/i.test(resume), resume);
+
+  clock.set(T0);
+  const f = await gl4Harness("ad2_started_lead");
+  await openDeliveryTurn(f, "default", { text: "[STARTED] dev queued plan entry plan-x", turnId: "t-lead" });
+  check("ad2 [STARTED] lead setup: submitted under the COORDINATOR ground",
+    f.promptSubmits.some((s) => s.startsWith("[COORDINATOR id=default-coord-open-1-1] [STARTED]")), f.promptSubmits);
+  await gl4ExpectRefused(f, "ad2 coordinator [STARTED] delivery", "matched-entry", "t-lead");
 }
 
 // ============================================================

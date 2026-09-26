@@ -226,8 +226,8 @@
     {
       "name": "goal_add_description",
       "file": "hooks/index.ts",
-      "chars": 659,
-      "words": 108
+      "chars": 1053,
+      "words": 175
     },
     {
       "name": "goal_done_description",
@@ -244,8 +244,8 @@
     {
       "name": "goal_resume_description",
       "file": "hooks/index.ts",
-      "chars": 233,
-      "words": 40
+      "chars": 398,
+      "words": 68
     },
     {
       "name": "supervisor_shutdown_description",
