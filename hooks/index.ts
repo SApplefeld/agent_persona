@@ -54,7 +54,7 @@ import {
   awaitingEntryAtOrAbove,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
-import type { AgentState, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
+import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding } from "./agent-state";
 import {
   claimResource,
   readAllClaims,
@@ -467,20 +467,42 @@ function kaizenLine(text: string): string {
   return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
 }
 
+// The [PROPOSE] frame's level clause at plan-and-ask and plan-and-start,
+// which replaces the propose level's "Start none of it yourself." sentence.
+// Design point 5. Each is a named literal so the ledger can size it. Both
+// close on the same no-goal-tree fallback clause, given one owner
+// (PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT) rather than a second copy, on the
+// same ground as STANDING_NO_TREE_FALLBACK_TEXT above.
+const PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT = "With no goal tree, send the [PROPOSAL] instead, since only the operator opens a tree. ";
+const PROPOSE_FRAME_PLAN_AND_ASK_TEXT =
+  `Write the plan document and queue it with goal_add; the entry waits paused until the operator's yes reaches you. ` +
+  PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT;
+const PROPOSE_FRAME_PLAN_AND_START_TEXT =
+  `Write the plan document, queue it and start it; the plugin tells the coordinator. ` +
+  PROPOSE_FRAME_NO_TREE_FALLBACK_TEXT;
+
 // The [PROPOSE] frame. Each long-term goal's title and objective is text the
 // persona wrote, so each is folded onto one line, cut at the lengths
 // goal_longterm stores, and passed through bracketSafeText, so a stored goal
-// cannot forge a label in the prompt it is spliced into.
-export function proposeFrame(longTermGoals: LongTermGoal[], coordinatorPersona: string): string {
+// cannot forge a label in the prompt it is spliced into. The level clause is
+// "Start none of it yourself. " only at propose, which keeps the frame
+// byte-identical to before this section at that level; at the other two
+// levels it is replaced by the level's own sentence above.
+export function proposeFrame(longTermGoals: LongTermGoal[], coordinatorPersona: string, level: AutonomyLevel): string {
   const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
   const goalLines = longTermGoals.map((g) =>
     `- ${bracketSafeText(oneLine(String(g?.title ?? "").slice(0, 80)))}: ${bracketSafeText(oneLine(String(g?.objective ?? "").slice(0, 500)))}`).join("\n");
+  const levelClause = level === "plan-and-ask"
+    ? PROPOSE_FRAME_PLAN_AND_ASK_TEXT
+    : level === "plan-and-start"
+    ? PROPOSE_FRAME_PLAN_AND_START_TEXT
+    : `Start none of it yourself. `;
   const proposeText =
     `[PROPOSE] Nothing in your goal tree is active or ready to start, and you hold these long-term goals:\n` +
     goalLines +
     `\nName the single next piece of work toward one of them: what it is, why now, and the repository it belongs in. ` +
     `Send it with agentic_say to the coordinator persona, persona set to ${coordinatorPersona}, with the text opening [PROPOSAL]. ` +
-    `Start none of it yourself. ` +
+    levelClause +
     `If you have no proposal worth making, answer "No proposal." and send nothing.`;
   return proposeText;
 }
@@ -1271,6 +1293,48 @@ const TEXT_CUT_MARK = " [cut at the bound]";
 // The most open entries the [GOAL QUEUE] block lists one per line. It rides
 // every external prompt, so past this many the rest are named by count.
 const GOAL_QUEUE_MAX_LINES = 12;
+
+// The [STANDING] block's fixed sentences: the idle order and the line naming
+// the goal tree as the queue. Each is a named literal of its own so the
+// injection ledger can size it. See design point 4.
+const STANDING_IDLE_ORDER_TEXT = "Finish the active entry, then the next queued entry in your goal tree, then your backlog.";
+const STANDING_QUEUE_NAME_TEXT = "Your goal tree is the queue; read it with goal_status.";
+
+// The [STANDING] block's level sentence, one literal per stored autonomy
+// level. `standingLevelSentence` below picks among them, falling to the
+// propose sentence for any value that is not one of the other two: a stored
+// value outside the three normalizes to "propose" at load
+// (isAutonomyLevel/parseState), so this fallback is never reached on a live
+// field, but it keeps an unrecognized value from ever reading as a wider
+// grant than propose.
+//
+// The plan-and-ask and plan-and-start sentences both close on the same
+// no-goal-tree fallback clause, so that clause is its own named literal
+// with one owner (STANDING_NO_TREE_FALLBACK_TEXT) rather than a second copy:
+// a sentence two sentences both need is one the injection duplicate check
+// refuses to see written out twice.
+const STANDING_LEVEL_PROPOSE_TEXT =
+  "Autonomy: propose. You may propose work only: send a [PROPOSAL] record to the coordinator and start nothing until it comes back as a queue entry.";
+const STANDING_NO_TREE_FALLBACK_TEXT = "With no goal tree, send a [PROPOSAL] instead, since only the operator opens a tree.";
+const STANDING_LEVEL_PLAN_AND_ASK_TEXT =
+  `Autonomy: plan and ask. You may write the plan document and queue it with goal_add; it waits paused until the operator's yes reaches you. ` +
+  STANDING_NO_TREE_FALLBACK_TEXT;
+const STANDING_LEVEL_PLAN_AND_START_TEXT =
+  `Autonomy: plan and start. You may write the plan document, queue it and start it; the plugin tells the coordinator. ` +
+  STANDING_NO_TREE_FALLBACK_TEXT;
+
+// The [STANDING] block's one conditional sentence, appended where the
+// controller will start nothing on its own even though the tree still holds
+// open work (hasStartableWork false, openGoals non-empty).
+const STANDING_IDLE_DUTIES_TEXT = "Nothing in your tree starts by itself, so you are idle for these duties.";
+
+// The level sentence for a stored autonomy level, selected so an unrecognized
+// value falls to the propose sentence rather than to a wider one.
+function standingLevelSentence(level: AutonomyLevel): string {
+  if (level === "plan-and-ask") return STANDING_LEVEL_PLAN_AND_ASK_TEXT;
+  if (level === "plan-and-start") return STANDING_LEVEL_PLAN_AND_START_TEXT;
+  return STANDING_LEVEL_PROPOSE_TEXT;
+}
 
 // A caught error's message as untrusted text: the string carries whatever the
 // filesystem put in it, including a path a persona chose, so it is neutralized
@@ -6324,7 +6388,7 @@ export const register: Register = async (on, options) => {
             });
           }
           proposal.sent = null;
-          const expectedProposalTurn = expectTurn({ kind: "proposal", text: proposeFrame(sess.state.longTermGoals, coordinatorPersona) });
+          const expectedProposalTurn = expectTurn({ kind: "proposal", text: proposeFrame(sess.state.longTermGoals, coordinatorPersona, sess.state.autonomy) });
           sess.state.updatedAt = proposal.askedAt;
           await persist($);
           const proposalOutcome = await submitExpectedTurn($, expectedTurns, expectedProposalTurn);
@@ -10363,6 +10427,28 @@ export const register: Register = async (on, options) => {
         contextBlocks.push(idleBlock);
         try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
       }
+    }
+
+    // --- [STANDING] block: the idle order, the goal tree named as the
+    // queue, and the operator-set autonomy level's sentence. Rides every
+    // external prompt an owner-armed session carries (gated above, at
+    // arming !== "reader", the same gate the goal blocks take), so it
+    // appears whether or not the tree holds an active entry. Design point 4.
+    {
+      const levelSentence = standingLevelSentence(sess.state.autonomy);
+      const idleSentence = !hasStartableWork(sess.state) && openGoals(sess.state).length > 0
+        ? `\n${STANDING_IDLE_DUTIES_TEXT}`
+        : "";
+      const standingBlock =
+        `[STANDING]\n` +
+        STANDING_IDLE_ORDER_TEXT +
+        `\n` +
+        STANDING_QUEUE_NAME_TEXT +
+        `\n` +
+        levelSentence +
+        idleSentence;
+      contextBlocks.push(standingBlock);
+      try { $.ui.log(`Agentic: [STANDING] injected at ${sess.state.autonomy}`); } catch { /* non-fatal */ }
     }
 
     // --- [ENV] block injection (G4: only when notable per plan section 4; push env_inject) ---
