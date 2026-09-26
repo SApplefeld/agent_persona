@@ -150,3 +150,9 @@ The open-turn map that `turnIsOpen()` reads is unaffected, since it closes a tur
 Still inferred: that a subagent's completion carries the subagent's turn id rather than the parent's. The `turn_start` decision now carries the turn id. Remedy: read one live worker log where a reviewer completes inside a turn and confirm the two ids differ. If they match, the id checks do nothing and the fault is the harness's to raise upstream.
 
 _Retired 2026-09-25: the cheap first step is done by `docs/plans/agent_persona_nudge-state_v1.md` section 1 (branch nudge-state), which writes the turn id to the plugin's log at both `turn.start` and `turn.complete`. Whether a subagent's completion carries an id other than its parent turn's is the live check the backlog's operator-checks entry for that plan carries._
+
+## Task list: the length-budget call (found 2026-09-26)
+
+The `[TASK LIST]` block was kept shorter than the `[GOAL TREE]` block beside it, so beside a typical goal block of about 375 characters it showed about three items, and a hidden item could not be marked done by id until earlier ones finished.
+
+_Retired 2026-09-26: the operator decided on the relay thread that the goal-length budget comes out, since a short goal can carry a long list. `taskListBlock` in `hooks/index.ts` now shows up to `TASK_LIST_MAX_LINES` (12) lines whatever the goal block's length, and each task's text stays capped at `TASK_TEXT_MAX_CHARS` (200). Shipped on branch task-list-budget._

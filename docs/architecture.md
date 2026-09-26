@@ -224,7 +224,7 @@ Three files write text into a child session that nobody typed: `bin/supervise-ho
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 68 entries totalling 47,084 characters. Eleven entries come from `bin/supervise-holder.sh` and total 22,400, two come from `bin/supervise.sh` and total 292, and fifty-five come from `hooks/index.ts` and total 24,392, of which the twenty registered tool descriptions are 17,361.
+`.kit/injection-ledger.json` is the committed size baseline, 68 entries totalling 47,083 characters. Eleven entries come from `bin/supervise-holder.sh` and total 22,400, two come from `bin/supervise.sh` and total 292, and fifty-five come from `hooks/index.ts` and total 24,391, of which the twenty registered tool descriptions are 17,361.
 
 | What a launch reads | Characters |
 |---|---|
