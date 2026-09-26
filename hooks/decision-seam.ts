@@ -1,7 +1,11 @@
 // decision-seam.ts: the one path a closed question takes to Jev, TypeSafe's
-// classifier service. Shadow only: the caller passes Haiku's value in, the
-// result carries it back out beside Jev's answer, and no branch anywhere
-// reads a Jev answer into a decision.
+// classifier service, in one of two modes. In shadow the caller passes
+// Haiku's value in, the result carries it back out beside Jev's answer, and
+// no branch reads the answer into a decision. In live the same path sends the
+// same request under a shorter timeout, because a live call is awaited by the
+// wrapper that made it where a shadow call is not; which questions may be
+// asked live, and what their answers reach, is that wrapper's rule in
+// hooks/index.ts (liveAsk) and never this module's.
 //
 // No `import $` and no side effects at load. The engine's loader follows `$`
 // only into functions declared in hooks/index.ts and refuses the whole module
@@ -31,8 +35,13 @@ import type { PluginHost } from "./host";
 // The live contract, endpoint included: https://docs.typesafe.ai/api.md
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
-// $.http.fetch takes no timeout, so every request is raced against this timer.
+// $.http.fetch takes no timeout, so every request is raced against a timer,
+// and the timer is the mode's. A shadow call is awaited by nothing, so its
+// bound only caps how long an orphaned request stays open. A live call is
+// awaited on the path that asked it, a turn end among them, so its bound is
+// the longest that path may be delayed.
 export const SHADOW_TIMEOUT_MS = 10_000;
+export const LIVE_TIMEOUT_MS = 2_000;
 // The longest model name the result carries; the vendor's is under 16.
 export const MODEL_MAX_CHARS = 64;
 
@@ -107,8 +116,8 @@ export type QuestionAsk =
 // that is not a question, the seam reads that as no_question.
 export type QuestionResolver = (questionSetId: string) => Promise<ResolvedQuestion>;
 
-// The closed set of ways a shadow call ends short of an answer.
-//   off         any mode other than the exact string "shadow"; nothing is read or sent
+// The closed set of ways a call ends short of an answer.
+//   off         any mode other than the exact strings "shadow" and "live"; nothing is read or sent
 //   no_key      TYPESAFE_API_KEY absent, unreadable, or shorter than KEY_MIN_CHARS
 //               once trimmed; nothing is sent and no state is carried
 //   no_question the resolver rejected or returned a shape carrying no options; local,
@@ -527,8 +536,9 @@ function coreFailure(
 // timeout race and the answer validation are written once and cover every
 // primitive.
 //
-// The mode check comes first, so anything but "shadow" reads no key, resolves
-// no question and sends nothing. The key check comes second, so a VM with no
+// The mode check comes first, so anything but "shadow" or "live" reads no
+// key, resolves no question and sends nothing; the two that send differ only
+// in the timer they race. The key check comes second, so a VM with no
 // key, or one holding a value too short to be a bearer token, sends nothing
 // either. The state is scrubbed third, immediately after that check, so every
 // path past it carries the scrubbed text and no caller can reach the vendor or
@@ -545,7 +555,10 @@ async function send(
   mode: string,
   resolve: QuestionResolver,
 ): Promise<CoreResult> {
-  if (mode !== "shadow") return coreFailure("off", null, null, null, null);
+  // The exact strings and nothing else: a value that is not one of the two
+  // folds to off rather than to a default mode, and never to a throw.
+  const timeoutMs = mode === "shadow" ? SHADOW_TIMEOUT_MS : mode === "live" ? LIVE_TIMEOUT_MS : null;
+  if (timeoutMs === null) return coreFailure("off", null, null, null, null);
 
   let key: unknown;
   try {
@@ -646,7 +659,7 @@ async function send(
   //
   // When the request wins, the timer is not cancelled: SeamHost.sleep carries
   // no abort signal, so it runs to its end as an orphan. That is accepted.
-  // It is bounded at SHADOW_TIMEOUT_MS and there is at most one per call.
+  // It is bounded at the mode's timeout and there is at most one per call.
   // The wiring puts two shadow calls on a tick, the controller decision and
   // the plan switch, and up to three on a turn, the turn score, the memory
   // kind gate and the plan health request, so up to five orphans can be live
@@ -655,7 +668,7 @@ async function send(
   // Its settling is handled here, so it can neither reject nor touch the
   // result.
   const timer: Promise<Settled> = Promise.resolve()
-    .then(() => host.sleep(SHADOW_TIMEOUT_MS))
+    .then(() => host.sleep(timeoutMs))
     .then(
       () => ({ kind: "timeout" as const }),
       () => ({ kind: "timeout" as const }),

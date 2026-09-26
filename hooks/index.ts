@@ -147,7 +147,7 @@ import {
 // Haiku-paired sites below put to Haiku, and also carries the four plan
 // health questions no classifier asks, plus the journal that records every
 // answer.
-import { ask, askAll, type JevAnswer, type QuestionAsk, type SeamResult, type SeamSetResult } from "./decision-seam";
+import { ask, askAll, type ChoiceAnswer, type JevAnswer, type QuestionAsk, type SeamResult, type SeamSetResult } from "./decision-seam";
 import { newStampId, writeCall, writeAnswers, writeOutcome, ASK_MARKER_VALUE, type JournalWrite, type OutcomeKind } from "./decision-journal";
 
 // --- Module-scope session identity ---
@@ -283,6 +283,81 @@ function shadowAsk(
       // losing one measurement.
     });
   return stampId;
+}
+
+/**
+ * The one entry point for a question that may be asked live, and the only
+ * wrapper whose return a branch may read. Takes shadowAsk's arguments with
+ * the live list in place of Haiku's value, since no classifier answers these
+ * questions.
+ *
+ * Where `jevMode` is not `shadow`, or `jevLive` does not name the question,
+ * this is shadowAsk with the same arguments: the question is journaled in
+ * shadow, nothing is awaited, and the return is null. Where both hold, the
+ * seam is awaited in mode `live`, the call and answer lines are written with
+ * that mode, and the return is the validated answer, or null on any of the
+ * seam's closed failure reasons, read off the result's `ok` rather than off
+ * a list of reasons so a reason added to the seam is null here too.
+ *
+ * So a caller reads one shape, an answer or null, and null always means the
+ * question's stated default. A live call is awaited on the path that asked
+ * it, so the seam bounds it at LIVE_TIMEOUT_MS; nothing here can hold that
+ * path longer, and nothing here can throw into it. `jevMode` is read before
+ * the list, so under `off` a question the list names is not sent either.
+ *
+ * Exported so the suite can drive it before any hook does.
+ */
+export async function liveAsk(
+  host: PluginHost,
+  site: string,
+  questionSetId: string,
+  optionIds: readonly string[],
+  state: string,
+  jevMode: string,
+  jevLive: readonly string[],
+): Promise<ChoiceAnswer | null> {
+  if (jevMode !== "shadow" || !jevLive.includes(questionSetId)) {
+    shadowAsk(host, site, questionSetId, optionIds, state, jevMode, null);
+    return null;
+  }
+  const mode = "live";
+  const persona = sess.persona;
+  const session = sess.mySessionId;
+  const stampId = newStampId(persona, session);
+  try {
+    const result: SeamResult = await ask(host, questionSetId, optionIds, state, mode, null, resolverOf(host));
+    noteJournalWrite(await writeCall(host, {
+      stampId,
+      persona,
+      session,
+      site,
+      questionSet: questionSetId,
+      mode,
+      result,
+    }), site);
+    if (!result.ok) return null;
+    noteJournalWrite(await writeAnswers(host, {
+      persona,
+      session,
+      answers: [{
+        callStampId: stampId,
+        questionId: result.questionId,
+        questionVersion: result.questionVersion,
+        overrideRefused: result.overrideRefused,
+        primitive: result.primitive,
+        value: result.answer.choice,
+        probabilities: result.answer.probabilities,
+        confidence: result.answer.confidence,
+        haikuValue: null,
+      }],
+    }), site);
+    return result.answer;
+  } catch {
+    // As in shadowAsk: the seam and the journal never reject, so this catches
+    // a host that broke that contract. Here the chain is awaited by a hook,
+    // so the catch is what keeps a broken host from throwing into it.
+    return null;
+  }
 }
 
 // Section 5 (plan-health-from-the-record): the four plan health questions.

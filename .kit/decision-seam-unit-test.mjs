@@ -27,6 +27,7 @@ const {
   JEV_ENDPOINT,
   JEV_MODEL,
   SHADOW_TIMEOUT_MS,
+  LIVE_TIMEOUT_MS,
   SEAM_FAILURE_REASONS,
   KEY_MIN_CHARS,
 } = await import("../hooks/decision-seam.ts");
@@ -159,18 +160,20 @@ try {
     check("Test 2f: mode off carries Haiku's value through", r.value.haikuValue === "nudge", r.value);
   }
 
-  // --- Test 3: every unrecognized mode is off, the exact string alone is shadow ---
+  // --- Test 3: every unrecognized mode is off; the exact strings shadow and live alone send ---
   {
-    for (const mode of ["Shadow", "shadow ", " shadow", "live", "on", "", "SHADOW", "shadows"]) {
+    for (const mode of ["Shadow", "shadow ", " shadow", "Live", "live ", " live", "LIVE", "on", "", "SHADOW", "shadows", "lives"]) {
       const h = harness();
       const r = await settle(askDefault(h, { mode }));
       check(`Test 3: mode ${JSON.stringify(mode)} is off and makes no request`,
         r.resolved && r.value.ok === false && r.value.reason === "off" && h.httpCalls.length === 0 && h.envGets.length === 0, r);
     }
-    const h = harness();
-    h.setHttpResponse(response(200, okBody("controller_decision")));
-    const r = await settle(askDefault(h, { mode: "shadow" }));
-    check("Test 3 control: the exact string shadow makes the request", r.resolved && r.value.ok === true && h.httpCalls.length === 1, r);
+    for (const mode of ["shadow", "live"]) {
+      const h = harness();
+      h.setHttpResponse(response(200, okBody("controller_decision")));
+      const r = await settle(askDefault(h, { mode }));
+      check(`Test 3 control: the exact string ${mode} makes the request`, r.resolved && r.value.ok === true && h.httpCalls.length === 1, r);
+    }
   }
 
   // --- Test 4: no key sends nothing ---
@@ -394,6 +397,21 @@ try {
     h4.fake.clock.sleep = () => { throw new Error("no timers"); };
     const r4 = await settle(askDefault(h4));
     check("Test 10g: a sleep that throws synchronously resolves the race as timeout", r4.resolved && r4.value.ok === false && r4.value.reason === "timeout", r4);
+
+    // 10h: the timer is the mode's. A live call is awaited on a turn-end
+    // path, so its bound is the shorter one; 10a above pins shadow at its.
+    const h5 = harness();
+    clock.set(T0);
+    h5.setHttpResponse(() => new Promise(() => {}));
+    const p5 = askDefault(h5, { mode: "live" });
+    await new Promise((r) => setImmediate(r));
+    check("Test 10h: a live call starts one sleep of LIVE_TIMEOUT_MS, which is two seconds",
+      h5.sleeps.length === 1 && h5.sleeps[0].ms === LIVE_TIMEOUT_MS && LIVE_TIMEOUT_MS === 2000 && LIVE_TIMEOUT_MS < SHADOW_TIMEOUT_MS, h5.sleeps.map((s) => s.ms));
+    clock.advance(LIVE_TIMEOUT_MS);
+    h5.fireSleep();
+    const r5 = await settle(p5);
+    check("Test 10i: the live timer winning resolves timeout at the live bound's latency",
+      r5.resolved && r5.value.ok === false && r5.value.reason === "timeout" && r5.value.latencyMs === LIVE_TIMEOUT_MS, r5);
   }
 
   // --- Test 11: every failure result carries the same field set, and no failure throws ---

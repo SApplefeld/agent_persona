@@ -116,9 +116,24 @@ export const SEGMENT_MAX = 64;
 // channel message, false on every other completed turn, and false the
 // moment a nudge is sent for the held record's own entry, whichever of the
 // two happens first.
-export type OutcomeKind = "next_score" | "ask_marker" | "lead_blocked" | "chapter_within" | "next_speaker" | "continued_unprompted";
-export const OUTCOME_KINDS: readonly OutcomeKind[] =
-  ["next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker", "continued_unprompted"];
+//
+// The last two belong to the two turn record questions. A
+// `record_delivered_within` answers turn-open: whether the record that call
+// opened or continued reached delivered within a fixed number of the
+// persona's own turns, written once as true or false. A `next_prompt_kind`
+// answers turn-disposition: the verdict the next external message took on
+// turn-open, one of its option ids, or `none` where the record expired
+// first.
+//
+// The union and the array carry the same members in the same order: a member
+// in the union alone compiles and is refused by writeOutcome at runtime.
+export type OutcomeKind =
+  | "next_score" | "ask_marker" | "lead_blocked" | "chapter_within" | "next_speaker" | "continued_unprompted"
+  | "record_delivered_within" | "next_prompt_kind";
+export const OUTCOME_KINDS: readonly OutcomeKind[] = [
+  "next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker", "continued_unprompted",
+  "record_delivered_within", "next_prompt_kind",
+];
 
 // The value every `ask_marker` outcome line carries, whatever the caller passes.
 // What matched is a line the worker wrote, and a journal line records that the

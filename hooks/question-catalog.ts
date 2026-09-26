@@ -110,9 +110,40 @@ export const PLAN_HEALTH_STATE_RECENT = "recentClosingTexts";
 // the two files are pinned to one spelling rather than two literals.
 export const PLAN_SWITCH_NO_MATCH = "no_match";
 
+// --- The two turn record sets ---
+//
+// Asked about the message that opens a turn and about how the turn ended,
+// over the turn record the plugin holds beside the goal tree. Neither has a
+// Haiku counterpart. Each goes through liveAsk in hooks/index.ts, the one
+// wrapper whose answer a branch may read, and is read only where the live
+// list that wrapper is handed names it; otherwise it is asked in shadow and
+// its answer reaches nothing. Each is measured against an outcome the plugin
+// observes afterwards: record_delivered_within for the open, next_prompt_kind
+// for the disposition.
+export const TURN_OPEN = "turn-open";
+export const TURN_DISPOSITION = "turn-disposition";
+
+// The sets a live list may name, and no other: a live answer is read into a
+// branch by option id, so only a set whose ids are this catalog's own and
+// whose promotion bar is stated can be named.
+export const PROMOTABLE_SET_IDS: readonly string[] = Object.freeze([TURN_OPEN, TURN_DISPOSITION]);
+
+// Each set's option ids in force, the caller's one constant, offered to Jev
+// and journaled as a closed vocabulary the way BLOCK_OWNER_OPTIONS is.
+export const TURN_OPEN_OPTIONS: readonly string[] = Object.freeze(["new-goal", "step", "continuation"]);
+export const TURN_DISPOSITION_OPTIONS: readonly string[] = Object.freeze(["delivered", "mid_work", "blocked_or_waiting"]);
+
+// A live turn-disposition answer reads as delivered where its probability on
+// `delivered` is at or above this, and as not delivered below it.
+export const TURN_DELIVERED_THRESHOLD = 0.5;
+// How many of the persona's own turns a record_delivered_within outcome waits
+// for the record to reach delivered before it is written false.
+export const RECORD_OUTCOME_TURNS = 3;
+
 export const QUESTION_SET_IDS: readonly string[] = Object.freeze([
   CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND,
   WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES,
+  TURN_OPEN, TURN_DISPOSITION,
 ]);
 
 // The four asked together at a plan entry's turn end, in the order the
@@ -136,10 +167,11 @@ export const MAX_OPTIONS = 255;
 // compares Jev's option id against Haiku's, and Haiku's come from the label
 // arrays above. The block owner has no Haiku answer to agree with and is
 // here for the other half of the same reason: its ids are the caller's one
-// constant, and a load reads that column as a closed vocabulary. The plan
-// switch is absent because its option ids are the caller's pending plan ids
-// rather than the catalog's.
-export const FIXED_OPTION_SETS: readonly string[] = Object.freeze([CONTROLLER_DECISION, TURN_SCORE, MEMORY_KIND, BLOCK_OWNER]);
+// constant, and a load reads that column as a closed vocabulary. The two turn
+// record sets are here on that ground and one more: a live answer's choice is
+// read into a branch by option id. The plan switch is absent because its
+// option ids are the caller's pending plan ids rather than the catalog's.
+export const FIXED_OPTION_SETS: readonly string[] = Object.freeze([CONTROLLER_DECISION, TURN_SCORE, MEMORY_KIND, BLOCK_OWNER, TURN_OPEN, TURN_DISPOSITION]);
 
 // A Score's levels are positions rather than names, so what an override of
 // one must keep is their count: the journal records a level number and a load
@@ -249,6 +281,34 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
     overrideRefused: null,
     primitive: "noul",
     instructions: "`closingText` is how an autonomous worker session ended its last turn. Should work continue on its own after this message, with nobody else acting first?",
+  },
+  // The two turn record sets' wording is fixed data: the agreement figure
+  // that promotes one to a live list was measured on this exact text, so a
+  // rewording is a new version through the override layer, never an edit
+  // here.
+  [TURN_OPEN]: {
+    id: TURN_OPEN,
+    version: SHIPPED_VERSION,
+    overrideRefused: null,
+    primitive: "choice",
+    instructions: "A message has just arrived for an autonomous persona. Given its active goal and its open turn record, what is the message?",
+    options: {
+      "new-goal": "It asks for something new, not a step of the active goal and not a follow-up to the open record.",
+      "step": "It is a step of, or an instruction about, the active goal.",
+      "continuation": "It follows up, corrects or adds to the open turn record's own request.",
+    },
+  },
+  [TURN_DISPOSITION]: {
+    id: TURN_DISPOSITION,
+    version: SHIPPED_VERSION,
+    overrideRefused: null,
+    primitive: "choice",
+    instructions: "How did this turn end?",
+    options: {
+      "delivered": "It finished what was asked of it this turn (answered, completed and reported the action, relayed or handed off the result, or acknowledged a message needing no action) and left nothing of its own half-done. Standing by for a new request, or others now acting on something it already handed over, still counts as delivered.",
+      "mid_work": "It stopped with its own work unfinished: a next step narrated but not taken, an edit or commit half-done, or an intermediate status.",
+      "blocked_or_waiting": "It cannot finish its own current task until something else happens: a person's decision it asked for, another agent's answer, or a background task or subagent of its own still running.",
+    },
   },
 };
 

@@ -19,9 +19,14 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
+// Loaded after the harness, whose resolve hook maps the extensionless
+// imports these two modules make, and read as namespaces so a missing export
+// reads as undefined in a check rather than refusing the whole suite.
+const Catalog = await import("../hooks/question-catalog.ts");
+const Seam = await import("../hooks/decision-seam.ts");
 import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -4006,6 +4011,9 @@ async function main() {
     await caseSeamDecisionsSurviveAnOppositeAnsweringJev(clock);
     await caseSeamHungJevCannotDelayATick(clock);
     await caseSeamFailingJevChangesNothingAndStillJournals(clock);
+    // The live path: the two turn record questions through liveAsk.
+    await caseLiveAsk_bothTurnQuestionsAreInvariantWithNoLiveList(clock);
+    await caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock);
     await caseSeamEachSiteWritesItsCallAndAnswerLines(clock);
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
@@ -22654,6 +22662,257 @@ async function caseSeamFailingJevChangesNothingAndStillJournals(clock) {
   check("seam failing: a failed call writes its call line and no answer line",
     journalLinesOfKind(failing, "answer").length === 0, journalLinesOfKind(failing, "answer"));
   checkInvariantAgainstOff("seam failing", failing, off);
+}
+
+// ============================================================
+// The live path: the two turn record questions go through liveAsk, the one
+// wrapper whose answer a branch may read. With no question named live both
+// are asked in shadow and return null, so the invariance instrument above
+// holds over them exactly as over the shadow sites. With a question named
+// live the answer comes back validated, the call is awaited and bounded at
+// the live timeout, and every closed failure reason reads as null.
+// ============================================================
+
+// The two questions' state texts. Fixed strings: what a site would build is
+// sections 4 and 5's, and this case reads nothing from them.
+const TURN_OPEN_STATE = "active_goal: none\nopen_record: none\nmessage: please summarize the survey notes";
+const TURN_DISPOSITION_STATE = "active_goal: none\nthis_turn_was_asked: summarize the notes\nagent_final_message: Done, three bullets.\nturn_tool_activity: none";
+
+// The exported liveAsk of the module a harness loaded, or null where the
+// module has none. The harness caches one module per case name, so the
+// name a harness was built under reaches the same instance its hooks run.
+async function liveAskOf(caseName) {
+  const mod = await loadModule(caseName);
+  return typeof mod.liveAsk === "function" ? mod.liveAsk : null;
+}
+
+// One liveAsk per turn record question, in the order a turn asks them.
+async function driveTurnQuestions(h, liveAsk, jevMode, jevLive) {
+  const host = fakeHostOf(h);
+  const open = await liveAsk(host, "turn-open", Catalog.TURN_OPEN, Catalog.TURN_OPEN_OPTIONS, TURN_OPEN_STATE, jevMode, jevLive);
+  const disposition = await liveAsk(host, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, jevMode, jevLive);
+  return { open, disposition };
+}
+
+// A Jev answer to whichever question the request carried, choosing
+// `delivered` for the disposition and `step` for the open, with the given
+// probability on that choice and the rest spread over the other ids. Built
+// from the request body, as jevAnswering is, so a case cannot pass by naming
+// an id the seam never offered.
+function jevTurnAnswer(pOnChoice) {
+  return (url, init) => {
+    const body = JSON.parse(init.body);
+    const questionId = Object.keys(body.questions)[0];
+    const optionIds = Object.keys(body.questions[questionId].criteria);
+    const choice = optionIds.includes("delivered") ? "delivered" : "step";
+    const probabilities = {};
+    for (const id of optionIds) probabilities[id] = id === choice ? pOnChoice : (1 - pOnChoice) / (optionIds.length - 1);
+    return {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({
+        model: "jev-fake",
+        answers: { [questionId]: { type: "choice", choice, probabilities, confidence: pOnChoice } },
+        usage: { input_tokens: 11, output_tokens: 2 },
+      }),
+    };
+  };
+}
+
+async function caseLiveAsk_bothTurnQuestionsAreInvariantWithNoLiveList(clock) {
+  console.log("\n=== Live path: with no question named live, both turn questions are shadow and invariant ===");
+
+  const off = await seedSeamHarness("liveask_inv_off", clock, { jevMode: "off" });
+  const offAsk = await liveAskOf("liveask_inv_off");
+  check("live invariance setup: hooks/index.ts exports liveAsk", offAsk !== null, offAsk);
+  if (offAsk === null) return;
+  const offAnswers = await driveTurnQuestions(off, offAsk, "off", []);
+  await driveSeamSites(off, clock, "t-live-inv");
+  check("live invariance: under off both questions return null and nothing is sent",
+    offAnswers.open === null && offAnswers.disposition === null && off.httpCalls.length === 0 && journalLines(off).length === 0,
+    { answers: offAnswers, calls: off.httpCalls.length, lines: journalLines(off).length });
+
+  // An answering Jev, at the far end of each set.
+  const opposite = await seedSeamHarness("liveask_inv_opposite", clock);
+  opposite.setHttpResponse(jevOpposite);
+  const oppositeAnswers = await driveTurnQuestions(opposite, await liveAskOf("liveask_inv_opposite"), "shadow", []);
+  await driveSeamSites(opposite, clock, "t-live-inv");
+  await new Promise((r) => setTimeout(r, 40));
+  const oppositeCalls = journalLinesOfKind(opposite, "call");
+  const turnCalls = oppositeCalls.filter((c) => c.site === "turn-open" || c.site === "turn-disposition");
+  check("live invariance control: both questions were asked, in shadow, and answered",
+    turnCalls.length === 2 && turnCalls.every((c) => c.mode === "shadow" && c.result === "ok")
+      && journalLinesOfKind(opposite, "answer").filter((a) => turnCalls.some((c) => c.stampId === a.callStampId)).length === 2,
+    turnCalls.map((c) => [c.site, c.mode, c.result]));
+  check("live invariance: with no question named live both return null whatever Jev answered",
+    oppositeAnswers.open === null && oppositeAnswers.disposition === null, oppositeAnswers);
+  checkInvariantAgainstOff("live invariance (answering)", opposite, off);
+
+  // A Jev that never answers. The not-live path is shadowAsk's, which is not
+  // awaited, so both calls return at once with their requests still open.
+  const hung = await seedSeamHarness("liveask_inv_hung", clock);
+  hung.setHttpResponse(() => new Promise(() => {}));
+  const hungAnswers = await driveTurnQuestions(hung, await liveAskOf("liveask_inv_hung"), "shadow", []);
+  // The not-awaited path issues its request a few microtasks after the
+  // return, once the seam has read the key and resolved the question.
+  await new Promise((r) => setTimeout(r, 20));
+  check("live invariance control (hung): both requests left and are still in flight",
+    hung.httpCalls.length === 2 && hung.pendingSleepCount === 2 && hungAnswers.open === null && hungAnswers.disposition === null,
+    { calls: hung.httpCalls.length, sleeps: hung.pendingSleepCount, answers: hungAnswers });
+  check("live invariance (hung): the not-live timers are the shadow bound",
+    hung.sleeps.every((s) => s.ms === Seam.SHADOW_TIMEOUT_MS), hung.sleeps.map((s) => s.ms));
+  await driveSeamSites(hung, clock, "t-live-inv");
+  checkInvariantAgainstOff("live invariance (hung)", hung, off);
+
+  // A failing Jev.
+  const failing = await seedSeamHarness("liveask_inv_failing", clock);
+  failing.setHttpResponse({ status: 429, ok: false, headers: {}, text: "rate limited" });
+  const failingAnswers = await driveTurnQuestions(failing, await liveAskOf("liveask_inv_failing"), "shadow", []);
+  await driveSeamSites(failing, clock, "t-live-inv");
+  await new Promise((r) => setTimeout(r, 40));
+  const failingTurnCalls = journalLinesOfKind(failing, "call").filter((c) => c.site === "turn-open" || c.site === "turn-disposition");
+  check("live invariance control (failing): both call lines carry the rate-limit reason",
+    failingTurnCalls.length === 2 && failingTurnCalls.every((c) => c.result === "http_429") && failingAnswers.open === null && failingAnswers.disposition === null,
+    failingTurnCalls.map((c) => [c.site, c.result]));
+  checkInvariantAgainstOff("live invariance (failing)", failing, off);
+}
+
+async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) {
+  console.log("\n=== Live path: a question named live is awaited and answered; one not named is shadow; every failure is null ===");
+
+  const h = await seedSeamHarness("liveask_switch", clock);
+  const liveAsk = await liveAskOf("liveask_switch");
+  check("live switch setup: hooks/index.ts exports liveAsk", liveAsk !== null, liveAsk);
+  if (liveAsk === null) return;
+  const host = fakeHostOf(h);
+  const live = [Catalog.TURN_DISPOSITION];
+
+  // Live direction: the fetch is held open, so a value that comes back only
+  // after it settles is a value that was awaited.
+  let answerFetch;
+  h.setHttpResponse(() => new Promise((resolve) => { answerFetch = resolve; }));
+  let settled = false;
+  const pending = liveAsk(host, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "shadow", live)
+    .then((v) => { settled = true; return v; });
+  await new Promise((r) => setTimeout(r, 20));
+  check("live direction: the question named live is sent once and awaited",
+    h.httpCalls.length === 1 && settled === false, { calls: h.httpCalls.length, settled });
+  check("live direction: the request is bounded at the live timeout, not the shadow one",
+    h.sleeps.length === 1 && h.sleeps[0].ms === Seam.LIVE_TIMEOUT_MS && h.sleeps[0].ms !== Seam.SHADOW_TIMEOUT_MS, h.sleeps.map((s) => s.ms));
+  const sentBody = JSON.parse(h.httpCalls[0].init.body);
+  check("live direction: the request carries the disposition question with exactly its ids in force",
+    JSON.stringify(Object.keys(sentBody.questions)) === JSON.stringify([Catalog.TURN_DISPOSITION])
+      && JSON.stringify(Object.keys(sentBody.questions[Catalog.TURN_DISPOSITION].criteria)) === JSON.stringify([...Catalog.TURN_DISPOSITION_OPTIONS]),
+    sentBody.questions);
+  answerFetch(jevTurnAnswer(0.5)(null, h.httpCalls[0].init));
+  const answer = await pending;
+  check("live direction: the validated answer comes back with its choice and a probability per option",
+    answer !== null && answer.type === "choice" && answer.choice === "delivered"
+      && Object.keys(answer.probabilities).length === Catalog.TURN_DISPOSITION_OPTIONS.length && answer.probabilities.delivered === 0.5,
+    answer);
+  check("live direction: a delivered probability at the threshold reads as delivered",
+    answer !== null && answer.probabilities.delivered >= Catalog.TURN_DELIVERED_THRESHOLD, answer && answer.probabilities);
+  await new Promise((r) => setTimeout(r, 20));
+  const liveCalls = journalLinesOfKind(h, "call");
+  const liveAnswers = journalLinesOfKind(h, "answer");
+  check("live direction: one call line with mode live and one answer line with no Haiku value",
+    liveCalls.length === 1 && liveCalls[0].mode === "live" && liveCalls[0].site === "turn-disposition" && liveCalls[0].questionSet === Catalog.TURN_DISPOSITION && liveCalls[0].result === "ok"
+      && liveAnswers.length === 1 && liveAnswers[0].callStampId === liveCalls[0].stampId && liveAnswers[0].value === "delivered" && liveAnswers[0].haikuValue === null && liveAnswers[0].agrees === null,
+    { calls: liveCalls, answers: liveAnswers });
+
+  // Not-live direction: the other question, with the fetch held open again.
+  // The value comes back null before the fetch settles, which is shadowAsk's
+  // not-awaited path, and the request that did leave is a shadow one.
+  h.setHttpResponse(() => new Promise(() => {}));
+  const notLive = await liveAsk(host, "turn-open", Catalog.TURN_OPEN, Catalog.TURN_OPEN_OPTIONS, TURN_OPEN_STATE, "shadow", live);
+  // The return is null before the request has even left; the request itself
+  // leaves a few microtasks later, so the read below yields first. The live
+  // timer from the direction above is still pending as an orphan, so the
+  // shadow timer is the newest one rather than the only one.
+  await new Promise((r) => setTimeout(r, 20));
+  check("not-live direction: the question not named live returns null while its shadow request is still open",
+    notLive === null && h.httpCalls.length === 2 && h.sleeps.length === 2 && h.sleeps[1].ms === Seam.SHADOW_TIMEOUT_MS,
+    { value: notLive, calls: h.httpCalls.length, sleeps: h.sleeps.map((s) => s.ms) });
+  const openBody = JSON.parse(h.httpCalls[1].init.body);
+  check("not-live direction: the shadow request carries the open question with exactly its ids",
+    JSON.stringify(Object.keys(openBody.questions)) === JSON.stringify([Catalog.TURN_OPEN])
+      && JSON.stringify(Object.keys(openBody.questions[Catalog.TURN_OPEN].criteria)) === JSON.stringify([...Catalog.TURN_OPEN_OPTIONS]),
+    openBody.questions);
+
+  // Below the threshold: the answer still comes back whole, and the
+  // comparison a caller makes reads it as not delivered.
+  h.sleeps.length = 0;
+  h.httpCalls.length = 0;
+  h.setHttpResponse(jevTurnAnswer(0.49));
+  const below = await liveAsk(host, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "shadow", live);
+  check("live direction: a delivered probability just below the threshold reads as not delivered",
+    below !== null && below.probabilities.delivered === 0.49 && !(below.probabilities.delivered >= Catalog.TURN_DELIVERED_THRESHOLD), below && below.probabilities);
+
+  // The kill switch: under off nothing is sent whatever the live list names,
+  // and the counter that stood at one above stands at zero here.
+  const off = await seedSeamHarness("liveask_switch_off", clock, { jevMode: "off" });
+  const offAsk = await liveAskOf("liveask_switch_off");
+  const offHost = fakeHostOf(off);
+  const offNamed = await offAsk(offHost, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "off", live);
+  const offUnnamed = await offAsk(offHost, "turn-open", Catalog.TURN_OPEN, Catalog.TURN_OPEN_OPTIONS, TURN_OPEN_STATE, "off", live);
+  check("kill switch: under off a question named live and one not named both return null with no request, no key read and no line",
+    offNamed === null && offUnnamed === null && off.httpCalls.length === 0 && !off.envGets.includes("TYPESAFE_API_KEY") && journalLines(off).length === 0,
+    { offNamed, offUnnamed, calls: off.httpCalls.length, env: off.envGets, lines: journalLines(off).length });
+
+  // Every closed failure reason, driven on the live path, reads as null, and
+  // the call line names which. The set is read from the seam, so a reason
+  // added there without a driver here fails the last check.
+  const f = await seedSeamHarness("liveask_fallbacks", clock);
+  const fAsk = await liveAskOf("liveask_fallbacks");
+  const fHost = fakeHostOf(f);
+  const askLive = (questionSetId = Catalog.TURN_DISPOSITION) =>
+    fAsk(fHost, "turn-disposition", questionSetId, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "shadow", [questionSetId]);
+  const drivers = {
+    off: async () => fAsk(fHost, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "off", live),
+    no_key: async () => { f.setEnv("TYPESAFE_API_KEY", undefined); try { return await askLive(); } finally { f.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY); } },
+    no_question: async () => askLive("no-such-question-set"),
+    timeout: async () => {
+      f.setHttpResponse(() => new Promise(() => {}));
+      const before = clock.get();
+      const p = askLive();
+      await new Promise((r) => setImmediate(r));
+      const timer = f.sleeps.pop();
+      check("fallback timeout control: the live call started one timer of LIVE_TIMEOUT_MS",
+        timer !== undefined && timer.ms === Seam.LIVE_TIMEOUT_MS, timer && timer.ms);
+      clock.advance(Seam.LIVE_TIMEOUT_MS);
+      timer.resolve();
+      const v = await p;
+      check("fallback timeout: the live call returned once the live timer fired and no later",
+        clock.get() - before === Seam.LIVE_TIMEOUT_MS, clock.get() - before);
+      return v;
+    },
+    network: async () => { f.setHttpResponse(() => Promise.reject(new Error("down"))); return askLive(); },
+    http_401: async () => { f.setHttpResponse({ status: 401, ok: false, headers: {}, text: "" }); return askLive(); },
+    http_422: async () => { f.setHttpResponse({ status: 422, ok: false, headers: {}, text: "" }); return askLive(); },
+    http_429: async () => { f.setHttpResponse({ status: 429, ok: false, headers: {}, text: "" }); return askLive(); },
+    http_529: async () => { f.setHttpResponse({ status: 529, ok: false, headers: {}, text: "" }); return askLive(); },
+    http_other: async () => { f.setHttpResponse({ status: 500, ok: false, headers: {}, text: "" }); return askLive(); },
+    parse: async () => { f.setHttpResponse({ status: 200, ok: true, headers: {}, text: "nope" }); return askLive(); },
+  };
+  check("fallbacks: a driver exists for every reason in the seam's closed set",
+    Array.isArray(Seam.SEAM_FAILURE_REASONS) && Seam.SEAM_FAILURE_REASONS.length === Object.keys(drivers).length
+      && Seam.SEAM_FAILURE_REASONS.every((r) => Object.hasOwn(drivers, r)), Object.keys(drivers));
+  for (const reason of Seam.SEAM_FAILURE_REASONS) {
+    const linesBefore = journalLinesOfKind(f, "call").length;
+    const v = await drivers[reason]();
+    await new Promise((r) => setTimeout(r, 20));
+    const calls = journalLinesOfKind(f, "call");
+    const last = calls[calls.length - 1];
+    if (reason === "off") {
+      check("fallback off: null with no call line, the kill switch writing nothing", v === null && calls.length === linesBefore, { v, lines: calls.length - linesBefore });
+    } else {
+      check(`fallback ${reason}: null, with the call line naming the reason under mode live`,
+        v === null && calls.length === linesBefore + 1 && last.result === reason && last.mode === "live", { v, last });
+    }
+  }
+  check("fallbacks: no answer line was written for any failed live call",
+    journalLinesOfKind(f, "answer").length === 0, journalLinesOfKind(f, "answer"));
 }
 
 async function caseSeamEachSiteWritesItsCallAndAnswerLines(clock) {

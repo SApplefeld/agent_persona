@@ -51,6 +51,12 @@ const {
   BLOCK_OWNER_OPTIONS,
   WORK_CONTINUES,
   PLAN_HEALTH_SET_IDS,
+  TURN_OPEN,
+  TURN_DISPOSITION,
+  TURN_OPEN_OPTIONS,
+  TURN_DISPOSITION_OPTIONS,
+  PROMOTABLE_SET_IDS,
+  TURN_DELIVERED_THRESHOLD,
   FIXED_LEVEL_SETS,
   OVERRIDE_DIR,
   resolverOf,
@@ -156,6 +162,9 @@ const VALID_CONTROLLER_OVERRIDE = {
     ["MEMORY_KIND_LABELS", MEMORY_KIND_LABELS],
     ["QUESTION_SET_IDS", QUESTION_SET_IDS],
     ["FIXED_OPTION_SETS", FIXED_OPTION_SETS],
+    ["PROMOTABLE_SET_IDS", PROMOTABLE_SET_IDS],
+    ["TURN_OPEN_OPTIONS", TURN_OPEN_OPTIONS],
+    ["TURN_DISPOSITION_OPTIONS", TURN_DISPOSITION_OPTIONS],
   ];
   for (const [name, arr] of frozen) {
     check(`Test 1g: ${name} is frozen`, Object.isFrozen(arr), name);
@@ -164,9 +173,9 @@ const VALID_CONTROLLER_OVERRIDE = {
 
 // --- Test 2: the option-id pin, the check a drifting catalog fails ---
 {
-  check("Test 2a: the eight question set ids are the ones the catalog exports",
-    sameSet(QUESTION_SET_IDS, [CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND, WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES])
-      && QUESTION_SET_IDS.length === 8, QUESTION_SET_IDS);
+  check("Test 2a: the ten question set ids are the ones the catalog exports",
+    sameSet(QUESTION_SET_IDS, [CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND, WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES, TURN_OPEN, TURN_DISPOSITION])
+      && QUESTION_SET_IDS.length === 10, QUESTION_SET_IDS);
   check("Test 2a: the four plan health sets are the noul, the score, the choice and the second noul, in the request's order",
     JSON.stringify(PLAN_HEALTH_SET_IDS) === JSON.stringify([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES]), PLAN_HEALTH_SET_IDS);
   check("Test 2b: every question set id has a shipped default",
@@ -182,6 +191,11 @@ const VALID_CONTROLLER_OVERRIDE = {
     // The block owner has no Haiku label array; its constant is the caller's
     // one source of the ids it offers, pinned here the same way.
     [BLOCK_OWNER, BLOCK_OWNER_OPTIONS],
+    // The two turn record sets are the block owner's case again: no Haiku
+    // label array, and the option constant is the one source of the ids the
+    // live caller offers and the journal reads as a closed vocabulary.
+    [TURN_OPEN, TURN_OPEN_OPTIONS],
+    [TURN_DISPOSITION, TURN_DISPOSITION_OPTIONS],
   ];
   check("Test 2d: the pinned sets are exactly the catalog's fixed sets", sameSet(pins.map(([id]) => id), FIXED_OPTION_SETS), FIXED_OPTION_SETS);
   for (const [id, labels] of pins) {
@@ -202,6 +216,17 @@ const VALID_CONTROLLER_OVERRIDE = {
   }
   check("Test 2i: the upper option bound is the vendor's and the lower is this catalog's",
     MIN_OPTIONS === 2 && MAX_OPTIONS === 255, [MIN_OPTIONS, MAX_OPTIONS]);
+  // The promotable set is what a live list is checked against, so each of its
+  // members must be a shipped question whose option ids are the catalog's own:
+  // a live answer's choice is read into a branch by option id.
+  check("Test 2j: the promotable sets are exactly the two turn record sets",
+    JSON.stringify(PROMOTABLE_SET_IDS) === JSON.stringify([TURN_OPEN, TURN_DISPOSITION]), PROMOTABLE_SET_IDS);
+  check("Test 2k: every promotable set is a shipped question with fixed option ids",
+    PROMOTABLE_SET_IDS.every((id) => QUESTION_SET_IDS.includes(id) && FIXED_OPTION_SETS.includes(id)), PROMOTABLE_SET_IDS);
+  // The threshold is read as at-or-above: a delivered probability equal to it
+  // counts as delivered and one just below it does not.
+  check("Test 2l: the delivered threshold is one half, read as at-or-above",
+    TURN_DELIVERED_THRESHOLD === 0.5 && 0.5 >= TURN_DELIVERED_THRESHOLD && !(0.49 >= TURN_DELIVERED_THRESHOLD), TURN_DELIVERED_THRESHOLD);
 }
 
 // --- Test 3: no override at all resolves to the shipped default, no reason ---
