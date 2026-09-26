@@ -284,6 +284,16 @@ export const TURN_RECORD_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 // message or one line naming what it asked, so it is cut rather than refused.
 export const TURN_RECORD_TEXT_MAX = 80;
 
+// Cuts a record's text to the maximum above. The cut belongs to the record
+// field rather than to whichever caller first needed it, so every producer of
+// a record's text calls this: the load, which reads a store the plugin did not
+// write, and the sites that open a record from a message or from a worded
+// line. A producer that cuts the text by hand instead reproduces the length it
+// can see and drops whatever this rule gains later.
+export function clampTurnRecordText(text: string): string {
+  return text.length > TURN_RECORD_TEXT_MAX ? text.slice(0, TURN_RECORD_TEXT_MAX) : text;
+}
+
 // A record id, minted in the goal nodes' shape: a prefix, the clock in base 36,
 // and a random tail. The "tr-" prefix is one no goal node, long-term goal or
 // task carries, so a record id never reads as a goal id or a task id.
@@ -911,6 +921,13 @@ function fillTasks(state: AgentState): void {
 // plugin cannot make sense of still shows the operator that a message arrived.
 // The text is cut to its maximum on the way in, since a store the plugin did
 // not write can carry any length.
+//
+// The pairing of status and closedAt is deliberately unconstrained. A stored
+// open record carrying a closedAt is kept, and so is a closed one carrying
+// none. Nothing reads closedAt on an open record, and no caller treats its
+// absence as evidence a record is open, status being the one field that
+// decides that. Refusing the pair here would drop a record whose message and
+// clock are both sound over a field nothing consults.
 function fillTurnRecords(state: AgentState): void {
   const stored = (state as { turnRecords?: unknown }).turnRecords;
   if (!Array.isArray(stored)) {
@@ -927,11 +944,10 @@ function fillTurnRecords(state: AgentState): void {
       && (record.planPath === undefined || typeof record.planPath === "string")
       && (record.taskId === undefined || typeof record.taskId === "string")
       && (record.closedAt === undefined || Number.isFinite(record.closedAt));
-  }).map((record) => (
-    record.text.length > TURN_RECORD_TEXT_MAX
-      ? { ...record, text: record.text.slice(0, TURN_RECORD_TEXT_MAX) }
-      : record
-  ));
+  }).map((record) => {
+    const cut = clampTurnRecordText(record.text);
+    return cut === record.text ? record : { ...record, text: cut };
+  });
 }
 
 export function parseState(json: string): AgentState {
@@ -1251,24 +1267,33 @@ function enforceInvariants(state: AgentState): void {
   // every store write.
   reapCompletedGoalTasks(state);
 
+  // The load-time backstop for the record reap; persist runs the same reap on
+  // every store write. It runs before the one-open repair below so that a
+  // record whose clock the plugin cannot read is already closed, and so never
+  // competes for the open slot against a record whose clock it can. Ordering
+  // it the other way lets an unreadable clock decide the repair, and the
+  // repair's own answer is then the one record the timeout can never reach.
+  const now = Date.now();
+  reapTurnRecords(state, now);
+
   // The record layer holds at most one open record, so openTurnRecord has one
   // answer at every read. A store carrying two, which a crash between an open
   // and the write that superseded the previous one leaves behind, keeps the
   // newest by openedAt and supersedes the rest, since the newest is the
-  // intention the persona is working on. A record with no usable openedAt sorts
-  // oldest, so a usable one is kept over it.
-  const now = Date.now();
+  // intention the persona is working on. Every record still open here has a
+  // readable clock, the reap above having closed the rest, so the comparison
+  // is between two real times.
   const openRecords = state.turnRecords.filter((r) => r.status === "open");
   if (openRecords.length > 1) {
     const newest = openRecords.reduce((a, b) => (turnRecordOrder(b) >= turnRecordOrder(a) ? b : a));
     state.turnRecords = state.turnRecords.map((r) => (
       r.status === "open" && r !== newest ? { ...r, status: "superseded" as const, closedAt: now } : r
     ));
+    // The repair closes records, so the cap can be over again where a store
+    // carried several open ones. This second pass expires nothing new and
+    // drops what the cap now covers.
+    reapTurnRecords(state, now);
   }
-
-  // The load-time backstop for the record reap; persist runs the same reap on
-  // every store write.
-  reapTurnRecords(state, now);
 }
 
 // Drops every task whose goal is closed: complete or abandoned, a closed set of
@@ -1298,10 +1323,15 @@ function turnRecordOrder(record: TurnRecord): number {
   return Number.isFinite(record.openedAt) ? record.openedAt : 0;
 }
 
-// Expires the stale open record and caps the closed ones. An open record whose
-// openedAt is older than TURN_RECORD_TIMEOUT_MS, or is not a finite number,
-// becomes "expired" with its closedAt at `now`, so a long-dead intention stops
-// reading as live. Expiry never deletes a record; the cap is what deletes, and
+// Expires the stale open record and caps the closed ones. An open record is
+// stale on any of three readings of its openedAt, which share one reason: none
+// of them yields an age the timeout can act on. It is not a finite number. It
+// is ahead of `now`, which yields a negative age, so no timeout ever passes and
+// the record would stand open for good. Or its age has reached
+// TURN_RECORD_TIMEOUT_MS, the boundary sitting on the expiring side, so a
+// record exactly a day old expires. A stale record becomes "expired" with its
+// closedAt at `now`, so a long-dead intention stops reading as live. Expiry
+// never deletes a record; the cap is what deletes, and
 // it drops only records that are not open, oldest-opened first, so an open
 // record stands however many closed ones sit beside it. Only state.turnRecords
 // changes. Called by persist before each store write, so a record that timed
@@ -1309,7 +1339,9 @@ function turnRecordOrder(record: TurnRecord): number {
 export function reapTurnRecords(state: AgentState, now: number): void {
   const aged = state.turnRecords.map((record) => {
     if (record.status !== "open") return record;
-    const stale = !Number.isFinite(record.openedAt) || now - record.openedAt >= TURN_RECORD_TIMEOUT_MS;
+    const stale = !Number.isFinite(record.openedAt)
+      || record.openedAt > now
+      || now - record.openedAt >= TURN_RECORD_TIMEOUT_MS;
     return stale ? { ...record, status: "expired" as const, closedAt: now } : record;
   });
   const closed = aged.filter((r) => r.status !== "open");

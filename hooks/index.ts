@@ -9998,13 +9998,14 @@ export const register: Register = async (on, options) => {
       // operator sees the intention the plugin is holding without reading the
       // store. A record is not a goal entry, so it sits outside the tree. There
       // is no line at all where no record is open, which is the usual case
-      // between turns. The text prints on one line and through String, as the
-      // long-term lines do, so a malformed stored entry prints as a blank
-      // rather than throwing goal_status for the whole persona.
+      // between turns. Both fields are strings by the time they reach here,
+      // fillTurnRecords having dropped any stored entry whose status or text is
+      // anything else, so the only shaping this line does is the one the
+      // long-term lines do: fold the text onto one line.
       const openRecord = openTurnRecord(sess.state);
       const recordLines = openRecord === null
         ? []
-        : [`Turn record: ${String(openRecord.status)} ${oneLine(String(openRecord.text ?? ""))}`];
+        : [`Turn record: ${openRecord.status} ${oneLine(openRecord.text)}`];
       if (!root) {
         // With no tree, the list is shown only where it holds an entry.
         return { result: [...recordLines, autonomyLine, "No goal tree exists.", ...(longTerm.length === 0 ? [] : longTermLines)].join("\n") };

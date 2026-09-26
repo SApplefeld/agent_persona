@@ -23857,7 +23857,7 @@ async function caseLtg_aStoreWrittenBeforeTheListLoadsEmpty() {
   check("ltg load: the seeded v4 state carries no tasks key (the instrument)", !("tasks" in v4), Object.keys(v4));
   const fromV4 = parseState(JSON.stringify(v4));
   check("ltg load, v4: an empty list and version 6", Array.isArray(fromV4.longTermGoals) && fromV4.longTermGoals.length === 0 && fromV4.version === 6, { list: fromV4.longTermGoals, version: fromV4.version });
-  check("ltg load, v4: the task list also loads at 5, empty", Array.isArray(fromV4.tasks) && fromV4.tasks.length === 0, fromV4.tasks);
+  check("ltg load, v4: the task list also loads empty", Array.isArray(fromV4.tasks) && fromV4.tasks.length === 0, fromV4.tasks);
   const fromV3 = parseState(JSON.stringify({ ...makeState({ now: T0 }), version: 3 }));
   check("ltg load, v3: an empty list and version 6", Array.isArray(fromV3.longTermGoals) && fromV3.longTermGoals.length === 0 && fromV3.version === 6, { list: fromV3.longTermGoals, version: fromV3.version });
   for (const name of ["state-v4-no-cost.json", "state-v4-cost-no-hash.json"]) {
@@ -27036,7 +27036,7 @@ async function caseGl5_theFrameNeutralizesStoredGoalText(clock) {
 }
 
 // A store written before the proposal record existed loads with askedAt 0 and
-// sent null, at version 6, on the v4 and v3 paths and for a malformed value.
+// sent null, at version 6, on the v6 and v3 paths and for a malformed value.
 async function caseGl5_theProposalRecordBackfills() {
   console.log("\n=== Goal levels 5: the proposal record is filled on load ===");
   // Section 2 (task verbs): makeState seeds a native current-version store by

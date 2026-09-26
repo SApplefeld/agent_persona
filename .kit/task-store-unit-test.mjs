@@ -294,6 +294,28 @@ const infiniteLoad = parseState(recordStore([record("tr-infinite", { openedAt: "
 check("an open record whose openedAt is not a finite number loads expired",
   infiniteLoad.turnRecords.length === 1 && infiniteLoad.turnRecords[0].status === "expired"
   && Number.isFinite(infiniteLoad.turnRecords[0].closedAt), infiniteLoad.turnRecords);
+// A clock ahead of the reader's own is unreadable in the same way a non-finite
+// one is: the age it yields is negative, so no timeout ever passes and the
+// record stands open for good. A store the plugin did not write carries one,
+// and so does its own store after the machine's clock steps backwards.
+const futureLoad = parseState(recordStore([record("tr-future", { openedAt: nowish + TURN_RECORD_TIMEOUT_MS })]));
+check("an open record whose openedAt is ahead of now loads expired",
+  futureLoad.turnRecords.length === 1 && futureLoad.turnRecords[0].status === "expired"
+  && Number.isFinite(futureLoad.turnRecords[0].closedAt), futureLoad.turnRecords);
+// The unreadable clock is expired before the one-open repair reads the clocks,
+// so a record the repair cannot place never competes for the open slot. The
+// corrupt record here is the one a naive repair would keep, since it was
+// written last; it reads expired rather than superseded, which names why it
+// closed.
+const twoOpenOneCorrupt = parseState(
+  recordStore([
+    record("tr-sound", { openedAt: nowish - 60_000 }),
+    record("tr-corrupt", { openedAt: "__INF__" }),
+  ]).replace('"__INF__"', "1e999"),
+);
+check("of two open records the one with an unreadable clock expires and the sound one stays open",
+  twoOpenOneCorrupt.turnRecords.map((r) => `${r.id}:${r.status}`).join(",") === "tr-sound:open,tr-corrupt:expired",
+  twoOpenOneCorrupt.turnRecords);
 
 console.log("\nThe timeout on a live state");
 const timeoutLive = stateWith([
