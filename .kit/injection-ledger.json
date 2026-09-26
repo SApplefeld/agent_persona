@@ -232,8 +232,8 @@
     {
       "name": "goal_done_description",
       "file": "hooks/index.ts",
-      "chars": 1223,
-      "words": 221
+      "chars": 1371,
+      "words": 246
     },
     {
       "name": "goal_status_description",
@@ -262,8 +262,8 @@
     {
       "name": "goal_edit_description",
       "file": "hooks/index.ts",
-      "chars": 700,
-      "words": 124
+      "chars": 822,
+      "words": 145
     },
     {
       "name": "goal_longterm_description",

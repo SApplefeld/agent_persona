@@ -3865,6 +3865,8 @@ async function main() {
     await caseAd2_aRecordThatCannotBeWrittenRefusesTheAdd(clock);
     await caseAd2_aSaveThatYieldsSendsNoRecord(clock);
     await caseAd2_aNudgeTurnCannotDropAnAwaitingEntry(clock);
+    await caseAd2_goalDoneByNameOnAnAwaitingEntry(clock);
+    await caseAd2_aFailedRecordRollsBackAReopenAndAnActivation(clock);
     await caseAd2_descriptionsAndTheStartedLead(clock);
     await caseGl5_anIdlePersonaIsAskedOncePerInterval(clock);
     await caseGl5_neverAskedWhileWorkIsActiveOrStartable(clock);
@@ -24644,17 +24646,19 @@ const AD2_EFFORT_REFUSED =
   "Refused: a new effort starts only in a turn the operator or the coordinator persona started, and this turn is neither. " +
   "An act the operator or the coordinator persona directed is retried in a turn one of them opens, not proposed. " +
   "Send any other idea to the coordinator persona with agentic_say, opening the text with [PROPOSAL].";
-// The token the awaiting-yes resume refusal carries, and no other refusal.
+// The token the three awaiting-yes refusals carry, the resume, the drop and
+// the completion by name, and no other refusal.
 const AD2_RESUME_REFUSED_TOKEN = "this entry waits for the operator's word";
 // The token every refusal of a plan whose record cannot be written carries.
 const AD2_NO_RECORD_TOKEN = "the record telling the coordinator persona about it could not be written";
 
 // A started owner session of `persona` ("dev" by default, whose coordinator
-// persona is "coordinator") over gl4Tree, where plan-a is active and plan-p
-// is paused, at `autonomy`.
-async function ad2Harness(caseName, { autonomy, persona = "dev" } = {}) {
+// persona is "coordinator") over `goals`, by default gl4Tree, where plan-a is
+// active and plan-p is paused, at `autonomy`.
+async function ad2Harness(caseName, { autonomy, persona = "dev", goals = gl4Tree() } = {}) {
   const h = await createTickHarness({ ...OPTS, caseName, persona, skipSessionStart: true });
-  const state = makeState({ now: T0, goals: gl4Tree(), activeGoalId: "plan-a", longTermGoals: [ltgEntry("lt-held", "Held goal")], autonomy });
+  const activeGoalId = goals.find((g) => g.status === "active")?.id ?? null;
+  const state = makeState({ now: T0, goals, activeGoalId, longTermGoals: [ltgEntry("lt-held", "Held goal")], autonomy });
   state.persona = persona;
   h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ [persona]: state }));
   h.storeMap.set(`commons:${SESSION_ID}`, {
@@ -24993,10 +24997,12 @@ async function caseAd2_aRecordThatCannotBeWrittenRefusesTheAdd(clock) {
 
 // A save that yields on an unprompted add sends no record: the record goes
 // out only after the entry is saved, so the coordinator's inbox never names
-// an entry the store does not hold. The yield is the epoch one: the stored
-// state names another session at a later epoch, as a takeover leaves it. A
-// commons yield cannot drive this path, since a live rival with the earlier
-// claim on the persona makes the reach rule refuse before the save.
+// an entry the store does not hold. The loop pins the epoch yield: the
+// stored state names another session at a later epoch, as a takeover leaves
+// it. That yield writes nothing, so the stored tree reads the rival's either
+// way, and the checks that carry the rollback are the in-memory tree
+// goal_status prints and the empty inbox. The commons leg below writes the
+// rolled-back state from the yield itself.
 async function caseAd2_aSaveThatYieldsSendsNoRecord(clock) {
   console.log("\n=== Autonomy dial 2: an unprompted plan add whose save yields sends no record ===");
   for (const level of ["plan-and-ask", "plan-and-start"]) {
@@ -25018,7 +25024,125 @@ async function caseAd2_aSaveThatYieldsSendsNoRecord(clock) {
     check(`${tag}: the stored decisions carry no add of the entry and neither unprompted decision`,
       !state.decisions.some((d) => (d.action === "add" && d.detail.includes(AD2_TITLE.slice(0, 50))) || d.action === "plan_awaiting_yes" || d.action === "plan_started_unprompted"),
       state.decisions.slice(-5));
+    const shown = String((await callTool(h, { tool: "mcp__agentic-plugin__goal_status" }))?.result);
+    check(`${tag}: the tree in memory, as goal_status prints it, holds no such entry`, shown.includes("Plan q") && !shown.includes(AD2_TITLE), shown);
   }
+
+  // The commons yield: this session also holds a reader:coordinator claim,
+  // which the reach rule admits, and a live rival holds the earlier claim
+  // on persona:dev. That yield writes the session's state after the
+  // rollback ran, so the stored tree shows the rollback.
+  clock.set(T0);
+  const c = await ad2Harness("ad2_yield_commons", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(c, clock, "ad2 yield commons", "t-nudge");
+  c.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: Date.now(), claims: [{ resource: "persona:dev", claimedAt: T0 - 2000 }, { resource: "reader:coordinator", claimedAt: T0 - 2000 }] });
+  c.storeMap.set("commons:rival-ad2", { sessionId: "rival-ad2", lastSeen: Date.now(), claims: [{ resource: "persona:dev", claimedAt: T0 - 600_000 }] });
+  const cres = await ad2Add(c);
+  check("ad2 yield commons: denied with the held text", cres?.deny === "persona 'dev' is held by a live session; this write was not saved.", cres);
+  const cstate = getStateForPersona(c, "dev");
+  check("ad2 yield commons: the save ran and gave the persona up", cstate.decisions.some((d) => d.action === "persona_yield_commons"), cstate.decisions.map((d) => d.action));
+  check("ad2 yield commons: no record reached the coordinator persona", ad2CoordinatorRecords(c).length === 0, ad2CoordinatorRecords(c));
+  check("ad2 yield commons: the stored tree, written by the yield, holds no new entry",
+    cstate.goals.map((g) => g.id).join() === "root-1,plan-a,plan-p,plan-q", cstate.goals.map((g) => g.id));
+  check("ad2 yield commons: the stored decisions carry no add of the entry",
+    !cstate.decisions.some((d) => d.action === "add" && d.detail.includes(AD2_TITLE.slice(0, 50))), cstate.decisions.slice(-5));
+}
+
+// Major review item: goal_done by name on an entry awaiting the operator's
+// yes, or on a task under it, is refused in a nudge turn with the store
+// byte-identical and the entry still paused with its flag, one tool error
+// each. In a coordinator delivery turn the same call on the entry completes
+// it and clears the flag, and a task under it completing by name cascades
+// the plan complete and clears the plan's flag.
+async function caseAd2_goalDoneByNameOnAnAwaitingEntry(clock) {
+  console.log("\n=== Autonomy dial 2: goal_done by name on an entry awaiting the operator's yes ===");
+  const DONE = "mcp__agentic-plugin__goal_done";
+  clock.set(T0);
+  const h = await ad2Harness("ad2_done_refused", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(h, clock, "ad2 done refused", "t-nudge");
+  await ad2Add(h);
+  const entry = ad2Entry(h);
+  check("ad2 done refused setup: the entry waits with the flag", entry?.awaitingYes === true && entry?.status === "paused", entry);
+  const expectHeld = (tag, res, bytesBefore) => {
+    check(`${tag}: refused, naming the operator's word`,
+      typeof res?.deny === "string" && res.deny.includes(AD2_RESUME_REFUSED_TOKEN) && res.deny.includes("complete") && res?.result === undefined, res);
+    check(`${tag}: the store is byte-identical`, h.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+    const after = ad2Entry(h);
+    check(`${tag}: the entry stays paused with the awaiting reason and the flag`,
+      after?.status === "paused" && after?.blockedReason === AD2_AWAITING_REASON && after?.awaitingYes === true, after);
+  };
+  let bytes = h.fsMap.get(PERSONA_STORE_FILE);
+  expectHeld("ad2 done refused (the entry)", await callTool(h, { tool: DONE, nodeId: entry?.id, note: "done" }), bytes);
+  const task = await callTool(h, { tool: AD2_ADD, kind: "task", parentId: entry?.id, title: "A task under it", objective: "The task is done" });
+  const taskNode = getStateForPersona(h, "dev").goals.find((g) => g.title === "A task under it");
+  check("ad2 done refused setup: a task was added under the entry", task?.deny === undefined && taskNode?.parentId === entry?.id, { task, taskNode });
+  bytes = h.fsMap.get(PERSONA_STORE_FILE);
+  expectHeld("ad2 done refused (a task under the entry)", await callTool(h, { tool: DONE, nodeId: taskNode?.id, note: "done" }), bytes);
+  check("ad2 done refused (a task under the entry): the task is still pending",
+    getStateForPersona(h, "dev").goals.find((g) => g.id === taskNode?.id)?.status === "pending");
+  await closeTurn(h, "t-nudge");
+  check("ad2 done refused: the turn's tool errors are the two denials", getStateForPersona(h, "dev").monitor.env.errors.toolErrorsLastTurn === 2, getStateForPersona(h, "dev").monitor.env.errors);
+
+  clock.set(T0);
+  const c = await ad2Harness("ad2_done_coordinator", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(c, clock, "ad2 done coordinator", "t-nudge");
+  await ad2Add(c);
+  const cEntry = ad2Entry(c);
+  await closeTurn(c, "t-nudge");
+  await openDeliveryTurn(c, "dev", { text: `The operator says it is done: goal_done ${cEntry?.id}.`, turnId: "t-coord" });
+  check("ad2 done coordinator setup: submitted under the COORDINATOR ground",
+    c.promptSubmits.some((p) => p.startsWith("[COORDINATOR id=dev-coord-open-1-1]")), c.promptSubmits);
+  const done = await callTool(c, { tool: DONE, nodeId: cEntry?.id, note: "done on the operator's word" });
+  const cAfter = ad2Entry(c);
+  check("ad2 done coordinator: accepted, the entry is complete and the flag cleared",
+    done?.deny === undefined && cAfter?.status === "complete" && cAfter?.awaitingYes === undefined, { done, cAfter });
+  await closeTurn(c, "t-coord");
+
+  clock.set(T0);
+  const k = await ad2Harness("ad2_done_cascade", { autonomy: "plan-and-ask" });
+  await ad2OpenNudge(k, clock, "ad2 done cascade", "t-nudge");
+  await ad2Add(k);
+  const kEntry = ad2Entry(k);
+  await callTool(k, { tool: AD2_ADD, kind: "task", parentId: kEntry?.id, title: "A task under it", objective: "The task is done" });
+  const kTask = getStateForPersona(k, "dev").goals.find((g) => g.title === "A task under it");
+  await closeTurn(k, "t-nudge");
+  await openDeliveryTurn(k, "dev", { text: `The operator says the task is done: goal_done ${kTask?.id}.`, turnId: "t-coord" });
+  const kDone = await callTool(k, { tool: DONE, nodeId: kTask?.id, note: "done on the operator's word" });
+  const kPlan = ad2Entry(k);
+  check("ad2 done cascade: accepted, the plan the cascade completed reads complete with the flag cleared",
+    kDone?.deny === undefined && kPlan?.status === "complete" && kPlan?.awaitingYes === undefined, { kDone, kPlan });
+}
+
+// Major review item: a record that cannot be written at plan-and-start, on a
+// tree with no active leaf under a finished root, rolls back each thing the
+// add changed: the root's reopening, the same-turn activation and its
+// decision line. The turn is the priming turn, since a tree with no active
+// leaf draws no nudge. The saved store is read against the store as it was
+// before the add.
+async function caseAd2_aFailedRecordRollsBackAReopenAndAnActivation(clock) {
+  console.log("\n=== Autonomy dial 2: a failed record rolls back a root reopen and a same-turn activation ===");
+  clock.set(T0);
+  const goals = gtc4Tree("complete", [{ id: "plan-x", parentId: "root-1", kind: "plan", status: "complete", title: "Plan x" }], { blockedReason: "finished earlier", updatedAt: T0 - 30_000 });
+  const h = await ad2Harness("ad2_rollback_reopen", { autonomy: "plan-and-start", goals });
+  const before = getStateForPersona(h, "dev");
+  const rootBefore = before.goals.find((g) => g.id === "root-1");
+  check("ad2 rollback setup: a finished root, no active leaf", rootBefore?.status === "complete" && before.activeGoalId === null, { root: rootBefore, active: before.activeGoalId });
+  await openPromptTurn(h, { originKind: "sdk", text: "[SUPERVISOR-PRIMING] You run as the persona's worker.", turnId: "t-prime" });
+  const realSet = h.fake.store.set;
+  h.fake.store.set = (k, v) => (k.startsWith("inbox:coordinator:") ? Promise.reject(new Error("store refused the write")) : realSet(k, v));
+  const res = await ad2Add(h);
+  h.fake.store.set = realSet;
+  check("ad2 rollback: refused, naming the failed write", typeof res?.deny === "string" && res.deny.includes(AD2_NO_RECORD_TOKEN) && res.deny.includes("store refused the write"), res);
+  const state = getStateForPersona(h, "dev");
+  const root = state.goals.find((g) => g.id === "root-1");
+  check("ad2 rollback: activeGoalId is as before the add", state.activeGoalId === null, state.activeGoalId);
+  check("ad2 rollback: the root's status, blockedReason and updatedAt are as before the add",
+    root?.status === rootBefore?.status && root?.blockedReason === rootBefore?.blockedReason && root?.updatedAt === rootBefore?.updatedAt, { root, rootBefore });
+  check("ad2 rollback: the stored tree holds no new entry", state.goals.map((g) => g.id).join() === "root-1,plan-x", state.goals.map((g) => g.id));
+  check("ad2 rollback: no stored decision is an add, an activation or a root reopen of this add",
+    !state.decisions.some((d) => (d.action === "add" && d.detail.includes(AD2_TITLE.slice(0, 50))) || d.action === "activated" || d.action === "root_reopened"),
+    state.decisions.map((d) => d.action));
+  check("ad2 rollback: no record reached the coordinator persona", ad2CoordinatorRecords(h).length === 0, ad2CoordinatorRecords(h));
 }
 
 // The Standing Brief Amendment: goal_edit drop of an entry awaiting the
@@ -25059,6 +25183,10 @@ async function caseAd2_descriptionsAndTheStartedLead(clock) {
   const resume = desc("goal_resume");
   check("ad2 descriptions: goal_resume states the refusal for an entry awaiting the operator's yes",
     resume.includes("awaiting the operator's yes") && /refused/i.test(resume), resume);
+  check("ad2 descriptions: goal_edit states the drop refusal for an entry awaiting the operator's yes",
+    desc("goal_edit").includes("A drop of an entry awaiting the operator's yes is refused"), desc("goal_edit"));
+  check("ad2 descriptions: goal_done states the refusal by name for an entry awaiting the operator's yes or a node under one",
+    desc("goal_done").includes("awaiting the operator's yes, or a node under one, is refused"), desc("goal_done"));
 
   clock.set(T0);
   const f = await gl4Harness("ad2_started_lead");

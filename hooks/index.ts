@@ -541,6 +541,13 @@ const AWAITING_YES_DROP_REFUSED_TEXT =
   "Refused: this entry waits for the operator's word, and only a turn the operator or the coordinator persona started may drop it. " +
   "It stays paused until that word reaches you.";
 
+// The one refusal goal_done by name gives on an entry awaiting the operator's
+// yes, or on a node under one, outside a turn the operator or the coordinator
+// persona started.
+const AWAITING_YES_DONE_REFUSED_TEXT =
+  "Refused: this entry waits for the operator's word, or sits under a plan that does, and only a turn the operator or the coordinator persona started may complete it. " +
+  "It stays paused until that word reaches you.";
+
 // The record goal_add sends the coordinator persona for a plan the autonomy
 // level admitted outside the operator's and the coordinator persona's turns:
 // a [PROPOSAL] at plan-and-ask, whose entry waits for the operator's yes, and
@@ -3463,7 +3470,8 @@ export const register: Register = async (on, options) => {
         "The result names the goal that became active where there is one, and that goal is the one to carry on with. " +
         "nodeId completes a named entry instead, once every child it has is complete or abandoned, and leaves any other active entry active. " +
         "The root's own nodeId completes the root once every entry under it is complete or abandoned with at least one complete, in a turn the operator or the coordinator persona opened; that is how a root the planner has planned is closed. " +
-        "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop.",
+        "Finished work on an entry that is not active is recorded with goal_done and its nodeId, never with a drop. " +
+        "nodeId naming an entry awaiting the operator's yes, or a node under one, is refused outside a turn the operator or the coordinator persona started.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3551,7 +3559,8 @@ export const register: Register = async (on, options) => {
       description:
         "Change one node of the goal tree. drop marks a pending, paused or blocked node abandoned, so it is " +
         "never activated, and refuses any other status; a drop is for work that will not be done, or for a plan queued as paused by mistake that is then added again as pending, and it does not reach the node's children. pause holds an active or pending node with a reason, and goal_resume " +
-        "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only.",
+        "continues it; a pause is for stuck work that waits on someone, and queued work stays pending. reprioritize moves a pending node ahead of its siblings. Owner only. " +
+        "A drop of an entry awaiting the operator's yes is refused outside a turn the operator or the coordinator persona started.",
       inputSchema: {
         type: "object",
         properties: {
@@ -8821,6 +8830,7 @@ export const register: Register = async (on, options) => {
       const priorActiveGoalId = sess.state.activeGoalId;
       let reopenedRoot: { status: GoalNode["status"]; blockedReason: string | undefined; updatedAt: number } | null = null;
       const addDecisions: AgentState["decisions"] = [];
+      let nudgeBefore: { answers: number; resetSinceOpened: boolean; lastNudgeAt: number } | null = null;
       // A node added directly under a finished root reopens the root, so the
       // tree never holds live work under a root that reads finished. A node
       // added under a plan leaves the root as it was, since a finished plan
@@ -8892,15 +8902,16 @@ export const register: Register = async (on, options) => {
         newNode.status = "active";
         newNode.updatedAt = now;
         sess.state.activeGoalId = newNode.id;
+        nudgeBefore = { answers: sess.nudgedAnswersWithoutStatus, resetSinceOpened: countResetSinceNudgeOpened, lastNudgeAt: sess.lastNudgeAt };
         activate($, newNode.id, `${newNode.id} added with no active leaf`);
         // activate() pushes its one decision line last.
         addDecisions.push(sess.state.decisions[sess.state.decisions.length - 1]);
       }
 
       // Takes this add back out of memory: the node, the root's reopening,
-      // the activation and the decision lines. The session-local nudge
-      // fields activate() reset are left, since this runs on a save that
-      // gave the persona up or before a refusal.
+      // the activation with the session-local nudge fields activate() reset,
+      // and the decision lines. The active slot goes back only while it still
+      // names this entry, so a change another call made meanwhile stands.
       const rollBackAdd = (): void => {
         const at = sess.state.goals.indexOf(newNode);
         if (at !== -1) sess.state.goals.splice(at, 1);
@@ -8909,7 +8920,12 @@ export const register: Register = async (on, options) => {
           root.blockedReason = reopenedRoot.blockedReason;
           root.updatedAt = reopenedRoot.updatedAt;
         }
-        sess.state.activeGoalId = priorActiveGoalId;
+        if (sess.state.activeGoalId === newNode.id) sess.state.activeGoalId = priorActiveGoalId;
+        if (nudgeBefore !== null) {
+          sess.nudgedAnswersWithoutStatus = nudgeBefore.answers;
+          countResetSinceNudgeOpened = nudgeBefore.resetSinceOpened;
+          sess.lastNudgeAt = nudgeBefore.lastNudgeAt;
+        }
         for (const d of addDecisions) dropDecision(d);
       };
 
@@ -8934,7 +8950,8 @@ export const register: Register = async (on, options) => {
           action: awaitingYes ? "plan_awaiting_yes" : "plan_started_unprompted",
           detail: `${newNode.id}: record ${recordId} to '${coordinatorPersona}'`,
         });
-        await persist($);
+        // The entry and the record have both landed, so only this line is lost on a failed save.
+        try { await persist($); } catch { /* the add's success stands */ }
       }
       if (writeOk) {
         const nextActive = sess.state.activeGoalId
@@ -9280,6 +9297,19 @@ export const register: Register = async (on, options) => {
           toolErrorsThisTurn++;
           return { deny: `Cannot complete ${byNameId}: status is "${named.status}" and its child ${openChild.id} is "${openChild.status}". Complete or drop every child first.` };
         }
+        // An entry awaiting the operator's yes, or a node under one, completes
+        // by name only in a turn the operator or the coordinator persona
+        // started, since completing it would settle the wait without that
+        // word. The walk is bounded by the node count.
+        let awaitingAt: GoalNode | undefined = named;
+        for (let steps = sess.state.goals.length; awaitingAt && !awaitingAt.awaitingYes && steps > 0; steps--) {
+          const parentId: string | null = awaitingAt.parentId;
+          awaitingAt = parentId === null ? undefined : sess.state.goals.find((g) => g.id === parentId);
+        }
+        if (awaitingAt?.awaitingYes && !turnIsOperatorsOrCoordinators()) {
+          toolErrorsThisTurn++;
+          return { deny: AWAITING_YES_DONE_REFUSED_TEXT };
+        }
         target = named;
       } else {
         if (!active || active.status !== "active") {
@@ -9303,6 +9333,11 @@ export const register: Register = async (on, options) => {
       if (byNameId) {
         target.blockedReason = undefined;
         target.lead = null;
+        // A flagged entry this call completed, the named one or a plan the
+        // cascade completed, no longer waits for the operator's yes.
+        for (const g of sess.state.goals) {
+          if (g.awaitingYes && g.status === "complete") g.awaitingYes = undefined;
+        }
       }
       // E2: health run at completeLeaf site (goal_done).
       await runHealth($, completedId);

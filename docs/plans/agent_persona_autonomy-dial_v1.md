@@ -221,8 +221,8 @@ Line numbers move, so find each site by the names given.
 ## Standing Brief Amendments
 
 - Section 2: a plan add that sends a `[PROPOSAL]` or `[STARTED]` record sends it only after the entry is saved, so the coordinator's inbox never holds a record naming an entry the store does not hold.
-- Section 2: `goal_edit drop` on an entry awaiting the operator's yes is refused outside a turn the operator or the coordinator persona started, and allowed in those turns.
-- Section 4: `docs/security-model.md` is in scope. Its sentences on the effort gate are rewritten to match the code: the gate reads the operator-set level for `goal_add` of a plan and nothing else, it decides five acts, the evidence-not-instruction rule is what defends a plan add a nudge turn makes at `plan-and-ask` or `plan-and-start`, and `goal_add` writes `[PROPOSAL]` and `[STARTED]` records through `sendPluginRecord` without a tool call.
+- Section 2: `goal_edit drop` on an entry awaiting the operator's yes, and `goal_done` by name on that entry or on a node under it, are refused outside a turn the operator or the coordinator persona started, and allowed in those turns, where they clear the flag.
+- Section 4: `docs/security-model.md` is in scope. Its sentences on the effort gate are rewritten to match the code: the gate reads the operator-set level for `goal_add` of a plan and nothing else, it decides five acts through its act list and refuses two more directly, a drop or a by-name completion of an entry awaiting the operator's yes outside those turns, the evidence-not-instruction rule is what defends a plan add a nudge turn makes at `plan-and-ask` or `plan-and-start`, and `goal_add` writes `[PROPOSAL]` and `[STARTED]` records through `sendPluginRecord` without a tool call.
 
 ## Sections of Work
 
