@@ -619,12 +619,9 @@ export const TASK_ID_MAX_CHARS = 64;
 // function decides only how to render it, never mutating a task or
 // completing the goal.
 //
-// The block is kept shorter than `maxChars`, which the caller sets to the
-// length of the [GOAL TREE] block it sits beside, so the list stays
-// lighter than the goal block. It shows the most lines, up to
-// TASK_LIST_MAX_LINES, whose whole block fits under that length, and
-// counts the rest in the "...and N more" line. Where not even the header,
-// the verb line and the count fit, it still returns that zero-line block.
+// It shows up to TASK_LIST_MAX_LINES lines and counts the rest in the
+// "...and N more" line. The block has no length budget against the
+// [GOAL TREE] block beside it, since a short goal can carry a long list.
 //
 // A task's id and text are read back out of the persona's store file, and
 // the goal id is spliced into the header and the all-done line, so all
@@ -636,7 +633,7 @@ export const TASK_ID_MAX_CHARS = 64;
 // [COORDINATOR id=x] once spliced into this prompt. Task text is capped at
 // TASK_TEXT_MAX_CHARS; a task's id and the goal id are capped at
 // TASK_ID_MAX_CHARS.
-export function taskListBlock(tasks: TaskItem[], goalId: string, maxChars: number): string | null {
+export function taskListBlock(tasks: TaskItem[], goalId: string): string | null {
   if (tasks.length === 0) return null;
   const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
   const guard = (text: string, cap: number) => bracketSafeText(oneLine(text.slice(0, cap)));
@@ -652,26 +649,19 @@ export function taskListBlock(tasks: TaskItem[], goalId: string, maxChars: numbe
   const closeLine = open.length === 0
     ? `\nEvery task under ${safeGoalId} is done; consider closing the goal with goal_done.`
     : "";
-  const compose = (shownCount: number) => {
-    const hidden = ordered.slice(shownCount);
-    const hiddenOpenCount = hidden.filter((t) => !t.done).length;
-    const tailLine = hidden.length > 0
-      ? `${shownCount > 0 ? "\n" : ""}...and ${hidden.length} more${hiddenOpenCount > 0 ? ` (${hiddenOpenCount} open)` : ""}`
-      : "";
-    return (
-      `[TASK LIST] ${safeGoalId}\n` +
-      lines.slice(0, shownCount).join("\n") +
-      tailLine +
-      `\n` +
-      `Drive this list with task_add, task_done <id> and task_clear.` +
-      closeLine
-    );
-  };
-  for (let shownCount = lines.length; shownCount > 0; shownCount--) {
-    const block = compose(shownCount);
-    if (block.length < maxChars) return block;
-  }
-  return compose(0);
+  const hidden = ordered.slice(lines.length);
+  const hiddenOpenCount = hidden.filter((t) => !t.done).length;
+  const tailLine = hidden.length > 0
+    ? `\n...and ${hidden.length} more${hiddenOpenCount > 0 ? ` (${hiddenOpenCount} open)` : ""}`
+    : "";
+  return (
+    `[TASK LIST] ${safeGoalId}\n` +
+    lines.join("\n") +
+    tailLine +
+    `\n` +
+    `Drive this list with task_add, task_done <id> and task_clear.` +
+    closeLine
+  );
 }
 
 type SubmitOutcome = { ok: true } | { ok: false; how: "failed" | "dropped"; reason: string };
@@ -10809,7 +10799,7 @@ export const register: Register = async (on, options) => {
       // agree on when a plan node's chapters are the goal's tracker instead.
       if (!planHolderOf(sess.state, activeNode)) {
         const activeTasks = sess.state.tasks.filter((t) => t.goalId === activeNode.id);
-        const taskListText = taskListBlock(activeTasks, activeNode.id, goalBlock.length);
+        const taskListText = taskListBlock(activeTasks, activeNode.id);
         if (taskListText) {
           contextBlocks.push(taskListText);
           try { $.ui.log(`Agentic: [TASK LIST] injected for ${activeNode.id}`); } catch { /* non-fatal */ }
