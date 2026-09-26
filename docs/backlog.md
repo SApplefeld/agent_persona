@@ -22,7 +22,7 @@ The reply backstop in `hooks/index.ts` now reads `e.answer` only at the persona'
 
 ## The persisted nudge budget still carries a count nothing reads (found 2026-09-25)
 
-`NudgeBudget.consecutiveNudgesWithoutOnGoal` in `hooks/agent-state.ts` is still declared, and four sites fill it with zero: `createDefaultState`, the v2 migration, and the v3 and v4 load branches where the store carries no `nudge` object. `.kit/tick-harness.mjs` seeds it too. The nudge-state plan moved the count to the controller's own per-session reading, so no production code reads the persisted field. It costs a few bytes per store and misleads a reader into thinking the count survives a relaunch. Remedy: drop the field from the type, the four fills and the harness seed, and let the parser ignore it in an older store. Proof: `tsc --noEmit` exits 0 and the tick suite's counts are unchanged. Raised by the nudge-state plan's section 3 security review.
+`NudgeBudget.consecutiveNudgesWithoutOnGoal` in `hooks/agent-state.ts` is still declared, and four sites fill it with zero: `createDefaultState`, the v2 migration, the v3 load branch, and the load branch v4 and v5 stores share, the last two where the store carries no `nudge` object. `.kit/tick-harness.mjs` seeds it too. The nudge-state plan moved the count to the controller's own per-session reading, so no production code reads the persisted field. It costs a few bytes per store and misleads a reader into thinking the count survives a relaunch. Remedy: drop the field from the type, the four fills and the harness seed, and let the parser ignore it in an older store. Proof: `tsc --noEmit` exits 0 and the tick suite's counts are unchanged. Raised by the nudge-state plan's section 3 security review.
 
 ## The openTurns comment says two turns can be open at once, which the map never holds (found 2026-09-25)
 
@@ -353,6 +353,8 @@ command, so the next hunt should keep the suite's own unpiped exit code beside t
 
 `.kit/plan-record-unit-test.mjs` died the same way on 2026-09-21, one run of six lanes under a heavy-process claim: `PASS: 0 failure(s)` then the same assertion and exit 127, with the rerun a moment later exiting 0. Second suite in the class, so the shape is the process teardown rather than either suite.
 
+`.kit/cost-migration-test.mjs` died the same way twice on 2026-09-25, during the task-list plan's section gates, each time printing its pass line and then exiting 127 on the same assertion. Four isolated reruns exited 0, and the suite imports only `hooks/agent-state.ts`. Third suite in the class.
+
 ## Suite hardening
 
 _No open items. Resolved items are archived in `docs/archive/backlog-2026-09-11.md`._
@@ -437,7 +439,7 @@ failure is not specific to this repo. Operator's call.
 
 ## A v2 or v3 persona store reaches the tick with no cost ledger (found 2026-09-14)
 
-`parseState` in `hooks/agent-state.ts` fills `monitor.cost` at the E11 site near the end of the function, but its v2 branch and its v3 branch both return before that fill, and the v2 branch copies `old.monitor` whole. Cited by symbol rather than by line, because the line numbers move. `enforceInvariants` never touches `cost`. So a store written before the cost ledger existed is migrated to version 4 with no `monitor.cost`, and the first controller tick reads `monitor.cost.callWindow` on undefined. `.kit/cost-migration-test.mjs` covers a v4 store missing the block and never a v2 or v3 one. The remedy is to move the cost fill above both early returns, or into `enforceInvariants`, with one fixture per old version. Found by Section 13's audit while reading the migration suite; outside that section's goal.
+`parseState` in `hooks/agent-state.ts` fills `monitor.cost` at the E11 site near the end of the function, but its v2 branch and its v3 branch both return before that fill, and the v2 branch copies `old.monitor` whole. Cited by symbol rather than by line, because the line numbers move. `enforceInvariants` never touches `cost`. So a store written before the cost ledger existed is migrated to version 5 with no `monitor.cost`, and the first controller tick reads `monitor.cost.callWindow` on undefined. `.kit/cost-migration-test.mjs` covers a v4 store missing the block and never a v2 or v3 one. The remedy is to move the cost fill above both early returns, or into `enforceInvariants`, with one fixture per old version. Found by Section 13's audit while reading the migration suite; outside that section's goal.
 
 ## The hourly cost-cap ask is controller prose of the kind Round 58 finding 3 removed elsewhere (found 2026-09-14)
 
@@ -659,4 +661,14 @@ The coordinator role instruction in `bin/supervise.sh` says "A prompt labelled [
 
 ## Plan B: the task-to-goal promotion seam (surfaced 2026-09-24)
 
-The task-list tier (`docs/plans/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion leave one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, authored by the ARCHITECT persona and coordinated with the ASSISTANT persona's discussion through the coordinator seat, owns the whole promotion design. The task-list spec names the seam in its Open Questions and cross-references Plan B when it lands. It also depends on the turn-record field, which the ASSISTANT discussion's ruling defines and which is out of scope for the task-list spec.
+The task-list tier (`docs/archive/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion leave one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, `docs/plans/agent_persona_goal-every-turn_spec_v1.md`, authored by the ARCHITECT persona and coordinated with the ASSISTANT persona's discussion through the coordinator seat, owns the whole promotion design. The task-list spec names the seam in its Open Questions and cross-references Plan B when it lands. It also depends on the turn-record field, which the ASSISTANT discussion's ruling defines and which is out of scope for the task-list spec.
+
+## The [GOAL TREE] block splices stored goal text with no label guard (found 2026-09-25)
+
+The `prompt.submit` hook in `hooks/index.ts` builds `[GOAL TREE]` from the active goal's objective, the parent and active titles, the pending siblings' titles and the last note. It slices the titles but folds no line breaks and applies no `bracketSafeText`, and the objective and the note reach the block as stored. A persona can write any of that text through `goal_add` or a `goal_done` note, so text it read as data can come back as a labelled line in its own prompt. The `[TASK LIST]` block beside it guards every stored field with the slice, `oneLine` and `bracketSafeText` chain in `taskListBlock`. The task-list plan's finishing security review found the gap, which predates that plan. Remedy: route the goal block's stored fields through the same guard, with a forgery pin like the task-list cases in `.kit/controller-tick-test.mjs`.
+
+## Task list: the operator's live check and the length-budget call (found 2026-09-26)
+
+The task-list plan (`docs/archive/agent_persona_task-list_spec_v1.md`) is complete, and two items wait on the operator. First, a live check the test harness cannot make. In a live persona on a non-plan goal, add three items with `task_add`, send an operator prompt, and confirm a `[TASK LIST]` block follows the `[GOAL TREE]` block, open items first. Then mark all three done and confirm the block suggests `goal_done` without closing the goal. A missing block or an auto-closed goal reopens the work.
+
+Second, a call on the block's length. It is kept shorter than the `[GOAL TREE]` block beside it, so beside a typical goal block of about 375 characters it shows about three items. The rest are counted in its last line, and a hidden item cannot be marked done by id until earlier ones finish. The recommendation is to keep the exact bound the plan's Intent states. The alternative is a floor, `Math.max(goalBlock.length, N)` at the `taskListBlock` call site in `hooks/index.ts`.

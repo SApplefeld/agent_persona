@@ -171,6 +171,34 @@ export interface LongTermGoal {
 // prompt, so it is kept short, and goal_longterm refuses an add past it.
 export const LONG_TERM_GOAL_CAP = 5;
 
+// One working item on a goal's task list. The list sits beside the goal tree,
+// never in it: a task names the goal it belongs to by goalId and lives only as
+// long as that goal is open, since reapCompletedGoalTasks drops it once the
+// goal is complete or abandoned, or no longer in the tree. A goal_create that
+// replaces the tree therefore drops every task the old tree's goals held.
+export interface TaskItem {
+  id: string;
+  goalId: string;
+  text: string;
+  done: boolean;
+  addedAt: number;
+  doneAt?: number;
+}
+
+// The most tasks one goal holds at once.
+export const MAX_TASKS_PER_GOAL = 20;
+
+// The most task lines the injected task list shows before it names the rest
+// by count.
+export const TASK_LIST_MAX_LINES = 12;
+
+// A task id, minted in the goal nodes' shape: a prefix, the clock in base 36,
+// and a random tail. The "tk-" prefix is one no goal node or long-term goal
+// carries, so a task id never reads as a goal id.
+export function newTaskId(now: number): string {
+  return `tk-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export interface MonitorState {
   sessionStart: number;
   turnCount: number;
@@ -329,12 +357,13 @@ export interface FleetHealthMemo {
 }
 
 export interface AgentState {
-  version: 4;
+  version: 5;
   persona: string;
   activeSessionId: string;
   epoch: number;
   memory: MemoryEntry[];
   goals: GoalNode[];
+  tasks: TaskItem[]; // beside the tree, each keyed to a goal; see TaskItem
   activeGoalId: string | null;
   longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
   monitor: MonitorState;
@@ -461,12 +490,13 @@ export function holdOf(state: AgentState, now: number): HoldReason | null {
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
   return {
-    version: 4,
+    version: 5,
     persona,
     activeSessionId: sessionId,
     epoch: 1,
     memory: [],
     goals: [],
+    tasks: [],
     activeGoalId: null,
     longTermGoals: [],
     monitor: {
@@ -730,6 +760,26 @@ function fillProposal(state: AgentState): void {
   if (!wellFormed) p.sent = null;
 }
 
+// The task list, filled at every load exit. A stored value that is not a list
+// reads as an empty one, which is how a store written before the list existed
+// loads. A stored entry is kept only where its id, goalId and text are
+// strings, its done a boolean, its addedAt a finite number, and its doneAt
+// absent or a finite number; anything else is dropped.
+function fillTasks(state: AgentState): void {
+  const stored = (state as { tasks?: unknown }).tasks;
+  if (!Array.isArray(stored)) {
+    state.tasks = [];
+    return;
+  }
+  state.tasks = stored.filter((t): t is TaskItem => {
+    const task = t as Partial<TaskItem> | null;
+    return !!task && typeof task === "object"
+      && typeof task.id === "string" && typeof task.goalId === "string" && typeof task.text === "string"
+      && typeof task.done === "boolean" && Number.isFinite(task.addedAt)
+      && (task.doneAt === undefined || Number.isFinite(task.doneAt));
+  });
+}
+
 export function parseState(json: string): AgentState {
   const parsed = JSON.parse(json);
 
@@ -817,12 +867,13 @@ export function parseState(json: string): AgentState {
     }
 
     const state: AgentState = {
-      version: 4,
+      version: 5,
       persona: old.persona,
       activeSessionId: old.activeSessionId,
       epoch: old.epoch,
       memory: old.memory ?? [],
       goals,
+      tasks: [],
       activeGoalId,
       longTermGoals: [],
       monitor: old.monitor ?? {
@@ -846,7 +897,8 @@ export function parseState(json: string): AgentState {
   }
 
   if (parsed.version === 3) {
-    // v3 to v4 migration: add env to monitor.
+    // v3 to v4 migration: add env to monitor. The v4 to v5 step, the task
+    // list, is the fillTasks call below.
     const state = parsed as unknown as AgentState;
     if (!state.monitor.env) {
       state.monitor.env = {
@@ -855,20 +907,28 @@ export function parseState(json: string): AgentState {
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       };
     }
-    state.version = 4;
+    state.version = 5;
     if (!state.nudge) {
       state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
     }
     if (!Array.isArray(state.longTermGoals)) {
       state.longTermGoals = [];
     }
+    fillTasks(state);
     fillProposal(state);
     applyPlanRecordOnLoad(state);
     enforceInvariants(state);
     return state;
   }
 
-  if (parsed.version !== 4) {
+  // v4 to v5 migration: add the task list, which fillTasks below seeds empty
+  // on a store that lacks it. Everything else a v4 store holds is already the
+  // v5 shape.
+  if (parsed.version === 4) {
+    parsed.version = 5;
+  }
+
+  if (parsed.version !== 5) {
     throw new Error(`Unsupported AgentState version: ${parsed.version}`);
   }
 
@@ -897,6 +957,7 @@ export function parseState(json: string): AgentState {
   if (!Array.isArray(state.longTermGoals)) {
     state.longTermGoals = [];
   }
+  fillTasks(state);
   fillProposal(state);
 
   // S12: fill selfReview with defaults at the E11 site, no version bump.
@@ -972,7 +1033,7 @@ export function parseState(json: string): AgentState {
   }
 
   // L10: invariant block runs on both v2 and v3 branches.
-  // Section 1: fill/recover runs here too, on the already-v4 exit.
+  // Section 1: fill/recover runs here too, on the v4 and v5 exit.
   applyPlanRecordOnLoad(state);
   enforceInvariants(state);
   return state;
@@ -1006,6 +1067,22 @@ function enforceInvariants(state: AgentState): void {
   if (state.decisions.length > DECISIONS_MAX) {
     state.decisions = state.decisions.slice(-DECISIONS_MAX);
   }
+
+  // The load-time backstop for the task reap; persist runs the same reap on
+  // every store write.
+  reapCompletedGoalTasks(state);
+}
+
+// Drops every task whose goal is closed: complete or abandoned, a closed set of
+// two, or absent from the tree. A task under a pending, active, paused or
+// blocked goal is kept. Only state.tasks changes. Called by persist before each
+// store write, so a goal completed mid-session loses its tasks at that write,
+// and by enforceInvariants on every load.
+export function reapCompletedGoalTasks(state: AgentState): void {
+  const open = new Set(
+    state.goals.filter((g) => g.status !== "complete" && g.status !== "abandoned").map((g) => g.id),
+  );
+  state.tasks = state.tasks.filter((t) => open.has(t.goalId));
 }
 
 // --- Pure helpers for goal-tree operations (R3) ---

@@ -191,6 +191,34 @@ Three goal tools do more than their descriptions state, and this section is for 
 
 **Queued work stays pending.** An entry queued behind the current one is added as `pending` and ordered with `goal_edit`'s `reprioritize`. The plugin starts the next pending entry by itself once the current one completes. `pause` is for an entry that cannot proceed until someone acts, and the controller never starts a paused entry from the queue. A resume while another entry is active pauses that entry. A resume also starts the entry at once rather than queueing it. So a plan queued as `paused` by mistake is dropped with `goal_edit` and added again as `pending` with the same `planPath`, rather than resumed. A re-added entry sorts behind every pending sibling. `reprioritize` moves an entry to the front of its level, so several are moved last-wanted first. A drop does not reach a node's children, so any open task under the plan is dropped first, after a pause if it is active. While an entry is active, the `[GOAL TREE]` block names it and its path, and where it has a plan holder, the line after `Path:` names the document and section in the same `Plan document: <planPath>, Section N.` form the nudge uses. When no entry is active, the `[GOAL QUEUE]` block on an operator's prompt lists up to twelve open entries in order, with a count of the rest, and says whether anything will start by itself. Its last line reads "Nothing here starts by itself" when no open entry can start.
 
+### The task list
+
+The task list is a short checklist of working items a persona keeps under whichever goal is active right now. It is the lightest of three tracking tiers. The goal tree holds the work itself: a root, its plans and their task-kind leaves, driven by the `goal_*` verbs. The long-term goals beside the tree hold aims that never become active work, as "Findings, proposals and long-term goals" below states.
+
+A task-list item differs from a goal tree's task-kind leaf. A leaf is an entry the controller activates and scores, and the persona or the controller completes it. A task-list item is a note the persona keeps while it works one goal. Nothing in the plugin activates, scores or schedules it.
+
+Three verbs drive the list. None of them is gated on whose turn it is. The persona drives its own list, so `turnMayStartEffort`, the check that limits `goal_create` and the other effort-starting acts to a turn the operator or the coordinator persona opened, does not apply. "Findings, proposals and long-term goals" below states that check.
+
+- `task_add` adds one item to the active goal's list. It refuses when no goal is active, when the active goal is a plan entry, when the text is empty, and when the goal already holds `MAX_TASKS_PER_GOAL` (20) items. Done items count toward that cap. It folds line breaks in the text to spaces and cuts it at `TASK_TEXT_MAX_CHARS` (200).
+- `task_done` marks one item done by the id `task_add` returned. It refuses an id not under the active goal as unknown. An item already done is left as it was.
+- `task_clear` removes every item of the active goal's list. Other goals' lists are left alone.
+
+`task_done` and `task_clear` also refuse when no goal is active. All three refuse on a store that has not loaded, and in a session that does not hold the persona. A reader session does not register them. Each writes the store through `persistOrRollBack`, which undoes the change in memory when the write does not land. Where the session has yielded the persona, the verb reports that the write was not saved. Where the write throws, the error propagates out of the tool call.
+
+The list is scoped to one goal. Each item names the goal it was added under, and the verbs and the injected block see only the active goal's items. An item under an open goal that is not active waits until that goal is active again.
+
+Completing a goal clears its list. An item is dropped once its goal is complete, abandoned or gone from the tree, at the next `persist` write and at every load (`reapCompletedGoalTasks` in `hooks/agent-state.ts`). This holds on every path by which a goal completes, the root included. So a goal reopened later starts with an empty list, and a `goal_create` that replaces the tree drops every item.
+
+The completion authority runs one way. A goal's completion clears its tasks. Finishing every task never completes the goal. When the last open item is marked done, `task_done`'s result and the injected block both suggest `goal_done`. The goal stays active until the persona or the controller completes it.
+
+When a goal is active, is not a plan entry, and holds at least one item, the `prompt.submit` hook injects a `[TASK LIST]` block right after `[GOAL TREE]`. That hook runs for a prompt from outside the plugin, such as the operator's keyboard, a channel message, Remote Control or an SDK caller. The plugin's own submitted turns, a nudge, an ask re-raise or an inbox delivery, bypass the hook and carry no block. A reader session injects nothing.
+
+The block names the goal and lists open items before done ones, each group in the order it was added. An open item reads `- <id>: <text>`, and a done one reads `- <id> (done): ~~<text>~~`. It shows at most `TASK_LIST_MAX_LINES` (12) items, and fewer where more would make it as long as the `[GOAL TREE]` block beside it, so the list stays lighter than the goal. Where not even one item fits, the block still appears with no item lines, and the count line carries every item. The items left out are counted in one line that reads `...and N more`, followed by `(M open)` when any hidden item is still open. Every id and text is cut to its cap, folded to one line and passed through `bracketSafeText`, so text read back from the store cannot forge a delivery label.
+
+A plan entry keeps its own tracker. Where the active goal is a plan entry, as "What a plan entry is" above defines it, the plan document's Chapters are its task list. `task_add` refuses and names the plan document, and no `[TASK LIST]` block is injected.
+
+`.kit/task-store-unit-test.mjs` pins the store field, its migration and its reap at load. The task-list cases in `.kit/controller-tick-test.mjs` pin the three verbs, the reap at `persist` and the injected block.
+
 ### C4: Clock is enough
 
 The K-turn trigger (every Nth turn triggers a controller evaluation) is **removed**. The clock tick is the sole trigger. Simpler, fewer race conditions.
@@ -559,7 +587,7 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":"/plugin-types"
 
 The two files land in `.claude/types/` of the current directory. Copy both generated files to `.claude/types/`, run `npx tsc --noEmit`, and re-gate with the controller suite before trusting a green.
 
-**Re-gate rule:** If you upgrade the engine, re-run `npx tsc --noEmit` and the full test suite (`.kit/cost-ledger-unit-test.mjs`, `.kit/cost-migration-test.mjs`, `.kit/controller-tick-test.mjs`, controller suite). The function names may change again.
+**Re-gate rule:** If you upgrade the engine, re-run `npx tsc --noEmit` and the full test suite (`.kit/cost-ledger-unit-test.mjs`, `.kit/cost-migration-test.mjs`, `.kit/task-store-unit-test.mjs`, `.kit/controller-tick-test.mjs`, controller suite). The function names may change again.
 
 ## Operator channel (item 7)
 

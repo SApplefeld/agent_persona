@@ -7,6 +7,7 @@
 !/self-review-unit-test.mjs
 !/cost-ledger-unit-test.mjs
 !/cost-migration-test.mjs
+!/task-store-unit-test.mjs
 !/supervisor-unit-test.mjs
 !/supervisor-poll-unit-test.mjs
 !/supervisor-turnstate-unit-test.mjs

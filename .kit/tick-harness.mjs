@@ -666,6 +666,7 @@ function makeGoalNode(overrides = {}) {
 function makeState(opts = {}) {
   const now = opts.now || 1_700_000_000_000;
   const hasActiveLeaf = opts.hasActiveLeaf !== false;
+  const version = opts.version || 5;
   let goals = [];
   let activeGoalId = null;
   // BM2: allow custom goals array (for testing planner with root-only state)
@@ -679,13 +680,18 @@ function makeState(opts = {}) {
     activeGoalId = "g-plan";
   }
   const state = {
-    version: 4,
+    version,
     persona: "default",
     activeSessionId: SESSION_ID,
     epoch: 1,
     memory: [],
     goals,
     activeGoalId,
+    // A pre-5 store never carried a tasks field. A case built below version 5
+    // and not passing opts.tasks seeds the shape parseState's v4-to-v5
+    // migration actually meets, rather than a v5 shape with an old version
+    // number stamped on it.
+    ...(version >= 5 || opts.tasks ? { tasks: opts.tasks || [] } : {}),
     monitor: {
       sessionStart: now,
       turnCount: 0,

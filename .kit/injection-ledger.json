@@ -212,6 +212,12 @@
       "words": 15
     },
     {
+      "name": "TASK_LIST_BLOCK",
+      "file": "hooks/index.ts",
+      "chars": 196,
+      "words": 31
+    },
+    {
       "name": "agentic_identity_description",
       "file": "hooks/index.ts",
       "chars": 427,
@@ -270,6 +276,24 @@
       "file": "hooks/index.ts",
       "chars": 805,
       "words": 151
+    },
+    {
+      "name": "task_add_description",
+      "file": "hooks/index.ts",
+      "chars": 400,
+      "words": 72
+    },
+    {
+      "name": "task_done_description",
+      "file": "hooks/index.ts",
+      "chars": 283,
+      "words": 53
+    },
+    {
+      "name": "task_clear_description",
+      "file": "hooks/index.ts",
+      "chars": 285,
+      "words": 49
     },
     {
       "name": "memory_add_description",
