@@ -3948,32 +3948,38 @@ gate_sweep_pairs() {
 # Removes the channel log files in a work directory whose last write is older
 # than a number of whole days: the frozen .agentic-channel.jsonl and each
 # numbered .agentic-channel.<digits>.jsonl segment whose digit run is four to
-# eighteen digits long, the width the plugin writes. Only the directory's own
-# files at depth one with one of those two names are candidates, so no other
-# file is ever touched, and a numbered name of another width is neither
-# removed nor counted as a segment. Eighteen digits always fit bash's integer
-# arithmetic. The highest-numbered segment is the one the plugin writes now,
-# so it is exempt by name whatever its age; where no numbered segment exists,
-# nothing is exempt. Digit runs are compared as decimals, so a
-# fifth digit sorts after four and a zero-padded run is never read as octal.
+# eighteen digits long. The plugin writes four or more digits, and the sweep
+# caps the run at eighteen so its value fits bash's integer arithmetic. Only
+# the directory's own files at depth one with one of those two names are
+# candidates, so no other file is ever touched, and a numbered name of another
+# width is neither removed nor counted as a segment. The highest-numbered
+# segment is the one the plugin writes now, so every numbered name at the
+# highest value is exempt whatever its age, and the frozen log never is; where
+# no numbered segment exists, nothing is exempt. Digit runs are compared as
+# decimals, so a fifth digit sorts after four, a zero-padded run is never read
+# as octal, and 0005 and 00005 share one value.
 # One log line names the count where at least one file was removed, and
 # nothing is logged where none was. A removal that fails is logged and the
 # sweep carries on: it always returns 0, since the launch it precedes is the
 # work.
 # Usage: sweep_channel_log_segments <workdir> <days>
 sweep_channel_log_segments() {
-  local dir="$1" days="$2" path name digits highest="" highest_num=-1 removed=0
+  local dir="$1" days="$2" path name digits highest_num=-1 removed=0
   while IFS= read -r path; do
     name="${path##*/}"
     digits="${name#.agentic-channel.}"
     digits="${digits%.jsonl}"
     if [ $((10#$digits)) -gt "$highest_num" ]; then
       highest_num=$((10#$digits))
-      highest="$name"
     fi
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/\.agentic-channel\.[0-9]{4,18}\.jsonl' 2>/dev/null)
   while IFS= read -r path; do
-    [ -n "$highest" ] && [ "${path##*/}" = "$highest" ] && continue
+    name="${path##*/}"
+    if [ "$name" != ".agentic-channel.jsonl" ]; then
+      digits="${name#.agentic-channel.}"
+      digits="${digits%.jsonl}"
+      [ $((10#$digits)) -eq "$highest_num" ] && continue
+    fi
     if rm -f -- "$path"; then
       removed=$((removed + 1))
     else
