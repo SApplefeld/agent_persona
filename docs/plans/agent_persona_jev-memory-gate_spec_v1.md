@@ -1,6 +1,6 @@
 # Jev gates the memory distiller, so a turn Jev is sure holds nothing memorable costs no Haiku call
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-25
 
@@ -101,3 +101,17 @@ Audience: a developer of the agent_persona plugin who knows the decision seam an
 - The persona memory curation plan, written the same day, which gives the persona list and forget over the same store this gate feeds.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-27
+
+Not a Chapter. The plan has started and no section is in flight, so this entry carries no `Completed:` line.
+
+**Plan start.** Status moved from `Ready` to `In Progress` on starting, the one edit inside the approval fingerprint. The prerequisite holds: `git ls-tree --name-only origin/main docs/plans/` lists no goal-every-turn file after a fetch, and `docs/archive/agent_persona_goal-every-turn_spec_v1.md` on origin/main reads `Status: Complete`. The worktree is `D:/agent_persona-jev-memory-gate` on branch `plan/jev-memory-gate`, cut from origin/main at c8abd03. The coordinator ordered this plan ahead of the persona memory port on 2026-09-27, settling the order the docs index called unsettled.
+
+**Anchors re-located at c8abd03.** `liveAsk` at `hooks/index.ts:345`, its two call sites at 729 and 980; `PROMOTABLE_SET_IDS` at `hooks/question-catalog.ts:132`; the memory site ("Memory curation: distill, don't snapshot") at `hooks/index.ts:9935`; the `heartbeatMs` read at `hooks/index.ts:4728`; `splitOf` at `hooks/decision-journal.ts:205`; `LIVE_TIMEOUT_MS` at `hooks/decision-seam.ts:44`; the settings shape loop at `bin/agentic-common.sh:250` and `emit_settings_json`'s options at 357; `heartbeatMs` in `.claude-plugin/plugin.json` at line 11.
+
+**Live dispatches.** None.
+
+**Next action.** The intake gap check and memory recall; section 1's task-notification precondition count over the journal; then section 1 at opus.
+
+**Rulings adopted since the last boundary.** None.
