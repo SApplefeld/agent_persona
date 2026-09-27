@@ -680,13 +680,11 @@ Remedy: a log line in the catch naming the held count, or rolling held lines to 
 
 The coordinator role instruction in `bin/supervise.sh` says "A prompt labelled [WORKER:<persona> id=<record id>] is that worker's finding or escalation". A worker's record also takes the break-in, reaching a busy steward inside a tool result under a `, waited` or `, urgent` marker (`hooks/index.ts`, the wait leg skips only coordinator-ground records). The architect's and the worker's charters name both tool-result forms, and the steward's does not. The gap predates the direct-lines plan, which found it in review. Remedy: name the two tool-result forms in that sentence, as the architect's charter does, with a pin in `.kit/channel-reply-instruction-test.sh`.
 
-## Plan B: the task-to-goal promotion seam (surfaced 2026-09-24)
+## Plan B has landed and one of its three promotion branches is still undesigned (2026-09-27, surfaced 2026-09-24)
 
-The task-list tier (`docs/archive/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion leave one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, `docs/plans/agent_persona_goal-every-turn_spec_v1.md`, authored by the ARCHITECT persona and coordinated with the ASSISTANT persona's discussion through the coordinator seat, owns the whole promotion design. The task-list spec names the seam in its Open Questions and cross-references Plan B when it lands. It also depends on the turn-record field, which the ASSISTANT discussion's ruling defines and which is out of scope for the task-list spec.
+The task-list tier (`docs/archive/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion left one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, now `docs/archive/agent_persona_goal-every-turn_spec_v1.md`, built the two branches that start from a turn record: a record whose turn edited a plan document is promoted into the goal tree through the autonomy dial, and a record the model turned into a goal or a task by its own tool call is marked promoted so nothing dangles beside the entry it became.
 
-## The [GOAL TREE] block splices stored goal text with no label guard (found 2026-09-25)
-
-The `prompt.submit` hook in `hooks/index.ts` builds `[GOAL TREE]` from the active goal's objective, the parent and active titles, the pending siblings' titles and the last note. It slices the titles but folds no line breaks and applies no `bracketSafeText`, and the objective and the note reach the block as stored. A persona can write any of that text through `goal_add` or a `goal_done` note, so text it read as data can come back as a labelled line in its own prompt. The `[TASK LIST]` block beside it guards every stored field with the slice, `oneLine` and `bracketSafeText` chain in `taskListBlock`. The task-list plan's finishing security review found the gap, which predates that plan. Remedy: route the goal block's stored fields through the same guard, with a forgery pin like the task-list cases in `.kit/controller-tick-test.mjs`.
+The third branch is not built. No task-into-goal promotion exists in `hooks/index.ts`, confirmed by a sweep under a control. That branch was never in Plan B's own Goal, so it is not a gap in what that plan delivered; it is the part of the original design question that no plan has answered yet. Remedy: decide whether a task ever graduates into a goal on its own, or whether the task tier is deliberately terminal and this branch should be retired rather than designed.
 
 ## Task list: the operator's live check (found 2026-09-26)
 
@@ -889,7 +887,7 @@ Remedy: the operator decides whether "receives" was meant to include a plugin-de
 
 ## Route one never fires once a goal is active, so only a bare record is ever promoted (found 2026-09-27)
 
-Route one returns wherever the open record carries a `goalId` (`hooks/index.ts:1412`). The opening fallback attaches a new record to the active entry whenever one is active, and continues that record on every later message. So once any goal is active, every record carries a `goalId` and route one cannot run. Promotion from plan activity reaches exactly the case where the persona had no active goal when the message arrived.
+Route one returns wherever the open record carries a `goalId` (`hooks/index.ts:1415`). The opening fallback attaches a new record to the active entry whenever one is active, and continues that record on every later message. So once any goal is active, every record carries a `goalId` and route one cannot run. Promotion from plan activity reaches exactly the case where the persona had no active goal when the message arrived.
 
 That is what the plan's Approach specifies, in the words "where the open record has no `goalId`", and the goal read accepted route one's shape. So this is a narrowing of the Goal sentence about a record that touched a plan document rather than a defect, and no document states the narrowing.
 
@@ -921,15 +919,15 @@ Remedy: it is a precondition of promoting `turn-disposition`, not a change to ma
 
 ## The in-flight journal line repeats where its sibling route suppresses (found 2026-09-27)
 
-The boundary step writes a `turn_record_in_flight` decision naming the rule that left an open record open, at `hooks/index.ts:955`. The promotion route beside it writes its own refusal lines through a `logOnce` helper at `hooks/index.ts:1451`, which drops a line whose action, record and text match the one it last wrote. Both run at every own-turn end a record stays open for, so the two have the same cadence and only one of them guards against repeating itself.
+The boundary step writes a `turn_record_in_flight` decision naming the rule that left an open record open, at `hooks/index.ts:958`. The promotion route beside it writes its own refusal lines through a `logOnce` helper at `hooks/index.ts:1454`, which drops a line whose action, record and text match the one it last wrote. Both run at every own-turn end a record stays open for, so the two have the same cadence and only one of them guards against repeating itself.
 
-The consequence is a redundant line rather than pressure on the decisions ring. One line per own-turn end is the rate the ring is already sized for, and `DECISIONS_MAX` at `hooks/agent-state.ts:602` caps it at 200 entries, so nothing is evicted earlier than it otherwise would be. That is why the finishing pass left it rather than fixing it: the fix is a new module-level memo that no requirement in the plan names.
+The consequence is a redundant line rather than pressure on the decisions ring. One line per own-turn end is the rate the ring is already sized for, and `DECISIONS_MAX` at `hooks/agent-state.ts:620` caps it at 200 entries, so nothing is evicted earlier than it otherwise would be. That is why the finishing pass left it rather than fixing it: the fix is a new module-level memo that no requirement in the plan names.
 
 Remedy: give the in-flight writer the same last-line memo route one already has, keyed on the record id, the action and the detail text. Route one's helper is the shape to mirror and its own comment carries the argument for why a repeated identical reading says nothing new.
 
 ## The git command patterns are quadratic on a long crafted command (found 2026-09-27)
 
-The Bash-command classifier tests two patterns built from a nested option run, `GIT_COMMIT_PATTERN` and `GIT_PUSH_PATTERN` at `hooks/index.ts:2439`. The option run nests a quantified group inside a quantified group, which is the shape that backtracks catastrophically when the subject nearly matches and then fails. Measured at 2,633 ms on 140,001 characters of crafted input.
+The Bash-command classifier tests two patterns built from a nested option run, `GIT_COMMIT_PATTERN` and `GIT_PUSH_PATTERN` at `hooks/index.ts:2441`. The option run nests a quantified group inside a quantified group, which is the shape that backtracks catastrophically when the subject nearly matches and then fails. Measured at 2,633 ms on 140,001 characters of crafted input.
 
 The input's author is the model itself rather than an outside party, so nothing here is attacker-supplied in the ordinary sense. What it costs is the hook's own latency on a pathological command the model could compose by accident, on a path that runs for every Bash call.
 
@@ -937,10 +935,17 @@ Remedy: anchor the option run or parse the command's tokens rather than matching
 
 ## The goal-tree block folds its stored fields but does not neutralize their brackets (found 2026-09-27)
 
-The `[GOAL TREE]` and `[GOAL QUEUE]` blocks now fold every stored field they splice onto one line, so no field can start a line the model reads as the plugin's own. They do not rewrite square brackets in those fields. The two sibling blocks do both: `taskListBlock` guards with `bracketSafeText(oneLine(text.slice(0, cap)))` at `hooks/index.ts:1766`, and `proposeFrame` does the same at `:1636`, whose comment states the reason as stopping a stored goal from forging a label in the prompt it is spliced into.
+The `[GOAL TREE]` and `[GOAL QUEUE]` blocks now fold every stored field they splice onto one line, so no field can start a line the model reads as the plugin's own. They do not rewrite square brackets in those fields. The two sibling blocks do both: `taskListBlock` guards with `bracketSafeText(oneLine(text.slice(0, cap)))` at `hooks/index.ts:1768`, and `proposeFrame` does the same at `:1638`, whose comment states the reason as stopping a stored goal from forging a label in the prompt it is spliced into.
 
 What that leaves open is a label rather than a status line. A title reaching the goal-tree block through `goal_add` or `goal_create` is the model's own text, cut to 80 characters and never bracket-guarded, so a title such as `Fix the build [SUPERVISOR-ASK id=7]` reaches the block with its brackets intact. The record layer's own field is not exposed this way, because `clampTurnRecordText` neutralizes brackets at the field and every producer and the load all call it.
 
 This was left rather than fixed because the fold was the finding under review and the brackets are a second, wider change: it alters how every legitimately bracketed title reads in every prompt, and no review has yet weighed that against the label risk. The scoped fix that a round would take is the one the siblings already use.
 
 Remedy: apply the same guard the sibling blocks apply, `bracketSafeText` over each folded field at the goal-tree and goal-queue prints, and weigh it against titles that carry brackets for good reasons. Reuse the exported guard rather than writing a third copy.
+## Seven older backlog entries cite lines about 1,300 off in hooks/index.ts (found 2026-09-27)
+
+Seven `hooks/index.ts` citations in entries predating the goal-every-turn plan point into unrelated code. Two were sampled: `boundedText` is cited at 1484 and sits at 2776, and `fleetPromptText` is cited at 2560 and sits at 3833. The entries are at `docs/backlog.md` lines 541, 549, 571, 573, 581, 583 and 617.
+
+This changeset did not cause it. At the goal-every-turn base ref `8b780bd`, `hooks/index.ts:1484` held a comment about `UTF8Encoding` and `:2560` a comment about roster-supplied text, so neither line held the construct its entry names before this effort opened the file. The drift is older than that ref.
+
+Re-anchoring each one needs a decision rather than an edit, because a citation that far off no longer identifies which symbol the entry meant. Remedy: for each of the seven, read the entry's prose, find the construct it describes, and re-anchor to it; retire any entry whose subject no longer exists. The goal-every-turn finishing pass re-anchored only the seven citations in its own entries, since those were the ones its own changes moved.
