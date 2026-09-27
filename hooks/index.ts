@@ -61,6 +61,7 @@ import {
   clampTurnRecordText,
   newTurnRecordId,
   bracketSafeText,
+  LINE_TERMINATOR,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem, TurnRecord, TurnRecordStamp } from "./agent-state";
@@ -87,7 +88,6 @@ import {
   COORDINATOR_GROUND,
   quoteContinuationLines,
   quoteCarriedLines,
-  LINE_TERMINATOR,
   deliveryPrefix,
   deliveryText,
   personaNameProblem,

@@ -27,6 +27,19 @@ export function bracketSafeText(text: string): string {
   return text.replace(/\[/g, "(").replace(/\]/g, ")");
 }
 
+/**
+ * Where one line of text ends: CRLF, or any one of LF, CR, VT, FF, NEL
+ * (U+0085), LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029). These
+ * are the terminators the bracket rule refuses as field splitters, and every
+ * site that splits store-sourced or file-sourced text into lines reads the
+ * set from here: a splitter that knows only LF and CR leaves a persona four
+ * more characters that start a line the reader of that text will see.
+ * It sits in this module for the reason bracketSafeText does. The two are one
+ * guard on one channel, text the plugin did not compose reaching a model, and
+ * the store layer is a caller of both.
+ */
+export const LINE_TERMINATOR = /\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u;
+
 export interface MemoryEntry {
   id: string;
   kind: "fact" | "preference" | "lesson" | "goal" | "eval";
@@ -367,9 +380,18 @@ export const TURN_RECORD_TEXT_MAX = 80;
 // as [SUPERVISOR-ASK id=1] or [COORDINATOR id=7], which bracketSafeText is the
 // one rule for. The guard runs here rather than at that print, so every reader
 // of the field inherits it and no future one has to remember.
+//
+// The line terminators are folded for the same reason and at the same place.
+// The record's text is also a goal entry's title once the promotion route
+// stores it there, and the prompt hook writes a title into the goal-tree block
+// unfolded, on a line of its own. So a terminator inside the text starts a line
+// in that block, where a forged WORKING, BLOCKED or WAITING lead would read as
+// the plugin's own. Brackets cannot be forged past the rule above, and a status
+// line needs no bracket. The order is the one every other guarded field takes:
+// cut to length, fold to one line, then neutralize the brackets.
 export function clampTurnRecordText(text: string): string {
   const cut = text.length > TURN_RECORD_TEXT_MAX ? text.slice(0, TURN_RECORD_TEXT_MAX) : text;
-  return bracketSafeText(cut);
+  return bracketSafeText(cut.split(LINE_TERMINATOR).join(" "));
 }
 
 // A record id, minted in the goal nodes' shape: a prefix, the clock in base 36,

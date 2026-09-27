@@ -878,3 +878,43 @@ Remedy: assert what the reach check itself contributes rather than what the boun
 A blind reader of the index found it while reviewing section 7 of the goal-every-turn plan. It is not that section's subject: both sentences predate it, neither names the record layer, and the running order of two parked plans is the operator's to set rather than a fact recoverable from the code. Fixing it here would mean guessing which order was meant.
 
 Remedy: ask the operator which of the two runs first, then state that one order in both rows. The general form is worth carrying, since this index carries one row per plan and every row states its own position: a running order written once per participant has no single place to be wrong, so the rows drift against each other rather than against a source.
+
+## A message the plugin delivers from the inbox is held by no turn record (found 2026-09-27)
+
+The goal-every-turn plan's Goal opens with every message a persona receives being held as a turn record before the model reads it. The record step runs inside the real `prompt.submit` hook alone, and the plugin's own deliveries bypass that hook by design, which the plan's Approach states. So a coordinator persona's ruling and a peer session's message, both of which reach the persona through the inbox drain's own submit, arrive with no record held. The operator's own messages split by route: one posted to an idle session arrives as a turn of its own and opens a record, while one the controller drains from the inbox does not.
+
+The code is what the plan specified, and the documents that claimed otherwise were corrected in the same pass. What is left is the Goal's own reach: the one class of received message it names and the code skips. The whole-changeset goal read ruled that filling it would be a new call site on the plugin's own submit path, so it is the operator's call rather than a defect to fix quietly.
+
+Remedy: the operator decides whether "receives" was meant to include a plugin-delivered record. If it was, the record step becomes a shared function the inbox drain calls before its `$.prompt.submit`, which also settles what `turnId` such a record carries, since the drain creates the turn it is delivering into. If it was not, the Goal sentence is narrowed to a message arriving as a turn of its own.
+
+## Route one never fires once a goal is active, so only a bare record is ever promoted (found 2026-09-27)
+
+Route one returns wherever the open record carries a `goalId` (`hooks/index.ts:1411`). The opening fallback attaches a new record to the active entry whenever one is active, and continues that record on every later message. So once any goal is active, every record carries a `goalId` and route one cannot run. Promotion from plan activity reaches exactly the case where the persona had no active goal when the message arrived.
+
+That is what the plan's Approach specifies, in the words "where the open record has no `goalId`", and the goal read accepted route one's shape. So this is a narrowing of the Goal sentence about a record that touched a plan document rather than a defect, and no document states the narrowing.
+
+Remedy: state the precondition where a reader meets the route, in `README.md`'s promotion routes and `docs/architecture.md`'s. Widening it is a separate question, because a record already attached to an entry has a home and promoting it would mean deciding whether the new plan entry hangs under that entry or beside it.
+
+## A record attached to an entry outlives that entry's completion (found 2026-09-27)
+
+A record whose `goalId` names an entry keeps that pointer for up to the 24-hour timeout, and nothing clears it when `goal_done` completes the entry. So `goal_status` prints the record as open, every later message continues it under the fallback, and the five statuses have no member that expresses "attached to an entry that has finished". The nearest, `promoted`, means the record became the entry rather than outlived it.
+
+Nothing is wrong on a reachable path today beyond the stale reading: the record is never nudged and an idle open record is a durable compaction boundary, so the cost is one line of goal status naming a finished node and a follow-up continuing an intention whose goal is closed.
+
+Remedy: decide first whether the completion should close the record or re-bare it. Closing it needs a sixth status or a reuse of `expired` with a different reason, which is a store change. Re-baring it, clearing `goalId` and leaving the record open, needs no new status and keeps the intention alive for the follow-up, which is the behaviour the carry-over ruling asks for. Prefer the second on that ground.
+
+## The two new journal sites roughly double a day file that is rewritten whole on every append (found 2026-09-27)
+
+`hooks/decision-journal.ts:272-289` reads and rewrites the whole day file on every append, so a day's disk work grows with the square of its line count. One 2026-09-23 day file on the trunk measures 1,762,069 bytes over 1,703 lines. The goal-every-turn plan adds two call sites, one per external message and one per own turn end, which is inferred to add about 950 lines a day, or 56 percent.
+
+The plan states no bound of any kind on journal volume, so this is a measurement rather than a violated requirement. It is recorded as an aggregate because no single section saw it: each section added its own site and the cost is in the total.
+
+Remedy: append rather than rewrite. The writer holds the day's path already, so an open-append-close per line removes the quadratic term outright. Where a whole-file rewrite is load-bearing for some reader, bound the day file instead and roll over at a line count.
+
+## The closing question is asked about the wrong turn's text once it goes live (found 2026-09-27)
+
+A record stays open across several of the persona's own turn ends, and each of those ends asks the closing question about that turn's own closing text. The record's own text is not in the state the question is given. So the sequence is: the operator's message opens a record, the persona replies with a `WAITING:` lead which leaves it open by a fixed rule, a controller nudge then opens a turn of its own, and that turn's end asks the classifier how it went. A `delivered` verdict there closes the operator's record on the strength of a turn that answered a nudge.
+
+This is unreachable as shipped. The live list is empty by default, and the close is the only writer of `delivered`, so the status is never written at all. It is recorded rather than fixed because the operator ruled on 2026-09-27 that the whole closing path ships dormant, and because the held-out pass established the question needs replacing rather than patching: no single question about one reply can decide closure, since answering the request and waiting on the operator are independent facts. A one-condition guard added now would sit on a path whose shape is going to change.
+
+Remedy: it is a precondition of promoting `turn-disposition`, not a change to make first. Whatever question replaces the shipped one has to be asked about the record's own ask as well as the ending turn's reply, which is the two-sided shape the plan's own Open Questions section argues for. The narrow guard, gating the close on the turn's kind so only a turn the record itself opened can close it, is the floor any replacement still needs.

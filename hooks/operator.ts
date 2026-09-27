@@ -70,6 +70,7 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 import type { CommonsStore, CommonsMeta, UnionedClaim } from "./commons";
 import { claimResource, releaseResource, readAllClaims, commonsWinner } from "./commons";
+import { LINE_TERMINATOR } from "./agent-state";
 
 // --- Key helpers ---
 
@@ -756,16 +757,6 @@ export function deliveryRecordProblem(rec: { id: unknown; text: unknown }): stri
 export function deliveryPrefix(ground: string, id: string, mark: "plain" | "urgent" | "waited"): string {
   return `[${ground} id=${id}${mark === "plain" ? "" : `, ${mark}`}]`;
 }
-
-/**
- * Where one line of text ends: CRLF, or any one of LF, CR, VT, FF, NEL
- * (U+0085), LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029). These
- * are the terminators the bracket rule refuses as field splitters, and every
- * site that splits store-sourced or file-sourced text into lines reads the
- * set from here: a splitter that knows only LF and CR leaves a persona four
- * more characters that start a line the reader of that text will see.
- */
-export const LINE_TERMINATOR = /\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u;
 
 /**
  * Every line of `body` after the first, quoted with `> `, split on

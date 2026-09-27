@@ -221,7 +221,7 @@ A plan entry keeps its own tracker. Where the active goal is a plan entry, as "W
 
 ### The turn record
 
-A turn record is the plugin's own hold on one message the persona has not answered yet. Every message from outside the plugin becomes one before the model reads it: yours, the coordinator persona's, a peer session's or the harness's. The point is that a one-turn request is tracked without leaving anything the controller will nudge. A record is never a goal entry, so nothing scores it, activates it or nudges it, and it drops out of view once it closes.
+A turn record is the plugin's own hold on one message the persona has not answered yet. A message that arrives as a turn of its own becomes one before the model reads it: yours from the keyboard or the thread, and the harness's. A message the plugin delivers out of the inbox does not, because that delivery is one of the plugin's own submits and those bypass the hook the record step runs in. A coordinator persona's or a peer session's message arrives that way, so it reaches the model with no record held. The point is that a one-turn request is tracked without leaving anything the controller will nudge. A record is never a goal entry, so nothing scores it, activates it or nudges it, and it drops out of view once it closes.
 
 It differs from both of the tiers beside it. A goal entry is work with a life of its own: it is activated, scored, queued and completed, and only you or the coordinator persona opens a tree of them. A task-list item is a note the persona keeps under a goal that is already active. A record is neither. It is one intention with no goal yet, or one ahead of a goal, and it belongs to the message rather than to any entry.
 
