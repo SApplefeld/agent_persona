@@ -1,6 +1,6 @@
 # The Claude Code upgrade check and the restart recap: two skills agentic-plugin ships, each on a script, so a new build is validated before the fleet moves and a restarted persona reads where things stood
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-25
 
@@ -187,3 +187,36 @@ The whole gate is every `.kit/*.mjs` test, `.kit/controller-tick-test.mjs` and `
 None beyond the Decisions items.
 
 ## Chapters
+### Interim board 1 - 2026-09-27
+
+Not a Chapter. Section 1 is in flight and unclosed, so it carries no `Completed:` line and the `Status:` header stays at `In Progress`.
+
+**Why this boundary exists.** The operator asked on the relay thread whether this session could park for a fleet restart. A park is honored at the next safe boundary, and a park needs nothing left in flight, so the section 1 implementer was stopped rather than left running into a restart that would have killed it mid-write. Its work is on disk and is described below.
+
+**Section 1's stage.** The implementer wrote three deliverables and was stopped part-way through a round of test fixes. Its own last words were that the fixture's no-log mode and four test-side fixes remained. So the section is at step 1 of the section loop, mid-implementation, and has reached neither step 2 verification nor a review round.
+
+What is on disk in this worktree, `D:/agent_persona-upgrade-check` on branch `plan/upgrade-check-recap`:
+
+- `bin/upgrade-check.mjs`, 951 lines, untracked and uncommitted.
+- `.kit/upgrade-check-unit-test.mjs`, 592 lines.
+- `.kit/fixtures/upgrade-check/`, holding a fake `claude` and a fake `tsc`, both extensionless with the execute bit set, plus `claude-code.d.ts` and `transcript.jsonl`.
+
+Both `.mjs` files pass `node --check` at exit 0, each read from its own unpiped run. That is a syntax reading and nothing more: the unit test has not been run to a verdict, and the acceptance criteria are unverified.
+
+**The live dispatch and what it was asked.** One dispatch, `implementer-opus`, on the brief at `.kit/scratch/upgrade-check/brief-section1.md`. It was asked for section 1 whole: the script with its `pre` and `post` verbs, the unit test driving both against the fake `claude` first on `PATH`, the fixtures, and a README bullet joining the test list marked Offline. Its liveness was read at a wake before the stop: 39 assistant turns, zero synthetic, every turn resolving to `claude-opus-5`, so the round ran at the tier the section assigns with no substitution. It was stopped deliberately for the park, not for a stall.
+
+**A confirmed finding the resuming session must act on before anything else.** This section's test and fixtures cannot be committed as written. `.kit/.gitignore` ignores `*` and re-includes each tracked source by explicit name, thirty-nine such lines today. `git check-ignore -v` confirms both `.kit/upgrade-check-unit-test.mjs` and `.kit/fixtures/upgrade-check/claude` are ignored by that `*`. The existing `!/fixtures/` and `!/fixtures/*` lines do not reach a nested `fixtures/upgrade-check/` subdirectory's contents. So `.kit/.gitignore` needs its own lines for the new test and the new fixture path.
+
+That file is not on section 1's `Files in scope:` line, so it is an out-of-scope surface. It folds rather than becoming a section: the fix lands in the same directory as files the section changed, it needs no acceptance criterion the section does not already carry, and the section's own gate covers it. The fold widens the section's `Files in scope:` line to name `.kit/.gitignore`, and the Chapter that closes section 1 records that widening as the approval drift it is.
+
+**Two unverified implementer claims to re-check at step 2 rather than accept.** The judgment sidecar flagged both, and each is data to check rather than a finding. First, the implementer reported a syntax check whose exit code came from a pipeline's last stage rather than from `node --check`, which is the `$?`-after-a-pipe class. That one is now settled independently: both files read exit 0 unpiped, as recorded above. Second, it reported reading the spec in full on a call the sidecar measured as cut at capture with about 24,000 characters missing, and reported a search for how this repository resolves the `claude` binary whose output did not establish it. Neither is a stall signal and neither was acted on. They are named here because step 2 reads the diff against the spec itself, which is where a build against a partial spec would show.
+
+**Gate baseline.** None taken for this plan. No lane has run against this section, and the section's own unit test has never reached a verdict. The whole-gate baseline this effort will diff against is still to be recorded at section 1's close. Measured on this machine at 2026-09-27, `node .kit/check-loader-rule.mjs` exits 0 with `PASS: no loader-rule violations in hooks/*.ts`, but that lane is not owed by this section, which edits nothing under `hooks/`.
+
+**Rulings adopted since the last boundary.** None. The plan carries no `Standing Brief Amendments` block, and no judge has been convened. The header was normalized from `Status: Ready` to `Status: In Progress` as part of starting, which is recorded here because it is the one edit inside the approval-scoped fingerprint region this session has made.
+
+**Machine state at the park.** Six `claude` processes, about 1052 MB, plus seventeen `node`, eight `powershell` and one `pwsh`, with no `testhost`, `dotnet` or `MSBuild`. That poll is name and working-set based and cannot see in-process fan-out, so it is a reading rather than proof the box is empty.
+
+**Next action, in order, for the session that resumes.** Add the two `.kit/.gitignore` lines the fold requires and widen section 1's `Files in scope:` to name that file. Re-dispatch `implementer-opus` on the same brief, extended with what is already on disk and with the four test-side fixes its predecessor named, so it resumes rather than restarts. Then run the unit test to a verdict with its exit code read unpiped, run the real-CLI probe acceptance with `--repo D:/agent_persona` and `--results` under a scratch directory, and only then take step 3's review round. Nothing of section 1 is committed, so a resuming session may also discard the worktree and start clean at no cost beyond the 1,543 lines described above.
+
+**One forward item the operator owns.** Section 6 of this plan runs the live suites rather than deferring them, on the ground that sections 3 and 5 change the priming turn a live launch exercises. Those are the same suites `docs/plans/agent_persona_deferred-gate-run_v1.md` is blocked on, and they refuse for the same reason: the live gate exits 10 beside any live persona claim, and any plugin-loaded session holds one. So one quiet window unblocks this plan's close and that plan's whole run together. The restart the operator is taking now is not that window on its own, since the fleet comes back up after it.
