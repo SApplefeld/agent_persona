@@ -1090,13 +1090,31 @@ function extractGoalQueueBlock(src) {
   return record("GOAL_QUEUE_BLOCK", "hooks/index.ts", literal);
 }
 
-// The [NO GOAL] reminder: fully literal, no interpolation at all, written as
-// a chain of backtick pieces joined by `+`.
+// The [NO GOAL] reminder, which is two texts rather than one. The block the
+// prompt carries is the common text on a turn that opened no turn record, and
+// that text plus one further sentence on a turn that opened one, so the claim
+// the sentence makes is only made where it is true. Each is its own fully
+// literal chain, no interpolation at all, written as backtick pieces joined by
+// `+`, and each is sized as its own entry: a reader of the ledger wants the
+// size of the sentence the second shape adds, not the sum of two shapes that
+// share most of their text.
+//
+// The third anchor is the selection itself. Sizing the two literals says
+// nothing about what reaches the prompt, so this rule also pins that the block
+// is exactly one of the two, chosen on the flag the record step sets. An arm
+// that gained interpolated text, a third arm, or a variable spliced in beside
+// them refuses here rather than going unsized.
 function extractNoGoalBlock(src) {
-  const m = /const idleBlock =\s*\n([\s\S]*?);\n/.exec(src);
-  if (!m) throw new Error("idleBlock not found in hooks/index.ts");
-  const literal = literalOfTemplateChain(m[1], "NO_GOAL_BLOCK");
-  return record("NO_GOAL_BLOCK", "hooks/index.ts", literal);
+  const c = /const idleBlockCommon =\s*\n([\s\S]*?);\n/.exec(src);
+  if (!c) throw new Error("idleBlockCommon not found in hooks/index.ts");
+  const r = /const idleRecordSentence =\s*\n([\s\S]*?);\n/.exec(src);
+  if (!r) throw new Error("idleRecordSentence not found in hooks/index.ts");
+  const s = /const idleBlock = recordOpened \? idleBlockCommon \+ idleRecordSentence : idleBlockCommon;\n/.exec(src);
+  if (!s) throw new Error("[chain-shape] NO_GOAL_BLOCK: the [NO GOAL] block is no longer `recordOpened ? idleBlockCommon + idleRecordSentence : idleBlockCommon`; text reaching the prompt from any other operand would be unsized, so restore that shape or size the new operand explicitly");
+  return [
+    record("NO_GOAL_BLOCK", "hooks/index.ts", literalOfTemplateChain(c[1], "NO_GOAL_BLOCK")),
+    record("NO_GOAL_RECORD_SENTENCE", "hooks/index.ts", literalOfTemplateChain(r[1], "NO_GOAL_RECORD_SENTENCE")),
+  ];
 }
 
 // The [STANDING] block's own frame: the "[STANDING]" header and the two
@@ -1198,6 +1216,9 @@ function extractTaskListBlock(src) {
 const CONTEXT_BLOCKS = {
   goalBlock: "GOAL_TREE_BLOCK",
   queueBlock: "GOAL_QUEUE_BLOCK",
+  // The [NO GOAL] block's two shapes are sized by one rule as two entries.
+  // This row names the common text's entry, and that rule's own selection
+  // anchor is what holds the second literal to the block.
   idleBlock: "NO_GOAL_BLOCK",
   standingBlock: "STANDING_BLOCK",
   envBlock: "ENV_BLOCK",
@@ -1574,7 +1595,7 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     ...extractNudgeFrames(tsSrc),
     extractGoalTreeBlock(tsSrc),
     extractGoalQueueBlock(tsSrc),
-    extractNoGoalBlock(tsSrc),
+    ...extractNoGoalBlock(tsSrc),
     extractSimpleTextConst(tsSrc, "STANDING_IDLE_ORDER_TEXT"),
     extractSimpleTextConst(tsSrc, "STANDING_QUEUE_NAME_TEXT"),
     extractSimpleTextConst(tsSrc, "STANDING_OWN_WORK_LEAD_TEXT"),

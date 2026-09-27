@@ -69,6 +69,15 @@ console.log("JEV_DEV_PRESENT=" + (!dev ? "noid" : dev.jevMode !== undefined ? 1 
 console.log("JEV_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.jevMode !== undefined ? 1 : 0) + ";");
 console.log("JEV_DEV=" + (dev && dev.jevMode !== undefined ? dev.jevMode : "") + ";");
 console.log("JEV_INSTALLED=" + (inst && inst.jevMode !== undefined ? inst.jevMode : "") + ";");
+// jevLive is array-valued, so its value line prints the JSON.stringify of
+// whatever is there rather than the raw value: a key present as an empty
+// string would print identically to a key that is absent under the string
+// interpolation the other three-state legs use, and the bug this leg
+// guards against is exactly a value that looks like a list but is not one.
+console.log("JEVLIVE_DEV_PRESENT=" + (!dev ? "noid" : dev.jevLive !== undefined ? 1 : 0) + ";");
+console.log("JEVLIVE_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.jevLive !== undefined ? 1 : 0) + ";");
+console.log("JEVLIVE_DEV=" + (dev && dev.jevLive !== undefined ? JSON.stringify(dev.jevLive) : "") + ";");
+console.log("JEVLIVE_INSTALLED=" + (inst && inst.jevLive !== undefined ? JSON.stringify(inst.jevLive) : "") + ";");
 // The three supervisor paths, each read the three-state way: an
 // id with no options, a key absent, or the key and its value.
 for (const [label, key] of [["MBX", "supervisorMailbox"], ["HBP", "heartbeatPath"], ["SHB", "supervisorHeartbeatPath"]]) {
@@ -103,6 +112,12 @@ case "$R" in *"ARCH_DEV_PRESENT=0;"*"ARCH_INSTALLED_PRESENT=0;"*) check "emitted
 # value assertions below pass against a file emitting "jevMode":"", which is a
 # present non-shadow string and so disables the seam everywhere.
 case "$R" in *"JEV_DEV_PRESENT=0;"*"JEV_INSTALLED_PRESENT=0;"*) check "emitted: JEV_MODE unset leaves jevMode out of both ids" 0 ;; *) check "emitted: JEV_MODE unset leaves jevMode out of both ids (out=$R)" 1 ;; esac
+# Section 2: the same leg for jevLive. The run above set
+# no JEV_LIVE, and the key is left out of both ids rather than written as an
+# empty array, which would still mean "nothing promoted" to the plugin's own
+# read but would make a byte-for-byte comparison against a hand-edited file
+# fail for no behavioral reason.
+case "$R" in *"JEVLIVE_DEV_PRESENT=0;"*"JEVLIVE_INSTALLED_PRESENT=0;"*) check "emitted: JEV_LIVE unset leaves jevLive out of both ids" 0 ;; *) check "emitted: JEV_LIVE unset leaves jevLive out of both ids (out=$R)" 1 ;; esac
 # The supervisor-peer plan's Section 2: a supervised child runs with the
 # harness's usage-limit pause off, at the top level where the harness reads
 # it, so a child that trips a limit ends its turn rather than parking for
@@ -161,6 +176,155 @@ ERR=$(run_lib JEV_MODE="bogus" bash -c 'source "$1/bin/agentic-common.sh" && emi
 RC=$?
 case "$RC:$ERR" in 0:*) check "emit_settings_json refuses JEV_MODE=bogus" 1 ;; *"JEV_MODE 'bogus' must be 'off' or 'shadow'"*) check "emit_settings_json refuses JEV_MODE=bogus" 0 ;; *) check "emit_settings_json refuses JEV_MODE=bogus (rc=$RC, err=$ERR)" 1 ;; esac
 [ ! -e "$TMP/jevbogus.json" ]; check "a refused JEV_MODE leaves no settings file" "$?"
+
+# --- Section 2: emit_settings_json writes JEV_LIVE as a JSON array under both ids ---
+run_lib PERSONA="keyprobe" JEV_LIVE="turn-disposition" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevliveemit.json"
+check "emit_settings_json exits 0 with JEV_LIVE=turn-disposition" "$?"
+R=$(inspect "$TMP/jevliveemit.json")
+case "$R" in *'JEVLIVE_DEV=["turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-disposition"];'*) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as [\"turn-disposition\"] under both ids" 0 ;; *) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as [\"turn-disposition\"] under both ids (out=$R)" 1 ;; esac
+
+# --- Section 2: surrounding whitespace on a JEV_LIVE member is trimmed ---
+run_lib PERSONA="keyprobe" JEV_LIVE=" turn-disposition " bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivespace.json"
+check "emit_settings_json exits 0 with a padded JEV_LIVE" "$?"
+R=$(inspect "$TMP/jevlivespace.json")
+case "$R" in *'JEVLIVE_DEV=["turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-disposition"];'*) check "emitted: a padded JEV_LIVE member reaches jevLive trimmed" 0 ;; *) check "emitted: a padded JEV_LIVE member reaches jevLive trimmed (out=$R)" 1 ;; esac
+
+# --- Section 2: JEV_LIVE= (empty) is treated the same as unset ---
+run_lib PERSONA="keyprobe" JEV_LIVE="" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevliveempty.json"
+check "emit_settings_json exits 0 with JEV_LIVE empty" "$?"
+R=$(inspect "$TMP/jevliveempty.json")
+case "$R" in *"JEVLIVE_DEV_PRESENT=0;"*"JEVLIVE_INSTALLED_PRESENT=0;"*) check "emitted: JEV_LIVE='' leaves jevLive out of both ids" 0 ;; *) check "emitted: JEV_LIVE='' leaves jevLive out of both ids (out=$R)" 1 ;; esac
+
+# --- Section 2: emit_settings_json refuses a JEV_LIVE id outside the promotable set ---
+# The check must be the promotable-set membership check and not some earlier
+# syntax check: turn-disposition alone is valid, so a run naming it plus a
+# bogus id can only be refused by the membership test seeing the bogus one.
+ERR=$(run_lib JEV_LIVE="turn-disposition,bogus" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivebogus.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses JEV_LIVE=turn-disposition,bogus" 1 ;; *"JEV_LIVE id 'bogus' is not in the promotable set"*) check "emit_settings_json refuses JEV_LIVE=turn-disposition,bogus, naming the promotable-set check" 0 ;; *) check "emit_settings_json refuses JEV_LIVE=turn-disposition,bogus (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/jevlivebogus.json" ]; check "a refused JEV_LIVE leaves no settings file" "$?"
+
+# --- Section 2: emit_settings_json refuses a JEV_LIVE carrying a newline ---
+# `read -ra` inside jev_live_to_array_json stops at the first newline
+# regardless of IFS, since that is its record separator and not a field one,
+# so a value carrying one must be refused before the split runs rather than
+# silently truncated there. The refusal must name the control-character
+# guard and not the promotable-set check, since "turn-open" alone, the text
+# before the newline, is itself a valid id and would pass that check.
+ERR=$(run_lib JEV_LIVE=$'turn-open\nbogus' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivenewline.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses a JEV_LIVE carrying a newline" 1 ;; *"must not hold a control character"*) check "emit_settings_json refuses a JEV_LIVE carrying a newline, naming the control-character guard" 0 ;; *) check "emit_settings_json refuses a JEV_LIVE carrying a newline (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/jevlivenewline.json" ]; check "a JEV_LIVE carrying a newline leaves no settings file" "$?"
+# A newline as the value's own first character, with no valid id ahead of it,
+# is the same guard's other edge: nothing after it can be reached at all.
+ERR=$(run_lib JEV_LIVE=$'\nturn-open' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivenewline2.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses a JEV_LIVE opening with a newline" 1 ;; *"must not hold a control character"*) check "emit_settings_json refuses a JEV_LIVE opening with a newline, naming the control-character guard" 0 ;; *) check "emit_settings_json refuses a JEV_LIVE opening with a newline (rc=$RC, err=$ERR)" 1 ;; esac
+
+# --- Section 2 control: a tab padding a JEV_LIVE member is trimmed, not refused ---
+# A tab is a control character too, so this is the withheld control for the
+# newline refusal above: it proves the guard does not refuse every control
+# character, only the ones the trim step does not already absorb as
+# whitespace, the reading this round took over the section's own text.
+run_lib JEV_LIVE=$'\tturn-disposition\t' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivetab.json"
+check "emit_settings_json exits 0 with a tab-padded JEV_LIVE" "$?"
+R=$(inspect "$TMP/jevlivetab.json")
+case "$R" in *'JEVLIVE_DEV=["turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-disposition"];'*) check "emitted: a tab-padded JEV_LIVE member reaches jevLive trimmed, not refused" 0 ;; *) check "emitted: a tab-padded JEV_LIVE member reaches jevLive trimmed, not refused (out=$R)" 1 ;; esac
+
+# --- Section 2: ensure_settings_jev_live carries the array onto a provided file ---
+cp "$TMP/jevliveemit.json" "$TMP/liveprovided.json"
+run_lib JEV_LIVE="turn-open,turn-disposition" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/liveprovided.json"
+check "ensure_settings_jev_live exits 0" "$?"
+R=$(inspect "$TMP/liveprovided.json")
+case "$R" in *'JEVLIVE_DEV=["turn-open","turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-open","turn-disposition"];'*) check "provided: ensure_settings_jev_live overwrites a single id with both ids under both plugin ids" 0 ;; *) check "provided: ensure_settings_jev_live overwrites a single id with both ids under both plugin ids (out=$R)" 1 ;; esac
+case "$R" in *"PERSONA_DEV=keyprobe;"*) check "provided: ensure_settings_jev_live leaves the other options as written" 0 ;; *) check "provided: ensure_settings_jev_live leaves the other options as written (out=$R)" 1 ;; esac
+
+# --- Section 2: ensure_settings_jev_live reads a BOM-prefixed provided file ---
+# The same class the coordinatorPersona and architectPersona reads are pinned
+# on above (a Windows editor's default first byte), over this function's own
+# BOM strip rather than a sibling's.
+printf '\xef\xbb\xbf%s' "$(cat "$TMP/jevliveemit.json")" > "$TMP/livebom.json"
+run_lib JEV_LIVE="turn-open,turn-disposition" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/livebom.json"
+check "ensure_settings_jev_live exits 0 over a BOM-prefixed provided file" "$?"
+R=$(inspect "$TMP/livebom.json")
+case "$R" in *'JEVLIVE_DEV=["turn-open","turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-open","turn-disposition"];'*) check "provided BOM: ensure_settings_jev_live parses past the BOM and writes both ids" 0 ;; *) check "provided BOM: ensure_settings_jev_live parses past the BOM and writes both ids (out=$R)" 1 ;; esac
+
+# --- Section 2: an unset JEV_LIVE leaves a provided file exactly as it was ---
+cp "$TMP/jevliveemit.json" "$TMP/liveuntouched.json"
+BEFORE=$(cat "$TMP/liveuntouched.json")
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/liveuntouched.json"
+check "ensure_settings_jev_live exits 0 with JEV_LIVE unset" "$?"
+[ "$BEFORE" = "$(cat "$TMP/liveuntouched.json")" ]; check "provided: an unset JEV_LIVE leaves the file byte-identical" "$?"
+
+# --- Section 2: ensure_settings_jev_live refuses a bad id with no file left behind ---
+cp "$TMP/jevliveemit.json" "$TMP/liverefused.json"
+BEFORE=$(cat "$TMP/liverefused.json")
+ERR=$(run_lib JEV_LIVE="turn-disposition,bogus" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/liverefused.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "ensure_settings_jev_live refuses JEV_LIVE=turn-disposition,bogus" 1 ;; *"JEV_LIVE id 'bogus' is not in the promotable set"*) check "ensure_settings_jev_live refuses JEV_LIVE=turn-disposition,bogus, naming the promotable-set check" 0 ;; *) check "ensure_settings_jev_live refuses JEV_LIVE=turn-disposition,bogus (rc=$RC, err=$ERR)" 1 ;; esac
+[ "$BEFORE" = "$(cat "$TMP/liverefused.json")" ]; check "a refused JEV_LIVE leaves the provided file unchanged" "$?"
+
+# --- Section 2: ensure_settings_jev_live refuses a JEV_LIVE carrying a newline ---
+cp "$TMP/jevliveemit.json" "$TMP/liverefusednewline.json"
+BEFORE=$(cat "$TMP/liverefusednewline.json")
+ERR=$(run_lib JEV_LIVE=$'turn-open\nbogus' bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/liverefusednewline.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "ensure_settings_jev_live refuses a JEV_LIVE carrying a newline" 1 ;; *"must not hold a control character"*) check "ensure_settings_jev_live refuses a JEV_LIVE carrying a newline, naming the control-character guard" 0 ;; *) check "ensure_settings_jev_live refuses a JEV_LIVE carrying a newline (rc=$RC, err=$ERR)" 1 ;; esac
+[ "$BEFORE" = "$(cat "$TMP/liverefusednewline.json")" ]; check "a JEV_LIVE carrying a newline leaves the provided file unchanged" "$?"
+
+# --- Section 2: the bash promotable list cannot drift from the catalog ---
+# PROMOTABLE_SET_IDS names its two ids by constant (TURN_OPEN, TURN_DISPOSITION),
+# not by string literal on its own line, so this resolves the constants the
+# array names rather than grepping for "turn-open" and "turn-disposition",
+# which do not appear next to PROMOTABLE_SET_IDS in the source at all.
+catalog_ids() {
+  node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const bashList = process.argv[2].length ? process.argv[2].split(",") : [];
+const constMap = {};
+const re = /export const ([A-Z0-9_]+)\s*=\s*"([^"]*)"/g;
+let m;
+while ((m = re.exec(src))) constMap[m[1]] = m[2];
+const arrMatch = src.match(/export const PROMOTABLE_SET_IDS[\s\S]*?Object\.freeze\(\[([^\]]*)\]\)/);
+if (!arrMatch) { console.log("NOARRAY"); process.exit(0); }
+const idents = arrMatch[1].split(",").map((s) => s.trim()).filter(Boolean);
+const catalogIds = [];
+for (const id of idents) {
+  if (!(id in constMap)) { console.log("UNRESOLVED:" + id); process.exit(0); }
+  catalogIds.push(constMap[id]);
+}
+const a = catalogIds.slice().sort();
+const b = bashList.slice().sort();
+const same = a.length === b.length && a.every((v, i) => v === b[i]);
+console.log(same ? "MATCH" : "MISMATCH:catalog=" + JSON.stringify(a) + " bash=" + JSON.stringify(b));
+' "$1" "$2"
+}
+BASH_PROMOTABLE_LIST=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && (IFS=,; echo "${JEV_PROMOTABLE_SET_IDS[*]}")' _ "$ROOT")
+RESULT=$(catalog_ids "$ROOT/hooks/question-catalog.ts" "$BASH_PROMOTABLE_LIST")
+case "$RESULT" in MATCH) check "the bash promotable list matches PROMOTABLE_SET_IDS" 0 ;; *) check "the bash promotable list matches PROMOTABLE_SET_IDS ($RESULT)" 1 ;; esac
+# Control: withhold the drift from the pattern's own literals by editing a
+# scratch copy of the catalog under $TMP rather than the real file, and
+# confirm the same comparison actually reddens when the two lists disagree.
+# Run against the same BASH_PROMOTABLE_LIST (still just the two real ids), so
+# a bash list that silently matched anything would report MATCH here too.
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+// Read the array the same relaxed way catalog_ids() above does, rather than
+// matching the whole declaration line verbatim, so this fixture survives a
+// reformat of that line or a real third id added for its own reason.
+const re = /export const PROMOTABLE_SET_IDS[\s\S]*?Object\.freeze\(\[([^\]]*)\]\)/;
+const m = src.match(re);
+if (!m) { console.error("control fixture: the PROMOTABLE_SET_IDS array did not match, so no drift was injected"); process.exit(1); }
+const injected = m[0].replace(m[1], m[1] + ", THIRD_ID");
+const out = src.slice(0, m.index) + "export const THIRD_ID = \"third-id\";\n" + injected + src.slice(m.index + m[0].length);
+if (out === src) { console.error("control fixture: the PROMOTABLE_SET_IDS array did not change, so no drift was injected"); process.exit(1); }
+fs.writeFileSync(process.argv[2], out);
+' "$ROOT/hooks/question-catalog.ts" "$TMP/question-catalog-drift.ts"
+check "control fixture: a third id was injected into a scratch copy of the catalog" "$?"
+DRIFT_RESULT=$(catalog_ids "$TMP/question-catalog-drift.ts" "$BASH_PROMOTABLE_LIST")
+case "$DRIFT_RESULT" in MISMATCH:*) check "control: the pin reddens when the catalog names a third id the bash list lacks ($DRIFT_RESULT)" 0 ;; *) check "control: the pin reddens when the catalog names a third id the bash list lacks ($DRIFT_RESULT)" 1 ;; esac
 
 # --- emit_settings_json writes architectPersona under both ids ---
 # The name vellum is withheld from every literal the emitter carries, so the

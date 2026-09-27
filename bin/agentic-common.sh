@@ -3,7 +3,8 @@
 # Sourced by bin/supervise.sh and .kit/live-common.sh.
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
 #           ensure_settings_plugin_ids, ensure_settings_arming,
-#           ensure_settings_jev_mode, settings_path_json,
+#           ensure_settings_jev_mode, ensure_settings_jev_live,
+#           jev_live_to_array_json, settings_path_json,
 #           read_settings_coordinator_persona,
 #           read_settings_architect_persona,
 #           read_settings_fleet_roster,
@@ -82,6 +83,70 @@ settings_path_json() {
   printf '%s' "${value//"$backslash"/"$backslash$backslash"}"
 }
 
+# --- JEV_PROMOTABLE_SET_IDS ---
+# The two question-set ids a JEV_LIVE value may name, typed once here so the
+# two callers of jev_live_to_array_json below cannot disagree about which ids
+# are promotable, and so .kit/settings-plugin-key-test.sh can pin this list
+# against hooks/question-catalog.ts's PROMOTABLE_SET_IDS, the plugin's own
+# copy of the same two ids.
+JEV_PROMOTABLE_SET_IDS=(turn-open turn-disposition)
+
+# --- jev_live_to_array_json ---
+# Usage: jev_live_to_array_json <caller-name> <comma-separated ids>
+# Refuses the whole raw value, before any split runs, where it carries a
+# control character other than a tab: `read -ra` below stops at the first
+# newline regardless of IFS, since that is its record separator and not a
+# field one, so a value carrying one would have silently dropped everything
+# past it and let the membership check below run on a truncated string
+# instead of failing on the character that broke it. That is the reason this
+# guard exists at all. A tab is the one control character it excepts, since
+# padding a member with one costs nothing and is trimmed away below anyway.
+# Every other control character is refused alongside the newline, a carriage
+# return, a vertical tab and a form feed among them.
+# Trims each comma-separated member of the given value in ASCII whitespace
+# only. That is the subset of the plugin's own jevLive-read trim() a POSIX
+# shell can strip; the plugin's trim() also strips the Unicode spaces (U+00A0,
+# U+FEFF, U+2028 and the rest), so a member hand-edited into a settings file
+# can be kept by the plugin where the same padding would have been refused
+# here. Drops a member left blank by a stray comma or by whitespace-only
+# input, and refuses with an ERROR line naming <caller-name> and returns 1
+# where a trimmed member is not one of JEV_PROMOTABLE_SET_IDS. A quote always
+# misses that fixed set, so this membership check is also the
+# hostile-boundary guard: no member printed by this function can ever be
+# anything but one of the two literal ids, so nothing it prints can break out
+# of the JSON string emit_settings_json splices it into. On success prints
+# the surviving members as a comma-separated, double-quoted list ready to sit
+# inside a JSON array's brackets (e.g. "turn-open","turn-disposition"), or
+# prints nothing where every member trimmed away.
+jev_live_to_array_json() {
+  local caller="$1" raw="$2" id trimmed candidate known out="" first=1
+  local cntrl_guard="${raw//$'\t'/}"
+  case "$cntrl_guard" in
+    *[[:cntrl:]]*)
+      echo "ERROR: $caller: JEV_LIVE must not hold a control character" >&2
+      return 1
+      ;;
+  esac
+  local IFS=','
+  local -a parts
+  read -ra parts <<< "$raw"
+  for id in "${parts[@]}"; do
+    trimmed="${id#"${id%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [ -z "$trimmed" ] && continue
+    known=0
+    for candidate in "${JEV_PROMOTABLE_SET_IDS[@]}"; do
+      if [ "$trimmed" = "$candidate" ]; then known=1; break; fi
+    done
+    if [ "$known" -ne 1 ]; then
+      echo "ERROR: $caller: JEV_LIVE id '$trimmed' is not in the promotable set" >&2
+      return 1
+    fi
+    if [ "$first" -eq 1 ]; then out="\"$trimmed\""; first=0; else out="$out,\"$trimmed\""; fi
+  done
+  printf '%s' "$out"
+}
+
 # --- emit_settings_json ---
 # Usage: emit_settings_json <output-file>
 # Emits the settings.json JSON for the --settings flag.
@@ -137,6 +202,19 @@ emit_settings_json() {
         ;;
     esac
     jev_opts=",\"jevMode\":\"$JEV_MODE\""
+  fi
+  # jevLive names, by id, which of the two questions PROMOTABLE_SET_IDS ships
+  # may read Jev's live answer; empty by default, so a fresh install promotes
+  # nothing. An unset or empty JEV_LIVE omits the key, the same "leave it out"
+  # state jevMode's own check above uses, rather than writing an empty array
+  # that would still read as "nothing promoted" but would make a byte-for-byte
+  # comparison against a hand-edited file fail for no behavioral reason.
+  if [ -n "${JEV_LIVE:-}" ]; then
+    local jev_live_ids
+    jev_live_ids=$(jev_live_to_array_json emit_settings_json "$JEV_LIVE") || return 1
+    if [ -n "$jev_live_ids" ]; then
+      jev_opts="$jev_opts,\"jevLive\":[$jev_live_ids]"
+    fi
   fi
   # Plan item 6: pass the persona the supervisor was given through to the
   # child, so it claims that persona at session.start instead of always
@@ -436,6 +514,63 @@ try {
   fail("could not be rewritten: " + e.message);
 }
 ' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "$JEV_MODE"
+}
+
+# --- ensure_settings_jev_live ---
+# Usage: ensure_settings_jev_live <settings-file>
+# Sibling to ensure_settings_jev_mode for the array-valued jevLive option.
+# Where JEV_LIVE is unset or empty, the file is left alone: unset and empty
+# are the same "leave it out" state ensure_settings_jev_mode's own JEV_MODE
+# check uses, so a hand-edited value survives a launch that names no live
+# question, and the file stays byte-identical rather than being rewritten
+# with an equivalent JSON array. Where JEV_LIVE is set, jev_live_to_array_json
+# validates every comma-separated member against the promotable set before
+# node runs, exactly as JEV_MODE's off|shadow case runs before this
+# function's own node -e, so a bad id is refused with no file touched at all
+# rather than reaching a node process that could still write something
+# before failing. The file is replaced by rename, same as its sibling.
+ensure_settings_jev_live() {
+  if [ -z "${JEV_LIVE:-}" ]; then
+    return 0
+  fi
+  local ids_json
+  ids_json=$(jev_live_to_array_json ensure_settings_jev_live "$JEV_LIVE") || return 1
+  if [ -z "$ids_json" ]; then
+    # Every member trimmed away (JEV_LIVE held only commas or whitespace),
+    # the same "nothing named" state as unset, so the file is left alone.
+    return 0
+  fi
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId, idsJson] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: ensure_settings_jev_live: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const ids = JSON.parse(idsJson);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+let changed = false;
+if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }
+const pc = s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) { pc[id] = {}; changed = true; }
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options === undefined) { pc[id].options = {}; changed = true; }
+  const opts = pc[id].options;
+  if (!plain(opts)) fail("has " + id + " options that are not an object");
+  if (JSON.stringify(opts.jevLive) !== JSON.stringify(ids)) { opts.jevLive = ids; changed = true; }
+}
+if (!changed) process.exit(0);
+const tmp = file + ".tmp-" + process.pid;
+try {
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, file);
+} catch (e) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  fail("could not be rewritten: " + e.message);
+}
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "[$ids_json]"
 }
 # --- read_settings_coordinator_persona ---
 # Usage: read_settings_coordinator_persona <settings-file> <dev_mode: 0|1>

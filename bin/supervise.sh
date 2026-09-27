@@ -443,6 +443,14 @@ else
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
+  # Same reasoning as the jevMode call above, for the array-valued jevLive:
+  # the emit branch writes it from JEV_LIVE, so a provided settings file
+  # needs the same carry-through or a roster that names a question live would
+  # reach no persona that already has a run directory.
+  if ! ensure_settings_jev_live "$SETTINGS_FILE" 2>>"$LOG"; then
+    echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
   # The emit branch above exports COORDINATOR_PERSONA from the value it
   # writes. This branch writes nothing, so the name is read back from the
   # provided file under the plugin's own rule, and the coordinator-role

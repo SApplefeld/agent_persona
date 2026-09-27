@@ -2,6 +2,62 @@
 // Access via $.fs.* (read, write, exists).
 // One JSON file per project, one owner at a time (the Monitor loop).
 
+/**
+ * One piece of untrusted text with the delivery brackets neutralized, under
+ * the same rule bracketSafeProblem refuses on and for the same reason: a '['
+ * in text the plugin did not compose lets that text forge a delivery label
+ * such as [COORDINATOR id=7]. The two are one rule read two ways. A caller
+ * who supplies a persona name can be told to pick another, so that path
+ * refuses; a file read has nobody to ask, so this path rewrites. Text
+ * carrying no bracket comes through byte for byte.
+ * The guard belongs to the channel the text leaves by rather than to the
+ * field that first needed it, so every site that puts text out of a
+ * persona's own tree in front of a model calls this one helper: the fleet
+ * report's fields as each is read, the fleet prompt the controller tick
+ * submits, over every field it carries, and the turn record's own text, at
+ * the clamp below that every writer of that field and the load both call. The
+ * prompt takes the wider sweep because a tool result is framed as JSON and a
+ * submitted turn is not, so a path the plugin composed loses its own brackets
+ * there.
+ * It lives in this module, which imports nothing, because the store layer is
+ * one of its callers: a module this one imported would be linked eagerly by
+ * every suite that reads the store.
+ */
+export function bracketSafeText(text: string): string {
+  return text.replace(/\[/g, "(").replace(/\]/g, ")");
+}
+
+/**
+ * Where one line of text ends: CRLF, or any one of LF, CR, VT, FF, NEL
+ * (U+0085), LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029). These
+ * are the terminators the bracket rule refuses as field splitters, and every
+ * site that splits store-sourced or file-sourced text into lines reads the
+ * set from here: a splitter that knows only LF and CR leaves a persona four
+ * more characters that start a line the reader of that text will see.
+ * It sits in this module for the reason bracketSafeText does. The two are one
+ * guard on one channel, text the plugin did not compose reaching a model, and
+ * the store layer is a caller of both.
+ */
+export const LINE_TERMINATOR = /\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u;
+
+/**
+ * One line of text, whatever terminators it arrived carrying, each replaced by
+ * a single space. This is the fold every context block owes the text it prints,
+ * and it belongs to the block rather than to whichever field first needed it:
+ * a block the plugin composes whole states the persona's own situation, so a
+ * line inside it that the plugin did not write reads as one the plugin did. A
+ * forged `WORKING`, `BLOCKED` or `WAITING` lead is the case that costs
+ * something, and a status line needs no bracket, so the bracket rule above does
+ * not reach it.
+ * It sits here with the terminator set and the bracket rule because the three
+ * are one guard on one channel. A print that folds with its own copy of this is
+ * a second place the set can drift, which is the defect this module exists to
+ * make impossible.
+ */
+export function oneLine(text: string): string {
+  return text.split(LINE_TERMINATOR).join(" ");
+}
+
 export interface MemoryEntry {
   id: string;
   kind: "fact" | "preference" | "lesson" | "goal" | "eval";
@@ -162,9 +218,11 @@ export interface SentProposal {
   delivered: boolean;
 }
 
-// A [PROPOSAL] or [STARTED] record goal_add sent the coordinator persona for
-// a plan the autonomy level admitted. `awaitingYes` is true for a [PROPOSAL],
-// whose entry waits for the operator's yes, and false for a [STARTED].
+// A [PROPOSAL] or [STARTED] record the shared add sent the coordinator persona
+// for a plan the autonomy level admitted, whether the model's own goal_add made
+// that add or the promotion route did at a turn's end for a record whose turn
+// wrote a plan document. `awaitingYes` is true for a [PROPOSAL], whose entry
+// waits for the operator's yes, and false for a [STARTED].
 // `writer` and `seq` key the record in the coordinator persona's inbox. The
 // entry leaves the list once its record reads delivered, answered, resolved
 // or absent, once its goal entry no longer needs it, or once a resend has no
@@ -235,6 +293,130 @@ export const TASK_LIST_MAX_LINES = 12;
 // carries, so a task id never reads as a goal id.
 export function newTaskId(now: number): string {
   return `tk-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// What a turn record can be. The set is closed at these five. "open" is the
+// live intention a message arrived with; the other four are closed states a
+// record never leaves. "delivered" is the turn that answered it, "superseded"
+// a later message that replaced it, "expired" the timeout below, and
+// "promoted" a record that became a goal entry or a task.
+export const TURN_RECORD_STATUSES = ["open", "delivered", "superseded", "expired", "promoted"] as const;
+export type TurnRecordStatus = (typeof TURN_RECORD_STATUSES)[number];
+
+// Whether a stored or supplied value is one of the five statuses.
+function isTurnRecordStatus(value: unknown): value is TurnRecordStatus {
+  return typeof value === "string" && (TURN_RECORD_STATUSES as readonly string[]).includes(value);
+}
+
+// One message held as an intention. A record sits beside the goal tree and
+// never in it: nothing that reads `goals`, the idle branch and the nudge among
+// them, sees a record, so a record is never scored, budgeted or nudged. At most
+// one record is open at a time, which enforceInvariants repairs on load, and a
+// record that is not open is closed for good. goalId names the entry the record
+// is a step of, where the message stepped one. planPath names the plan document
+// the turn wrote, and taskId the task the record became. turnId is absent at the
+// open, since the record opens before the turn it belongs to has an id.
+//
+// pendingStamps carries the record's own unsettled journal outcomes rather than
+// anything about the intention. One entry per turn-open call that opened or
+// continued this record, each present exactly while that call's
+// record_delivered_within outcome is still unwritten: the writer drops an entry
+// as it writes its line, which is what holds one call to one outcome line. The
+// list is what a continuation needs, because a record carried across several
+// messages was opened by one call and continued by others, and each of those
+// calls owes an outcome of its own. `turns` counts the persona's own turn
+// completions since that entry's own call, which is what the outcome's "within
+// three turns" is measured over, so a call that joined a record already three
+// messages old is still measured from where it joined.
+export interface TurnRecordStamp {
+  stampId: string;
+  turns: number;
+}
+
+// dispositionStamps is the second list of unsettled journal outcomes, for the
+// turn-disposition question, and it is a list of its own rather than more
+// entries in pendingStamps. The two outcomes settle on different events and
+// carry different values: a turn-open call's record_delivered_within settles at
+// a delivery or after a counted number of the persona's own turns, while a
+// turn-disposition call's next_prompt_kind settles at the next external
+// message, to that message's turn-open verdict where one was read and to
+// `fallback` where none was, or as `none` once the record has expired, and so
+// needs no turn count. The record_delivered_within writer settles and drops
+// every entry of pendingStamps by name, so a disposition stamp parked there
+// would be answered with the wrong outcome kind and dropped before its own
+// writer ran. One entry per turn-disposition call asked over this record, each
+// present exactly while its outcome is unwritten; a record open across several
+// turn ends holds several.
+export interface TurnRecord {
+  id: string;
+  text: string;
+  openedAt: number;
+  status: TurnRecordStatus;
+  turnId?: string;
+  goalId?: string;
+  planPath?: string;
+  taskId?: string;
+  closedAt?: number;
+  pendingStamps?: TurnRecordStamp[];
+  dispositionStamps?: string[];
+}
+
+// Whether a stored or supplied value is one pending stamp. A stamp id that is
+// not a string names no call line, and a count the plugin cannot compare against
+// the threshold leaves an outcome that is never written, so both are read as
+// strictly as closedAt is.
+function isTurnRecordStamp(value: unknown): value is TurnRecordStamp {
+  const stamp = value as Partial<TurnRecordStamp> | null;
+  return !!stamp && typeof stamp === "object"
+    && typeof stamp.stampId === "string" && Number.isFinite(stamp.turns);
+}
+
+// The most records the store holds at once, counting only the closed ones: the
+// cap never drops an open record.
+export const TURN_RECORDS_MAX = 20;
+
+// How long an open record stands before the reap expires it. A day, because an
+// idle open record costs nothing while it stands (it is never nudged, and it is
+// a durable compaction boundary) and holds a stale intention against every
+// later message once its turn is long past.
+export const TURN_RECORD_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+// The most characters a record's text carries. The text is an excerpt of the
+// message or one line naming what it asked, so it is cut rather than refused.
+export const TURN_RECORD_TEXT_MAX = 80;
+
+// Cuts a record's text to the maximum above and neutralizes its brackets. Both
+// belong to the record field rather than to whichever caller first needed them,
+// so every producer of a record's text calls this: the load, which reads a store
+// the plugin did not write, and the sites that open a record from a message or
+// from a worded line. A producer that cuts the text by hand instead reproduces
+// the length it can see and drops whatever this rule gains later.
+//
+// The text is an external message, and goal_status prints it into a tool result
+// the model reads, one line above the tree, beside lines whose own text is
+// guarded there. So a '[' in it could forge a delivery or authority label such
+// as [SUPERVISOR-ASK id=1] or [COORDINATOR id=7], which bracketSafeText is the
+// one rule for. The guard runs here rather than at that print, so every reader
+// of the field inherits it and no future one has to remember.
+//
+// The line terminators are folded for the same reason and at the same place.
+// The record's text is also a goal entry's title once the promotion route
+// stores it there, and the prompt hook writes a title into the goal-tree block
+// unfolded, on a line of its own. So a terminator inside the text starts a line
+// in that block, where a forged WORKING, BLOCKED or WAITING lead would read as
+// the plugin's own. Brackets cannot be forged past the rule above, and a status
+// line needs no bracket. The order is the one every other guarded field takes:
+// cut to length, fold to one line, then neutralize the brackets.
+export function clampTurnRecordText(text: string): string {
+  const cut = text.length > TURN_RECORD_TEXT_MAX ? text.slice(0, TURN_RECORD_TEXT_MAX) : text;
+  return bracketSafeText(oneLine(cut));
+}
+
+// A record id, minted in the goal nodes' shape: a prefix, the clock in base 36,
+// and a random tail. The "tr-" prefix is one no goal node, long-term goal or
+// task carries, so a record id never reads as a goal id or a task id.
+export function newTurnRecordId(now: number): string {
+  return `tr-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export interface MonitorState {
@@ -398,13 +580,14 @@ export interface FleetHealthMemo {
 }
 
 export interface AgentState {
-  version: 5;
+  version: 6;
   persona: string;
   activeSessionId: string;
   epoch: number;
   memory: MemoryEntry[];
   goals: GoalNode[];
   tasks: TaskItem[]; // beside the tree, each keyed to a goal; see TaskItem
+  turnRecords: TurnRecord[]; // beside the tree, one message each; see TurnRecord
   activeGoalId: string | null;
   longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
   autonomy: AutonomyLevel; // set only by goal_autonomy; see AUTONOMY_LEVELS
@@ -532,13 +715,14 @@ export function holdOf(state: AgentState, now: number): HoldReason | null {
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
   return {
-    version: 5,
+    version: 6,
     persona,
     activeSessionId: sessionId,
     epoch: 1,
     memory: [],
     goals: [],
     tasks: [],
+    turnRecords: [],
     activeGoalId: null,
     longTermGoals: [],
     autonomy: "propose",
@@ -844,6 +1028,52 @@ function fillTasks(state: AgentState): void {
   });
 }
 
+// The turn records, filled at every load exit. A stored value that is not a
+// list reads as an empty one, which is how a store written before the records
+// existed loads. A stored entry is kept only where its id and text are strings,
+// its status one of the five, its openedAt a number, and each of turnId, goalId,
+// planPath and taskId absent or a string with closedAt absent or a finite
+// number; anything else is dropped. openedAt is read as a number rather than a
+// finite one because the reap owns the non-finite case: a record whose clock
+// reads as infinity is expired there rather than lost here, so the store the
+// plugin cannot make sense of still shows the operator that a message arrived.
+// The text is cut to its maximum on the way in, since a store the plugin did
+// not write can carry any length.
+//
+// The pairing of status and closedAt is deliberately unconstrained. A stored
+// open record carrying a closedAt is kept, and so is a closed one carrying
+// none. Nothing reads closedAt on an open record, and no caller treats its
+// absence as evidence a record is open, status being the one field that
+// decides that. Refusing the pair here would drop a record whose message and
+// clock are both sound over a field nothing consults.
+function fillTurnRecords(state: AgentState): void {
+  const stored = (state as { turnRecords?: unknown }).turnRecords;
+  if (!Array.isArray(stored)) {
+    state.turnRecords = [];
+    return;
+  }
+  state.turnRecords = stored.filter((r): r is TurnRecord => {
+    const record = r as Partial<TurnRecord> | null;
+    return !!record && typeof record === "object"
+      && typeof record.id === "string" && typeof record.text === "string"
+      && isTurnRecordStatus(record.status) && typeof record.openedAt === "number"
+      && (record.turnId === undefined || typeof record.turnId === "string")
+      && (record.goalId === undefined || typeof record.goalId === "string")
+      && (record.planPath === undefined || typeof record.planPath === "string")
+      && (record.taskId === undefined || typeof record.taskId === "string")
+      && (record.closedAt === undefined || Number.isFinite(record.closedAt))
+      && (record.pendingStamps === undefined
+        || (Array.isArray(record.pendingStamps) && record.pendingStamps.every(isTurnRecordStamp)))
+      // Read as strictly as pendingStamps, for the same reason: a stamp id that
+      // is not a string names no call line for the outcome to join.
+      && (record.dispositionStamps === undefined
+        || (Array.isArray(record.dispositionStamps) && record.dispositionStamps.every((s) => typeof s === "string")));
+  }).map((record) => {
+    const cut = clampTurnRecordText(record.text);
+    return cut === record.text ? record : { ...record, text: cut };
+  });
+}
+
 export function parseState(json: string): AgentState {
   const parsed = JSON.parse(json);
 
@@ -931,13 +1161,14 @@ export function parseState(json: string): AgentState {
     }
 
     const state: AgentState = {
-      version: 5,
+      version: 6,
       persona: old.persona,
       activeSessionId: old.activeSessionId,
       epoch: old.epoch,
       memory: old.memory ?? [],
       goals,
       tasks: [],
+      turnRecords: [],
       activeGoalId,
       longTermGoals: [],
       autonomy: "propose",
@@ -964,7 +1195,8 @@ export function parseState(json: string): AgentState {
 
   if (parsed.version === 3) {
     // v3 to v4 migration: add env to monitor. The v4 to v5 step, the task
-    // list, is the fillTasks call below.
+    // list, is the fillTasks call below, and the v5 to v6 step, the turn
+    // records, is the fillTurnRecords call beside it.
     const state = parsed as unknown as AgentState;
     if (!state.monitor.env) {
       state.monitor.env = {
@@ -973,7 +1205,7 @@ export function parseState(json: string): AgentState {
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       };
     }
-    state.version = 5;
+    state.version = 6;
     if (!state.nudge) {
       state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
     }
@@ -984,6 +1216,7 @@ export function parseState(json: string): AgentState {
       state.autonomy = "propose";
     }
     fillTasks(state);
+    fillTurnRecords(state);
     fillProposal(state);
     fillPlanRecords(state);
     applyPlanRecordOnLoad(state);
@@ -998,7 +1231,14 @@ export function parseState(json: string): AgentState {
     parsed.version = 5;
   }
 
-  if (parsed.version !== 5) {
+  // v5 to v6 migration: add the turn records, which fillTurnRecords below seeds
+  // empty on a store that lacks them. Everything else a v5 store holds is
+  // already the v6 shape.
+  if (parsed.version === 5) {
+    parsed.version = 6;
+  }
+
+  if (parsed.version !== 6) {
     throw new Error(`Unsupported AgentState version: ${parsed.version}`);
   }
 
@@ -1035,6 +1275,7 @@ export function parseState(json: string): AgentState {
     state.autonomy = "propose";
   }
   fillTasks(state);
+  fillTurnRecords(state);
   fillProposal(state);
   fillPlanRecords(state);
 
@@ -1149,6 +1390,34 @@ function enforceInvariants(state: AgentState): void {
   // The load-time backstop for the task reap; persist runs the same reap on
   // every store write.
   reapCompletedGoalTasks(state);
+
+  // The load-time backstop for the record reap; persist runs the same reap on
+  // every store write. It runs before the one-open repair below so that a
+  // record whose clock the plugin cannot read is already closed, and so never
+  // competes for the open slot against a record whose clock it can. Ordering
+  // it the other way lets an unreadable clock decide the repair, and the
+  // repair's own answer is then the one record the timeout can never reach.
+  const now = Date.now();
+  reapTurnRecords(state, now);
+
+  // The record layer holds at most one open record, so openTurnRecord has one
+  // answer at every read. A store carrying two, which a crash between an open
+  // and the write that superseded the previous one leaves behind, keeps the
+  // newest by openedAt and supersedes the rest, since the newest is the
+  // intention the persona is working on. Every record still open here has a
+  // readable clock, the reap above having closed the rest, so the comparison
+  // is between two real times.
+  const openRecords = state.turnRecords.filter((r) => r.status === "open");
+  if (openRecords.length > 1) {
+    const newest = openRecords.reduce((a, b) => (turnRecordOrder(b) >= turnRecordOrder(a) ? b : a));
+    state.turnRecords = state.turnRecords.map((r) => (
+      r.status === "open" && r !== newest ? { ...r, status: "superseded" as const, closedAt: now } : r
+    ));
+    // The repair closes records, so the cap can be over again where a store
+    // carried several open ones. This second pass expires nothing new and
+    // drops what the cap now covers.
+    reapTurnRecords(state, now);
+  }
 }
 
 // Drops every task whose goal is closed: complete or abandoned, a closed set of
@@ -1161,6 +1430,54 @@ export function reapCompletedGoalTasks(state: AgentState): void {
     state.goals.filter((g) => g.status !== "complete" && g.status !== "abandoned").map((g) => g.id),
   );
   state.tasks = state.tasks.filter((t) => open.has(t.goalId));
+}
+
+// The one open record, or null where none is open. The record layer holds at
+// most one, which enforceInvariants repairs on every load, so the first open
+// record is the only one.
+export function openTurnRecord(state: AgentState): TurnRecord | null {
+  return state.turnRecords.find((r) => r.status === "open") ?? null;
+}
+
+// Where a record sorts by age. A record whose openedAt is not a finite number
+// sorts as the oldest there is, since a clock the plugin cannot read is no
+// evidence of recency: the reap expires such a record and the cap drops it
+// first.
+function turnRecordOrder(record: TurnRecord): number {
+  return Number.isFinite(record.openedAt) ? record.openedAt : 0;
+}
+
+// Expires the stale open record and caps the closed ones. An open record is
+// stale on any of three readings of its openedAt, which share one reason: none
+// of them yields an age the timeout can act on. It is not a finite number. It
+// is ahead of `now`, which yields a negative age, so no timeout ever passes and
+// the record would stand open for good. Or its age has reached
+// TURN_RECORD_TIMEOUT_MS, the boundary sitting on the expiring side, so a
+// record exactly a day old expires. A stale record becomes "expired" with its
+// closedAt at `now`, so a long-dead intention stops reading as live. Expiry
+// never deletes a record; the cap is what deletes, and
+// it drops only records that are not open, oldest-opened first, so an open
+// record stands however many closed ones sit beside it. Only state.turnRecords
+// changes. Called by persist before each store write, so a record that timed
+// out mid-session expires at that write, and by enforceInvariants on every load.
+export function reapTurnRecords(state: AgentState, now: number): void {
+  const aged = state.turnRecords.map((record) => {
+    if (record.status !== "open") return record;
+    const stale = !Number.isFinite(record.openedAt)
+      || record.openedAt > now
+      || now - record.openedAt >= TURN_RECORD_TIMEOUT_MS;
+    return stale ? { ...record, status: "expired" as const, closedAt: now } : record;
+  });
+  const closed = aged.filter((r) => r.status !== "open");
+  if (closed.length <= TURN_RECORDS_MAX) {
+    state.turnRecords = aged;
+    return;
+  }
+  const dropped = new Set(
+    [...closed].sort((a, b) => turnRecordOrder(a) - turnRecordOrder(b))
+      .slice(0, closed.length - TURN_RECORDS_MAX),
+  );
+  state.turnRecords = aged.filter((r) => !dropped.has(r));
 }
 
 // --- Pure helpers for goal-tree operations (R3) ---
