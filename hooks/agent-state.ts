@@ -584,6 +584,7 @@ export interface AgentState {
   persona: string;
   activeSessionId: string;
   epoch: number;
+  previousSessionIds: string[]; // the sessions that held the persona before, newest first; see recordPreviousSession
   memory: MemoryEntry[];
   goals: GoalNode[];
   tasks: TaskItem[]; // beside the tree, each keyed to a goal; see TaskItem
@@ -711,6 +712,39 @@ export function holdOf(state: AgentState, now: number): HoldReason | null {
   return null;
 }
 
+// How many earlier holders the lineage ring keeps. The restart recap reads the
+// newest two by default, and the third keeps the working session in reach when
+// the relaunch after it died before its first turn and left an empty transcript.
+export const PREVIOUS_SESSIONS_MAX = 3;
+
+// The longest a stored id runs in agentic_identity's answer. A session id is
+// 36 characters, so the cut touches only text no session wrote.
+export const PREVIOUS_SESSION_ID_TEXT_MAX = 64;
+
+// The lineage write every claim site makes on the state before the write that
+// publishes its claim, so that one write carries both. outgoingId is the
+// session the claim replaces, as that site knows it. It goes to the front of
+// the ring where it is a non-empty string other than this session's own id,
+// an earlier copy of it is dropped, and the ring is cut to
+// PREVIOUS_SESSIONS_MAX. The own id is dropped from the ring too, so the ring
+// never names the session that holds the persona now.
+export function recordPreviousSession(state: AgentState, outgoingId: unknown, ownId: string): void {
+  const ring = state.previousSessionIds.filter((id) => id !== ownId);
+  const next = typeof outgoingId === "string" && outgoingId !== "" && outgoingId !== ownId
+    ? [outgoingId, ...ring.filter((id) => id !== outgoingId)]
+    : ring;
+  state.previousSessionIds = next.slice(0, PREVIOUS_SESSIONS_MAX);
+}
+
+// The lineage as agentic_identity reports it, one sentence. The ids come out
+// of a store file any local process can write, so each takes the guard every
+// site putting store text in front of a model applies, in its order: cut to
+// length, fold to one line, then neutralize the brackets.
+export function previousSessionsText(state: AgentState): string {
+  if (state.previousSessionIds.length === 0) return "Previous sessions: none recorded.";
+  return `Previous sessions, newest first: ${state.previousSessionIds.map((id) => bracketSafeText(oneLine(id.slice(0, PREVIOUS_SESSION_ID_TEXT_MAX)))).join(", ")}.`;
+}
+
 // Default state (per persona)
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
@@ -719,6 +753,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
     persona,
     activeSessionId: sessionId,
     epoch: 1,
+    previousSessionIds: [],
     memory: [],
     goals: [],
     tasks: [],
@@ -1074,6 +1109,18 @@ function fillTurnRecords(state: AgentState): void {
   });
 }
 
+// The lineage ring, filled at every load exit. A stored value that is not a
+// list reads as an empty one, which is how a store written before the ring
+// existed loads, with no decision line and no version bump. An entry that is
+// not a non-empty string is dropped, since it names no session, and the ring
+// is cut to PREVIOUS_SESSIONS_MAX, since a claim write never stores more.
+function fillPreviousSessionIds(state: AgentState): void {
+  const stored = (state as { previousSessionIds?: unknown }).previousSessionIds;
+  state.previousSessionIds = Array.isArray(stored)
+    ? stored.filter((id): id is string => typeof id === "string" && id !== "").slice(0, PREVIOUS_SESSIONS_MAX)
+    : [];
+}
+
 export function parseState(json: string): AgentState {
   const parsed = JSON.parse(json);
 
@@ -1165,6 +1212,7 @@ export function parseState(json: string): AgentState {
       persona: old.persona,
       activeSessionId: old.activeSessionId,
       epoch: old.epoch,
+      previousSessionIds: [],
       memory: old.memory ?? [],
       goals,
       tasks: [],
@@ -1217,6 +1265,7 @@ export function parseState(json: string): AgentState {
     }
     fillTasks(state);
     fillTurnRecords(state);
+    fillPreviousSessionIds(state);
     fillProposal(state);
     fillPlanRecords(state);
     applyPlanRecordOnLoad(state);
@@ -1276,6 +1325,7 @@ export function parseState(json: string): AgentState {
   }
   fillTasks(state);
   fillTurnRecords(state);
+  fillPreviousSessionIds(state);
   fillProposal(state);
   fillPlanRecords(state);
 

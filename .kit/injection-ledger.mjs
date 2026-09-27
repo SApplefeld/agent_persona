@@ -1117,6 +1117,32 @@ function extractNoGoalBlock(src) {
   ];
 }
 
+// The [RESTART RECAP] block's frame, which is two texts the way the [NO GOAL]
+// reminder is: the header and frame line on every injection, and one further
+// sentence where the header's lineage is not recorded. Each is a fully
+// literal chain sized as its own entry. The digest the frame introduces is the
+// restart recap script's output, per-launch data rather than authored text,
+// and is not sized.
+//
+// The selection and the composition are the third and fourth anchors: the
+// frame is exactly one of the two texts, and the block is that frame, one
+// line break and the digest. An operand added to either refuses here rather
+// than reaching the prompt unsized.
+function extractRestartRecapBlock(src) {
+  const f = /const recapBlockFrame =\s*\n([\s\S]*?);\n/.exec(src);
+  if (!f) throw new Error("recapBlockFrame not found in hooks/index.ts");
+  const u = /const recapUnrecordedSentence =\s*\n([\s\S]*?);\n/.exec(src);
+  if (!u) throw new Error("recapUnrecordedSentence not found in hooks/index.ts");
+  const s = /const recapFrame = unrecorded \? recapBlockFrame \+ recapUnrecordedSentence : recapBlockFrame;\n/.exec(src);
+  if (!s) throw new Error("[chain-shape] RESTART_RECAP_BLOCK: the frame is no longer `unrecorded ? recapBlockFrame + recapUnrecordedSentence : recapBlockFrame`; text reaching the prompt from any other operand would be unsized, so restore that shape or size the new operand explicitly");
+  const c = /return recapFrame \+ "\\n" \+ digest;\n/.exec(src);
+  if (!c) throw new Error("[chain-shape] RESTART_RECAP_BLOCK: the block is no longer `recapFrame + \"\\n\" + digest`; text reaching the prompt from any other operand would be unsized, so restore that shape or size the new operand explicitly");
+  return [
+    record("RESTART_RECAP_BLOCK", "hooks/index.ts", literalOfTemplateChain(f[1], "RESTART_RECAP_BLOCK")),
+    record("RESTART_RECAP_UNRECORDED_SENTENCE", "hooks/index.ts", literalOfTemplateChain(u[1], "RESTART_RECAP_UNRECORDED_SENTENCE")),
+  ];
+}
+
 // The [STANDING] block's own frame: the "[STANDING]" header and the two
 // newlines that separate its lines, everything else in the chain being a
 // whole-variable insertion declared here and sized by its own rule instead:
@@ -1221,6 +1247,9 @@ const CONTEXT_BLOCKS = {
   // anchor is what holds the second literal to the block.
   idleBlock: "NO_GOAL_BLOCK",
   standingBlock: "STANDING_BLOCK",
+  // The frame's two texts are sized by one rule as two entries, as the
+  // [NO GOAL] block's are; this row names the frame's entry.
+  recapBlock: "RESTART_RECAP_BLOCK",
   envBlock: "ENV_BLOCK",
   lessonBlock: "LESSON_BLOCK",
   memoryBlock: "MEMORY_BLOCK",
@@ -1605,6 +1634,7 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractStandingLevelPlanAndStartText(tsSrc),
     extractSimpleTextConst(tsSrc, "STANDING_IDLE_DUTIES_TEXT"),
     extractStandingBlock(tsSrc),
+    ...extractRestartRecapBlock(tsSrc),
     extractEnvBlock(tsSrc),
     extractLessonBlock(tsSrc),
     extractMemoryBlock(tsSrc),

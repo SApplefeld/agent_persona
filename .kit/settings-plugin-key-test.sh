@@ -69,6 +69,12 @@ console.log("JEV_DEV_PRESENT=" + (!dev ? "noid" : dev.jevMode !== undefined ? 1 
 console.log("JEV_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.jevMode !== undefined ? 1 : 0) + ";");
 console.log("JEV_DEV=" + (dev && dev.jevMode !== undefined ? dev.jevMode : "") + ";");
 console.log("JEV_INSTALLED=" + (inst && inst.jevMode !== undefined ? inst.jevMode : "") + ";");
+// restartRecap has no emitter default, so it takes the same three-state
+// reading as jevMode: an id with no options, a key absent, or the key and its value.
+console.log("RECAP_DEV_PRESENT=" + (!dev ? "noid" : dev.restartRecap !== undefined ? 1 : 0) + ";");
+console.log("RECAP_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.restartRecap !== undefined ? 1 : 0) + ";");
+console.log("RECAP_DEV=" + (dev && dev.restartRecap !== undefined ? dev.restartRecap : "") + ";");
+console.log("RECAP_INSTALLED=" + (inst && inst.restartRecap !== undefined ? inst.restartRecap : "") + ";");
 // jevLive is a comma-separated string, and its value line prints the JSON.stringify of
 // whatever is there rather than the raw value: a key present as an empty
 // string would print identically to a key that is absent under the string
@@ -176,6 +182,27 @@ ERR=$(run_lib JEV_MODE="bogus" bash -c 'source "$1/bin/agentic-common.sh" && emi
 RC=$?
 case "$RC:$ERR" in 0:*) check "emit_settings_json refuses JEV_MODE=bogus" 1 ;; *"JEV_MODE 'bogus' must be 'off' or 'shadow'"*) check "emit_settings_json refuses JEV_MODE=bogus" 0 ;; *) check "emit_settings_json refuses JEV_MODE=bogus (rc=$RC, err=$ERR)" 1 ;; esac
 [ ! -e "$TMP/jevbogus.json" ]; check "a refused JEV_MODE leaves no settings file" "$?"
+
+# --- restartRecap: the automatic restart recap's switch ---
+# The plugin reads any value but skill as auto, so skill is the one value that
+# changes behaviour, and it must reach both ids. An unset RESTART_RECAP leaves
+# the key out, which the plugin reads as auto. A value outside the pair stops
+# the launch before any file is written, so a typo in the pattern shows here
+# rather than as every launch that sets the switch refusing to start.
+run_lib PERSONA="keyprobe" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/recapunset.json"
+check "emit_settings_json exits 0 with RESTART_RECAP unset" "$?"
+R=$(inspect "$TMP/recapunset.json")
+case "$R" in *"RECAP_DEV_PRESENT=0;"*"RECAP_INSTALLED_PRESENT=0;"*) check "emitted: RESTART_RECAP unset leaves restartRecap out of both ids" 0 ;; *) check "emitted: RESTART_RECAP unset leaves restartRecap out of both ids (out=$R)" 1 ;; esac
+for v in skill auto; do
+  run_lib PERSONA="keyprobe" RESTART_RECAP="$v" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/recap-$v.json"
+  check "emit_settings_json exits 0 with RESTART_RECAP=$v" "$?"
+  R=$(inspect "$TMP/recap-$v.json")
+  case "$R" in *"RECAP_DEV=$v;"*"RECAP_INSTALLED=$v;"*) check "emitted: RESTART_RECAP=$v reaches restartRecap under both ids" 0 ;; *) check "emitted: RESTART_RECAP=$v reaches restartRecap under both ids (out=$R)" 1 ;; esac
+done
+ERR=$(run_lib PERSONA="keyprobe" RESTART_RECAP="Skill" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/recapbogus.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses RESTART_RECAP=Skill" 1 ;; *"RESTART_RECAP 'Skill' must be 'auto' or 'skill'"*) check "emit_settings_json refuses RESTART_RECAP=Skill, naming the pair" 0 ;; *) check "emit_settings_json refuses RESTART_RECAP=Skill (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/recapbogus.json" ]; check "a refused RESTART_RECAP leaves no settings file" "$?"
 
 # --- Section 2: emit_settings_json writes JEV_LIVE as a comma-separated string under both ids ---
 run_lib PERSONA="keyprobe" JEV_LIVE="turn-disposition" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevliveemit.json"

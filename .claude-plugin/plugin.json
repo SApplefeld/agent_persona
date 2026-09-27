@@ -110,6 +110,12 @@
       "title": "Jev live questions",
       "description": "Comma-separated question-set ids, each one of PROMOTABLE_SET_IDS, naming which question may read Jev's live answer through liveAsk instead of always shadowing it. Empty by default: no question is live. An id outside the promotable set is dropped, logged as one jev_live_invalid decision naming it."
     },
+    "restartRecap": {
+      "type": "string",
+      "default": "auto",
+      "title": "Automatic restart recap",
+      "description": "auto or skill, and auto is the default. auto runs bin/restart-recap.mjs at the supervisor's priming turn and injects its digest as a [RESTART RECAP] block, only where the previous session's last record is under 24 hours old and either the persona has an active goal or the operator wrote within 6 hours. skill runs nothing at launch, leaving the recap to the restart-recap skill. Any other value reads as auto at the plugin's own read. A supervisor launch given RESTART_RECAP outside that pair stops rather than writing it."
+    },
     "reconcileEveryMs": {
       "type": "number",
       "default": 14400000,

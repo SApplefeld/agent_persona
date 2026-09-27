@@ -15,6 +15,9 @@ import path from "node:path";
 
 const SESSION_ID = "harness-session";
 const HARNESS_CWD = "D:/harness-root";
+// The plugin's own directory as $.plugin.root reports it. A fixed literal,
+// so a case asserts the exact script path the plugin runs from it.
+const HARNESS_PLUGIN_ROOT = "D:/harness-plugin-root";
 
 // The one path the plugin resolves the heartbeat file to under this harness.
 // The plugin anchors it to the launch directory it captured at session.start,
@@ -239,8 +242,19 @@ function createFake$(opts = {}) {
   // can drive the read's failure path. Empty by default, the shape of a
   // session that has spawned nothing.
   let agentList = [];
+  // Every $.process.run call, in order, as { argv, init }, each a copy taken
+  // at the call. A case pinning that a command never ran reads this staying
+  // empty. A case that replaces h.fake.process.run outright records nothing
+  // here.
+  const processRuns = [];
+  // What each $.process.run call resolves with: a result object, or a
+  // function of (argv, init) whose return value is the result and whose
+  // throw is the rejection. The default is the exit 128 every case before
+  // this list was added ran against.
+  let processRunAnswer = { exitCode: 128 };
 
   const fake = {
+    plugin: { name: "agentic-plugin", root: HARNESS_PLUGIN_ROOT },
     ui: {
       log(msg) { uiLogs.push(String(msg)); },
       status() {},
@@ -409,7 +423,15 @@ function createFake$(opts = {}) {
       keys() { return Promise.resolve([...storeMap.keys()]); },
     },
     process: {
-      run() { return Promise.resolve({ exitCode: 128 }); },
+      run(argv, init) {
+        processRuns.push({
+          argv: Array.isArray(argv) ? [...argv] : argv,
+          init: init === undefined ? undefined : { ...init },
+        });
+        const answer = processRunAnswer;
+        if (typeof answer === "function") return Promise.resolve().then(() => answer(argv, init));
+        return Promise.resolve(answer);
+      },
     },
     // The session's agents so far, as the real $.agent.list() lists the ones
     // the model spawned and the ones plugins did alike. A function value is
@@ -459,6 +481,10 @@ function createFake$(opts = {}) {
     // What every subsequent $.agent.list() resolves with: an array of rows,
     // or a function of no arguments returning one (or throwing).
     setAgentList(v) { agentList = v; },
+    // What every subsequent $.process.run resolves with: a result object, or
+    // a function of (argv, init) returning one or throwing to reject.
+    setProcessRun(v) { processRunAnswer = v; },
+    processRuns,
     fsWriteRefusals,
     // Set (or, with undefined, unset) a variable $.env.get reads.
     setEnv(name, value) {
@@ -917,6 +943,7 @@ export {
   jevResponseFor,
   SESSION_ID,
   HARNESS_CWD,
+  HARNESS_PLUGIN_ROOT,
   HARNESS_HOME,
   JOURNAL_MARK,
   JEV_FAKE_KEY,

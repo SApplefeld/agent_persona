@@ -1,0 +1,130 @@
+#!/usr/bin/env node
+// A stand-in for the Claude Code CLI, for .kit/upgrade-check-unit-test.mjs.
+// It answers the four invocations bin/upgrade-check.mjs makes and nothing
+// else, so an invocation the script changes shape on fails here rather than
+// passing unread.
+//
+// No extension, and a shebang, so one file serves every shell: the check
+// resolves it off PATH and launches it through node, Git Bash resolves it by
+// its shebang, and no .cmd shim is needed. A .cmd forwarding with %* would be
+// a command-injection surface, since cmd.exe substitutes the arguments into
+// its command line before parsing them.
+//
+// Each case is driven by the environment, so one fixture covers every case
+// the suite needs:
+//   FAKE_CLAUDE_CALLS        a file each invocation appends one JSON line to:
+//                            its arguments, its working directory and whether
+//                            CLAUDE_CODE_ENABLE_FUNCTION_HOOKS reached it.
+//   FAKE_CLAUDE_VERSION      what --version prints (default 9.9.9).
+//   FAKE_CLAUDE_VERSION_EXIT its exit code (default 0).
+//   FAKE_CLAUDE_TYPES_FILE   the types text /plugin-types writes.
+//   FAKE_CLAUDE_TYPES_WRITE  "none" to write no types file at all.
+//   FAKE_CLAUDE_TYPES_EXIT   /plugin-types' exit code (default 0).
+//   FAKE_CLAUDE_VALIDATE_OUT what plugin validate prints (default: one
+//                            warning block).
+//   FAKE_CLAUDE_VALIDATE_EXIT   its exit code (default 0).
+//   FAKE_CLAUDE_TEST_OUT     what plugin test prints.
+//   FAKE_CLAUDE_TEST_EXIT    its exit code (default 0).
+//   FAKE_CLAUDE_SMOKE_LOG    the debug log the smoke run writes.
+//   FAKE_CLAUDE_SMOKE_WRITE  "none" to write no debug log at all.
+//   FAKE_CLAUDE_SMOKE_EXIT   its exit code (default 0).
+//   FAKE_CLAUDE_HANG_ON      one of version, types, validate, test, smoke:
+//                            that invocation sleeps FAKE_CLAUDE_HANG_MS.
+//   FAKE_CLAUDE_HANG_MS      how long it sleeps (default 600000).
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const args = process.argv.slice(2);
+const env = process.env;
+
+const DEFAULT_TYPES = '// Written by Claude Code ' + (env.FAKE_CLAUDE_VERSION || '9.9.9') + '.\n';
+const DEFAULT_VALIDATE = [
+  'Validating plugin manifest: plugin.json',
+  '',
+  'Found 1 warning:',
+  '',
+  '  root: CLAUDE.md at the plugin root is not loaded as project context.',
+  '',
+].join('\n');
+const DEFAULT_SMOKE = [
+  'plugin agentic-plugin: admitted',
+  'plugin agentic-plugin: session.start settled in 11.8 ms',
+  'engine: tasks gate off',
+].join('\n');
+
+function record(kind) {
+  if (env.FAKE_CLAUDE_CALLS) {
+    fs.appendFileSync(env.FAKE_CLAUDE_CALLS, JSON.stringify({
+      kind,
+      args,
+      cwd: process.cwd(),
+      functionHooks: env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS || '',
+    }) + '\n');
+  }
+  if (env.FAKE_CLAUDE_HANG_ON === kind) {
+    const ms = Number(env.FAKE_CLAUDE_HANG_MS || 600000);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  }
+}
+
+function exitCode(name) {
+  const raw = env[name];
+  return raw === undefined || raw === '' ? 0 : Number(raw);
+}
+
+function valueAfter(flag) {
+  const i = args.indexOf(flag);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : '';
+}
+
+const prompt = valueAfter('-p');
+
+if (args.includes('--version')) {
+  record('version');
+  process.stdout.write((env.FAKE_CLAUDE_VERSION || '9.9.9') + ' (Claude Code)\n');
+  process.exit(exitCode('FAKE_CLAUDE_VERSION_EXIT'));
+}
+
+if (args[0] === 'plugin' && args[1] === 'validate') {
+  record('validate');
+  process.stdout.write((env.FAKE_CLAUDE_VALIDATE_OUT || DEFAULT_VALIDATE) + '\n');
+  process.exit(exitCode('FAKE_CLAUDE_VALIDATE_EXIT'));
+}
+
+if (args[0] === 'plugin' && args[1] === 'test') {
+  record('test');
+  process.stdout.write((env.FAKE_CLAUDE_TEST_OUT || 'ran 0 test files') + '\n');
+  process.exit(exitCode('FAKE_CLAUDE_TEST_EXIT'));
+}
+
+if (prompt === '/plugin-types') {
+  record('types');
+  if (env.FAKE_CLAUDE_TYPES_WRITE !== 'none') {
+    const dir = path.join(process.cwd(), '.claude', 'types');
+    fs.mkdirSync(dir, { recursive: true });
+    const body = env.FAKE_CLAUDE_TYPES_FILE ? fs.readFileSync(env.FAKE_CLAUDE_TYPES_FILE, 'utf8') : DEFAULT_TYPES;
+    fs.writeFileSync(path.join(dir, 'claude-code.d.ts'), body);
+    // The real command writes the tool-list mirror beside the types, read off
+    // a session whose plugin stayed passive, so it lacks the plugin's own
+    // tools. The fake compiler refuses any compile that reads this file.
+    fs.writeFileSync(path.join(dir, 'claude-code-mcp.d.ts'), '// SCRATCH_MIRROR: the scratch session\'s tools, without the plugin\'s.\n');
+  }
+  process.stdout.write('wrote the type files\n');
+  process.exit(exitCode('FAKE_CLAUDE_TYPES_EXIT'));
+}
+
+const debugFile = valueAfter('--debug-file');
+if (prompt && debugFile) {
+  record('smoke');
+  if (env.FAKE_CLAUDE_SMOKE_WRITE !== 'none') {
+    const body = env.FAKE_CLAUDE_SMOKE_LOG === undefined ? DEFAULT_SMOKE : env.FAKE_CLAUDE_SMOKE_LOG;
+    fs.writeFileSync(path.resolve(process.cwd(), debugFile), body + '\n');
+  }
+  process.stdout.write('ok\n');
+  process.exit(exitCode('FAKE_CLAUDE_SMOKE_EXIT'));
+}
+
+record('unknown');
+process.stderr.write('fake claude: no case for ' + JSON.stringify(args) + '\n');
+process.exit(64);

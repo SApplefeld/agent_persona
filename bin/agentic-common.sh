@@ -158,7 +158,9 @@ jev_live_to_csv() {
 #          and fleetRoster (from FLEET_ROSTER, which has no default either
 #          and is omitted the same way), and supervisorMailbox, heartbeatPath
 #          and supervisorHeartbeatPath (from SUPERVISOR_MAILBOX, HEARTBEAT_PATH
-#          and SUPERVISOR_HEARTBEAT_PATH, each omitted the same way); and,
+#          and SUPERVISOR_HEARTBEAT_PATH, each omitted the same way), and
+#          restartRecap (from RESTART_RECAP, auto or skill, omitted the same
+#          way and refused outside that pair); and,
 #          outside the plugin options, the harness's own autoContinue, always
 #          false.
 # Exports COORDINATOR_PERSONA and ARCHITECT_PERSONA to the values it wrote, so
@@ -202,6 +204,23 @@ emit_settings_json() {
         ;;
     esac
     jev_opts=",\"jevMode\":\"$JEV_MODE\""
+  fi
+  # restartRecap switches the automatic [RESTART RECAP] block at the priming
+  # turn: auto runs the recap script there, skill leaves the recap to the
+  # skill alone. An unset or empty RESTART_RECAP omits the key, and the plugin
+  # reads a missing key as auto. A set value outside that pair is refused the
+  # way JEV_MODE's is, rather than reaching the child where it would read as
+  # auto.
+  local recap_opts=""
+  if [ -n "${RESTART_RECAP:-}" ]; then
+    case "$RESTART_RECAP" in
+      auto|skill) ;;
+      *)
+        echo "ERROR: emit_settings_json: RESTART_RECAP '$RESTART_RECAP' must be 'auto' or 'skill'" >&2
+        return 1
+        ;;
+    esac
+    recap_opts=",\"restartRecap\":\"$RESTART_RECAP\""
   fi
   # jevLive names, by id, which of the two questions PROMOTABLE_SET_IDS ships
   # may read Jev's live answer; empty by default, so a fresh install promotes
@@ -335,7 +354,7 @@ emit_settings_json() {
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$jev_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt$supervisor_opts}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$jev_opts$recap_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt$supervisor_opts}"
   # autoContinue is the harness's own setting, at the top level rather than
   # under a plugin id. Off, a child that trips a usage limit ends its turn and
   # sits idle rather than parking until the limit resets, and the supervisor's
