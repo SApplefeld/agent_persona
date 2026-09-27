@@ -799,7 +799,7 @@ export function pre(flags) {
     if (e && e.code !== 'ENOENT') cannotRun('the scratch folder ' + scratch + ' cannot be read: ' + e.message);
   }
   if (existing && existing.length > 0 && !existing.includes(SCRATCH_MARKER)) {
-    cannotRun('the scratch folder ' + scratch + ' holds files and no ' + SCRATCH_MARKER + ' marker, so no run of this check made it, and the scratch folder is emptied at the start of a run; name an empty or absent folder');
+    cannotRun('the scratch folder ' + scratch + ' holds files and no ' + SCRATCH_MARKER + ' marker, so no run of this check made it, and the scratch folder is emptied at the start of a run; delete that folder by hand, or name an empty or absent one');
   }
   try {
     if (existing && existing.length > 0) fs.rmSync(scratch, { recursive: true, force: true });
