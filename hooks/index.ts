@@ -63,6 +63,8 @@ import {
   bracketSafeText,
   LINE_TERMINATOR,
   oneLine,
+  recordPreviousSession,
+  previousSessionsText,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem, TurnRecord, TurnRecordStamp } from "./agent-state";
@@ -5515,6 +5517,7 @@ export const register: Register = async (on, options) => {
         sess.myEpoch = sess.state.epoch;
         sess.isOwner = true;
         const prevId = holderHb?.sessionId ?? existingPersona.activeSessionId;
+        recordPreviousSession(sess.state, prevId, sess.mySessionId);
         sess.state.decisions.push({
           timestamp: now,
           loop: "monitor",
@@ -5751,6 +5754,7 @@ export const register: Register = async (on, options) => {
                 const claims = await readAllClaims(commonsStoreOf($), staleAfterMs);
                 const winner = commonsWinner(claims, `persona:${sess.persona}`);
                 if (winner === null || winner === sess.mySessionId) {
+                  recordPreviousSession(sess.state, onDisk.activeSessionId, sess.mySessionId);
                   sess.state.activeSessionId = sess.mySessionId;
                   // Above the epoch the store carries, so that the guarded
                   // write this session makes next reads its own claim rather
@@ -5902,6 +5906,7 @@ export const register: Register = async (on, options) => {
             // before the yield is not added to this tree's count either.
             sess.nudgedAnswersWithoutStatus = 0;
             countResetSinceNudgeOpened = true;
+            recordPreviousSession(sess.state, holderHb?.sessionId ?? sess.state.activeSessionId, sess.mySessionId);
             sess.state.activeSessionId = sess.mySessionId;
             sess.state.epoch += 1;
             sess.myEpoch = sess.state.epoch;
@@ -10280,7 +10285,7 @@ export const register: Register = async (on, options) => {
         });
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
         return {
-          result: `persona '${sess.persona}': joined as reader (arming reader). ${sess.state.memory.length} memories.`,
+          result: `persona '${sess.persona}': joined as reader (arming reader). ${sess.state.memory.length} memories. ${previousSessionsText(sess.state)}`,
         };
       }
       // Backlog fix (commons claim staleness): a commons session record shares
@@ -10357,11 +10362,12 @@ export const register: Register = async (on, options) => {
         // D2: Claim the reader role
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
         return {
-          result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${sess.state.memory.length} memories.`,
+          result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${sess.state.memory.length} memories. ${previousSessionsText(sess.state)}`,
         };
       }
 
       // Commons winner: take ownership, bump epoch, write heartbeat.
+      recordPreviousSession(sess.state, sess.state.activeSessionId, sess.mySessionId);
       sess.state.activeSessionId = sess.mySessionId;
       sess.state.epoch += 1;
       sess.myEpoch = sess.state.epoch;
@@ -10383,7 +10389,7 @@ export const register: Register = async (on, options) => {
       // must not go through persist's yield check.
       await writeClaimDirect($);
       return {
-        result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${sess.state.memory.length} memories.`,
+        result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${sess.state.memory.length} memories. ${previousSessionsText(sess.state)}`,
       };
     }
 

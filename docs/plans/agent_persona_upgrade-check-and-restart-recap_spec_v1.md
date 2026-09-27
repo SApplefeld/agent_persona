@@ -284,3 +284,15 @@ Not a Chapter. Section 3 is mid-implementation and unclosed, so it carries no `C
 **Rulings adopted since the last boundary.** None. Two plan-text corrections landed in Chapter 2: sections 2 and 5 accept validate by manifest plus a control.
 
 **Other state.** PR #118 (jevLive as a comma-separated string) merged as ccfeb16 on the operator's approval, after its offline gate read 25 of 26 suites at exit 0. The 26th, `supervisor-natural-exit-test.sh`, fails five checks on main as well, confirmed by three solo runs of the `pkdu` case and by the root_complete pin's own extraction reading 0 on main, and `docs/backlog.md` gains that entry in this commit. The installed plugin was updated to ccfeb16, `claude plugin validate` on it exits 0 with no errors, and a passive headless load from an empty folder admitted it and settled `session.start` with no error line.
+
+### Interim board 3 - 2026-09-27
+
+Not a Chapter. Section 3 has passed step 2 verification and landed its first-green commit, and its review round has not run, so it carries no `Completed:` line.
+
+**Why this boundary exists.** The operator asked on the relay thread for a second fleet-wide restart, so every persona picks up the plugin build ccfeb16. Nothing was in flight, so this is a park with no dispatch to stop.
+
+**Section 3's stage.** The implementer's stopped work turned out complete on resume: all four claim sites call `recordPreviousSession`, and `agentic_identity`'s three answers carry `previousSessionsText`. No re-dispatch was needed. Step 2 read on this worktree at 8829773 plus the four section files, 2026-09-27 on SCOTT-CLAUDE, beside another session's `supervisor-natural-exit-test.sh` run from D:/agent_persona-jevlive: `node .kit/controller-tick-test.mjs` exit 0, `PASS: 0 failure(s)`, 33 lineage checks OK; `.kit/cost-migration-test.mjs` exit 0; `.kit/task-store-unit-test.mjs` exit 0; `node .kit/check-loader-rule.mjs` exit 0; `tsc --noEmit -p tsconfig.json` with the main checkout's TypeScript, exit 0. Red-first probe: with the four `recordPreviousSession(sess.state, ...)` lines deleted, the controller suite exited 10 with 10 lineage checks failing, covering all four sites; `hooks/index.ts` was restored from a copy and verified by `cmp` and a porcelain diff.
+
+**Next action for the resuming session.** Step 3's round on section 3: adversarial and blind at fable low on the Agent tool, over base 8829773, since the writer tier is opus. The delta touches a hostile boundary, store text returned to a model, so the security reviewer joins; it also runs on the per-tool-call claim path, so the performance reviewer joins. Then step 4, the Chapter, and section 4.
+
+**Rulings adopted since the last boundary.** None.
