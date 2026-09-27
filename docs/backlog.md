@@ -870,3 +870,11 @@ The instrument is calibrated rather than anchored. It discovers how many reads t
 Nothing is wrong today: the sweep reddens on the defect it was written for, proven by a withheld mutation that made the mark read the open slot again.
 
 Remedy: assert what the reach check itself contributes rather than what the boundary totals, so the sweep names the read it depends on and reddens when that read goes away. The general form is the one this repository keeps relearning: a check calibrated from the subject's own behaviour cannot tell a covered absence from an uncovered one.
+
+## The plan index states two different running orders for the same two plans (found 2026-09-27)
+
+`docs/README.md` gives the persona memory port plan as running last, "after boundary-compaction, goal-every-turn and jev-memory-gate merge". Four lines later it gives the Jev memory gate plan as "second behind the persona memory curation plan in the persona queue". The first sentence puts the memory port after the gate and the second puts the gate after the memory plan, so one of the two is wrong and a reader picking up either plan takes the wrong predecessor.
+
+A blind reader of the index found it while reviewing section 7 of the goal-every-turn plan. It is not that section's subject: both sentences predate it, neither names the record layer, and the running order of two parked plans is the operator's to set rather than a fact recoverable from the code. Fixing it here would mean guessing which order was meant.
+
+Remedy: ask the operator which of the two runs first, then state that one order in both rows. The general form is worth carrying, since this index carries one row per plan and every row states its own position: a running order written once per participant has no single place to be wrong, so the rows drift against each other rather than against a source.

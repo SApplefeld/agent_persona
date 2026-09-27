@@ -301,8 +301,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // event a co-loaded hook may answer with a value of its own, so a hostile
 // shape here is reachable rather than exotic. The guard is exported-shaped
 // (one helper, every site) rather than repeated inline, because it is a
-// property of the channel and not of the site that first needed it: three of
-// the four sites were written by hand without it and the fourth with it.
+// property of the channel and not of the site that first needed it, so every
+// site that stringifies a value off the injected host calls it.
 function safeString(v: unknown, fallback: string): string {
   try {
     return String(v);
@@ -676,12 +676,12 @@ async function send(
   // It is bounded at the mode's timeout and there is at most one per call.
   // The count across a tick, a turn and a prompt is the count of call sites,
   // each of which makes one call: two on a tick, the controller decision and
-  // the plan switch; three on a turn, the turn score, the memory kind gate and
-  // the plan health request; and one on a prompt, the turn-open question the
-  // record step asks before the model reads the message. Six, read off those
-  // sites rather than derived, so a site added later leaves this number
-  // checkable against them. Still bounded, still harmless, and worth stating
-  // truthfully.
+  // the plan switch; four on a turn, the turn score, the memory kind gate, the
+  // plan health request and the turn-disposition question the record close
+  // asks; and one on a prompt, the turn-open question the record step asks
+  // before the model reads the message. Seven, read off those sites rather
+  // than derived, so a site added later leaves this number checkable against
+  // them. Still bounded, still harmless, and worth stating truthfully.
   // The other orphan is the request: $.http.fetch takes no abort signal
   // either, so when the timer wins, the request it raced stays open for as
   // long as the host's own fetch allows.
