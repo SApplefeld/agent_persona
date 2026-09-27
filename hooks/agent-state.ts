@@ -40,6 +40,24 @@ export function bracketSafeText(text: string): string {
  */
 export const LINE_TERMINATOR = /\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u;
 
+/**
+ * One line of text, whatever terminators it arrived carrying, each replaced by
+ * a single space. This is the fold every context block owes the text it prints,
+ * and it belongs to the block rather than to whichever field first needed it:
+ * a block the plugin composes whole states the persona's own situation, so a
+ * line inside it that the plugin did not write reads as one the plugin did. A
+ * forged `WORKING`, `BLOCKED` or `WAITING` lead is the case that costs
+ * something, and a status line needs no bracket, so the bracket rule above does
+ * not reach it.
+ * It sits here with the terminator set and the bracket rule because the three
+ * are one guard on one channel. A print that folds with its own copy of this is
+ * a second place the set can drift, which is the defect this module exists to
+ * make impossible.
+ */
+export function oneLine(text: string): string {
+  return text.split(LINE_TERMINATOR).join(" ");
+}
+
 export interface MemoryEntry {
   id: string;
   kind: "fact" | "preference" | "lesson" | "goal" | "eval";
@@ -391,7 +409,7 @@ export const TURN_RECORD_TEXT_MAX = 80;
 // cut to length, fold to one line, then neutralize the brackets.
 export function clampTurnRecordText(text: string): string {
   const cut = text.length > TURN_RECORD_TEXT_MAX ? text.slice(0, TURN_RECORD_TEXT_MAX) : text;
-  return bracketSafeText(cut.split(LINE_TERMINATOR).join(" "));
+  return bracketSafeText(oneLine(cut));
 }
 
 // A record id, minted in the goal nodes' shape: a prefix, the clock in base 36,

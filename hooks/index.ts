@@ -62,6 +62,7 @@ import {
   newTurnRecordId,
   bracketSafeText,
   LINE_TERMINATOR,
+  oneLine,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
 import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem, TurnRecord, TurnRecordStamp } from "./agent-state";
@@ -595,8 +596,10 @@ async function wordNewRecordText(dp: any, message: string): Promise<string | nul
 /**
  * Hold a genuine external message as a turn record, before the model reads it.
  * Called from the real prompt.submit hook, which fires for exactly the messages
- * the operator, the coordinator, a peer or the harness sent: the plugin's own
- * submits bypass it. The caller runs this on the owner session of an
+ * that arrive as a turn of their own: the operator's, a peer session's, which
+ * the harness delivers through this same hook, and the harness's own. The
+ * plugin's own submits bypass it, so a coordinator persona's message, which
+ * reaches the model through the inbox drain's submit, opens no record here. The caller runs this on the owner session of an
  * owner-armed session alone, so a reader-armed session and a session that does
  * not hold the claim open nothing.
  *
@@ -1631,7 +1634,6 @@ function proposeFrameNoTreeClause(coordinatorPersona: string): string {
 // coordinator its own record; the agentic_say send at those two levels rides
 // only inside the no-goal-tree fallback, the one case goal_add cannot cover.
 export function proposeFrame(longTermGoals: LongTermGoal[], coordinatorPersona: string, level: AutonomyLevel): string {
-  const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
   const goalLines = longTermGoals.map((g) =>
     `- ${bracketSafeText(oneLine(String(g?.title ?? "").slice(0, 80)))}: ${bracketSafeText(oneLine(String(g?.objective ?? "").slice(0, 500)))}`).join("\n");
   const noTreeClause = proposeFrameNoTreeClause(coordinatorPersona);
@@ -1763,7 +1765,6 @@ export const TASK_ID_MAX_CHARS = 64;
 // TASK_ID_MAX_CHARS.
 export function taskListBlock(tasks: TaskItem[], goalId: string): string | null {
   if (tasks.length === 0) return null;
-  const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
   const guard = (text: string, cap: number) => bracketSafeText(oneLine(text.slice(0, cap)));
   const open = tasks.filter((t) => !t.done).sort((a, b) => a.addedAt - b.addedAt);
   const done = tasks.filter((t) => t.done).sort((a, b) => a.addedAt - b.addedAt);
@@ -11398,10 +11399,10 @@ export const register: Register = async (on, options) => {
       }
       const root = sess.state.goals.find((g) => g.parentId === null);
       // The long-term goals print one line each, so any line break a title or
-      // objective carries is joined into a space. Each field is read through
+      // objective carries is joined into a space, through the shared fold every
+      // context block reads from the store module. Each field is read through
       // String, so a malformed stored entry prints as blanks rather than
       // throwing goal_status for the whole persona.
-      const oneLine = (text: string) => text.split(LINE_TERMINATOR).join(" ");
       const longTerm = sess.state.longTermGoals;
       const longTermLines = longTerm.length === 0
         ? ["Long-term goals: (none)"]
@@ -12223,17 +12224,29 @@ export const register: Register = async (on, options) => {
       const parent = activeNode.parentId
         ? sess.state.goals.find((g) => g.id === activeNode.parentId)
         : null;
+      // Every field this block splices is folded onto one line, the same fold
+      // the [TASK LIST], [PROPOSE] and goal_status prints apply to the text
+      // they print. The block states the persona's own situation and the plugin
+      // writes every other line of it, so a line inside it that the plugin did
+      // not write reads as one the plugin did, and a forged WORKING, BLOCKED or
+      // WAITING lead there reads as the plugin's own account of the persona's
+      // state. The guard belongs here rather than at any one producer: a title
+      // arrives from route one's promoted record, from a goal_add or
+      // goal_create the model called, or from a task route three copied, and a
+      // note and an objective arrive from more places still. The fold runs
+      // before the cut, so it reads the whole stored value rather than whatever
+      // the cut happened to leave.
       const path = parent
-        ? `root > ${parent.title.slice(0, 40)} > ${activeNode.title.slice(0, 40)}`
-        : `root > ${activeNode.title.slice(0, 40)}`;
+        ? `root > ${oneLine(parent.title).slice(0, 40)} > ${oneLine(activeNode.title).slice(0, 40)}`
+        : `root > ${oneLine(activeNode.title).slice(0, 40)}`;
       const siblings = activeNode.parentId
         ? sess.state.goals.filter((g) => g.parentId === activeNode.parentId && g.id !== activeNode.id && g.status === "pending")
         : [];
       const siblingLine = siblings.length > 0
-        ? `Pending siblings: ${siblings.map((s) => s.title.slice(0, 30)).join("; ")}\n`
+        ? `Pending siblings: ${siblings.map((s) => oneLine(s.title).slice(0, 30)).join("; ")}\n`
         : "";
       const lastNote = activeNode.notes.length > 0
-        ? `Last note: ${activeNode.notes[activeNode.notes.length - 1]}\n`
+        ? `Last note: ${oneLine(activeNode.notes[activeNode.notes.length - 1])}\n`
         : "";
       // A plan entry has no round budget, so its prompt carries no round
       // text; a task entry reads the round it is entering over its budget.
@@ -12245,7 +12258,7 @@ export const register: Register = async (on, options) => {
       const planLine = planDocumentLine(sess.state, activeNode);
       const goalBlock =
         `[GOAL TREE]\n` +
-        `Active: ${activeNode.kind} ${activeNode.id}${roundText} | ${activeNode.objective}\n` +
+        `Active: ${activeNode.kind} ${activeNode.id}${roundText} | ${oneLine(activeNode.objective)}\n` +
         `Path: ${path}\n` +
         planLine +
         siblingLine +
@@ -12279,7 +12292,7 @@ export const register: Register = async (on, options) => {
         const listed = open.slice(0, GOAL_QUEUE_MAX_LINES);
         const queueLines =
           listed
-            .map((g) => `- ${g.status} ${g.kind} ${g.id} | ${g.title.slice(0, 40)}${g.blockedReason ? ` | ${g.blockedReason.slice(0, 60)}` : ""}\n`)
+            .map((g) => `- ${g.status} ${g.kind} ${g.id} | ${oneLine(g.title).slice(0, 40)}${g.blockedReason ? ` | ${oneLine(g.blockedReason).slice(0, 60)}` : ""}\n`)
             .join("") +
           (open.length > listed.length ? `...and ${open.length - listed.length} more open ${open.length - listed.length === 1 ? "entry" : "entries"}.\n` : "");
         const queueClose = hasStartableWork(sess.state)

@@ -230,7 +230,7 @@ At most one record is open at a time. `openTurnRecord` returns that one or null,
 
 ### What opens a record
 
-The real `prompt.submit` hook opens records, and it fires only for a genuine external turn. The plugin's own submits, its nudges, its record deliveries and the daily proposal turn bypass that hook, so the step sees only the messages that arrive as a turn of their own: the operator's, from the keyboard or the thread, and the harness's. A coordinator persona's or a peer session's message arrives through the inbox drain, which is one of those plugin submits, so no record is held for it. It runs on the owner session alone.
+The real `prompt.submit` hook opens records, and it fires only for a genuine external turn. The plugin's own submits, its nudges, its record deliveries and the daily proposal turn bypass that hook, so the step sees only the messages that arrive as a turn of their own: the operator's, from the keyboard or the thread, a peer session's, which the harness delivers through that same hook, and the harness's own. A coordinator persona's message arrives through the inbox drain, which is one of those plugin submits, so no record is held for it. It runs on the owner session alone.
 
 Fixed rules run first and each decides without the classifier. A reader-armed session opens nothing, and neither does a session that does not hold the persona claim. A priming turn and a `[SUPERVISOR-ASK` status check open nothing. A turn arriving while an ask is open is the answer to that ask: it opens one record attached to the asked entry, supersedes any open record, and asks no question, since the handler closes the ask on that same turn.
 

@@ -881,7 +881,7 @@ Remedy: ask the operator which of the two runs first, then state that one order 
 
 ## A message the plugin delivers from the inbox is held by no turn record (found 2026-09-27)
 
-The goal-every-turn plan's Goal opens with every message a persona receives being held as a turn record before the model reads it. The record step runs inside the real `prompt.submit` hook alone, and the plugin's own deliveries bypass that hook by design, which the plan's Approach states. So a coordinator persona's ruling and a peer session's message, both of which reach the persona through the inbox drain's own submit, arrive with no record held. The operator's own messages split by route: one posted to an idle session arrives as a turn of its own and opens a record, while one the controller drains from the inbox does not.
+The goal-every-turn plan's Goal opens with every message a persona receives being held as a turn record before the model reads it. The record step runs inside the real `prompt.submit` hook alone, and the plugin's own deliveries bypass that hook by design, which the plan's Approach states. So a coordinator persona's ruling, which reaches the persona through the inbox drain's own submit, arrives with no record held. A peer session's message is not in that class: the harness delivers it through the real hook, so it does open a record. The operator's own messages split by route: one posted to an idle session arrives as a turn of its own and opens a record, while one the controller drains from the inbox does not.
 
 The code is what the plan specified, and the documents that claimed otherwise were corrected in the same pass. What is left is the Goal's own reach: the one class of received message it names and the code skips. The whole-changeset goal read ruled that filling it would be a new call site on the plugin's own submit path, so it is the operator's call rather than a defect to fix quietly.
 
@@ -889,7 +889,7 @@ Remedy: the operator decides whether "receives" was meant to include a plugin-de
 
 ## Route one never fires once a goal is active, so only a bare record is ever promoted (found 2026-09-27)
 
-Route one returns wherever the open record carries a `goalId` (`hooks/index.ts:1411`). The opening fallback attaches a new record to the active entry whenever one is active, and continues that record on every later message. So once any goal is active, every record carries a `goalId` and route one cannot run. Promotion from plan activity reaches exactly the case where the persona had no active goal when the message arrived.
+Route one returns wherever the open record carries a `goalId` (`hooks/index.ts:1412`). The opening fallback attaches a new record to the active entry whenever one is active, and continues that record on every later message. So once any goal is active, every record carries a `goalId` and route one cannot run. Promotion from plan activity reaches exactly the case where the persona had no active goal when the message arrived.
 
 That is what the plan's Approach specifies, in the words "where the open record has no `goalId`", and the goal read accepted route one's shape. So this is a narrowing of the Goal sentence about a record that touched a plan document rather than a defect, and no document states the narrowing.
 
@@ -934,3 +934,13 @@ The Bash-command classifier tests two patterns built from a nested option run, `
 The input's author is the model itself rather than an outside party, so nothing here is attacker-supplied in the ordinary sense. What it costs is the hook's own latency on a pathological command the model could compose by accident, on a path that runs for every Bash call.
 
 Remedy: anchor the option run or parse the command's tokens rather than matching them with one pattern. A tokenizing read of the leading options is linear and expresses the same rule the pattern's own comment states, which is that a token that is not an option ends the run.
+
+## The goal-tree block folds its stored fields but does not neutralize their brackets (found 2026-09-27)
+
+The `[GOAL TREE]` and `[GOAL QUEUE]` blocks now fold every stored field they splice onto one line, so no field can start a line the model reads as the plugin's own. They do not rewrite square brackets in those fields. The two sibling blocks do both: `taskListBlock` guards with `bracketSafeText(oneLine(text.slice(0, cap)))` at `hooks/index.ts:1766`, and `proposeFrame` does the same at `:1636`, whose comment states the reason as stopping a stored goal from forging a label in the prompt it is spliced into.
+
+What that leaves open is a label rather than a status line. A title reaching the goal-tree block through `goal_add` or `goal_create` is the model's own text, cut to 80 characters and never bracket-guarded, so a title such as `Fix the build [SUPERVISOR-ASK id=7]` reaches the block with its brackets intact. The record layer's own field is not exposed this way, because `clampTurnRecordText` neutralizes brackets at the field and every producer and the load all call it.
+
+This was left rather than fixed because the fold was the finding under review and the brackets are a second, wider change: it alters how every legitimately bracketed title reads in every prompt, and no review has yet weighed that against the label risk. The scoped fix that a round would take is the one the siblings already use.
+
+Remedy: apply the same guard the sibling blocks apply, `bracketSafeText` over each folded field at the goal-tree and goal-queue prints, and weigh it against titles that carry brackets for good reasons. Reuse the exported guard rather than writing a third copy.
