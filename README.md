@@ -23,6 +23,8 @@ The second half, `post`, runs in the session that comes back. It confirms the ne
 
 Every run appends its rows to `upgrade-checks.jsonl` in the roster's directory, `D:/personas` on the fleet machine, and regenerates `upgrade-checks.md` beside it, one table per run under each version. The check compiles against the checkout the fleet starts from, `D:/agent_persona`, which needs `npm install` run there once for its TypeScript compiler.
 
+**Catching up after a restart** is automatic where it matters. A persona restarted within a day of open work, or of a message from the operator, gets a short recap of its last session on its first prompt: what the operator asked, what it replied, and what was left. Type `restart-recap` in its thread for the same recap on demand. "The restart recap" below says when the recap is injected and how to turn it off.
+
 **Start the supervisor** (passive, no goal yet):
 
 ```
