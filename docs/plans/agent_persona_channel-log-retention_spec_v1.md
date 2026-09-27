@@ -120,3 +120,25 @@ Not a Chapter. Sections 1 and 2 are in flight, so this entry carries no `Complet
 **Next action.** Section 1's and section 2's review pairs as each returns; section 3 inline once both have landed.
 
 **Rulings adopted since the last boundary.** None.
+
+### Chapter 1 - 2026-09-27
+Completed: 2. The roster field through the keeper
+Implemented By: implementer-sonnet
+Metrics: review rounds 0, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- add-decision (section 2 open): map the roster field `channelLogRetentionDays` to the supervisor's environment under the same name, name it in the function's description, and pin it in the keeper unit test; serves the Goal's "The window is a roster field, `channelLogRetentionDays`, default 14, so the operator sets it per persona in `fleet.json`"; no mechanism, one map entry beside `controllerTickMs`; about 3 lines of script and 3 of test; without it the roster value never reaches the supervisor and every persona keeps the default.
+- The plan's `Status:` header moved from `Ready` to `In Progress` when the run started (commit 5365c00). That header sits inside the approval fingerprint, so this first Chapter records the change as deliberate.
+- Section 2 ran ahead of section 1. The two sections share no file, so they ran staggered in one worktree. Section 1 is still in flight at this Chapter.
+- The implementer added `channelLogRetentionDays` to the test's ambient-environment scrub (`.kit/keeper-unit-test.mjs:49`). Its reason, which I confirmed against that list's own comment: without the scrub, a value set in the runner's shell could make both the full-entry pin and the minimal-entry absence check pass with the map row broken.
+- Incident: while cleaning up, the section 2 implementer removed the whole `.kit/scratch/log-retention/` folder, not just its own files. That deleted both sections' add-decision files and any restore copies section 1's implementer kept there. I recreated the two add-decision files from the session record. Section 1's implementer was told to retake its baseline from `git show HEAD:<path>` and to keep scratch under its own subfolder.
+Failed approaches: none
+Assumptions: none
+Review Findings: per-section review skipped as a trivial section (one map row, one comment list, one fixture field, one expected key, one scrub entry, no logic), under the section loop's trivial-section option; the finishing pass reviews the whole changeset. Critical/Major: none. Minors: 0.
+Stamps: adjudicated 8, stamped 1; `a-premise-marked-confirmed-in-a-brief-is-never-re-derived-downstream` (operator tier) changed section 1's brief, since the `find` premise was run before it was marked confirmed. The other seven were read, including `the-live-gate-is-operator-only-while-the-fleet-is-up`, and changed nothing built in this stretch.
+Gate: targeted lane `node --test .kit/keeper-unit-test.mjs`, 97 PASS lines, 0 FAIL lines, exit 0, run by the orchestrator on the worktree at b0dec06 plus section 1's and section 2's unstaged edits, 2026-09-27, this box, with the fleet live and section 1's implementer active beside it; no earlier baseline on this lane on this branch. The implementer reports a red run first, with the fixture and expectation changed and the map row absent: 96 passed, 1 failed (the full-entry mapping test), exit 1. That red run is reported, not re-run. Test delta: 0 tests added, 0 retired, 1 edited (the full-entry mapping test, which now pins that `channelLogRetentionDays` reaches the supervisor's environment as a string); 0 added tests spawn a process.
+Next: 1. The sweep function, its two call sites, and their pins
+Commit Model: Branch-and-PR
+Delta: 2026-09-27, this box, worktree at b0dec06 with sections 1 and 2 unstaged.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
