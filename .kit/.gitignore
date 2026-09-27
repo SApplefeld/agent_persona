@@ -40,3 +40,5 @@
 !/injection-ledger.json
 !/injection-duplicate-test.mjs
 !/tool-description-length-test.mjs
+!/upgrade-check-unit-test.mjs
+!/fixtures/upgrade-check/*
