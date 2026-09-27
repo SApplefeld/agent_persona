@@ -2685,10 +2685,14 @@ async function restartRecapBlock(dp: any): Promise<string | null> {
     });
     return null;
   };
+  // An id session.start could not read stays "pending", which names no
+  // transcript, so the script is left to exclude the session its own
+  // environment names rather than handed a value that excludes nothing.
+  const exclude = sess.mySessionId === "pending" ? [] : ["--exclude", sess.mySessionId];
   let res: any;
   try {
     res = await dp.process.run(
-      ["node", `${dp.plugin.root}/bin/restart-recap.mjs`, "--persona", sess.persona, "--exclude", sess.mySessionId],
+      ["node", `${dp.plugin.root}/bin/restart-recap.mjs`, "--persona", sess.persona, ...exclude],
       { cwd: sess.workdir, timeoutMs: RECAP_TIMEOUT_MS },
     );
   } catch (err) {
@@ -12482,7 +12486,9 @@ export const register: Register = async (on, options) => {
     // [SUPERVISOR-ASK status check shares the priming flag above but is not a
     // launch. A session holding no claim runs nothing, since the persona's
     // store and its lineage are the holder's. The script's timeout bounds the
-    // only wait here.
+    // only wait here. The block lands after [STANDING] and before [ENV], so
+    // the orders the session works under come first and the environment's
+    // current state stays the last word.
     if (restartRecap === "auto" && sess.isOwner && e.text.startsWith("[SUPERVISOR-PRIMING]")) {
       const recapBlock = await restartRecapBlock($);
       if (recapBlock !== null) {
