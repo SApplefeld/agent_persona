@@ -1855,6 +1855,12 @@ printf '{"id":"1-1","kind":"probe","at":1000,"text":"probe"}\n' > "$FA_DIR/mailb
 FA_KEY=$(node --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL(process.argv[1]).href); console.log(m.projectKey(process.argv[2]));" "$HERE/../bin/supervise-liveness.mjs" "$(cygpath -w "$TMP/wd")" 2>/dev/null)
 mkdir -p "$TMP/home-adopt/.claude/projects/$FA_KEY"
 printf '{"type":"assistant","timestamp":"2020-01-01T00:00:00.000Z"}\n' > "$TMP/home-adopt/.claude/projects/$FA_KEY/sess-frozen.jsonl"
+# Two numbered channel log segments, both 20 days old, sit in the work
+# directory. An adopted child has no launch sweep, so only the poll loop's
+# daily sweep, whose timer starts at 0, can remove the older one.
+FA_CH_PRE=$(ls -A "$TMP/wd" 2>/dev/null | grep -c '^\.agentic-channel')
+: > "$TMP/wd/.agentic-channel.0001.jsonl"; : > "$TMP/wd/.agentic-channel.0002.jsonl"
+touch -d '20 days ago' "$TMP/wd/.agentic-channel.0001.jsonl" "$TMP/wd/.agentic-channel.0002.jsonl"
 rm -f "$TMP/stub/launched"
 env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-adopt" supervisorPollMs=1000 supervisorGateWaitS=3 \
   bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$FA_DIR" --no-channel --prompt "a goal the adopted child never receives" > "$FA_DIR/drive.out" 2>&1 &
@@ -1869,6 +1875,12 @@ wait "$FA_SUP" 2>/dev/null; FA_RC=$?
 kill "$FA_PID" 2>/dev/null; wait "$FA_PID" 2>/dev/null
 [ "$FA_ADOPTED" -eq 0 ] && [ "$FA_POLLED" -eq 0 ] && grep -q 'ADOPT child-1: .*verdict frozen' "$FA_DIR/supervisor.log" && [ "$FA_RC" -eq 143 ] && grep -q 'DETACH child-1' "$FA_DIR/supervisor.log"; CHECK_RC=$?
 check "frozen adopt control: the gate adopted the sleep as child-1 on a frozen verdict, the loop polled it six times, and the signal detached at 143 (adopted=$FA_ADOPTED polled=$FA_POLLED rc=$FA_RC, log=$(tr '\n' '|' < "$FA_DIR/supervisor.log" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+[ ! -e "$TMP/wd/.agentic-channel.0001.jsonl" ]; FA_CH_GONE=$?
+[ -e "$TMP/wd/.agentic-channel.0002.jsonl" ]; FA_CH_KEPT=$?
+grep -qF 'CHANNEL-LOG SWEEP: removed 1 file(s) older than 14 day(s)' "$FA_DIR/supervisor.log" 2>/dev/null; FA_CH_LOGGED=$?
+[ "$FA_POLLED" -eq 0 ] && [ "$FA_CH_PRE" -eq 0 ] && [ "$FA_CH_GONE" -eq 0 ] && [ "$FA_CH_KEPT" -eq 0 ] && [ "$FA_CH_LOGGED" -eq 0 ]; CHECK_RC=$?
+check "frozen adopt channel sweep: the adopted child's first poll sweeps the work directory, removing the 20-day-old segment 0001, keeping 0002 as the highest, and logging one removal (polled=$FA_POLLED pre-existing=$FA_CH_PRE 0001-gone=$FA_CH_GONE 0002-kept=$FA_CH_KEPT logged=$FA_CH_LOGGED, sweep lines=$(grep 'CHANNEL-LOG SWEEP' "$FA_DIR/supervisor.log" 2>/dev/null | tr '\n' '|'))" "$CHECK_RC"
+rm -f "$TMP/wd/.agentic-channel.0001.jsonl" "$TMP/wd/.agentic-channel.0002.jsonl"
 FA_ASK_ID=$(sed -n 's/.*FINAL_ASK child-1: .*(ask id=\([^ ]*\) written to .*/\1/p' "$FA_DIR/supervisor.log" 2>/dev/null | head -1)
 [ "$(grep -c 'FINAL_ASK child-1' "$FA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ] && [ -n "$FA_ASK_ID" ] && [ "$(wc -l < "$FA_DIR/child-1/ask.request" 2>/dev/null | tr -d ' ')" = 1 ] && grep -q "\[SUPERVISOR-ASK id=$FA_ASK_ID\]" "$FA_DIR/child-1/ask.request" 2>/dev/null; CHECK_RC=$?
 check "frozen adopt: the ADOPT of a frozen child logs FINAL_ASK once across six polls and writes ask.request once, carrying the logged id in the [SUPERVISOR-ASK id=] marker (ask lines: $(grep -c 'FINAL_ASK child-1' "$FA_DIR/supervisor.log" 2>/dev/null), id=${FA_ASK_ID:-none}, file=$(tr '\n' '|' < "$FA_DIR/child-1/ask.request" 2>/dev/null | head -c 200))" "$CHECK_RC"

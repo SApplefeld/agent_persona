@@ -4170,7 +4170,7 @@ while true; do
     # Every launch and relaunch sweeps the work directory's old channel log
     # files first, and the poll loop's daily sweep counts from here.
     sweep_channel_log_segments "$WORKDIR" "$CHANNEL_LOG_RETENTION_DAYS"
-    LAST_CHANNEL_SWEEP_S=$EPOCHSECONDS
+    LAST_CHANNEL_SWEEP_S=$(date +%s)
 
     # The child index is allocated only now, past the gate, and never on an
     # index whose handle names a running supervisor, so the files removed
@@ -4377,9 +4377,9 @@ while true; do
 
     # A child that runs for days has its work directory swept once a day. An
     # adopted child had no launch sweep, so its first poll sweeps.
-    if [ $(( EPOCHSECONDS - LAST_CHANNEL_SWEEP_S )) -ge 86400 ]; then
+    if [ $(( $(date +%s) - LAST_CHANNEL_SWEEP_S )) -ge 86400 ]; then
       sweep_channel_log_segments "$WORKDIR" "$CHANNEL_LOG_RETENTION_DAYS"
-      LAST_CHANNEL_SWEEP_S=$EPOCHSECONDS
+      LAST_CHANNEL_SWEEP_S=$(date +%s)
     fi
     POLL_COUNT=$((POLL_COUNT + 1))
 
