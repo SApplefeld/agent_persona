@@ -201,3 +201,15 @@ Gate: the section's acceptance greps on the working copy, 2026-09-27: `grep -n c
 Next: finishing-work
 Commit Model: Branch-and-PR
 Delta: 2026-09-27, this box, worktree at c6da770 with the close pass unstaged; the same reading as Chapter 2's.
+
+### Interim board 4 - 2026-09-27
+
+Not a Chapter. The finishing pass is running; no section is open, so this entry carries no `Completed:` line.
+
+**Finishing stage.** Base ref ccfeb161b971fbe2389751ea378229a0568968ed, the branch's merge-base with origin/main; origin/main has not moved since, and the changeset lists only files in the sections' scope plus this plan. Step 1 (qa-verifier) returned PASS on every acceptance criterion of sections 1 to 3 and on the Goal's behaviour claims. Whole gate on 0808410 (`whole-gate.sh`, 2026-09-27, this box, fleet live): 19 offline node suites, 5 short shell suites, supervisor-model (269 OK, 0 FAIL, 389 s), tsc and `claude plugin validate` exit 0; `supervisor-natural-exit-parallel.sh` exit 1, 221 OK and 3 FAIL, the three `root_complete` pins in `hooks/index.ts`, which this changeset does not touch. Contention lane `bash .kit/live-all.sh` exit 10, refusing beside a live persona claim.
+
+**Live dispatches.** The same natural-exit suite at the base ref in a detached worktree `D:/agent_persona-lr-base`, run by the orchestrator (background bohp00u4q, marker `.kit/scratch/log-retention/finishing/base-natexit.exit`), to confirm those three failures are on the base. The finishing review wave (Workflow whqgmjzer): performance, security and adversarial at fable, effort high, over the whole changeset, told what the section reviews cleared.
+
+**Next action.** Read the base run and the wave; step 4 goal read; step 5 docs curator; close and archive; the handoff whole gate; the pull request.
+
+**Rulings adopted since the last boundary.** None.
