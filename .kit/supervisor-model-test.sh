@@ -177,10 +177,15 @@ refused_by "supervisorAskGraceMs '0' is refused at its own call site" "ERROR: su
 # The gate's wait bound, read from the supervisor's own environment and
 # refused at its own call site.
 refused_by "supervisorGateWaitS '0' is refused at its own call site" "ERROR: supervisorGateWaitS '0'" supervisorGateWaitS=0
-# The five defaults, read out of the assignments themselves: fifteen minutes,
-# two minutes, eleven minutes, twenty minutes and the gate's two minutes. A
-# changed default reds here rather than passing every startup check.
-for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVISOR_PROBE_MS:supervisorProbeMs:120000 SUPERVISOR_FINAL_ASK_MS:supervisorFinalAskMs:660000 SUPERVISOR_ASK_GRACE_MS:supervisorAskGraceMs:1200000 SUPERVISOR_GATE_WAIT_S:supervisorGateWaitS:120; do
+# The channel log sweep's window in days, read from the supervisor's own
+# environment and refused at its own call site, before any launch.
+refused_by "channelLogRetentionDays 'abc' is refused at its own call site" "ERROR: channelLogRetentionDays 'abc'" channelLogRetentionDays=abc
+refused_by "channelLogRetentionDays '0' is refused at its own call site" "ERROR: channelLogRetentionDays '0'" channelLogRetentionDays=0
+# The six defaults, read out of the assignments themselves: fifteen minutes,
+# two minutes, eleven minutes, twenty minutes, the gate's two minutes and the
+# channel log's fourteen days. A changed default reds here rather than passing
+# every startup check.
+for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVISOR_PROBE_MS:supervisorProbeMs:120000 SUPERVISOR_FINAL_ASK_MS:supervisorFinalAskMs:660000 SUPERVISOR_ASK_GRACE_MS:supervisorAskGraceMs:1200000 SUPERVISOR_GATE_WAIT_S:supervisorGateWaitS:120 CHANNEL_LOG_RETENTION_DAYS:channelLogRetentionDays:14; do
   IFS=: read -r var setting want <<< "$pair"
   grep -q "^$var=\"\\\${$setting:-$want}\"" "$SCRIPT"
   check "$setting defaults to $want in its assignment to $var" "$?"
@@ -1850,6 +1855,12 @@ printf '{"id":"1-1","kind":"probe","at":1000,"text":"probe"}\n' > "$FA_DIR/mailb
 FA_KEY=$(node --input-type=module -e "import { pathToFileURL } from 'node:url'; const m = await import(pathToFileURL(process.argv[1]).href); console.log(m.projectKey(process.argv[2]));" "$HERE/../bin/supervise-liveness.mjs" "$(cygpath -w "$TMP/wd")" 2>/dev/null)
 mkdir -p "$TMP/home-adopt/.claude/projects/$FA_KEY"
 printf '{"type":"assistant","timestamp":"2020-01-01T00:00:00.000Z"}\n' > "$TMP/home-adopt/.claude/projects/$FA_KEY/sess-frozen.jsonl"
+# Two numbered channel log segments, both 20 days old, sit in the work
+# directory. An adopted child has no launch sweep, so only the poll loop's
+# daily sweep, whose timer starts at 0, can remove the older one.
+FA_CH_PRE=$(ls -A "$TMP/wd" 2>/dev/null | grep -c '^\.agentic-channel')
+: > "$TMP/wd/.agentic-channel.0001.jsonl"; : > "$TMP/wd/.agentic-channel.0002.jsonl"
+touch -d '20 days ago' "$TMP/wd/.agentic-channel.0001.jsonl" "$TMP/wd/.agentic-channel.0002.jsonl"
 rm -f "$TMP/stub/launched"
 env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-adopt" supervisorPollMs=1000 supervisorGateWaitS=3 \
   bash "$SCRIPT" "$TMP/wd" modelprobe default --rundir "$FA_DIR" --no-channel --prompt "a goal the adopted child never receives" > "$FA_DIR/drive.out" 2>&1 &
@@ -1864,6 +1875,12 @@ wait "$FA_SUP" 2>/dev/null; FA_RC=$?
 kill "$FA_PID" 2>/dev/null; wait "$FA_PID" 2>/dev/null
 [ "$FA_ADOPTED" -eq 0 ] && [ "$FA_POLLED" -eq 0 ] && grep -q 'ADOPT child-1: .*verdict frozen' "$FA_DIR/supervisor.log" && [ "$FA_RC" -eq 143 ] && grep -q 'DETACH child-1' "$FA_DIR/supervisor.log"; CHECK_RC=$?
 check "frozen adopt control: the gate adopted the sleep as child-1 on a frozen verdict, the loop polled it six times, and the signal detached at 143 (adopted=$FA_ADOPTED polled=$FA_POLLED rc=$FA_RC, log=$(tr '\n' '|' < "$FA_DIR/supervisor.log" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+[ ! -e "$TMP/wd/.agentic-channel.0001.jsonl" ]; FA_CH_GONE=$?
+[ -e "$TMP/wd/.agentic-channel.0002.jsonl" ]; FA_CH_KEPT=$?
+grep -qF 'CHANNEL-LOG SWEEP: removed 1 file(s) older than 14 day(s)' "$FA_DIR/supervisor.log" 2>/dev/null; FA_CH_LOGGED=$?
+[ "$FA_POLLED" -eq 0 ] && [ "$FA_CH_PRE" -eq 0 ] && [ "$FA_CH_GONE" -eq 0 ] && [ "$FA_CH_KEPT" -eq 0 ] && [ "$FA_CH_LOGGED" -eq 0 ]; CHECK_RC=$?
+check "frozen adopt channel sweep: the adopted child's first poll sweeps the work directory, removing the 20-day-old segment 0001, keeping 0002 as the highest, and logging one removal (polled=$FA_POLLED pre-existing=$FA_CH_PRE 0001-gone=$FA_CH_GONE 0002-kept=$FA_CH_KEPT logged=$FA_CH_LOGGED, sweep lines=$(grep 'CHANNEL-LOG SWEEP' "$FA_DIR/supervisor.log" 2>/dev/null | tr '\n' '|'))" "$CHECK_RC"
+rm -f "$TMP/wd/.agentic-channel.0001.jsonl" "$TMP/wd/.agentic-channel.0002.jsonl"
 FA_ASK_ID=$(sed -n 's/.*FINAL_ASK child-1: .*(ask id=\([^ ]*\) written to .*/\1/p' "$FA_DIR/supervisor.log" 2>/dev/null | head -1)
 [ "$(grep -c 'FINAL_ASK child-1' "$FA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ] && [ -n "$FA_ASK_ID" ] && [ "$(wc -l < "$FA_DIR/child-1/ask.request" 2>/dev/null | tr -d ' ')" = 1 ] && grep -q "\[SUPERVISOR-ASK id=$FA_ASK_ID\]" "$FA_DIR/child-1/ask.request" 2>/dev/null; CHECK_RC=$?
 check "frozen adopt: the ADOPT of a frozen child logs FINAL_ASK once across six polls and writes ask.request once, carrying the logged id in the [SUPERVISOR-ASK id=] marker (ask lines: $(grep -c 'FINAL_ASK child-1' "$FA_DIR/supervisor.log" 2>/dev/null), id=${FA_ASK_ID:-none}, file=$(tr '\n' '|' < "$FA_DIR/child-1/ask.request" 2>/dev/null | head -c 200))" "$CHECK_RC"
@@ -2019,6 +2036,101 @@ RL_LIVE_LINE=$(grep -n 'LIVENESS child-2:' "$RL_LOG" 2>/dev/null | head -1 | cut
 RL_DETACH_LINE=$(grep -n 'DETACH child-2' "$RL_LOG" 2>/dev/null | head -1 | cut -d: -f1)
 [ "$RL_RELAUNCHED" -eq 0 ] && grep -q 'EXIT child-1 code=0 (sweep_relaunch)' "$RL_LOG" && [ "$RL_READY" -eq 0 ] && [ "$RL_RC" -eq 143 ] && [ -n "$RL_VERDICT" ] && [ -n "$RL_LIVE_LINE" ] && [ -n "$RL_DETACH_LINE" ] && [ "$RL_LIVE_LINE" -lt "$RL_DETACH_LINE" ] && grep -q "DETACH child-2: .*(verdict $RL_VERDICT)" "$RL_LOG" && ! grep -q 'CLEANUP: stopping child-2' "$RL_LOG" && [ "$RL_ALIVE" -eq 0 ]; CHECK_RC=$?
 check "relaunch signal control: after the same sweep and relaunch, a TERM after child-2's first poll detaches on child-2's own reading, the verdict the DETACH line names being the one its LIVENESS line logged (verdict=${RL_VERDICT:-none} ready=$RL_READY rc=$RL_RC alive=$RL_ALIVE, log=$(tr '\n' '|' < "$RL_LOG" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
+
+# --- The channel log sweep ---
+# sweep_channel_log_segments is extracted and run as written, through the find
+# on PATH, against real directories whose files carry real modification times,
+# at the default window of 14 days. Only log is stubbed, writing each line to
+# a file per run, so an empty file is a run that logged nothing.
+# The first directory holds the frozen log and segments 0001 to 0003, all 20
+# days old, beside a store and a backup whose names sit just outside the
+# pattern. The second holds the same old highest segment beside a lower one a
+# day old, so the lower one stays on its age alone. The third holds only the
+# frozen log, so with no segment nothing is exempt. The fourth holds segments
+# whose digit runs differ in width, so the highest is found by value and a
+# zero-padded run that is not valid octal is still read. The fifth holds
+# segments 0003 and 0004 beside strays numbered 7 and 123, all 20 days old, so
+# a name narrower than four digits is neither the highest nor removed. The
+# sixth is swept with rm defined to fail, so a removal that fails is logged by
+# path, counted as nothing removed, and the sweep still returns 0. The seventh
+# holds segments 0005 and 00005, which share the highest value, beside a lower
+# 0004, all 20 days old, so every name at the highest value stays whichever
+# one find lists first. A second run over the first directory finds nothing
+# old left to remove.
+: > "$TMP/sweep.fn"; supervisor_extract_fn "$SCRIPT" sweep_channel_log_segments "$TMP/sweep.fn" || true
+SWEEP_SNIPPET=$(tr -d '\r' < "$TMP/sweep.fn")
+[ -n "$SWEEP_SNIPPET" ]; check "sweep_channel_log_segments is found in bin/supervise.sh" "$?"
+if [ -n "$SWEEP_SNIPPET" ]; then
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$SWEEP_SNIPPET" '
+LOG="$2"; : > "$LOG"
+log() { echo "$*" >> "$LOG"; }
+sweep_channel_log_segments "$1" 14
+echo "rc=$?"' > "$TMP/sweep.sh"
+  printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$SWEEP_SNIPPET" '
+LOG="$2"; : > "$LOG"
+log() { echo "$*" >> "$LOG"; }
+rm() { return 1; }
+sweep_channel_log_segments "$1" 14
+echo "rc=$?"' > "$TMP/sweep-rmfail.sh"
+  # Prints each name given as present or gone in the directory, one per line.
+  sweep_state() {
+    local d="$1" f; shift
+    for f in "$@"; do if [ -e "$d/$f" ]; then echo "present $f"; else echo "gone $f"; fi; done
+  }
+  SW1=$(mktemp -d "$TMP/sweep1.XXXXXX"); SW2=$(mktemp -d "$TMP/sweep2.XXXXXX"); SW3=$(mktemp -d "$TMP/sweep3.XXXXXX"); SW4=$(mktemp -d "$TMP/sweep4.XXXXXX"); SW5=$(mktemp -d "$TMP/sweep5.XXXXXX"); SW6=$(mktemp -d "$TMP/sweep6.XXXXXX"); SW7=$(mktemp -d "$TMP/sweep7.XXXXXX")
+  SW1_FILES=".agentic-channel.jsonl .agentic-channel.0001.jsonl .agentic-channel.0002.jsonl .agentic-channel.0003.jsonl .agentic-personas.json .agentic-channel.0002.jsonl.bak"
+  for f in $SW1_FILES; do touch -d '20 days ago' "$SW1/$f"; done
+  touch -d '1 day ago' "$SW2/.agentic-channel.0002.jsonl"; touch -d '20 days ago' "$SW2/.agentic-channel.0003.jsonl"
+  touch -d '20 days ago' "$SW3/.agentic-channel.jsonl"
+  for f in .agentic-channel.0008.jsonl .agentic-channel.9999.jsonl .agentic-channel.10000.jsonl; do touch -d '20 days ago' "$SW4/$f"; done
+  SW5_FILES=".agentic-channel.0003.jsonl .agentic-channel.0004.jsonl .agentic-channel.7.jsonl .agentic-channel.123.jsonl"
+  for f in $SW5_FILES; do touch -d '20 days ago' "$SW5/$f"; done
+  for f in .agentic-channel.0001.jsonl .agentic-channel.0002.jsonl; do touch -d '20 days ago' "$SW6/$f"; done
+  SW7_FILES=".agentic-channel.0005.jsonl .agentic-channel.00005.jsonl .agentic-channel.0004.jsonl"
+  for f in $SW7_FILES; do touch -d '20 days ago' "$SW7/$f"; done
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW1" "$TMP/sweep1.log" 2>&1)
+  STATE=$(sweep_state "$SW1" $SW1_FILES | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "gone .agentic-channel.jsonl|gone .agentic-channel.0001.jsonl|gone .agentic-channel.0002.jsonl|present .agentic-channel.0003.jsonl|present .agentic-personas.json|present .agentic-channel.0002.jsonl.bak|" ]; CHECK_RC=$?
+  check "channel log sweep: old lower segments 0001 and 0002 and the old frozen log are removed, the old highest segment 0003 stays, and the store and the .bak outside the pattern stay (out=$OUT state=$STATE)" "$CHECK_RC"
+  [ "$(cat "$TMP/sweep1.log")" = "CHANNEL-LOG SWEEP: removed 3 file(s) older than 14 day(s)" ]; CHECK_RC=$?
+  check "channel log sweep: one log line names the 3 files removed and the window (log=$(tr '\n' '|' < "$TMP/sweep1.log"))" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW2" "$TMP/sweep2.log" 2>&1)
+  STATE=$(sweep_state "$SW2" .agentic-channel.0002.jsonl .agentic-channel.0003.jsonl | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "present .agentic-channel.0002.jsonl|present .agentic-channel.0003.jsonl|" ] && [ ! -s "$TMP/sweep2.log" ]; CHECK_RC=$?
+  check "channel log sweep: a lower segment a day old stays beside the old highest, and a run that removes nothing logs nothing (out=$OUT state=$STATE log=$(tr '\n' '|' < "$TMP/sweep2.log"))" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW3" "$TMP/sweep3.log" 2>&1)
+  STATE=$(sweep_state "$SW3" .agentic-channel.jsonl | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "gone .agentic-channel.jsonl|" ] && [ "$(cat "$TMP/sweep3.log")" = "CHANNEL-LOG SWEEP: removed 1 file(s) older than 14 day(s)" ]; CHECK_RC=$?
+  check "channel log sweep: with no numbered segment nothing is exempt, so the old frozen log is removed (out=$OUT state=$STATE log=$(tr '\n' '|' < "$TMP/sweep3.log"))" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW4" "$TMP/sweep4.log" 2>&1)
+  STATE=$(sweep_state "$SW4" .agentic-channel.0008.jsonl .agentic-channel.9999.jsonl .agentic-channel.10000.jsonl | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "gone .agentic-channel.0008.jsonl|gone .agentic-channel.9999.jsonl|present .agentic-channel.10000.jsonl|" ]; CHECK_RC=$?
+  check "channel log sweep: the highest segment is found by value, so 10000 stays over 9999, and the zero-padded 0008 is read as decimal (out=$OUT state=$STATE)" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW5" "$TMP/sweep5.log" 2>&1)
+  STATE=$(sweep_state "$SW5" $SW5_FILES | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "gone .agentic-channel.0003.jsonl|present .agentic-channel.0004.jsonl|present .agentic-channel.7.jsonl|present .agentic-channel.123.jsonl|" ] && [ "$(cat "$TMP/sweep5.log")" = "CHANNEL-LOG SWEEP: removed 1 file(s) older than 14 day(s)" ]; CHECK_RC=$?
+  check "channel log sweep: strays numbered 7 and 123 are outside the four-to-eighteen-digit names, so 0004 stays as the highest over 123, 0003 alone is removed, and both strays stay (out=$OUT state=$STATE log=$(tr '\n' '|' < "$TMP/sweep5.log"))" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep-rmfail.sh" "$SW6" "$TMP/sweep6.log" 2>&1)
+  STATE=$(sweep_state "$SW6" .agentic-channel.0001.jsonl .agentic-channel.0002.jsonl | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "present .agentic-channel.0001.jsonl|present .agentic-channel.0002.jsonl|" ] && [ "$(cat "$TMP/sweep6.log")" = "CHANNEL-LOG SWEEP: could not remove $SW6/.agentic-channel.0001.jsonl" ] && ! grep -q 'removed' "$TMP/sweep6.log"; CHECK_RC=$?
+  check "channel log sweep: a removal that fails logs the path it could not remove, logs no removed count, leaves the file, and returns 0 (out=$OUT state=$STATE log=$(tr '\n' '|' < "$TMP/sweep6.log"))" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW7" "$TMP/sweep7.log" 2>&1)
+  STATE=$(sweep_state "$SW7" $SW7_FILES | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "present .agentic-channel.0005.jsonl|present .agentic-channel.00005.jsonl|gone .agentic-channel.0004.jsonl|" ] && [ "$(cat "$TMP/sweep7.log")" = "CHANNEL-LOG SWEEP: removed 1 file(s) older than 14 day(s)" ]; CHECK_RC=$?
+  check "channel log sweep: 0005 and 00005 share the highest value, so both stay whichever find lists first, and the lower 0004 alone is removed (out=$OUT state=$STATE log=$(tr '\n' '|' < "$TMP/sweep7.log"))" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW1" "$TMP/sweep1-again.log" 2>&1)
+  STATE=$(sweep_state "$SW1" $SW1_FILES | tr '\n' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "gone .agentic-channel.jsonl|gone .agentic-channel.0001.jsonl|gone .agentic-channel.0002.jsonl|present .agentic-channel.0003.jsonl|present .agentic-personas.json|present .agentic-channel.0002.jsonl.bak|" ] && [ ! -s "$TMP/sweep1-again.log" ]; CHECK_RC=$?
+  check "channel log sweep: a second run over the first directory removes nothing and logs nothing (out=$OUT state=$STATE log=$(tr '\n' '|' < "$TMP/sweep1-again.log"))" "$CHECK_RC"
+fi
 
 echo
 if [ "$failed" = "0" ]; then

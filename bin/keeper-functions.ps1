@@ -208,9 +208,10 @@ them (<workdir> <persona> <permission-mode>), then --rundir and --channel-name w
 carries them, then the args field verbatim. workdir and rundir go through ConvertTo-BashPath,
 because bash is the consumer of these two and a Windows spelling of the rundir reads to it as a
 relative path. The args field is passed as written, since the keeper does not know what a flag it
-has no row for means. model, effort, controllerTickMs, coordinatorPersona, architectPersona, fleetRoster and
-jevMode become the MODEL, EFFORT, controllerTickMs, COORDINATOR_PERSONA, ARCHITECT_PERSONA, FLEET_ROSTER and
-JEV_MODE environment variables, each present only where the entry carries the field. jevLive is an
+has no row for means. model, effort, controllerTickMs, channelLogRetentionDays, coordinatorPersona,
+architectPersona, fleetRoster and jevMode become the MODEL, EFFORT, controllerTickMs,
+channelLogRetentionDays, COORDINATOR_PERSONA, ARCHITECT_PERSONA, FLEET_ROSTER and JEV_MODE
+environment variables, each present only where the entry carries the field. jevLive is an
 array of question-set ids rather than a scalar, so it does not ride that same field map: a
 non-empty array becomes JEV_LIVE as its members joined with a comma, since the shell halves that
 read JEV_LIVE split on commas, and PowerShell's own [string] cast on an array joins with $OFS
@@ -258,6 +259,7 @@ function Build-SupervisorInvocation {
         model = 'MODEL'
         effort = 'EFFORT'
         controllerTickMs = 'controllerTickMs'
+        channelLogRetentionDays = 'channelLogRetentionDays'
         coordinatorPersona = 'COORDINATOR_PERSONA'
         architectPersona = 'ARCHITECT_PERSONA'
         fleetRoster = 'FLEET_ROSTER'

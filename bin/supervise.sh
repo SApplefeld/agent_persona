@@ -227,6 +227,9 @@ SUPERVISOR_ASK_GRACE_MS="${supervisorAskGraceMs:-1200000}"
 # be ruled out), before ending the run at GATE TIMEOUT. Two minutes, the
 # gate's standing bound; a suite shortens it.
 SUPERVISOR_GATE_WAIT_S="${supervisorGateWaitS:-120}"
+# How many whole days a channel log file in the work directory is kept after
+# its last write before the channel log sweep removes it. Two weeks.
+CHANNEL_LOG_RETENTION_DAYS="${channelLogRetentionDays:-14}"
 # v2 spec Section 0 item 3 Part B (operator decision, DISCUSSION.md Round
 # 136 addendum): the worker's own main thread - where PR #17's kill path
 # was actually written - defaults to opus at medium effort, not sonnet.
@@ -336,6 +339,10 @@ if ! positive_number "$SUPERVISOR_ASK_GRACE_MS"; then
 fi
 if ! positive_number "$SUPERVISOR_GATE_WAIT_S"; then
   echo "ERROR: supervisorGateWaitS '$SUPERVISOR_GATE_WAIT_S' is not a whole number of seconds greater than zero (digits only, no leading zero, at most 9 digits)" >&2
+  exit 1
+fi
+if ! positive_number "$CHANNEL_LOG_RETENTION_DAYS"; then
+  echo "ERROR: channelLogRetentionDays '$CHANNEL_LOG_RETENTION_DAYS' is not a whole number of days greater than zero (digits only, no leading zero, at most 9 digits)" >&2
   exit 1
 fi
 
@@ -3937,8 +3944,57 @@ gate_sweep_pairs() {
   printf '%s' "$out"
 }
 
+# --- Channel log retention ---
+# Removes the channel log files in a work directory whose last write is older
+# than a number of whole days: the frozen .agentic-channel.jsonl and each
+# numbered .agentic-channel.<digits>.jsonl segment whose digit run is four to
+# eighteen digits long. The plugin writes four or more digits, and the sweep
+# caps the run at eighteen so its value fits bash's integer arithmetic. Only
+# the directory's own files at depth one with one of those two names are
+# candidates, so no other file is ever touched, and a numbered name of another
+# width is neither removed nor counted as a segment. The highest-numbered
+# segment is the one the plugin writes now, so every numbered name at the
+# highest value is exempt whatever its age, and the frozen log never is; where
+# no numbered segment exists, nothing is exempt. Digit runs are compared as
+# decimals, so a fifth digit sorts after four, a zero-padded run is never read
+# as octal, and 0005 and 00005 share one value.
+# One log line names the count where at least one file was removed, and
+# nothing is logged where none was. A removal that fails is logged and the
+# sweep carries on: it always returns 0, since the launch it precedes is the
+# work.
+# Usage: sweep_channel_log_segments <workdir> <days>
+sweep_channel_log_segments() {
+  local dir="$1" days="$2" path name digits highest_num=-1 removed=0
+  while IFS= read -r path; do
+    name="${path##*/}"
+    digits="${name#.agentic-channel.}"
+    digits="${digits%.jsonl}"
+    if [ $((10#$digits)) -gt "$highest_num" ]; then
+      highest_num=$((10#$digits))
+    fi
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/\.agentic-channel\.[0-9]{4,18}\.jsonl' 2>/dev/null)
+  while IFS= read -r path; do
+    name="${path##*/}"
+    if [ "$name" != ".agentic-channel.jsonl" ]; then
+      digits="${name#.agentic-channel.}"
+      digits="${digits%.jsonl}"
+      [ $((10#$digits)) -eq "$highest_num" ] && continue
+    fi
+    if rm -f -- "$path"; then
+      removed=$((removed + 1))
+    else
+      log "CHANNEL-LOG SWEEP: could not remove $path"
+    fi
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/\.agentic-channel(\.[0-9]{4,18})?\.jsonl' -mmin +$((days * 1440)) 2>/dev/null)
+  if [ "$removed" -ge 1 ]; then
+    log "CHANNEL-LOG SWEEP: removed $removed file(s) older than $days day(s)"
+  fi
+  return 0
+}
+
 # --- Main loop ---
 CHILD_INDEX=0
+LAST_CHANNEL_SWEEP_S=0  # epoch seconds of the last channel log sweep, 0 before the first
 RESTART_COUNT=0
 CRASH_COUNT=0
 RESTART_TIMES=()  # array of timestamps for rolling-hour budget
@@ -4110,6 +4166,11 @@ while true; do
       exit 2
     fi
     log "GATE PASSED: no live persona claims (commons and heartbeat both free)"
+
+    # Every launch and relaunch sweeps the work directory's old channel log
+    # files first, and the poll loop's daily sweep counts from here.
+    sweep_channel_log_segments "$WORKDIR" "$CHANNEL_LOG_RETENTION_DAYS"
+    LAST_CHANNEL_SWEEP_S=$(date +%s)
 
     # The child index is allocated only now, past the gate, and never on an
     # index whose handle names a running supervisor, so the files removed
@@ -4313,6 +4374,13 @@ while true; do
   # while its marker is absent and the walk has not completed finding nothing.
   while child_present; do
     sleep $((SUPERVISOR_POLL_MS / 1000))
+
+    # A child that runs for days has its work directory swept once a day. An
+    # adopted child had no launch sweep, so its first poll sweeps.
+    if [ $(( $(date +%s) - LAST_CHANNEL_SWEEP_S )) -ge 86400 ]; then
+      sweep_channel_log_segments "$WORKDIR" "$CHANNEL_LOG_RETENTION_DAYS"
+      LAST_CHANNEL_SWEEP_S=$(date +%s)
+    fi
     POLL_COUNT=$((POLL_COUNT + 1))
 
     # The child's own processes, recorded while they can still be read. A
