@@ -1,0 +1,71 @@
+#!/usr/bin/env node
+// A stand-in for the repository's own compiler, for
+// .kit/upgrade-check-unit-test.mjs. The suite copies it to
+// <repo>/node_modules/typescript/bin/tsc, which is where the compile step
+// looks, and the real compiler's own bin is a node script with a shebang too.
+//
+// It reads the tsconfig it was pointed at and answers on what that config
+// names, so the two runs of one compile step are told apart the way the real
+// compiler tells them apart: the control run is the one whose config names
+// the control file, and the hooks run is every other.
+//
+// A hooks run that reads a file marked SCRATCH_MIRROR, named in the config's
+// files or found under one of its include directories, fails the way the real
+// compiler fails on a tool-list mirror that lacks the plugin's own tools.
+//
+//   FAKE_TSC_CONTROL_COMPILES=1  the control run exits 0, which is the case
+//                                the compile step must read as proving
+//                                nothing.
+//   FAKE_TSC_HOOKS_EXIT=<n>      the hooks run exits n, printing a diagnostic.
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const args = process.argv.slice(2);
+const i = args.indexOf('--project');
+const configPath = i >= 0 && i + 1 < args.length ? args[i + 1] : '';
+let config = {};
+try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) { config = {}; }
+const files = Array.isArray(config.files) ? config.files : [];
+const include = Array.isArray(config.include) ? config.include : [];
+
+const controlFile = files.find((f) => /upgrade-check-control\.ts$/.test(f));
+if (controlFile) {
+  // The control run. Its own file names the member the engine's declarations
+  // do not carry, and the diagnostic quotes that member, so the suite can
+  // read which rule refused it rather than only that something did.
+  if (process.env.FAKE_TSC_CONTROL_COMPILES === '1') process.exit(0);
+  let body = '';
+  try { body = fs.readFileSync(controlFile, 'utf8'); } catch (e) { body = ''; }
+  const member = (body.match(/register\.([A-Za-z_$][\w$]*)/) || [])[1] || 'unknown';
+  process.stdout.write(controlFile + "(8,29): error TS2339: Property '" + member + "' does not exist on type 'Register'.\n");
+  process.exit(2);
+}
+
+function readsScratchMirror(file) {
+  try { return fs.readFileSync(file, 'utf8').includes('SCRATCH_MIRROR'); } catch (e) { return false; }
+}
+function walk(dir) {
+  let found = [];
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return found; }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) found = found.concat(walk(full));
+    else found.push(full);
+  }
+  return found;
+}
+const read = files.concat(...include.map(walk));
+const mirror = read.find(readsScratchMirror);
+if (mirror) {
+  process.stdout.write("hooks/index.ts(10232,9): error TS2367: This comparison appears to be unintentional, read against " + mirror + ".\n");
+  process.exit(2);
+}
+
+const hooksExit = Number(process.env.FAKE_TSC_HOOKS_EXIT || 0);
+if (hooksExit !== 0) {
+  process.stdout.write("hooks/index.ts(21,10): error TS2305: Module 'claude-code' has no exported member 'PromptSubmitResult'.\n");
+  process.exit(hooksExit);
+}
+process.exit(0);

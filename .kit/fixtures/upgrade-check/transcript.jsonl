@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-09-25T09:00:00.000Z","sessionId":"upgrade-check-fixture","cwd":"C:\\fixture","version":"2.1.282","message":{"role":"user","content":"run the upgrade check"}}
+{"type":"assistant","timestamp":"2026-09-25T09:00:04.000Z","sessionId":"upgrade-check-fixture","cwd":"C:\\fixture","version":"2.1.282","message":{"role":"assistant","content":[{"type":"text","text":"running it"}]}}
+{"type":"user","timestamp":"2026-09-25T09:01:00.000Z","sessionId":"upgrade-check-fixture","cwd":"C:\\fixture","version":"2.1.282","message":{"role":"user","content":"thanks"}}
