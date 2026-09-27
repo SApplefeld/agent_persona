@@ -187,9 +187,11 @@ export interface SentProposal {
   delivered: boolean;
 }
 
-// A [PROPOSAL] or [STARTED] record goal_add sent the coordinator persona for
-// a plan the autonomy level admitted. `awaitingYes` is true for a [PROPOSAL],
-// whose entry waits for the operator's yes, and false for a [STARTED].
+// A [PROPOSAL] or [STARTED] record the shared add sent the coordinator persona
+// for a plan the autonomy level admitted, whether the model's own goal_add made
+// that add or the promotion route did at a turn's end for a record whose turn
+// wrote a plan document. `awaitingYes` is true for a [PROPOSAL], whose entry
+// waits for the operator's yes, and false for a [STARTED].
 // `writer` and `seq` key the record in the coordinator persona's inbox. The
 // entry leaves the list once its record reads delivered, answered, resolved
 // or absent, once its goal entry no longer needs it, or once a resend has no

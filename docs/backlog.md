@@ -828,3 +828,45 @@ Section 5 is the first code to call `$.agent.list()`. That call complies, and th
 This is a gap in the instrument rather than in any delta. It was found by the blind lens on section 5, which read it as a production risk; the production half does not hold, because the engine declares the verb at `.claude/types/claude-code.d.ts:6121` and `:6371`, so the call is live rather than silently dead.
 
 Remedy: add `agent` to the check's noun list, and audit the list against the engine's declared nouns rather than against the ones this repository happens to call today, since the same gap exists for every noun nobody has used yet.
+
+## The generated MCP tool declarations do not carry `goal_add`'s `taskId` argument (found 2026-09-27)
+
+`.claude/types/claude-code-mcp.d.ts` is tracked and is a generated snapshot of every MCP tool's input schema, written by the engine's own `mcp-tool-declarations.ts` and carrying a header that says to regenerate rather than edit. Section 6 of the goal-every-turn plan gave `goal_add` a `taskId` argument and dropped `title` from its required list. The snapshot carries neither change.
+
+What it costs is type narrowing rather than behaviour. The declarations merge into the engine's tool-input type so a handler reading `e.tool === "mcp__...__goal_add"` narrows to that tool's arguments; a snapshot that predates the argument narrows to a shape without it. Nothing in this repository reads the new argument through that type today, so no code is wrong. What is missing is the guard the file exists to give.
+
+It is not edited by hand on its own instruction, and it sits in no section's scope, which is why it is here rather than folded into the section that made it stale.
+
+Remedy: regenerate it. The sibling record in the operator memory tier, `function-hooks-prototype-ships-behind-a-flag`, states that the `/plugin-types` command works in a headless session with the function-hooks flag set, and that a leading slash passed from Git Bash needs `MSYS_NO_PATHCONV=1` or the CLI never sees the command. That record names the sibling file and a different generator, so confirm which command writes this one before running it. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
+
+## A promoted turn record has `false` written for the outcome that scores the turn-open question (found 2026-09-27)
+
+The `record_delivered_within` outcome answers every turn-open call that opened or continued a record: `true` where that record reached `delivered` inside the outcome window, `false` otherwise. Its writer reads the status and treats only `delivered` as the true arm.
+
+Section 6 added a second way for a record to close. A record the model turned into a goal or a task, or one route one promoted, reads `promoted` rather than `delivered`. It keeps its pending stamps, and the writer then puts `false` against every one of them when the window closes, even though the message was acted on in full and the record became real work.
+
+What it costs is the promotion bar rather than any behaviour. That bar is a labelling pass over these outcome lines, and a `false` on a record that became a goal entry is the wrong label on exactly the case the question is meant to get right. The blind lens on section 6 found it.
+
+It is here rather than in a section because the fix belongs to section 4's outcome writer and turns on a question nobody has answered: whether `promoted` settles the stamps true, or drops them as not applicable. Those are different claims about what the question is being scored on, and picking one inside a close pass would decide it quietly.
+
+Remedy: decide which of the two `promoted` means, then handle that status in the settling loop beside `delivered`. Either choice is a few lines; the decision is the work.
+
+## Two handlers read state and act on it across an await, the shape section 6's fix round closed in a third (found 2026-09-27)
+
+Section 6's fix round closed a defect where the shared goal-entry add read the open turn record, awaited a reach check, and then marked whichever record was open by the time the mark ran. A message arriving inside that await would have had its own record marked against an entry it never asked for.
+
+The implementer that fixed it reported two further sites in other handlers with the same shape: a read of state, an awaited reach check, then an act on the value read before the await. Both are outside section 6's scope and neither was touched.
+
+Whether either is reachable is unestablished. The engine probe recorded in this plan's interim board 3 found that no turn starts while a turn-completion chain is open on this build, and the same reasoning may cover these two, but they sit in different handlers and the probe was not run against them.
+
+Remedy: read both sites against that probe's finding. Where the window is reachable, take the same fix, which is to thread the value already read rather than re-reading it after the await. Where it is not, say so in a comment at each site so the next reader does not re-derive it, as the record-close beside it does.
+
+## A test sweep in the controller suite is calibrated against a commons read it does not name (found 2026-09-27)
+
+Section 6's fix round proved that a promotion marks the record the entry was made for, not whichever record is open when the mark runs. The case that proves it walks the boundary one parked commons read at a time and runs one drive per read a control drive counted, asserting each time that the promoted record is the one whose text the entry carries as its title.
+
+The instrument is calibrated rather than anchored. It discovers how many reads the boundary makes by counting them, and two of those reads are the reach check the fix is about. If a later change removes the commons read from that check, the sweep keeps passing while covering nothing, and the only thing standing against that is a control assertion that at least two parks exist, which the implementer itself named as weak.
+
+Nothing is wrong today: the sweep reddens on the defect it was written for, proven by a withheld mutation that made the mark read the open slot again.
+
+Remedy: assert what the reach check itself contributes rather than what the boundary totals, so the sweep names the read it depends on and reddens when that read goes away. The general form is the one this repository keeps relearning: a check calibrated from the subject's own behaviour cannot tell a covered absence from an uncovered one.

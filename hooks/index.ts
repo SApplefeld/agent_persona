@@ -1006,25 +1006,46 @@ async function closeTurnRecordAtTurnEnd(
   });
 }
 
-// Section 6 (goal-every-turn): marks the open turn record promoted with the id
-// of the goal node or the task it became, and returns the undo of that mark, or
-// null where no record was open. Route two's three handlers and route one all
+// Section 6 (goal-every-turn): marks one turn record promoted with the id of the
+// goal node or the task it became, and returns the undo of that mark, or null
+// where there is no record to mark. Route two's three handlers and route one all
 // promote through this one function, so the fields a promotion writes are one
-// rule: the closed status, the id on whichever field names its kind, and the
-// clock the promotion happened at. A promoted record is no longer open, so it
-// drops out of the close's view and out of the status line's, which is what
-// keeps a record from dangling beside the entry it became.
+// rule: the closed status, the id on whichever field names its kind, the plan
+// path where the add carried one, and the clock the promotion happened at. A
+// promoted record is no longer open, so it drops out of the close's view and out
+// of the status line's, which is what keeps a record from dangling beside the
+// entry it became.
+//
+// The record is the caller's reading rather than this function's, because a
+// caller that awaited anything between resolving the record and marking it has
+// to mark the record it resolved: the one a message that arrived in that window
+// opened asked for nothing, and marking it would leave the record the entry was
+// made from superseded with its plan path and never promoted.
+//
+// The plan path is written because the entry the record became is found by path
+// at the next boundary, and the record is the only place a path-keyed reader can
+// see that route two's own add already covered the document. An add naming no
+// path leaves whatever the record carried.
 //
 // The undo is returned rather than applied by the caller's own hand because a
 // caller that can roll its add back has to put every field of the record back
 // as it was, including the ones it never wrote, and a caller that cannot roll
 // back simply drops the undo.
-function promoteOpenRecord(id: string, field: "goalId" | "taskId", now: number): (() => void) | null {
-  const record = openTurnRecord(sess.state);
+function promoteTurnRecord(
+  record: TurnRecord | null,
+  id: string,
+  field: "goalId" | "taskId",
+  now: number,
+  planPath: string | undefined,
+): (() => void) | null {
   if (record === null) return null;
-  const before = { status: record.status, goalId: record.goalId, taskId: record.taskId, closedAt: record.closedAt };
+  const before = {
+    status: record.status, goalId: record.goalId, taskId: record.taskId,
+    planPath: record.planPath, closedAt: record.closedAt,
+  };
   record.status = "promoted";
   record[field] = id;
+  if (planPath !== undefined) record.planPath = planPath;
   record.closedAt = now;
   const decision: AgentState["decisions"][number] = {
     timestamp: now,
@@ -1037,9 +1058,16 @@ function promoteOpenRecord(id: string, field: "goalId" | "taskId", now: number):
     record.status = before.status;
     if (before.goalId === undefined) delete record.goalId; else record.goalId = before.goalId;
     if (before.taskId === undefined) delete record.taskId; else record.taskId = before.taskId;
+    if (before.planPath === undefined) delete record.planPath; else record.planPath = before.planPath;
     if (before.closedAt === undefined) delete record.closedAt; else record.closedAt = before.closedAt;
     dropDecision(decision);
   };
+}
+
+// The same mark on whichever record is open now, for the three route-two handlers
+// that read the record and mark it with nothing awaited in between.
+function promoteOpenRecord(id: string, field: "goalId" | "taskId", now: number): (() => void) | null {
+  return promoteTurnRecord(openTurnRecord(sess.state), id, field, now, undefined);
 }
 
 // Section 6 (goal-every-turn): what an add of a goal entry does once its
@@ -1077,6 +1105,11 @@ async function addGoalEntry(
   },
 ): Promise<GoalEntryAdd> {
   const { kind, parentId, root, planPath, unprompted, awaitingYes, coordinatorPersona, architectPersona } = a;
+  // The record this add is made for, read here rather than at the mark below,
+  // because the reach check is an await and a message arriving inside it opens a
+  // record of its own and supersedes this one. The mark belongs on the record the
+  // add answered, whatever is open by the time it runs.
+  const recordAtEntry = openTurnRecord(sess.state);
   // A plan the gate admitted outside the operator's and the coordinator
   // persona's turns was admitted by the autonomy level, and one record
   // tells the coordinator persona about it: a [PROPOSAL] at plan-and-ask,
@@ -1223,13 +1256,16 @@ async function addGoalEntry(
   if (droppedTask !== undefined) sess.state.tasks = sess.state.tasks.filter((t) => t !== droppedTask);
 
   // Route two of the promotion routes, and the mark route one takes as well:
-  // where the turn holding this add holds an open turn record, that record is
+  // where the turn holding this add held an open turn record, that record is
   // the intention the message arrived with and this entry is what the
-  // intention became. Any open record counts, bare or attached, since a record
+  // intention became. Any open record counted, bare or attached, since a record
   // attached to the active entry is still the message this add answered. The
-  // mark rides this add's own write and the rollback takes it back, so no
-  // record reads promoted against an entry the store does not hold.
-  const undoPromotion = promoteOpenRecord(newNode.id, "goalId", now);
+  // record is the one read above, before the reach check, and the plan path this
+  // add named goes onto it, so the next boundary's path-keyed reading of the tree
+  // and of the record agree about which document is already covered. The mark
+  // rides this add's own write and the rollback takes it back, so no record reads
+  // promoted against an entry the store does not hold.
+  const undoPromotion = promoteTurnRecord(recordAtEntry, newNode.id, "goalId", now, planPath);
 
   // Takes this add back out of memory: the node, the root's reopening,
   // the activation with the session-local nudge fields activate() reset,
@@ -1287,6 +1323,11 @@ async function addGoalEntry(
   return { ok: true, node: newNode };
 }
 
+// The last line route one logged, which is what its two no-entry lines are held
+// to one of per reading by. It carries the record it was logged for, so a new
+// record's first reading is logged whatever the record before it read.
+let lastPlanRouteLine: { recordId: string; action: string; detail: string } | null = null;
+
 /**
  * Route one of the promotion routes: a turn record whose own turn wrote a plan
  * document becomes a plan entry in the goal tree, through the autonomy dial.
@@ -1303,33 +1344,55 @@ async function addGoalEntry(
  * seat, which is what the plugin holds where the setting is absent, blank,
  * "default" or the coordinator's own name, excludes nobody.
  *
- * The path is this turn's own edit where the turn made one, and otherwise the
- * path the record already carries, which is what makes a refused promotion
- * retry at the next boundary. An edit is read through PLAN_PATH_PATTERN after
- * the working directory's prefix comes off, so a plan document in another
- * checkout, in a subdirectory, or under a working directory the host will not
- * name yields no path and the record keeps whatever it had: the entry's planPath
- * is joined back onto this working directory by every later reader, so a path
- * that is not this directory's names a file none of them will find. A path the
- * record carried is re-tested against that same pattern before anything is
- * built on it, which the store's own comment puts at the reader: goal_add
- * enforces the shape on what it writes, and a hand-edited or foreign-written
- * store is the second producer no validation saw.
+ * The path is the first of this turn's own plan edits this match accepts, and
+ * otherwise the path the record already carries, which is what makes a refused
+ * promotion retry at the next boundary. An edit is read through
+ * PLAN_PATH_PATTERN after the working directory's prefix comes off, so a plan
+ * document in another checkout, in a subdirectory, or under a working directory
+ * the host will not name yields no path and the record keeps whatever it had:
+ * the entry's planPath is joined back onto this working directory by every later
+ * reader, so a path that is not this directory's names a file none of them will
+ * find.
+ *
+ * A path the record carried is re-tested against that same pattern before
+ * anything is built on it, which the store's own comment puts at the reader:
+ * goal_add enforces the shape on what it writes, and a hand-edited or
+ * foreign-written store is the second producer no validation saw. A path that
+ * fails that re-test is dropped from the record rather than written back,
+ * because nothing between two boundaries can change the shape of a string: the
+ * next boundary would re-test the same value, fail it again and log the same
+ * line, for as long as the record stayed open.
  *
  * Then the autonomy dial decides, and two readings stop before it. A tree the
  * operator has not opened takes no entry, since only the operator opens one, and
- * a path some record was already promoted for takes no second entry, since the
- * tree would otherwise gain one entry per turn that touched the document. Both
- * leave the record open with its planPath and log one turn_record_plan_noted
- * naming which of them held. At `propose` the same line is logged and nothing
- * else happens, which is the level's own rule: the standing block already tells
- * a persona how to propose, and an entry here would propose the plan to the
- * steward on the author's behalf. At `plan-and-ask` and `plan-and-start` the
- * entry is added through addGoalEntry, so the paused-awaiting-yes shape and the
- * [PROPOSAL] or [STARTED] record are the dial's own, and the record is marked
- * promoted by that same path. A refused add logs one
- * turn_record_promotion_refused naming the cause and leaves the record open with
- * its planPath, so the next boundary tries again.
+ * a path a plan entry of the tree already carries takes no second entry, since
+ * the tree would otherwise gain one entry per turn that touched the document.
+ * That second reading is the tree's and not the record log's, because the tree is
+ * where the entry lives: a record promoted through route two carries the path
+ * only because the promotion copies it, a paused entry outlives the twenty closed
+ * records the log keeps, and either way the log can stop naming a document the
+ * tree still holds an entry for. An entry of any status counts, a finished one
+ * included, since a second entry for a document the tree has already worked is
+ * the same flood by another route. Both readings leave the record open with its
+ * planPath and log one turn_record_plan_noted naming which of them held. At
+ * `propose` the same line is logged and nothing else happens, which is the
+ * level's own rule: the standing block already tells a persona how to propose,
+ * and an entry here would propose the plan to the steward on the author's
+ * behalf. At `plan-and-ask` and `plan-and-start` the entry is added through
+ * addGoalEntry, so the paused-awaiting-yes shape and the [PROPOSAL] or [STARTED]
+ * record are the dial's own, and the record is marked promoted by that same path.
+ * A refused add logs one turn_record_promotion_refused naming the cause and
+ * leaves the record open with its planPath, so the next boundary tries again.
+ *
+ * Either line is logged only where its own text moved for that record since the
+ * last boundary, which is what holds the log to one line per reading rather than
+ * one per turn end: this runs at every own-turn end while the record stays open,
+ * and under the shipped fallback an open record continues across messages until
+ * the timeout reaps it. The text carries the record, the rule and the path, so a
+ * path this turn moved and a rule that now refuses for another reason are both
+ * logged, and only an unchanged reading is silent. The comparison is one reading
+ * held in this module, so a relaunched session logs its record's current reading
+ * once more.
  *
  * The record's own text is the entry's title. It arrives cut to the record
  * field's bound and with its brackets already neutralized, by the one clamp
@@ -1340,7 +1403,7 @@ async function addGoalEntry(
  */
 async function promotePlanTouchingRecord(
   dp: any,
-  editedPath: string | null,
+  editedPaths: readonly string[],
   coordinatorPersona: string,
   architectPersona: string,
   newerTurnStarted: () => boolean,
@@ -1351,17 +1414,25 @@ async function promotePlanTouchingRecord(
 
   // The working directory is read only where this turn edited something that
   // named a plan document, so a turn that touched none costs no host call on
-  // the turn-end path. A read that fails or answers no directory leaves the
+  // the turn-end path. A read that fails or answers no directory leaves every
   // edit unresolved, which reads the same way as an edit outside this
-  // directory: no path, and the record keeps what it had.
+  // directory: no path, and the record keeps what it had. The turn's edits are
+  // read in call order and the first this match accepts is the path, so a turn
+  // that touched another checkout's spec before its own document is promoted on
+  // its own document.
   let edited: string | null = null;
-  if (editedPath !== null) {
+  if (editedPaths.length > 0) {
     let cwd: string | null = null;
     try {
       const answered = await dp.session.cwd();
       if (typeof answered === "string" && answered.length > 0) cwd = answered;
-    } catch { /* read as an unresolvable edit below */ }
-    if (cwd !== null) edited = planPathUnderCwd(editedPath, cwd);
+    } catch { /* read as unresolvable edits below */ }
+    if (cwd !== null) {
+      for (const candidate of editedPaths) {
+        edited = planPathUnderCwd(candidate, cwd);
+        if (edited !== null) break;
+      }
+    }
   }
   // After the one await above, two facts are read again before anything is
   // written, the way the record close beside this reads them. A newer turn
@@ -1372,28 +1443,40 @@ async function promotePlanTouchingRecord(
   const record = openTurnRecord(sess.state);
   if (record === null || record.id !== open.id) return;
 
-  const noted = (rule: string): void => {
+  // One line per reading rather than one per boundary: a line whose action,
+  // record and text are the ones last logged from here says nothing new, and
+  // this runs at every own-turn end the record stays open for. The reading is
+  // compared before the 300-character cut, so two causes that part company past
+  // that cut are still two readings.
+  const logOnce = (action: string, detail: string): void => {
+    if (lastPlanRouteLine !== null && lastPlanRouteLine.recordId === record.id
+      && lastPlanRouteLine.action === action && lastPlanRouteLine.detail === detail) return;
+    lastPlanRouteLine = { recordId: record.id, action, detail };
     sess.state.decisions.push({
       timestamp: Date.now(),
       loop: "monitor",
-      action: "turn_record_plan_noted",
-      detail: `record ${record.id} holds ${record.planPath}, no entry added: ${rule}`,
+      action,
+      detail: detail.slice(0, 300),
     });
   };
+  const noted = (rule: string): void => {
+    logOnce("turn_record_plan_noted", `record ${record.id} holds ${record.planPath}, no entry added: ${rule}`);
+  };
   const refused = (cause: string): void => {
-    sess.state.decisions.push({
-      timestamp: Date.now(),
-      loop: "monitor",
-      action: "turn_record_promotion_refused",
-      detail: `record ${record.id} keeps ${record.planPath} for the next boundary: ${cause}`.slice(0, 300),
-    });
+    logOnce("turn_record_promotion_refused", `record ${record.id} keeps ${record.planPath} for the next boundary: ${cause}`);
   };
 
   const path = edited ?? record.planPath;
   if (path === undefined) return;
   if (!PLAN_PATH_PATTERN.test(path)) {
-    record.planPath = path;
-    refused("the plan path the record carries fails the shape the store's own pattern names");
+    // The shape of a stored string cannot change between boundaries, so the path
+    // is dropped rather than written back: keeping it would buy a re-test and a
+    // line at every later boundary and no promotion ever.
+    delete record.planPath;
+    logOnce(
+      "turn_record_promotion_refused",
+      `record ${record.id} drops the plan path ${path}: it fails the shape the store's own pattern names`,
+    );
     return;
   }
   record.planPath = path;
@@ -1403,8 +1486,8 @@ async function promotePlanTouchingRecord(
     noted("no goal tree exists, and only the operator opens one");
     return;
   }
-  if (sess.state.turnRecords.some((r) => r.id !== record.id && r.status === "promoted" && r.planPath === path)) {
-    noted("an earlier record was already promoted for that plan document");
+  if (sess.state.goals.some((g) => g.kind === "plan" && g.planPath === path)) {
+    noted("the tree already holds a plan entry for that plan document");
     return;
   }
   const autonomy = sess.state.autonomy;
@@ -2246,18 +2329,29 @@ let turnToolFlags: TurnToolFlags = freshTurnToolFlags();
 let turnToolRing: string[] = [];
 let turnWorkToolCalls = 0;
 
-// Section 6 (goal-every-turn): the path of the first plan document this turn
-// wrote or edited, as the model wrote it, or null where it edited none. It sits
-// beside the flags above rather than inside them because route one of the
-// promotion routes needs the path itself and a boolean cannot carry one: the
-// record it promotes stores that path, and the entry it adds is judged against
-// the document the path names. Reset and written where the flags are, so it is
-// the same turn's reading, and the first such edit is the one kept: a turn that
+// Section 6 (goal-every-turn): the plan documents this turn wrote or edited, as
+// the model wrote them, in call order. It sits beside the flags above rather
+// than inside them because route one of the promotion routes needs the path
+// itself and a boolean cannot carry one: the record it promotes stores that
+// path, and the entry it adds is judged against the document the path names.
+// Reset and written where the flags are, so it is the same turn's reading.
+//
+// The turn's edits are kept rather than one value, because the one route one
+// wants is the first that its own match accepts and this path cannot run that
+// match: the working directory the match needs is a host call, and the
+// per-tool-call path makes none. A turn whose first plan edit is another
+// checkout's spec and whose second is this directory's own would otherwise
+// promote nothing. Route one takes the first of these it accepts, so a turn that
 // writes its own plan document and then touches a second one (an archive move,
-// another worker's spec) set out on the first, and promoting the second would
-// name the wrong document. The value is unresolved here; route one is what
-// resolves it against the working directory and tests the result.
-let turnPlanEditedPath: string | null = null;
+// another worker's spec) is still promoted on the first.
+//
+// The list is bounded the way the ring above is bounded, and the bound drops the
+// latest edits rather than the earliest, since the earliest that matches is the
+// one route one wants.
+// It is exported so the leg that drives a turn past the bound counts to the
+// bound the code holds rather than to a literal of its own.
+export const TURN_PLAN_EDITS_MAX = 8;
+let turnPlanEditedPaths: string[] = [];
 
 // Whether a tool argument names a plan document: a file directly under a
 // docs/plans/ directory, at any depth and with either separator, whose
@@ -2283,9 +2377,10 @@ function namesPlanDocument(value: unknown): boolean {
 // which the plugin loader offers no path API for. Separators are folded to "/"
 // on both sides, since this host's own paths carry "\" and the store's pattern
 // admits neither separator inside a name. A path already relative is relative
-// to cwd by definition and is tested as it stands. An absolute one keeps only
-// what follows the directory's own prefix, the trailing-separator-plus-"/" rule
-// the plan reader's join uses, so the strip and that join are inverses.
+// to cwd by definition and is tested as it stands, past any leading
+// current-directory segment. An absolute one keeps only what follows the
+// directory's own prefix, the trailing-separator-plus-"/" rule the plan reader's
+// join uses, so the strip and that join are inverses.
 //
 // PLAN_PATH_PATTERN on the remainder is what makes the strip safe, and it is
 // the only guard here: it is anchored at both ends and admits no separator and
@@ -2293,21 +2388,36 @@ function namesPlanDocument(value: unknown): boolean {
 // fails it rather than being admitted. "D:/root/../other/docs/plans/a.md"
 // leaves "../other/docs/plans/a.md", "D:/root/x/../docs/plans/a.md" leaves
 // "x/../docs/plans/a.md", and a path under another checkout keeps its whole
-// absolute self; none of the three matches. A drive letter's case is folded,
-// because a Windows path names one file whichever case its drive carries and
-// the model writes either; the rest of the comparison stays case-sensitive,
-// since a case-insensitive one would accept "DOCS/PLANS/a.md" as a directory
-// this one does not hold on a case-sensitive host.
-function planPathUnderCwd(filePath: string, cwd: string): string | null {
+// absolute self; none of the three matches.
+//
+// The whole prefix comparison folds case where both sides are drive-rooted,
+// because a Windows path names one file whichever case any of its segments
+// carries and the model writes the directory either way. Where the path starts
+// with "/" the comparison stays case-sensitive, since on a case-sensitive host
+// "/home/Root" and "/home/root" are two directories. The remainder is sliced
+// out of the path as the model wrote it and still read by PLAN_PATH_PATTERN
+// case-sensitively, so the fold reaches the directory's own prefix and never
+// admits "DOCS/PLANS/a.md" as the name of a plan document.
+//
+// It is exported for the unit pins over these shapes: the function is two
+// strings in and one out, and the hook path that feeds it is pinned by legs of
+// its own.
+export function planPathUnderCwd(filePath: string, cwd: string): string | null {
   const slashed = filePath.replace(/\\/g, "/");
   const root = cwd.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
   const rooted = /^([A-Za-z]:|\/)/.test(slashed);
   let candidate: string;
   if (!rooted) {
-    candidate = slashed;
+    // A relative path the model wrote as "./docs/plans/x.md", or with this host's
+    // separators as ".\docs\plans\x.md", names the file the bare form names, so
+    // the leading current-directory segments come off before the pattern reads
+    // it. Only "./" comes off: a "../" segment leaves this directory, and the
+    // pattern below refuses what is left of it as it refuses every other escape.
+    candidate = slashed.replace(/^(?:\.\/)+/, "");
   } else if (slashed.startsWith(root)) {
     candidate = slashed.slice(root.length);
-  } else if (driveFolded(slashed).startsWith(driveFolded(root))) {
+  } else if (driveRooted(slashed) && driveRooted(root)
+    && slashed.toLowerCase().startsWith(root.toLowerCase())) {
     candidate = slashed.slice(root.length);
   } else {
     return null;
@@ -2315,11 +2425,10 @@ function planPathUnderCwd(filePath: string, cwd: string): string | null {
   return PLAN_PATH_PATTERN.test(candidate) ? candidate : null;
 }
 
-// A path with a leading drive letter lowercased, for the one comparison above
-// that a drive's case must not decide. A path with no drive letter is returned
-// as it is.
-function driveFolded(path: string): string {
-  return /^[A-Za-z]:/.test(path) ? path.charAt(0).toLowerCase() + path.slice(1) : path;
+// Whether a path leads with a drive letter, which is what makes its comparison
+// above a case-folding one. A path leading with "/" does not.
+function driveRooted(path: string): boolean {
+  return /^[A-Za-z]:/.test(path);
 }
 
 // A git subcommand read off a Bash command: the word `git`, then any run of
@@ -2335,7 +2444,7 @@ function resetTurnToolActivity(): void {
   turnToolFlags = freshTurnToolFlags();
   turnToolRing = [];
   turnWorkToolCalls = 0;
-  turnPlanEditedPath = null;
+  turnPlanEditedPaths = [];
 }
 
 // One main-loop tool call's contribution to the flags, the ring and the
@@ -2349,7 +2458,7 @@ function noteTurnToolCall(tool: string, args: { file_path?: unknown; command?: u
   if (tool === "Read" && namesPlanDocument(args.file_path)) turnToolFlags.planRead = true;
   if ((tool === "Write" || tool === "Edit") && namesPlanDocument(args.file_path)) {
     turnToolFlags.planEdited = true;
-    if (turnPlanEditedPath === null) turnPlanEditedPath = args.file_path as string;
+    if (turnPlanEditedPaths.length < TURN_PLAN_EDITS_MAX) turnPlanEditedPaths.push(args.file_path as string);
   }
   if (tool === "Bash" && typeof args.command === "string") {
     if (GIT_COMMIT_PATTERN.test(args.command)) turnToolFlags.committed = true;
@@ -8908,9 +9017,12 @@ export const register: Register = async (on, options) => {
     const askedTextAtDelete = currentTurnAskedText;
     const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
     // Section 6 (goal-every-turn): route one's own fact, read here for the same
-    // reason. The plan document this turn edited is rewritten by the next
-    // turn.start too, and route one reads it after an await of its own.
-    const planEditedPathAtDelete = turnPlanEditedPath;
+    // reason. The plan documents this turn edited are rewritten by the next
+    // turn.start too, and route one reads them after an await of its own. The
+    // list is copied rather than aliased: the reset at the next turn.start
+    // replaces the array, but a tool call landing before route one reads it
+    // pushes onto this one.
+    const planEditedPathsAtDelete = [...turnPlanEditedPaths];
     // The persona's own turn end clears any owed bank here, before any await,
     // and the step below sets it again only where this turn ended durable. A
     // throw on the way there leaves nothing owed: a missed bank costs one
@@ -9889,7 +10001,7 @@ export const register: Register = async (on, options) => {
       settleExpiredDispositionStamps($);
       if (!turnOpenAfterDelete && !skipped) {
         await promotePlanTouchingRecord(
-          $, planEditedPathAtDelete, coordinatorPersona, architectPersona,
+          $, planEditedPathsAtDelete, coordinatorPersona, architectPersona,
           () => turnStartSeq !== turnStartSeqAtDelete,
         );
         await closeTurnRecordAtTurnEnd(

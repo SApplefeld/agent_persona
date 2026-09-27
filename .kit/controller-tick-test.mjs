@@ -4060,9 +4060,13 @@ async function main() {
     // Section 6 (goal-every-turn): the three promotion routes.
     await casePromote_routeOneAtEachAutonomyLevel(clock);
     await casePromote_routeOnesOwnMatchAgainstTheWorkingDirectory(clock);
+    await casePromote_theFirstPlanEditThatMatchesIsTheOnePromoted(clock);
+    await casePromote_anUnchangedRefusalIsLoggedOncePerRecord(clock);
     await casePromote_theArchitectPersonaTakesNoPromotion(clock);
     await casePromote_withNoGoalTreeTheRecordKeepsThePath(clock);
     await casePromote_theSamePlanIsNotPromotedTwice(clock);
+    await casePromote_aPlanDocumentTheTreeHoldsTakesNoSecondEntry(clock);
+    await casePromote_theMarkLandsOnTheRecordTheAddWasMadeFor(clock);
     await casePromote_aStoredPlanPathIsRetestedAndARefusalRetries(clock);
     await casePromote_routeOneRunsAboveTheCloseUnderALiveVerdict(clock);
     await casePromote_routeTwoMarksTheRecordTheToolCallBecame(clock);
@@ -25929,10 +25933,13 @@ async function casePromote_routeOneAtEachAutonomyLevel(clock) {
 }
 
 // What route one reads as a plan document of this working directory and what it
-// does not. Every leg is the same drive at plan-and-start differing only on the
-// path or the tool, and the first leg is the control the rest are read against:
-// a Write of the document under the working directory promotes, so a leg that
-// notes nothing is the path rule refusing rather than the drive failing.
+// does not. The split here is by what each half can see. planPathUnderCwd is
+// two strings in and one string out, so every path shape is pinned by calling
+// it directly over the module the control leg loaded; a session per shape
+// evaluated the whole hooks module once per string. The hook legs carry what
+// the direct call cannot: which tools reach the capture at all, that the
+// capture's value reaches route one through a real boundary, and a turn that
+// touched no file.
 async function casePromote_routeOnesOwnMatchAgainstTheWorkingDirectory(clock) {
   console.log("\n=== Promotion route one: which path a turn's own edit reads as this directory's plan document ===");
   const drive = async (label, { tool = "Write", path } = {}) => {
@@ -25942,22 +25949,14 @@ async function casePromote_routeOnesOwnMatchAgainstTheWorkingDirectory(clock) {
     return { h, record: proRecordById(h, id), entry: proAddedEntry(h) };
   };
 
+  // The leg the direct pins below are read against: the real capture, the real
+  // working-directory read and the real boundary carry one path all the way to
+  // a promotion, so a null the pins assert is the match refusing and not a
+  // function nothing calls.
   const control = await drive("write_absolute", { path: PRO_ABS });
   check("pro match control: a Write of the document under the working directory promotes, the path stored project-relative",
     control.record?.status === "promoted" && control.record?.planPath === PRO_PLAN && control.entry?.planPath === PRO_PLAN,
     { record: control.record, entry: control.entry });
-
-  const relative = await drive("write_relative", { path: PRO_PLAN });
-  check("pro match relative: a path the model wrote relative is relative to the working directory and promotes",
-    relative.record?.status === "promoted" && relative.record?.planPath === PRO_PLAN, relative.record);
-
-  const backslashes = await drive("write_backslashes", { path: `${HARNESS_CWD.replace(/\//g, "\\")}\\docs\\plans\\found-at-the-boundary_v1.md` });
-  check("pro match backslashes: this host's own separators read the same file, and the stored path carries forward slashes",
-    backslashes.record?.status === "promoted" && backslashes.record?.planPath === PRO_PLAN, backslashes.record);
-
-  const lowerDrive = await drive("write_drive_case", { path: PRO_ABS.charAt(0).toLowerCase() + PRO_ABS.slice(1) });
-  check("pro match drive case: a drive letter in the other case names the same directory and promotes",
-    lowerDrive.record?.status === "promoted" && lowerDrive.record?.planPath === PRO_PLAN, lowerDrive.record);
 
   const edit = await drive("edit_absolute", { tool: "Edit", path: PRO_ABS });
   check("pro match edit: an Edit counts as a write and promotes",
@@ -25967,25 +25966,162 @@ async function casePromote_routeOnesOwnMatchAgainstTheWorkingDirectory(clock) {
   check("pro match read: a Read of the document sets no plan path, adds no entry and leaves the record open",
     read.record?.planPath === undefined && read.record?.status === "open" && read.entry === null, read.record);
 
-  const elsewhere = await drive("write_other_checkout", { path: "D:/other-root/docs/plans/found-at-the-boundary_v1.md" });
-  check("pro match other checkout: a plan document under another directory sets no plan path and adds no entry",
-    elsewhere.record?.planPath === undefined && elsewhere.record?.status === "open" && elsewhere.entry === null, elsewhere.record);
-
-  // A path that ends in a plan document but does not sit directly under this
-  // directory's docs/plans. The turn-activity flag beside route one reads a
-  // docs/plans suffix at any depth, so this leg is refused by route one's own
-  // match against the working directory rather than by that flag.
-  const nested = await drive("write_nested_root", { path: `${HARNESS_CWD}/vendor/docs/plans/found-at-the-boundary_v1.md` });
-  check("pro match nested: a docs/plans under a subdirectory of this one sets no plan path and adds no entry",
-    nested.record?.planPath === undefined && nested.record?.status === "open" && nested.entry === null, nested.record);
-
-  const escaped = await drive("write_escaping", { path: `${HARNESS_CWD}/../other-root/docs/plans/found-at-the-boundary_v1.md` });
-  check("pro match escaping: a path climbing out of this directory sets no plan path and adds no entry",
-    escaped.record?.planPath === undefined && escaped.record?.status === "open" && escaped.entry === null, escaped.record);
-
   const noTouch = await drive("no_edit", { path: null });
   check("pro match no edit: a turn that wrote nothing sets no plan path and adds no entry",
     noTouch.record?.planPath === undefined && noTouch.record?.status === "open" && noTouch.entry === null, noTouch.record);
+
+  // The path shapes, over the module the control leg already loaded, so the
+  // pins cost no further evaluation of it.
+  const mod = await loadModule("pro_match_write_absolute");
+  const pin = (label, path, expected, cwd = HARNESS_CWD) => {
+    const got = mod.planPathUnderCwd(path, cwd);
+    check(`pro match ${label}: ${expected === null ? "names no plan document of this directory" : `reads as ${expected}`}`,
+      got === expected, { path, cwd, got, expected });
+  };
+
+  pin("absolute", PRO_ABS, PRO_PLAN);
+  pin("relative", PRO_PLAN, PRO_PLAN);
+  pin("dot relative", `./${PRO_PLAN}`, PRO_PLAN);
+  pin("dot backslash", `.\\${PRO_PLAN.replace(/\//g, "\\")}`, PRO_PLAN);
+  pin("relative climbing", `../${PRO_PLAN}`, null);
+  pin("backslashes", `${HARNESS_CWD.replace(/\//g, "\\")}\\docs\\plans\\found-at-the-boundary_v1.md`, PRO_PLAN);
+  pin("cwd trailing separator", PRO_ABS, PRO_PLAN, `${HARNESS_CWD}/`);
+  pin("drive case", PRO_ABS.charAt(0).toLowerCase() + PRO_ABS.slice(1), PRO_PLAN);
+  // A directory segment in the other case names the same directory on this
+  // host, and the model writes either, so the whole drive-rooted prefix folds
+  // rather than the drive letter alone.
+  pin("directory case", `${HARNESS_CWD.replace("harness-root", "Harness-Root")}/${PRO_PLAN}`, PRO_PLAN);
+  // The fold stops at the prefix: the name itself is still read
+  // case-sensitively, so a docs/plans written in another case is not this
+  // directory's plan document.
+  pin("name case", `${HARNESS_CWD.replace("harness-root", "Harness-Root")}/DOCS/plans/found-at-the-boundary_v1.md`, null);
+  // A path leading with "/" is not drive-rooted, and two directories differing
+  // only in case are two directories on a case-sensitive host.
+  pin("posix case control", "/srv/root/docs/plans/a_v1.md", "docs/plans/a_v1.md", "/srv/root");
+  pin("posix case", "/srv/Root/docs/plans/a_v1.md", null, "/srv/root");
+  pin("other checkout", "D:/other-root/docs/plans/found-at-the-boundary_v1.md", null);
+  // A path that ends in a plan document but does not sit directly under this
+  // directory's docs/plans. The turn-activity flag beside route one reads a
+  // docs/plans suffix at any depth, so this shape is refused by route one's own
+  // match against the working directory rather than by that flag.
+  pin("nested root", `${HARNESS_CWD}/vendor/docs/plans/found-at-the-boundary_v1.md`, null);
+  pin("escaping", `${HARNESS_CWD}/../other-root/docs/plans/found-at-the-boundary_v1.md`, null);
+  // The two escape shapes the function's own comment names, which the pattern
+  // on the remainder is what refuses.
+  pin("escaping at the root", "D:/root/../other/docs/plans/a_v1.md", null, "D:/root");
+  pin("escaping inside the path", "D:/root/x/../docs/plans/a_v1.md", null, "D:/root");
+}
+
+// Section 6 close pass: route one takes the first plan document of this
+// directory the turn touched, whichever of the turn's plan edits that is. The
+// capture cannot run route one's own match, because the working directory is
+// not read on the per-tool-call path, so it keeps what the turn touched and the
+// match picks from that list at the boundary. A turn whose first plan edit is
+// another checkout's spec and whose second is this directory's own is the shape
+// that costs a promotion where one value is kept.
+async function casePromote_theFirstPlanEditThatMatchesIsTheOnePromoted(clock) {
+  console.log("\n=== Promotion route one: the turn's plan edits are kept until one of them matches this directory ===");
+  const ELSEWHERE = "D:/other-root/docs/plans/somebody-elses-spec_v1.md";
+  const SECOND = `${HARNESS_CWD}/docs/plans/second-document_v1.md`;
+
+  const drive = async (label, paths) => {
+    clock.set(T0);
+    const h = await proHarness(`pro_first_${label}`, { autonomy: "plan-and-start" });
+    await submitMessage(h, PRO_MESSAGE);
+    const id = proOpenRecord(h)?.id ?? null;
+    await recordTurnStart(h, `t-${label}`, PRO_MESSAGE);
+    for (const path of paths) await callTool(h, { tool: "Write", file_path: path });
+    await recordTurnComplete(h, `t-${label}`, "Drafted the plan.");
+    await settleJournalWrites(h);
+    return { record: proRecordById(h, id), entry: proAddedEntry(h) };
+  };
+
+  const after = await drive("elsewhere_first", [ELSEWHERE, PRO_ABS]);
+  check("pro first elsewhere: a turn that edited another checkout's spec first promotes this directory's own document",
+    after.record?.status === "promoted" && after.record?.planPath === PRO_PLAN && after.entry?.planPath === PRO_PLAN,
+    { record: after.record, entry: after.entry });
+
+  // The control on the order: with two documents of this directory the earlier
+  // one is the one promoted, so the leg above is the match picking and not the
+  // capture having switched to the last edit.
+  const both = await drive("both_here", [PRO_ABS, SECOND]);
+  check("pro first both: with two documents of this directory the turn set out on, the first is the one promoted",
+    both.record?.status === "promoted" && both.record?.planPath === PRO_PLAN && both.entry?.planPath === PRO_PLAN,
+    { record: both.record, entry: both.entry });
+
+  // The list is bounded the way the tool ring beside it is bounded, and the
+  // bound drops the latest edits, since the first that matches is the one route
+  // one wants. A turn whose match sits past the bound promotes nothing. The
+  // bound is read off the module the first leg loaded, so the leg cannot pass by
+  // counting to a number the code no longer holds.
+  const { TURN_PLAN_EDITS_MAX } = await loadModule("pro_first_elsewhere_first");
+  check("pro first bound: the kept bound is a positive number the module names",
+    typeof TURN_PLAN_EDITS_MAX === "number" && TURN_PLAN_EDITS_MAX > 0, TURN_PLAN_EDITS_MAX);
+  const pastBound = await drive("past_bound", [
+    ...Array.from({ length: TURN_PLAN_EDITS_MAX }, (_unused, i) => `D:/other-root/docs/plans/spec-${i}_v1.md`),
+    PRO_ABS,
+  ]);
+  check("pro first past the bound: a plan edit past the kept bound sets no plan path and adds no entry",
+    pastBound.record?.planPath === undefined && pastBound.record?.status === "open" && pastBound.entry === null,
+    pastBound.record);
+}
+
+// Section 6 close pass: route one re-runs at every own-turn end while the record
+// stays open, and under the shipped fallback an open record continues across
+// messages until the timeout reaps it. So the line route one logs when it adds
+// no entry is logged only where that line's own rule or path changed for the
+// record since the last boundary, and one boundary per turn on an unchanged
+// reading writes nothing. The negative half is what this case is for: a leg
+// that drives one boundary cannot tell a change-detected line from a line
+// logged every time.
+async function casePromote_anUnchangedRefusalIsLoggedOncePerRecord(clock) {
+  console.log("\n=== Promotion route one: the no-entry line is logged once per record until its rule or its path changes ===");
+  const SECOND_PLAN = "docs/plans/second-document_v1.md";
+  const SECOND_ABS = `${HARNESS_CWD}/${SECOND_PLAN}`;
+  // The seeded record is the one under test, so these legs drive turns alone and
+  // send no message: a message would supersede the record with one of its own.
+  const seeded = (planPath) => [{
+    id: "tr-seeded", text: "Take the plan forward.", openedAt: T0 - 1000, status: "open", planPath,
+  }];
+  const boundary = async (h, turnId, path) => {
+    await recordTurnStart(h, turnId, "");
+    if (path !== undefined) await callTool(h, { tool: "Write", file_path: path });
+    await recordTurnComplete(h, turnId, "Carried on.");
+    await settleJournalWrites(h);
+  };
+
+  // A tree already holding an entry for each of the two documents, so route one
+  // reaches the same rule on both paths: the tree already holds a plan entry for
+  // that plan document. The rule is held still and the path is the axis.
+  clock.set(T0);
+  const h = await proHarness("pro_once_noted", {
+    autonomy: "plan-and-start",
+    goals: gtc4Tree("pending", [
+      { id: "plan-a", parentId: "root-1", kind: "plan", status: "pending", title: "Plan a", planPath: PRO_PLAN },
+      { id: "plan-b", parentId: "root-1", kind: "plan", status: "pending", title: "Plan b", planPath: SECOND_PLAN },
+    ]),
+    turnRecords: seeded(PRO_PLAN),
+  });
+  await boundary(h, "t-once-1", PRO_ABS);
+  const first = proDecisionsOf(h, "turn_record_plan_noted");
+  check("pro once: the first boundary logs one turn_record_plan_noted naming the entry the tree already holds and the path",
+    first.length === 1 && first[0].detail.includes(PRO_PLAN) && first[0].detail.includes("already holds"), first);
+
+  await boundary(h, "t-once-2", undefined);
+  check("pro once: a second boundary on the same rule and the same path logs no second line",
+    proDecisionsOf(h, "turn_record_plan_noted").length === 1, proDecisionsOf(h, "turn_record_plan_noted"));
+  check("pro once: the record is still open and still carries the path, so the step declined rather than finished",
+    proOpenRecord(h)?.id === "tr-seeded" && proOpenRecord(h)?.planPath === PRO_PLAN, proRecords(h));
+
+  // The boundary that proves the step still runs: a turn editing the second
+  // document moves the path, the same rule refuses it, and the line is logged.
+  await boundary(h, "t-once-3", SECOND_ABS);
+  const moved = proDecisionsOf(h, "turn_record_plan_noted");
+  check("pro once: a boundary whose path moved logs a second line naming the second document",
+    moved.length === 2 && moved[1].detail.includes(SECOND_PLAN), moved);
+  check("pro once: no entry was added at any of the three boundaries",
+    proState(h).goals.length === 3 && proDecisionsOf(h, "turn_record_promoted").length === 0,
+    proState(h).goals.map((g) => g.id));
 }
 
 // The architect seat never takes route one, and an unset seat excludes nobody.
@@ -26048,8 +26184,8 @@ async function casePromote_withNoGoalTreeTheRecordKeepsThePath(clock) {
     { record: proRecordById(rooted, rootedId), entry: proAddedEntry(rooted) });
 }
 
-// The no-double-promotion guard: a second turn touching a document some record
-// was already promoted for adds no second entry. The two turns run at
+// The no-double-promotion guard: a second turn touching a document the tree
+// already holds an entry for adds no second entry. The two turns run at
 // plan-and-ask, where the entry the first turn queued waits paused and so leaves
 // nothing active, which is what lets the second message open a bare record and
 // reach this guard at all. At plan-and-start the entry is active instead, and the
@@ -26078,8 +26214,8 @@ async function casePromote_theSamePlanIsNotPromotedTwice(clock) {
     proState(h).goals.length === 2 && proCoordinatorRecords(h).length === 1,
     { goals: proState(h).goals.map((g) => g.id), records: proCoordinatorRecords(h).length });
   const noted = proDecisionsOf(h, "turn_record_plan_noted");
-  check("pro twice: one turn_record_plan_noted decision naming the earlier promotion as the rule",
-    noted.length === 1 && noted[0].detail.includes("already promoted"), noted);
+  check("pro twice: one turn_record_plan_noted decision naming the entry the tree already holds as the rule",
+    noted.length === 1 && noted[0].detail.includes("the tree already holds"), noted);
 
   clock.set(T0);
   const c = await proHarness("pro_twice_control", { autonomy: "plan-and-ask" });
@@ -26104,11 +26240,210 @@ async function casePromote_theSamePlanIsNotPromotedTwice(clock) {
     { record: stepRecord, goals: proState(attached).goals.map((g) => g.id) });
 }
 
+// The same guard on the two drives a record-keyed reading of it cannot answer,
+// because the entry lives in the tree and the record log is neither the entry's
+// home nor a lasting one. Route two's own add carries the plan path to the entry,
+// so the record it promotes names that document only if the promotion copies the
+// path onto the record. And the log keeps twenty closed records, oldest-opened
+// dropped first, which a paused entry waiting for the operator's yes easily
+// outlives. Each drive ends with a turn editing the document the tree already
+// holds, and each carries the control that adds an entry for another document, so
+// the refusals read as the path the tree holds rather than as a drive that failed
+// to reach the guard at all.
+async function casePromote_aPlanDocumentTheTreeHoldsTakesNoSecondEntry(clock) {
+  console.log("\n=== Promotion route one: a plan document the tree already holds an entry for takes no second entry ===");
+  const ADD = "mcp__agentic-plugin__goal_add";
+  const SECOND = "docs/plans/a-second-plan_v1.md";
+  const CARRY_ON = "Carry on with the retention plan.";
+
+  // The model's own add of the plan document, in a turn that is not the
+  // operator's: that is what makes the add unprompted, which leaves the entry
+  // paused for the operator's yes and so leaves nothing active for the next
+  // message to attach its record to. A record attached to an active entry would
+  // be refused by route one's own goalId rule instead, one rule earlier.
+  const routeTwoAdd = async (h, turnId, message) => {
+    await submitMessage(h, message, "hook");
+    const id = proOpenRecord(h)?.id ?? null;
+    await recordTurnStart(h, turnId, message);
+    const res = await callTool(h, {
+      tool: ADD, kind: "plan", title: "The retention plan",
+      objective: "Work the retention plan document to its end.", planPath: PRO_PLAN,
+    });
+    check(`${turnId} setup: the model's own add naming the plan document was accepted`, res?.deny === undefined, res);
+    await recordTurnComplete(h, turnId, "Queued the plan.");
+    await settleJournalWrites(h);
+    return id;
+  };
+
+  clock.set(T0);
+  const h = await proHarness("pro_tree_route_two", { autonomy: "plan-and-ask" });
+  const firstId = await routeTwoAdd(h, "t-tree-two", "Track the retention plan.");
+  const entry = proAddedEntry(h);
+  check("pro tree route two setup: one paused entry carries the plan path and nothing is active",
+    entry?.status === "paused" && entry?.planPath === PRO_PLAN && proState(h).goals.length === 2
+      && proState(h).activeGoalId === null,
+    { entry, goals: proState(h).goals.map((g) => `${g.id}:${g.status}`) });
+  check("pro tree route two: the promoted record carries the plan path the add named, so a path-keyed reader can see it",
+    proRecordById(h, firstId)?.status === "promoted" && proRecordById(h, firstId)?.goalId === entry?.id
+      && proRecordById(h, firstId)?.planPath === PRO_PLAN, proRecordById(h, firstId));
+  const secondId = await proDrive(h, "t-tree-two-next", { message: CARRY_ON });
+  check("pro tree route two: the next turn's record is bare, holds the same plan path and stays open",
+    secondId !== firstId && proRecordById(h, secondId)?.goalId === undefined
+      && proRecordById(h, secondId)?.planPath === PRO_PLAN && proRecordById(h, secondId)?.status === "open",
+    proRecordById(h, secondId));
+  check("pro tree route two: no second entry was added and the coordinator persona got one record in all",
+    proState(h).goals.length === 2 && proCoordinatorRecords(h).length === 1,
+    { goals: proState(h).goals.map((g) => `${g.id}:${g.planPath}`), records: proCoordinatorRecords(h).length });
+  const twoNoted = proDecisionsOf(h, "turn_record_plan_noted");
+  check("pro tree route two: one turn_record_plan_noted decision names the entry the tree already holds as the rule",
+    twoNoted.length === 1 && twoNoted[0].detail.includes("the tree already holds") && twoNoted[0].detail.includes(PRO_PLAN),
+    twoNoted);
+  await proDrive(h, "t-tree-two-other", { path: `${HARNESS_CWD}/${SECOND}`, message: "Now draft the archive plan." });
+  const twoPaths = proState(h).goals.filter((g) => g.planPath).map((g) => g.planPath).sort();
+  check("pro tree route two (the control): a turn editing another document does add an entry, so the refusal is the path the tree holds",
+    twoPaths.join(",") === [PRO_PLAN, SECOND].sort().join(","), twoPaths);
+
+  // The record log past its cap: twenty closed records opened after the one the
+  // add promotes, so the reap at that add's own write drops the promoted record
+  // and the tree is the only surface left naming the plan document.
+  const closedRecords = () => Array.from({ length: 20 }, (_, i) => ({
+    id: `tr-closed-${i}`, text: `An answered message ${i}`, openedAt: T0 + 1000 + i,
+    status: "delivered", closedAt: T0 + 2000 + i,
+  }));
+  clock.set(T0);
+  const capped = await proHarness("pro_tree_capped", { autonomy: "plan-and-ask", turnRecords: closedRecords() });
+  const cappedId = await routeTwoAdd(capped, "t-tree-capped", "Track the retention plan.");
+  check("pro tree capped setup: the promoted record was dropped by the cap, so no record in the store names the plan document",
+    proRecordById(capped, cappedId) === null && !proRecords(capped).some((r) => r.planPath === PRO_PLAN)
+      && proAddedEntry(capped)?.planPath === PRO_PLAN,
+    { records: proRecords(capped).map((r) => `${r.id}:${r.status}`), entry: proAddedEntry(capped) });
+  await proDrive(capped, "t-tree-capped-next", { message: CARRY_ON });
+  check("pro tree capped: the turn editing that document added no second entry, and the coordinator got one record in all",
+    proState(capped).goals.filter((g) => g.kind === "plan").length === 1 && proCoordinatorRecords(capped).length === 1,
+    { goals: proState(capped).goals.map((g) => `${g.id}:${g.planPath}`), records: proCoordinatorRecords(capped).length });
+  const cappedNoted = proDecisionsOf(capped, "turn_record_plan_noted");
+  check("pro tree capped: one turn_record_plan_noted decision names the entry the tree already holds as the rule",
+    cappedNoted.length === 1 && cappedNoted[0].detail.includes("the tree already holds"), cappedNoted);
+  await proDrive(capped, "t-tree-capped-other", { path: `${HARNESS_CWD}/${SECOND}`, message: "Now draft the archive plan." });
+  const cappedPaths = proState(capped).goals.filter((g) => g.planPath).map((g) => g.planPath).sort();
+  check("pro tree capped (the control): a turn editing another document does add an entry over the same capped log",
+    cappedPaths.join(",") === [PRO_PLAN, SECOND].sort().join(","), cappedPaths);
+}
+
+// Which record the promotion marks: the one the add was made for, read before the
+// dial's reach check and marked after it. A message can arrive inside that check,
+// and under a live new-goal verdict it supersedes the record the boundary resolved
+// and opens one of its own. The mark belongs on the record the entry was made
+// from, whose text is the entry's own title: the arriving message asked for
+// nothing, and the resolved record would otherwise keep its plan path and never
+// read promoted, which is the dangling record the promotion routes exist to
+// prevent. No turn starts while a completion is open on this engine build, so the
+// arriving message is a prompt and nothing here waits on a turn.
+//
+// The window is driven by parking this session's own commons read, which the
+// reach check is one of: the hold is armed, the read that parks is released, and
+// the hold is re-armed in the same synchronous step, so the drive walks the
+// boundary one such read at a time and it cannot run ahead of the walk. The
+// message is submitted behind the kth of them, and the case runs one drive per k
+// over the count the control drive observed, so no drive has to know which read
+// belongs to the reach check. The invariant every drive is read against is the
+// one this rule states: the record that reads promoted is the record whose text
+// the entry carries as its title. The control drive, which submits nothing, is
+// what says the walk itself lets the boundary finish and promote.
+async function casePromote_theMarkLandsOnTheRecordTheAddWasMadeFor(clock) {
+  console.log("\n=== Promotion route one: a message arriving inside the add's own reach check leaves the mark on the record the add was made for ===");
+  const ARRIVING = "One more thing while you work on that.";
+  const HELD_KEY = `commons:${SESSION_ID}`;
+  // The wording call answers each message with its own text, so the record the
+  // entry was made from is named by the entry's title and by nothing else.
+  const worded = (text) => text.slice(0, 40);
+
+  // The boundary walked one parked store read at a time, with the arriving
+  // message submitted behind the `atPark`th of them, or behind none where that
+  // number is 0. Returns the parked reads the walk saw and the state after it.
+  const drive = async (caseName, atPark) => {
+    clock.set(T0);
+    const h = await proHarness(caseName, { autonomy: "plan-and-start", jevLive: [Catalog.TURN_OPEN] });
+    h.setHttpResponse(jevChoiceResponse(Catalog.TURN_OPEN, "new-goal", Catalog.TURN_OPEN_OPTIONS));
+    h.setCompleteValue(worded(PRO_MESSAGE));
+    await submitMessage(h, PRO_MESSAGE);
+    const firstId = proOpenRecord(h)?.id ?? null;
+    await recordTurnStart(h, `t-${caseName}`, PRO_MESSAGE);
+    await callTool(h, { tool: "Write", file_path: PRO_ABS });
+
+    h.setCompleteValue(worded(ARRIVING));
+    h.holdStoreGets(HELD_KEY);
+    let done = false;
+    const completion = recordTurnComplete(h, `t-${caseName}`, "Drafted the plan.").then(() => { done = true; });
+    let arriving = null;
+    let parks = 0;
+    let walked = true;
+    for (let step = 0; step < 60 && !done; step += 1) {
+      if (!await waitUntil(() => done || h.parkedStoreGetCount > 0)) { walked = false; break; }
+      if (done) break;
+      parks += 1;
+      if (parks === atPark) {
+        let arrived = false;
+        arriving = submitMessage(h, ARRIVING).then((v) => { arrived = true; return v; });
+        // The submit's own write parks on the same key, so the message has run
+        // its record step by the time either of these reads true.
+        if (!await waitUntil(() => arrived || h.parkedStoreGetCount >= 2)) walked = false;
+      }
+      // One read per step, and the hold is re-armed in the same synchronous step
+      // as the release: a released read's continuation runs no earlier than the
+      // next microtask, so the read after it parks too and the boundary cannot
+      // run past the walk.
+      h.releaseStoreGet();
+      h.holdStoreGets(HELD_KEY);
+      await new Promise((r) => setImmediate(r));
+    }
+    h.holdStoreGets(null);
+    while (h.parkedStoreGetCount > 0) h.releaseStoreGet();
+    if (arriving !== null) await arriving;
+    await completion;
+    await settleJournalWrites(h);
+    check(`${caseName} setup: the walk released every parked read and the boundary finished`, walked && done,
+      { walked, done, parks });
+    return { h, firstId, parks };
+  };
+
+  const alone = await drive("pro_race_control", 0);
+  check("pro race (the control): the walk with no message promotes the record the boundary resolved, so the walk itself finishes the add",
+    proRecordById(alone.h, alone.firstId)?.status === "promoted"
+      && proRecordById(alone.h, alone.firstId)?.goalId === proAddedEntry(alone.h)?.id
+      && proAddedEntry(alone.h)?.planPath === PRO_PLAN && proRecords(alone.h).length === 1,
+    { record: proRecordById(alone.h, alone.firstId), entry: proAddedEntry(alone.h) });
+  check("pro race (the control): the boundary parked on more than one read, so there is a window past the first to submit into",
+    alone.parks >= 2, alone.parks);
+
+  // One drive per parked read the control saw, so the reach check's own read is
+  // covered wherever in that sequence it sits.
+  for (let k = 1; k <= alone.parks; k += 1) {
+    const raced = await drive(`pro_race_at_${k}`, k);
+    const entry = proAddedEntry(raced.h);
+    const promoted = proRecords(raced.h).filter((r) => r.status === "promoted");
+    const arrivingRecords = proRecords(raced.h).filter((r) => r.text === worded(ARRIVING));
+    check(`pro race at ${k}: the entry exists with the plan path, and the arriving message opened a record of its own`,
+      entry?.planPath === PRO_PLAN && arrivingRecords.length === 1,
+      { entry, records: proRecords(raced.h).map((r) => `${r.id}:${r.status}:${r.text}`) });
+    check(`pro race at ${k}: exactly one record reads promoted, and it is the record whose text the entry carries as its title`,
+      promoted.length === 1 && promoted[0].text === entry?.title && promoted[0].goalId === entry?.id,
+      { promoted, title: entry?.title, records: proRecords(raced.h).map((r) => `${r.id}:${r.status}:${r.text}`) });
+    check(`pro race at ${k}: one turn_record_promoted decision, naming that same record`,
+      proDecisionsOf(raced.h, "turn_record_promoted").length === 1
+        && proDecisionsOf(raced.h, "turn_record_promoted")[0].detail.includes(promoted[0]?.id),
+      proDecisionsOf(raced.h, "turn_record_promoted"));
+  }
+}
+
 // A plan path the store handed back is re-tested before anything is built on it,
-// which is the re-test the store's own comment puts at the reader. A refused
-// promotion keeps the path on the open record, so the next boundary tries again.
+// which is the re-test the store's own comment puts at the reader. The two
+// refusals part company on whether their cause can change: a path that fails the
+// shape will fail it at every boundary, so the record drops it, while an add the
+// dial refused can be admitted at a later boundary, so the record keeps the path
+// and the next boundary tries again.
 async function casePromote_aStoredPlanPathIsRetestedAndARefusalRetries(clock) {
-  console.log("\n=== Promotion route one: a stored plan path is re-tested, and a refused promotion keeps the path for the next boundary ===");
+  console.log("\n=== Promotion route one: a plan path that cannot pass is dropped, and a refused add keeps the path for the next boundary ===");
 
   // The seeded record is the one under test, so these legs drive the turn alone
   // and send no message: a message would supersede the seeded record with one of
@@ -26122,11 +26457,20 @@ async function casePromote_aStoredPlanPathIsRetestedAndARefusalRetries(clock) {
   await recordTurnStart(bad, "t-retest-bad", "");
   await recordTurnComplete(bad, "t-retest-bad", "Carried on.");
   const badRefused = proDecisionsOf(bad, "turn_record_promotion_refused");
-  check("pro retest bad: one turn_record_promotion_refused decision naming the shape rule, and no entry was added",
-    badRefused.length === 1 && badRefused[0].detail.includes("fails the shape") && proAddedEntry(bad) === null, badRefused);
-  check("pro retest bad: the record is still open and keeps the path it carried",
-    proOpenRecord(bad)?.id === "tr-seeded" && proOpenRecord(bad)?.planPath === "docs/plans/../../etc/passwd.md", proRecords(bad));
+  check("pro retest bad: one turn_record_promotion_refused decision naming the shape rule and the path it dropped, and no entry was added",
+    badRefused.length === 1 && badRefused[0].detail.includes("fails the shape")
+      && badRefused[0].detail.includes("docs/plans/../../etc/passwd.md") && proAddedEntry(bad) === null, badRefused);
+  check("pro retest bad: the record is still open and the path it could not pass is gone",
+    proOpenRecord(bad)?.id === "tr-seeded" && proOpenRecord(bad)?.planPath === undefined, proRecords(bad));
   check("pro retest bad: no record reached the coordinator persona", proCoordinatorRecords(bad).length === 0, proCoordinatorRecords(bad));
+  // The cause cannot change between boundaries, so the next boundary starts
+  // clean: it reads no path off the record, tries nothing and logs nothing.
+  await recordTurnStart(bad, "t-retest-bad-2", "");
+  await recordTurnComplete(bad, "t-retest-bad-2", "Carried on.");
+  check("pro retest bad: the next boundary has no path to retry, so it logs nothing further and adds no entry",
+    proDecisionsOf(bad, "turn_record_promotion_refused").length === 1
+      && proDecisionsOf(bad, "turn_record_plan_noted").length === 0 && proAddedEntry(bad) === null,
+    proDecisionsOf(bad, "turn_record_promotion_refused"));
 
   clock.set(T0);
   const good = await proHarness("pro_retest_good", { autonomy: "plan-and-start", turnRecords: seeded(PRO_PLAN) });
@@ -26152,13 +26496,32 @@ async function casePromote_aStoredPlanPathIsRetestedAndARefusalRetries(clock) {
     proAddedEntry(noRoad, "default") === null && proCoordinatorRecords(noRoad).length === 0,
     { goals: proState(noRoad, "default").goals.map((g) => g.id), records: proCoordinatorRecords(noRoad) });
   // The next boundary of the same record, with no edit of its own, reads the
-  // path off the record and tries again.
+  // path off the record and tries again. The refusal it meets is the one it met
+  // before, on the same path, so it is not logged a second time: one line per
+  // turn end for a reading that has not moved is what the record would otherwise
+  // cost for as long as it stays open.
   await recordTurnStart(noRoad, "t-no-road-2", "");
   await recordTurnComplete(noRoad, "t-no-road-2", "Still going.");
-  check("pro no road: the next turn end tried again from the stored path, refused again, and left the record open",
-    proDecisionsOf(noRoad, "turn_record_promotion_refused", "default").length === 2
+  check("pro no road: the unchanged refusal is not logged again, and the record stays open with its path",
+    proDecisionsOf(noRoad, "turn_record_promotion_refused", "default").length === 1
+      && proRecordById(noRoad, noRoadId, "default")?.status === "open"
+      && proRecordById(noRoad, noRoadId, "default")?.planPath === PRO_PLAN,
+    { refusals: proDecisionsOf(noRoad, "turn_record_promotion_refused", "default"), record: proRecordById(noRoad, noRoadId, "default") });
+
+  // The boundary that proves the retry is still running rather than the line
+  // being suppressed for a step that stopped: this turn edits a second plan
+  // document, the dial refuses the add on the same missing road, and the moved
+  // path is logged.
+  const SECOND_ABS = `${HARNESS_CWD}/docs/plans/second-document_v1.md`;
+  await recordTurnStart(noRoad, "t-no-road-3", "");
+  await callTool(noRoad, { tool: "Write", file_path: SECOND_ABS });
+  await recordTurnComplete(noRoad, "t-no-road-3", "Still going.");
+  const movedRefusals = proDecisionsOf(noRoad, "turn_record_promotion_refused", "default");
+  check("pro no road: the boundary whose path moved tried again and logged the second path with the same missing road",
+    movedRefusals.length === 2 && movedRefusals[1].detail.includes("docs/plans/second-document_v1.md")
+      && movedRefusals[1].detail.includes("default persona")
       && proRecordById(noRoad, noRoadId, "default")?.status === "open",
-    proDecisionsOf(noRoad, "turn_record_promotion_refused", "default"));
+    movedRefusals);
 }
 
 // Route one runs above the close, so a plan-touching record under a live
