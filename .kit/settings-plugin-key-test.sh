@@ -266,6 +266,17 @@ run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "
 check "ensure_settings_jev_live exits 0 with JEV_LIVE unset" "$?"
 [ "$BEFORE" = "$(cat "$TMP/liveuntouched.json")" ]; check "provided: an unset JEV_LIVE leaves the file byte-identical" "$?"
 
+# --- Section 2: an unset JEV_LIVE still rewrites a list-shaped jevLive as the string ---
+# Claude Code refuses to load the plugin's hooks where a settings value does not
+# fit the type plugin.json declares, and jevLive is declared a string. So a list
+# an earlier launch left in the file is rewritten on every launch, whether or not
+# this launch names JEV_LIVE, rather than left to take the plugin down.
+node -e 'const fs=require("fs");const s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));for(const id of Object.keys(s.pluginConfigs)){s.pluginConfigs[id].options.jevLive=["turn-open","turn-disposition"];}fs.writeFileSync(process.argv[2],JSON.stringify(s));' "$TMP/jevliveemit.json" "$TMP/livelegacyunset.json"
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/livelegacyunset.json"
+check "ensure_settings_jev_live exits 0 with JEV_LIVE unset over a list-shaped jevLive" "$?"
+R=$(inspect "$TMP/livelegacyunset.json")
+case "$R" in *'JEVLIVE_DEV="turn-open,turn-disposition";'*'JEVLIVE_INSTALLED="turn-open,turn-disposition";'*) check "provided legacy, JEV_LIVE unset: the list is rewritten as the string under both ids" 0 ;; *) check "provided legacy, JEV_LIVE unset: the list is rewritten as the string under both ids (out=$R)" 1 ;; esac
+
 # --- Section 2: ensure_settings_jev_live refuses a bad id with no file left behind ---
 cp "$TMP/jevliveemit.json" "$TMP/liverefused.json"
 BEFORE=$(cat "$TMP/liverefused.json")

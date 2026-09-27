@@ -519,28 +519,30 @@ try {
 # --- ensure_settings_jev_live ---
 # Usage: ensure_settings_jev_live <settings-file>
 # Sibling to ensure_settings_jev_mode for the comma-separated jevLive option.
-# Where JEV_LIVE is unset or empty, the file is left alone: unset and empty
-# are the same "leave it out" state ensure_settings_jev_mode's own JEV_MODE
-# check uses, so a hand-edited value survives a launch that names no live
-# question, and the file stays byte-identical rather than being rewritten
-# with an equivalent value. Where JEV_LIVE is set, jev_live_to_csv
+# Where JEV_LIVE is unset or empty, a string value is left alone: unset and
+# empty are the same "leave it out" state ensure_settings_jev_mode's own
+# JEV_MODE check uses, so a hand-edited value survives a launch that names no
+# live question, and the file stays byte-identical rather than being
+# rewritten with an equivalent value. A jevLive held as a JSON list is the
+# one thing rewritten on every launch, set or unset, into the comma-separated
+# string: Claude Code refuses to load the plugin's hooks where a settings
+# value does not fit the type plugin.json declares, so a list left in place
+# takes the plugin down. Where JEV_LIVE is set, jev_live_to_csv
 # validates every comma-separated member against the promotable set before
 # node runs, exactly as JEV_MODE's off|shadow case runs before this
 # function's own node -e, so a bad id is refused with no file touched at all
 # rather than reaching a node process that could still write something
-# before failing. A value an older launch wrote as a JSON array is rewritten
-# as the string, since the manifest declares the string. The file is
-# replaced by rename, same as its sibling.
+# before failing. The file is replaced by rename, same as its sibling.
 ensure_settings_jev_live() {
-  if [ -z "${JEV_LIVE:-}" ]; then
-    return 0
+  local ids_csv=""
+  if [ -n "${JEV_LIVE:-}" ]; then
+    ids_csv=$(jev_live_to_csv ensure_settings_jev_live "$JEV_LIVE") || return 1
   fi
-  local ids_json
-  ids_json=$(jev_live_to_csv ensure_settings_jev_live "$JEV_LIVE") || return 1
-  if [ -z "$ids_json" ]; then
-    # Every member trimmed away (JEV_LIVE held only commas or whitespace),
-    # the same "nothing named" state as unset, so the file is left alone.
-    return 0
+  if [ -z "$ids_csv" ]; then
+    # Nothing named, whether JEV_LIVE is unset or held only commas and
+    # whitespace. Node runs only where the file holds a jevLive list to
+    # rewrite, so a launch that names nothing costs no process otherwise.
+    grep -q '"jevLive"[[:space:]]*:[[:space:]]*\[' "$1" 2>/dev/null || return 0
   fi
   node -e '
 const fs = require("fs");
@@ -551,16 +553,28 @@ let s;
 try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
 if (!plain(s)) fail("is not a JSON object");
 let changed = false;
-if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }
-const pc = s.pluginConfigs;
-if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
-for (const id of [devId, installedId]) {
-  if (pc[id] === undefined) { pc[id] = {}; changed = true; }
-  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
-  if (pc[id].options === undefined) { pc[id].options = {}; changed = true; }
-  const opts = pc[id].options;
-  if (!plain(opts)) fail("has " + id + " options that are not an object");
-  if (opts.jevLive !== ids) { opts.jevLive = ids; changed = true; }
+if (ids === "") {
+  // Nothing named: only a list is rewritten, as its trimmed members joined,
+  // and no missing entry is created.
+  for (const id of [devId, installedId]) {
+    const opts = plain(s.pluginConfigs) && plain(s.pluginConfigs[id]) ? s.pluginConfigs[id].options : undefined;
+    if (plain(opts) && Array.isArray(opts.jevLive)) {
+      opts.jevLive = opts.jevLive.filter((m) => typeof m === "string").map((m) => m.trim()).filter((m) => m !== "").join(",");
+      changed = true;
+    }
+  }
+} else {
+  if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }
+  const pc = s.pluginConfigs;
+  if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+  for (const id of [devId, installedId]) {
+    if (pc[id] === undefined) { pc[id] = {}; changed = true; }
+    if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+    if (pc[id].options === undefined) { pc[id].options = {}; changed = true; }
+    const opts = pc[id].options;
+    if (!plain(opts)) fail("has " + id + " options that are not an object");
+    if (opts.jevLive !== ids) { opts.jevLive = ids; changed = true; }
+  }
 }
 if (!changed) process.exit(0);
 const tmp = file + ".tmp-" + process.pid;
@@ -571,7 +585,7 @@ try {
   try { fs.unlinkSync(tmp); } catch (_) {}
   fail("could not be rewritten: " + e.message);
 }
-' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "$ids_json"
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "$ids_csv"
 }
 # --- read_settings_coordinator_persona ---
 # Usage: read_settings_coordinator_persona <settings-file> <dev_mode: 0|1>

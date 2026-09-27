@@ -4303,8 +4303,7 @@ const roundSummaryText = (state: AgentState, g: GoalNode): string =>
  * which ids liveAsk may act on, and which the manifest value carried but
  * this dropped. The manifest declares jevLive as a comma-separated string,
  * so a string `raw` is split on commas and a member left blank by a stray
- * comma is skipped; an array, the shape settings files written before the
- * string declaration still hold, is read member by member. Trims each member
+ * comma is skipped. An array is read member by member. Trims each member
  * the way the settings file's own shell producer trims JEV_LIVE, and drops a
  * member that is not a string or is not one of PROMOTABLE_SET_IDS, rather
  * than reaching a branch that would otherwise treat an unpromoted question
