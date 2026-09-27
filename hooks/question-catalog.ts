@@ -128,8 +128,10 @@ export const TURN_DISPOSITION = "turn-disposition";
 // whose promotion bar is stated is here. The constant enforces nothing by
 // itself. The read that turns the settings value into the list liveAsk is
 // handed is where an id outside this set is dropped, and liveAsk checks
-// membership in that list alone.
-export const PROMOTABLE_SET_IDS: readonly string[] = Object.freeze([TURN_OPEN, TURN_DISPOSITION]);
+// membership in that list alone. The memory kind is here because the memory
+// site reads its live answer as a gate ahead of the Haiku classify, and its
+// promotion bar is the shadow journal's count of what that gate would skip.
+export const PROMOTABLE_SET_IDS: readonly string[] = Object.freeze([TURN_OPEN, TURN_DISPOSITION, MEMORY_KIND]);
 
 // Each set's option ids in force, the caller's one constant, offered to Jev
 // and journaled as a closed vocabulary the way BLOCK_OWNER_OPTIONS is.

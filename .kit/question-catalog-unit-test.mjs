@@ -219,8 +219,8 @@ const VALID_CONTROLLER_OVERRIDE = {
   // The promotable set is what a live list is checked against, so each of its
   // members must be a shipped question whose option ids are the catalog's own:
   // a live answer's choice is read into a branch by option id.
-  check("Test 2j: the promotable sets are exactly the two turn record sets",
-    JSON.stringify(PROMOTABLE_SET_IDS) === JSON.stringify([TURN_OPEN, TURN_DISPOSITION]), PROMOTABLE_SET_IDS);
+  check("Test 2j: the promotable sets are exactly the two turn record sets and the memory kind",
+    JSON.stringify(PROMOTABLE_SET_IDS) === JSON.stringify([TURN_OPEN, TURN_DISPOSITION, MEMORY_KIND]), PROMOTABLE_SET_IDS);
   check("Test 2k: every promotable set is a shipped question with fixed option ids",
     PROMOTABLE_SET_IDS.every((id) => QUESTION_SET_IDS.includes(id) && FIXED_OPTION_SETS.includes(id)), PROMOTABLE_SET_IDS);
   // The value is a designed copy: the README states it as one half. The

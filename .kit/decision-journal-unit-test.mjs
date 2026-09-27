@@ -351,8 +351,8 @@ try {
       JSON.stringify(Object.keys(line).sort()) === JSON.stringify([...expectedFields].sort()), Object.keys(line));
     check("outcome line: the kind is the outcome's own, and the line names itself separately",
       line.kind === "next_score" && line.lineKind === "outcome", line);
-    check("outcome line: the eight kinds are the closed set",
-      JSON.stringify(J.OUTCOME_KINDS) === JSON.stringify(["next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker", "continued_unprompted", "record_delivered_within", "next_prompt_kind"]), J.OUTCOME_KINDS);
+    check("outcome line: the nine kinds are the closed set",
+      JSON.stringify(J.OUTCOME_KINDS) === JSON.stringify(["next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker", "continued_unprompted", "record_delivered_within", "next_prompt_kind", "haiku_kind"]), J.OUTCOME_KINDS);
 
     const { host: h2, files: f2 } = makeHost();
     const bad = await J.writeOutcome(h2, { persona: PERSONA, session: SESSION, callStampId: "a.b.1.1", kind: "something_else", value: "x" });
@@ -400,9 +400,9 @@ try {
       l2.length === 2 && l2[0].primitive === null && l2[1].primitive === null, l2.map((l) => l.primitive));
   }
 
-  // --- The four plan health outcome kinds and the two turn record kinds ---
+  // --- The four plan health outcome kinds, the two turn record kinds and the memory gate's kind ---
   {
-    console.log("\n=== The four plan health outcome kinds and the two turn record kinds each write a line ===");
+    console.log("\n=== The four plan health outcome kinds, the two turn record kinds and the memory gate's kind each write a line ===");
     const J = await freshModule();
     clock.set(T0);
     const { host, files } = makeHost();
@@ -413,14 +413,15 @@ try {
       ["continued_unprompted", "false"],
       ["record_delivered_within", "true"],
       ["next_prompt_kind", "step"],
+      ["haiku_kind", "fact"],
     ];
     for (const [kind, value] of writes) {
       const r = await J.writeOutcome(host, { persona: PERSONA, session: SESSION, callStampId: "a.b.1.1", kind, value });
       check(`observed outcome: ${kind} landed`, r.ok === true, r);
     }
     const lines = linesOf(files);
-    check("observed outcome: six lines, each carrying its kind and the value as given",
-      lines.length === 6 && lines.every((l, i) => l.lineKind === "outcome" && l.kind === writes[i][0] && l.value === writes[i][1] && l.callStampId === "a.b.1.1"), lines);
+    check("observed outcome: seven lines, each carrying its kind and the value as given",
+      lines.length === 7 && lines.every((l, i) => l.lineKind === "outcome" && l.kind === writes[i][0] && l.value === writes[i][1] && l.callStampId === "a.b.1.1"), lines);
   }
 
   // --- A call line from a request that carried several questions ---

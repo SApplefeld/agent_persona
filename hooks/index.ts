@@ -159,8 +159,8 @@ import {
 // Haiku-paired sites below put to Haiku, and also carries the four plan
 // health questions no classifier asks, plus the journal that records every
 // answer.
-import { ask, askAll, type ChoiceAnswer, type JevAnswer, type QuestionAsk, type SeamResult, type SeamSetResult } from "./decision-seam";
-import { newStampId, writeCall, writeAnswers, writeOutcome, ASK_MARKER_VALUE, type JournalWrite, type OutcomeKind } from "./decision-journal";
+import { ask, askAll, type ChoiceAnswer, type JevAnswer, type QuestionAsk, type SeamFailureReason, type SeamResult, type SeamSetResult } from "./decision-seam";
+import { newStampId, splitOf, writeCall, writeAnswers, writeOutcome, ASK_MARKER_VALUE, type JournalWrite, type OutcomeKind } from "./decision-journal";
 
 // --- Module-scope session identity ---
 // The loader requires `persist` and `activate` to be top-level functions.
@@ -302,6 +302,14 @@ function shadowAsk(
   return stampId;
 }
 
+// What liveAsk returns for a call it put live: the stamp id its journal lines
+// carry, with the validated answer or the reason the call failed. `rejected`
+// is liveAsk's own reason for a host that broke the seam's never-rejects
+// contract, and is kept out of SeamFailureReason, which is the seam's set.
+export type LiveAskResult =
+  | { stampId: string; answer: ChoiceAnswer }
+  | { stampId: string; reason: SeamFailureReason | "rejected" };
+
 /**
  * The one entry point for a question that may be asked live, and the only
  * wrapper whose return a branch may read. Takes shadowAsk's arguments with
@@ -312,13 +320,19 @@ function shadowAsk(
  * this is shadowAsk with the same arguments: the question is journaled in
  * shadow, nothing is awaited, and the return is null. Where both hold, the
  * seam is awaited in mode `live`, the call and answer lines are written with
- * that mode, and the return is the validated answer, or null on any of the
- * seam's closed failure reasons, read off the result's `ok` rather than off
- * a list of reasons so a reason added to the seam is null here too.
+ * that mode, and the return carries the stamp id those lines carry, with
+ * either the validated answer or the reason the call failed. The reason is
+ * the seam's own closed failure reason, read off the result's `ok` rather
+ * than off a list of reasons so a reason added to the seam is a failure here
+ * too, or `rejected` where a host broke the seam's never-rejects contract.
  *
- * So a caller reads one shape, an answer or null, and null always means the
- * question's stated default. A live call is awaited on the path that asked
- * it. What the live timer bounds is the request: the seam races it against
+ * So null means only that the question was not live, and a caller that
+ * needs nothing but the answer reads a `reason` return as it reads null: the
+ * question's stated default. A caller that joins something to the live call,
+ * or names why it fell back, reads the stamp id and the reason as well.
+ *
+ * A live call is awaited on the path that asked it. What the live timer
+ * bounds is the request: the seam races it against
  * LIVE_TIMEOUT_MS from the moment the request leaves. Two awaits sit before
  * that race and outside its bound, the key read and the override resolver,
  * which reads `active.json` and, where one is named, a version file; both
@@ -332,13 +346,12 @@ function shadowAsk(
  * this list, filtered to the promotable set. `jevMode` is read before the
  * list, so under `off` a question the list names is not sent either.
  *
- * `onStamp` is how a caller that owes an outcome learns which call to join it
- * to. The return carries the answer a branch may read and nothing else, so the
- * stamp id comes out this way instead: it is called once per call, on both
- * paths, with the stamp id the journal lines carry, or null where no line was
- * written at all (the kill switch off, which mints no id). The comment at the
- * call itself names the one case where a minted id reaches no line. A caller
- * with no outcome to write passes nothing.
+ * `onStamp` is how a caller learns the stamp id before the await, on both
+ * paths, including the not-live one whose null return carries none: it is
+ * called once per call with the stamp id the journal lines carry, or null
+ * where no line was written at all (the kill switch off, which mints no id).
+ * The comment at the call itself names the one case where a minted id
+ * reaches no line. A caller with no outcome to write passes nothing.
  *
  * Exported so the test suite can call it directly over the fake host.
  */
@@ -351,7 +364,7 @@ export async function liveAsk(
   jevMode: string,
   jevLive: readonly string[],
   onStamp?: (stampId: string | null) => void,
-): Promise<ChoiceAnswer | null> {
+): Promise<LiveAskResult | null> {
   if (jevMode !== "shadow" || !jevLive.includes(questionSetId)) {
     const shadowStampId = shadowAsk(host, site, questionSetId, optionIds, state, jevMode, null);
     if (onStamp) onStamp(shadowStampId);
@@ -378,8 +391,9 @@ export async function liveAsk(
   } catch {
     // As in shadowAsk: the seam never rejects, so this catches a host that
     // broke that contract. This await sits on a hook's path, so the catch is
-    // what keeps a broken host from throwing into it.
-    return null;
+    // what keeps a broken host from throwing into it. The reason is this
+    // wrapper's own, since no seam reason names a call that never resolved.
+    return { stampId, reason: "rejected" };
   }
   // The journal writes ride a detached chain, as shadowAsk's do, so the hook
   // that awaited the answer is not held for them.
@@ -420,7 +434,7 @@ export async function liveAsk(
       // unhandled rejection, which ends the process rather than losing one
       // measurement.
     });
-  return result.ok ? result.answer : null;
+  return result.ok ? { stampId, answer: result.answer } : { stampId, reason: result.reason };
 }
 
 // Section 5 (plan-health-from-the-record): the four plan health questions.
@@ -617,7 +631,7 @@ async function wordNewRecordText(dp: any, message: string): Promise<string | nul
  * wrapper whose answer a branch may read. Live, `new-goal` supersedes the open
  * record and opens one worded by Haiku, `step` opens one attached to the active
  * entry, and `continuation` keeps the open record for the turn about to open.
- * Not live, or on a null answer, the fallback is continue-or-attach-or-bare-
+ * Not live, or on a failed live call, the fallback is continue-or-attach-or-bare-
  * record: an open record carries over until it expires, a message arriving on
  * an active entry attaches to it, and anything else opens a bare record holding
  * the message's own opening. No route opens a goal, which is the plan's ruling.
@@ -723,10 +737,11 @@ async function holdMessageAsRecord(
     promptKind = "fallback";
   } else {
     const openAtEntry = openTurnRecord(sess.state);
-    // The stamp id rides a holder rather than the return, because the return is
-    // the answer a branch reads. Null where no journal line was written at all.
+    // The stamp id rides a holder filled by onStamp, because onStamp is called
+    // on the not-live path too, whose null return carries no id. Null where no
+    // journal line was written at all.
     const call: { stampId: string | null } = { stampId: null };
-    const answer = await liveAsk(
+    const live = await liveAsk(
       hostOf(dp),
       // One hook site asks this question, so the journal site is its own id.
       TURN_OPEN,
@@ -742,7 +757,8 @@ async function holdMessageAsRecord(
     // runs this same step, so the record read before it may already be closed
     // and a record it opened is the one this act has to answer to.
     const open = openTurnRecord(sess.state);
-    const verdict = answer === null ? null : answer.choice;
+    // A failed live call reads as the not-live path does: no verdict.
+    const verdict = live !== null && "answer" in live ? live.answer.choice : null;
     // The outcome is the verdict itself, whichever arm below it lands in: a
     // live `step` with nothing active or a live `continuation` with nothing
     // open runs a fallback arm and still reads as the verdict Jev gave.
@@ -927,7 +943,7 @@ function settleExpiredDispositionStamps(dp: any): void {
  * so the served one is what the question is asked about. Live,
  * the record is delivered when the answer's probability for `delivered` is at
  * least TURN_DELIVERED_THRESHOLD, the equal case included, else it stays open.
- * Not live, or on a null answer, the fallback is not delivered, which keeps the
+ * Not live, or on a failed live call, the fallback is not delivered, which keeps the
  * record open and costs nothing on a record, since a record is never nudged.
  *
  * The stamp of every call this asks is parked on the record before the await,
@@ -977,7 +993,7 @@ async function closeTurnRecordAtTurnEnd(
     inFlight("a background agent the main loop started is still running");
     return;
   }
-  const answer = await liveAsk(
+  const live = await liveAsk(
     hostOf(dp),
     // One hook site asks this question, so the journal site is its own id.
     TURN_DISPOSITION,
@@ -996,8 +1012,9 @@ async function closeTurnRecordAtTurnEnd(
   // A completion that no longer owns the turn writes nothing, on the boundary
   // step's own reading of the turn-start count it captured at the delete.
   if (newerTurnStarted()) return;
-  if (answer === null) return;
-  const delivered = answer.probabilities["delivered"];
+  // A failed live call reads as the not-live path does: not delivered.
+  if (live === null || !("answer" in live)) return;
+  const delivered = live.answer.probabilities["delivered"];
   if (typeof delivered !== "number" || delivered < TURN_DELIVERED_THRESHOLD) return;
   const current = openTurnRecord(sess.state);
   if (current === null || current.id !== open.id) return;
@@ -4726,6 +4743,22 @@ export const register: Register = async (on, options) => {
   // Read as options.<name> per the types doc (lines 2540–2547).
   const cfg = (options ?? {}) as Record<string, unknown>;
   const heartbeatMs = typeof cfg.heartbeatMs === "number" ? (cfg.heartbeatMs as number) : 30_000;
+  // The memory gate's floor: the whole-number percent at or above which a
+  // live Jev `discard` on a dev stamp skips both Haiku calls at the memory
+  // site. An absent or non-numeric value is the default, silently, as an
+  // absent heartbeatMs is. A number is rounded, and one outside 50 to 100 is
+  // the default too, since a floor below one half skips turns Jev itself
+  // calls a coin toss. That value is held here and logged as one
+  // setting_clamped decision at session.start, the first point with a state
+  // to log against.
+  const MEMORY_GATE_DISCARD_PERCENT_DEFAULT = 90;
+  let memoryGateDiscardPercent = MEMORY_GATE_DISCARD_PERCENT_DEFAULT;
+  let memoryGateDiscardPercentClamped: number | null = null;
+  if (typeof cfg.memoryGateDiscardPercent === "number" && !Number.isNaN(cfg.memoryGateDiscardPercent)) {
+    const rounded = Math.round(cfg.memoryGateDiscardPercent);
+    if (rounded >= 50 && rounded <= 100) memoryGateDiscardPercent = rounded;
+    else memoryGateDiscardPercentClamped = cfg.memoryGateDiscardPercent;
+  }
   const staleAfterMs = typeof cfg.staleAfterMs === "number" ? (cfg.staleAfterMs as number) : 90_000;
   sess.staleAfterMs = staleAfterMs; // F9a: single-source the threshold
   const controllerTickMs = typeof cfg.controllerTickMs === "number" ? (cfg.controllerTickMs as number) : 30_000;
@@ -5723,6 +5756,19 @@ export const register: Register = async (on, options) => {
         detail: `jevLive dropped ${bracketSafeText(JSON.stringify(jevLiveDropped).slice(0, 50))}`,
       });
       jevLiveDropped = [];
+    }
+
+    // The memory gate's floor was read at registration, above the state this
+    // decision needs, so a clamp is logged here for the reason and on the
+    // pattern of jev_live_invalid above, and cleared the same way.
+    if (memoryGateDiscardPercentClamped !== null) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "setting_clamped",
+        detail: `memoryGateDiscardPercent ${memoryGateDiscardPercentClamped} is outside 50 to 100; using ${MEMORY_GATE_DISCARD_PERCENT_DEFAULT}`,
+      });
+      memoryGateDiscardPercentClamped = null;
     }
 
     if (startPersonaProblem !== null) {
@@ -9937,65 +9983,135 @@ export const register: Register = async (on, options) => {
     // is not a user preference and must not be distilled into a memory.
     if (!skipped && !wasNudged) {
       try {
-        // Bound to a name so the same bytes reach Haiku and the shadow call
-        // below it.
-        const memoryKindState =
-          `What kind of memorable content is in this exchange? Answer with exactly one label.\n` +
-          `A description of what happened this turn is "discard".\n` +
-          `Only a fact or preference the user stated explicitly. An instruction to call a tool is discard.\n` +
-          `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`;
-        const kind = await $.model.classify(
-          memoryKindState,
-          MEMORY_KIND_LABELS,
-          { model: "haiku" }
-        );
-        // The decision seam, in shadow.
-        shadowAsk(
-          hostOf($),
-          "memory-kind",
-          MEMORY_KIND,
-          MEMORY_KIND_LABELS,
-          memoryKindState,
-          jevMode,
-          typeof kind === "string" ? kind : null,
-        );
-        if (kind && kind !== "discard") {
-          const rawDistilled = await $.model.complete({
-            model: "haiku",
-            prompt:
-              `One durable fact about the user, their preferences, or this project that a future session should know. ` +
-              `Reply NONE if there is none. No preamble, no labels, just the fact or NONE.\n` +
-              `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`,
-            maxTokens: 50,
+        if (currentPrompt.trimStart().startsWith("<task-notification>")) {
+          // A turn opened by the harness's notification block for a finished
+          // background task or subagent makes no memory call at all: no seam
+          // call, no classify and no distill. What such an exchange holds is
+          // the persona's own report rather than anything the operator stated.
+          // A prompt carrying the block anywhere but its opening is an
+          // operator's message and is classified as any other.
+          sess.state.decisions.push({
+            timestamp: Date.now(),
+            loop: "memory",
+            action: "memory_skipped_task_notification",
+            detail: "the turn opened with a task notification, so no memory call was made",
           });
-          // A result with no text distills nothing, as an empty reply does,
-          // after one line naming the shape the engine handed back.
-          const distilledText = completionText(rawDistilled);
-          if (distilledText === null) noteCompletionShape("memory-distill", rawDistilled);
-          const distilled = (distilledText ?? "").trim();
-          if (distilled.length > 0 && distilled.toUpperCase() !== "NONE") {
-            const normalized = distilled.toLowerCase().trim();
-            const isDupe = sess.state.memory.some(
-              (m) => m.text.toLowerCase().trim() === normalized
-            );
-            if (!isDupe) {
-              sess.state.memory.push({
-                id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                kind: kind as "fact" | "preference" | "lesson",
-                text: distilled,
-                confidence: 0.4,
-                source: "distilled",
-                createdAt: Date.now(),
-                lastAccessed: Date.now(),
-                accessCount: 0,
-                pinned: false,
-              });
+        } else {
+          // Bound to a name so the same bytes reach Haiku and Jev, whether
+          // Jev is asked live ahead of Haiku or in shadow beside it.
+          const memoryKindState =
+            `What kind of memorable content is in this exchange? Answer with exactly one label.\n` +
+            `A description of what happened this turn is "discard".\n` +
+            `Only a fact or preference the user stated explicitly. An instruction to call a tool is discard.\n` +
+            `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`;
+          // The memory gate. Where memory-kind is named live, Jev is asked
+          // first and awaited, bounded at the live timeout. Everywhere else
+          // the gate is null and the step is Haiku, then Jev in shadow with
+          // Haiku's value. The branch is tested here rather than left to
+          // liveAsk, whose not-live path would journal a shadow call carrying
+          // no Haiku value.
+          const gate = jevMode === "shadow" && jevLive.includes(MEMORY_KIND)
+            ? await liveAsk(hostOf($), "memory-kind", MEMORY_KIND, MEMORY_KIND_LABELS, memoryKindState, jevMode, jevLive)
+            : null;
+          // Whether a confident discard skips both Haiku calls, and the live
+          // stamp a call the gate passed joins Haiku's label to.
+          let gateSkips = false;
+          let passedStampId: string | null = null;
+          if (gate !== null) {
+            const split = splitOf(gate.stampId);
+            if ("reason" in gate) {
+              // The live call has journaled its own failure, so Haiku runs as
+              // today with no shadow call beside it.
               sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "memory",
-                action: "remember",
-                detail: `${kind}: ${distilled.slice(0, 80)}`,
+                action: "memory_gate_fallback",
+                detail: `reason ${gate.reason}, stamp ${gate.stampId}, split ${split}`,
               });
+            } else {
+              const discard = gate.answer.probabilities["discard"];
+              const p = typeof discard === "number" ? discard : null;
+              // A holdout stamp, one in five by a hash of its id, runs Haiku
+              // whatever Jev said, so the rate at which the gate would have
+              // skipped a memory Haiku kept stays readable from the journal.
+              if (split === "dev" && p !== null && Math.round(p * 100) >= memoryGateDiscardPercent) {
+                gateSkips = true;
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "memory",
+                  action: "memory_gate_skipped",
+                  detail: `p ${p}, stamp ${gate.stampId}, split ${split}`,
+                });
+              } else {
+                passedStampId = gate.stampId;
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "memory",
+                  action: "memory_gate_passed",
+                  detail: `${p === null ? "" : `p ${p}, `}stamp ${gate.stampId}, split ${split}, ${split === "holdout" ? "holdout" : "below-floor"}`,
+                });
+              }
+            }
+          }
+          const kind = gateSkips ? null : await $.model.classify(
+            memoryKindState,
+            MEMORY_KIND_LABELS,
+            { model: "haiku" }
+          );
+          if (gate === null) {
+            // The decision seam, in shadow.
+            shadowAsk(
+              hostOf($),
+              "memory-kind",
+              MEMORY_KIND,
+              MEMORY_KIND_LABELS,
+              memoryKindState,
+              jevMode,
+              typeof kind === "string" ? kind : null,
+            );
+          } else if (passedStampId !== null && typeof kind === "string") {
+            // Haiku's label against the live call, so the journal holds both
+            // answers for one input as a shadow answer line does.
+            shadowOutcome(hostOf($), passedStampId, "haiku_kind", kind);
+          }
+          if (kind && kind !== "discard") {
+            const rawDistilled = await $.model.complete({
+              model: "haiku",
+              prompt:
+                `One durable fact about the user, their preferences, or this project that a future session should know. ` +
+                `Reply NONE if there is none. No preamble, no labels, just the fact or NONE.\n` +
+                `User asked: ${currentPrompt.slice(0, 300)}\nWorker answered: ${e.answer.slice(0, 500)}`,
+              maxTokens: 50,
+            });
+            // A result with no text distills nothing, as an empty reply does,
+            // after one line naming the shape the engine handed back.
+            const distilledText = completionText(rawDistilled);
+            if (distilledText === null) noteCompletionShape("memory-distill", rawDistilled);
+            const distilled = (distilledText ?? "").trim();
+            if (distilled.length > 0 && distilled.toUpperCase() !== "NONE") {
+              const normalized = distilled.toLowerCase().trim();
+              const isDupe = sess.state.memory.some(
+                (m) => m.text.toLowerCase().trim() === normalized
+              );
+              if (!isDupe) {
+                sess.state.memory.push({
+                  id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  kind: kind as "fact" | "preference" | "lesson",
+                  text: distilled,
+                  confidence: 0.4,
+                  source: "distilled",
+                  createdAt: Date.now(),
+                  lastAccessed: Date.now(),
+                  accessCount: 0,
+                  pinned: false,
+                });
+                sess.state.decisions.push({
+                  timestamp: Date.now(),
+                  loop: "memory",
+                  action: "remember",
+                  detail: `${kind}: ${distilled.slice(0, 80)}`,
+                });
+              }
             }
           }
         }
