@@ -524,7 +524,7 @@ try {
 # JEV_MODE check uses, so a hand-edited value survives a launch that names no
 # live question, and the file stays byte-identical rather than being
 # rewritten with an equivalent value. A jevLive held as a JSON list is the
-# one thing rewritten on every launch, set or unset, into the comma-separated
+# one thing rewritten on every supervisor launch, set or unset, into the comma-separated
 # string: Claude Code refuses to load the plugin's hooks where a settings
 # value does not fit the type plugin.json declares, so a list left in place
 # takes the plugin down. Where JEV_LIVE is set, jev_live_to_csv
@@ -542,7 +542,7 @@ ensure_settings_jev_live() {
     # Nothing named, whether JEV_LIVE is unset or held only commas and
     # whitespace. Node runs only where the file holds a jevLive list to
     # rewrite, so a launch that names nothing costs no process otherwise.
-    grep -q '"jevLive"[[:space:]]*:[[:space:]]*\[' "$1" 2>/dev/null || return 0
+    tr -d '\r\n' < "$1" 2>/dev/null | grep -q '"jevLive"[[:space:]]*:[[:space:]]*\[' || return 0
   fi
   node -e '
 const fs = require("fs");
@@ -559,7 +559,7 @@ if (ids === "") {
   for (const id of [devId, installedId]) {
     const opts = plain(s.pluginConfigs) && plain(s.pluginConfigs[id]) ? s.pluginConfigs[id].options : undefined;
     if (plain(opts) && Array.isArray(opts.jevLive)) {
-      opts.jevLive = opts.jevLive.filter((m) => typeof m === "string").map((m) => m.trim()).filter((m) => m !== "").join(",");
+      opts.jevLive = opts.jevLive.map((m) => String(m).trim()).filter((m) => m !== "").join(",");
       changed = true;
     }
   }
