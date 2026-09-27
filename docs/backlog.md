@@ -918,3 +918,19 @@ A record stays open across several of the persona's own turn ends, and each of t
 This is unreachable as shipped. The live list is empty by default, and the close is the only writer of `delivered`, so the status is never written at all. It is recorded rather than fixed because the operator ruled on 2026-09-27 that the whole closing path ships dormant, and because the held-out pass established the question needs replacing rather than patching: no single question about one reply can decide closure, since answering the request and waiting on the operator are independent facts. A one-condition guard added now would sit on a path whose shape is going to change.
 
 Remedy: it is a precondition of promoting `turn-disposition`, not a change to make first. Whatever question replaces the shipped one has to be asked about the record's own ask as well as the ending turn's reply, which is the two-sided shape the plan's own Open Questions section argues for. The narrow guard, gating the close on the turn's kind so only a turn the record itself opened can close it, is the floor any replacement still needs.
+
+## The in-flight journal line repeats where its sibling route suppresses (found 2026-09-27)
+
+The boundary step writes a `turn_record_in_flight` decision naming the rule that left an open record open, at `hooks/index.ts:955`. The promotion route beside it writes its own refusal lines through a `logOnce` helper at `hooks/index.ts:1451`, which drops a line whose action, record and text match the one it last wrote. Both run at every own-turn end a record stays open for, so the two have the same cadence and only one of them guards against repeating itself.
+
+The consequence is a redundant line rather than pressure on the decisions ring. One line per own-turn end is the rate the ring is already sized for, and `DECISIONS_MAX` at `hooks/agent-state.ts:602` caps it at 200 entries, so nothing is evicted earlier than it otherwise would be. That is why the finishing pass left it rather than fixing it: the fix is a new module-level memo that no requirement in the plan names.
+
+Remedy: give the in-flight writer the same last-line memo route one already has, keyed on the record id, the action and the detail text. Route one's helper is the shape to mirror and its own comment carries the argument for why a repeated identical reading says nothing new.
+
+## The git command patterns are quadratic on a long crafted command (found 2026-09-27)
+
+The Bash-command classifier tests two patterns built from a nested option run, `GIT_COMMIT_PATTERN` and `GIT_PUSH_PATTERN` at `hooks/index.ts:2439`. The option run nests a quantified group inside a quantified group, which is the shape that backtracks catastrophically when the subject nearly matches and then fails. Measured at 2,633 ms on 140,001 characters of crafted input.
+
+The input's author is the model itself rather than an outside party, so nothing here is attacker-supplied in the ordinary sense. What it costs is the hook's own latency on a pathological command the model could compose by accident, on a path that runs for every Bash call.
+
+Remedy: anchor the option run or parse the command's tokens rather than matching them with one pattern. A tokenizing read of the leading options is linear and expresses the same rule the pattern's own comment states, which is that a token that is not an option ends the run.
