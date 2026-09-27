@@ -1,5 +1,13 @@
 # Backlog
 
+## supervisor-natural-exit-test.sh fails five checks on main (found 2026-09-27)
+
+The suite exits 1 on origin/main at ccfeb16, in two groups, and neither comes from a change under review. Both fail the same way at a2f61b6, the base the upgrade check plan read, and on that plan's branch, so the plan refused to carry them. They were found while gating PR #118, whose diff touches neither file.
+
+The first group is three root_complete pin checks in the unit blocks (`--units`). The pin's awk pairs each `action: "root_complete",` line with a backtick `detail: ` literal in the same decision. The one root_complete decision in `hooks/index.ts` writes the shorthand `detail,` from a variable, so the awk yields no pair and all three checks fail (0/1 details). The pin's own comment says a detail in another shape yields none and should fail, so the remedy is either to write that decision's detail as a literal the pin can read, or to teach the pin to follow the variable to its assignments.
+
+The second group is the (pkdu) park case: the supervisor exits 6 where the case expects 5, and its exit line does not name what the stop could not clear. Run alone with `--cases pkdu`, it fails the same way each time. The sibling (pku) case, which injects the kill at the park sweep rather than at the decide path, passes. Remedy: read `bin/supervise.sh`'s two `exit 6` sites against the case's injected-kill path, and decide whether the code or the case's expectation is out of date.
+
 ## Operator checks owed by the autonomy-dial plan (parked 2026-09-26)
 
 Two live checks only the operator can run, once the autonomy-dial pull request merges and the installed agentic-plugin copy is updated. The plan is at `docs/archive/agent_persona_autonomy-dial_v1.md`, under its Operator Verification. First, tell one worker on its own thread that its autonomy is now plan and start. Its goal status must then show `Autonomy: plan-and-start`, and its next external prompt's `[STANDING]` block must say so. A refusal in that turn reopens the plan's section 1, since a thread message is the operator's own turn. Second, within a day of that worker next running out of work while it holds a long-term goal, one line must arrive on the coordinator's thread naming what it queued to start. Its goal status must show the new entry as `pending` or `active`. Either reading means it worked, since the controller activates a pending entry on its next tick.
