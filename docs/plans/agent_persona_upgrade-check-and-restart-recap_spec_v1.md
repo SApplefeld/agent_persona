@@ -387,3 +387,21 @@ Delta: 2026-09-27 on SCOTT-CLAUDE, worktree D:/agent_persona-upgrade-check at 2d
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 5 - 2026-09-27
+
+Not a Chapter. The finishing pass is in flight, so this entry carries no `Completed:` line. Section 5 closed as Chapter 5 at 007bce9, and section 6's README paragraph landed at 54c989d. Section 6 closes with the finishing Chapter.
+
+**Why this boundary exists.** The compaction gate reported it is holding offers, so the pass's state is written here before a compaction can land.
+
+**Finishing stage.** Base ref a2f61b6, the merge-base of `plan/upgrade-check-recap` with `main`. Step 1, QA verification, returned PASS on HEAD 54c989d: tsc exit 0, the 21 offline node suites and 5 shell suites exit 0, plugin validate exit 0, and every acceptance criterion in sections 1 to 5 passed with evidence. It reproduced section 1's real-CLI run and section 4's real-transcript read independently. Its report of a `jevLive` array defect "on main" read the local main checkout at 86efe47, which is behind origin: `origin/main` declares `jevLive` as a string since 08da3b7, so main carries no such defect. That stale checkout is what the upgrade check compiles against, so it needs a pull before the check is run.
+
+**Whole gate, taken before the pass.** 2026-09-27 on SCOTT-CLAUDE, no other suite running. On the branch at 007bce9 plus the README paragraph: every offline node suite, the five shell suites inside two minutes, supervisor-holder, supervisor-model (376 s), tsc and plugin validate exit 0. `supervisor-natural-exit-parallel.sh` exit 1 (221 OK, 3 FAIL, 963 s). The baseline on a2f61b6 in a throwaway worktree, since removed, reads the same: every suite exit 0 except natural-exit-parallel, exit 1 with the same three `root_complete` pin failures (961 s). So the branch adds no failure, and adds two suites, upgrade-check-unit and restart-recap-unit, both green. The three pins predate this plan and are already filed in `docs/backlog.md`'s last entry. The two long suites run past the spec's two-minute bound for shell suites, so they sit outside this plan's gate and are reported beside it.
+
+**Live suites.** `bash .kit/live-all.sh` exit 10: "refusing to start: a live persona claim is present" (`persona:STEWARD`), no `.kit/RUNNING` left. This session is itself a supervisor's child, so the live suites cannot run from it. Per the plan's assumption of 2026-09-25 on the live suites, they defer to `docs/plans/agent_persona_deferred-gate-run_v1.md`, and the finishing Chapter records them as deferred, not passed.
+
+**Live dispatches.** One Workflow run, dispatched right after this entry: the step 2 and 3 wave (performance, security and adversarial reviewers over the whole changeset at fable, effort high, through Workflow), on a capacity reading of "fable capacity: scoped 45%, 7d 41%, 5h 12% (account 7, fetched 158s ago) -> dispatch".
+
+**Next action.** Dispatch the wave; adjudicate; the goal read (step 4); the docs curator (step 5); the finishing Chapter, archive and index refresh (step 6); the whole gate again after updating from origin; the pull request, ready and auto-merge (step 7); banking (step 8).
+
+**Rulings adopted since the last boundary.** None.
