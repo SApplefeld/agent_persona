@@ -655,15 +655,17 @@ async function holdMessageAsRecord(
   const logRecord = (action: string, detail: string): void => {
     sess.state.decisions.push({ timestamp: Date.now(), loop: "monitor", action, detail });
   };
-  // Section 5 (goal-every-turn): what this message was taken as on the
-  // turn-open question, in that question's own option ids, which is the
-  // next_prompt_kind outcome every turn-disposition call still pending on a
-  // record is waiting for. Set by whichever act below runs: a live verdict
-  // where one was read, else the fallback arm's own reading of the same
-  // three-way question, since the arm chosen is what the message was taken as.
-  // A bare record opened is new-goal, a record attached to an entry is step,
-  // and a record continued is continuation. Null until an act runs.
-  let promptKind: "new-goal" | "step" | "continuation" | null = null;
+  // Section 5 (goal-every-turn): what the turn-open question said this message
+  // was, which is the next_prompt_kind outcome every turn-disposition call
+  // still pending on a record is waiting for. It carries a live verdict's own
+  // option id where one was read, and the token `fallback` where none was:
+  // the question not live, not asked, or failed. The arm the fallback then
+  // runs is a function of the record's own status, so writing the arm would
+  // restate the verdict the outcome exists to score. The shadow verdict for a
+  // fallback call sits on the journal's answer line for that call, joined by
+  // the stamp id, which is where a labelling pass reads it. Null until an act
+  // runs.
+  let promptKind: string | null = null;
   // Closes the open record as the act that replaced it. The record layer holds
   // at most one open record, so every route that opens one runs this first. The
   // record is passed in rather than read here, because a caller that awaited
@@ -686,7 +688,6 @@ async function holdMessageAsRecord(
     if (goalId !== null) record.goalId = goalId;
     if (stampId !== null) record.pendingStamps = [{ stampId, turns: 0 }];
     sess.state.turnRecords.push(record);
-    promptKind = goalId === null ? "new-goal" : "step";
     logRecord(
       goalId === null ? "turn_record_opened" : "turn_record_attached",
       `record ${record.id}${goalId === null ? "" : ` on ${goalId}`}: ${kaizenLine(record.text)}`,
@@ -704,7 +705,6 @@ async function holdMessageAsRecord(
       pending.push({ stampId, turns: 0 });
       record.pendingStamps = pending;
     }
-    promptKind = "continuation";
     logRecord("turn_record_continued", `record ${record.id} continued: ${kaizenLine(record.text)}`);
   };
 
@@ -714,6 +714,8 @@ async function holdMessageAsRecord(
     const asked = sess.state.goals.find((g) => g.id === answeredAskNodeId);
     supersede(openTurnRecord(sess.state));
     openNew(excerpt, asked === undefined ? null : asked.id, null);
+    // This route asks the question of no one, so no verdict steered it.
+    promptKind = "fallback";
   } else {
     const openAtEntry = openTurnRecord(sess.state);
     // The stamp id rides a holder rather than the return, because the return is
@@ -736,6 +738,10 @@ async function holdMessageAsRecord(
     // and a record it opened is the one this act has to answer to.
     const open = openTurnRecord(sess.state);
     const verdict = answer === null ? null : answer.choice;
+    // The outcome is the verdict itself, whichever arm below it lands in: a
+    // live `step` with nothing active or a live `continuation` with nothing
+    // open runs a fallback arm and still reads as the verdict Jev gave.
+    promptKind = verdict ?? "fallback";
     if (verdict === "new-goal") {
       const worded = await wordNewRecordText(dp, excerpt);
       // Read again for the same reason, the wording call being a second await.
@@ -902,7 +908,10 @@ function settleExpiredDispositionStamps(dp: any): void {
  * Jev, logging one turn_record_in_flight decision naming itself. A closing
  * text opening with a BLOCKED: or WAITING: lead, an ask open at the turn's
  * end, and a background agent the main loop started and still running each
- * leave the record open and in flight. What they leave goes to the
+ * leave the record open and in flight. The agent list is read through the
+ * caller's thunk only once the first two rules have declined, since those
+ * two are synchronous facts already in hand and the list is a host call
+ * with a suspension of its own. What they leave goes to the
  * turn-disposition question through liveAsk over the four-field state, whose
  * active_goal is the objective of the entry that was active at the turn's
  * start, the entry the turn served, read by the caller from the same
@@ -918,11 +927,16 @@ function settleExpiredDispositionStamps(dp: any): void {
  *
  * The stamp of every call this asks is parked on the record before the await,
  * on the disposition list rather than the turn-open one, so the next
- * message's verdict can answer it. The open record is read again after the
- * await before it is written, since a store write in between can have
- * expired it. Nothing here throws to the caller: liveAsk catches a host that
- * broke the seam's never-rejects contract, and every other line is a read or
- * a write of state already in memory.
+ * message's verdict can answer it. After the await, two facts are read again
+ * before anything is written. The turn-start count is compared with the one
+ * the caller read at its delete, which is the same reading the compaction
+ * boundary takes of the same fact: a newer turn started while this
+ * completion awaited means it no longer owns the turn, and a completion that
+ * does not own the turn writes nothing. And the open record is read again,
+ * since a store write in between can have expired it. Nothing here throws
+ * to the caller: liveAsk catches a host that broke the seam's never-rejects
+ * contract, and every other line is a read or a write of state already in
+ * memory.
  */
 async function closeTurnRecordAtTurnEnd(
   dp: any,
@@ -931,7 +945,8 @@ async function closeTurnRecordAtTurnEnd(
   askedText: string,
   activityText: string,
   endedOnLead: boolean,
-  liveAgent: boolean,
+  readLiveAgent: () => Promise<boolean>,
+  newerTurnStarted: () => boolean,
   jevMode: string,
   jevLive: readonly string[],
 ): Promise<void> {
@@ -953,7 +968,7 @@ async function closeTurnRecordAtTurnEnd(
     inFlight(`an ask is open (${sess.state.pendingAskId})`);
     return;
   }
-  if (liveAgent) {
+  if (await readLiveAgent()) {
     inFlight("a background agent the main loop started is still running");
     return;
   }
@@ -973,6 +988,9 @@ async function closeTurnRecordAtTurnEnd(
       open.dispositionStamps = stamps;
     },
   );
+  // A completion that no longer owns the turn writes nothing, on the boundary
+  // step's own reading of the turn-start count it captured at the delete.
+  if (newerTurnStarted()) return;
   if (answer === null) return;
   const delivered = answer.probabilities["delivered"];
   if (typeof delivered !== "number" || delivered < TURN_DELIVERED_THRESHOLD) return;
@@ -1767,16 +1785,23 @@ let toolCallsThisTurn = 0;
 let nudgeCountWorkThisTurn = 0;
 
 // Section 5 (goal-every-turn): the turn's own tool activity, which the
-// turn-disposition question's state carries as turn_tool_activity. The flags
-// and the ring are reset at turn.start and written by tool.call for the main
-// loop's calls alone, on the ground the nudge count takes: a subagent
-// dispatched in an earlier turn can still be running, and its calls say
-// nothing about what the persona's own turn did. Each flag is a text read of
-// the call's own arguments and never a run: a commit or a push is a Bash
-// command carrying `git commit` or `git push`, and a plan document is a path
-// under docs/plans/. The ring holds the last TURN_TOOL_RING_MAX tool names in
-// call order. The eighth reading, the work-tool count, is toolCallsThisTurn
-// above, the count the handler already keeps.
+// turn-disposition question's state carries as turn_tool_activity. The flags,
+// the ring and the work-tool count are reset at turn.start and written by
+// tool.call for the main loop's calls alone, on the ground the nudge count
+// takes: a subagent dispatched in an earlier turn can still be running, and
+// its calls say nothing about what the persona's own turn did. The reset
+// itself carries no agent-id guard and rests on turn.start firing for the
+// persona's own turns only, which is what the engine's turn events describe
+// and what no test here pins; a reset is idempotent, so a guard on it would
+// be a mechanism no reading needs. Each flag is a text read of the call's own
+// arguments and never a run: a commit or a push is a Bash command whose
+// subcommand is `commit` or `push`, with any option run between `git` and
+// the subcommand allowed, and a plan document is a name directly under
+// docs/plans/ that the store's own PLAN_PATH_PATTERN accepts. The ring holds
+// the last TURN_TOOL_RING_MAX tool names in call order. The work-tool count
+// is kept here rather than read from toolCallsThisTurn above, which counts
+// every loop's work calls for the untracked-work backstop and the lead
+// clear, so the four-field state has one subject across all eight readings.
 const TURN_TOOL_RING_MAX = 8;
 type TurnToolFlags = {
   planRead: boolean;
@@ -1791,32 +1816,49 @@ function freshTurnToolFlags(): TurnToolFlags {
 }
 let turnToolFlags: TurnToolFlags = freshTurnToolFlags();
 let turnToolRing: string[] = [];
+let turnWorkToolCalls = 0;
 
-// Whether a tool argument names a file directly under a docs/plans/ directory,
-// at any depth and with either separator. The path is read as the model wrote
-// it, absolute or relative, since this flag is a reading of what the turn
-// touched rather than the promotion route's own match, which is section 6's
-// and resolves the path against the working directory first.
+// Whether a tool argument names a plan document: a file directly under a
+// docs/plans/ directory, at any depth and with either separator, whose
+// docs/plans/ suffix is a name PLAN_PATH_PATTERN accepts once the separators
+// read as forward slashes. The path is read as the model wrote it, absolute
+// or relative, since this flag is a reading of what the turn touched rather
+// than the promotion route's own match, which is section 6's and resolves
+// the path against the working directory first.
 function namesPlanDocument(value: unknown): boolean {
-  return typeof value === "string" && /(^|[\\/])docs[\\/]plans[\\/][^\\/]+$/.test(value);
+  if (typeof value !== "string") return false;
+  const suffix = /(^|[\\/])(docs[\\/]plans[\\/][^\\/]+)$/.exec(value);
+  return suffix !== null && PLAN_PATH_PATTERN.test(suffix[2].replace(/\\/g, "/"));
 }
+
+// A git subcommand read off a Bash command: the word `git`, then any run of
+// options, each with at most one argument of its own, then the subcommand.
+// An argument is one unquoted token or one quoted string, so `-C <dir>` and
+// `-c key=value` are read past. A token that is not an option ends the run,
+// so `git log && echo commit` names no commit.
+const GIT_OPTION_RUN = String.raw`(?:\s+-\S*(?:\s+(?:"[^"]*"|'[^']*'|[^-\s"']\S*))?)*`;
+const GIT_COMMIT_PATTERN = new RegExp(String.raw`\bgit${GIT_OPTION_RUN}\s+commit\b`);
+const GIT_PUSH_PATTERN = new RegExp(String.raw`\bgit${GIT_OPTION_RUN}\s+push\b`);
 
 function resetTurnToolActivity(): void {
   turnToolFlags = freshTurnToolFlags();
   turnToolRing = [];
+  turnWorkToolCalls = 0;
 }
 
-// One main-loop tool call's contribution to the flags and the ring. The
-// arguments arrive spread on the tool.call event, so the call passes the event
-// itself; only `file_path` and `command` are read from it, and both as text.
+// One main-loop tool call's contribution to the flags, the ring and the
+// work-tool count. The arguments arrive spread on the tool.call event, so the
+// call passes the event itself; only `file_path` and `command` are read from
+// it, and both as text.
 function noteTurnToolCall(tool: string, args: { file_path?: unknown; command?: unknown }): void {
   turnToolRing.push(tool);
   if (turnToolRing.length > TURN_TOOL_RING_MAX) turnToolRing.splice(0, turnToolRing.length - TURN_TOOL_RING_MAX);
+  if (isWorkTool(tool)) turnWorkToolCalls += 1;
   if (tool === "Read" && namesPlanDocument(args.file_path)) turnToolFlags.planRead = true;
   if ((tool === "Write" || tool === "Edit") && namesPlanDocument(args.file_path)) turnToolFlags.planEdited = true;
   if (tool === "Bash" && typeof args.command === "string") {
-    if (/\bgit\s+commit\b/.test(args.command)) turnToolFlags.committed = true;
-    if (/\bgit\s+push\b/.test(args.command)) turnToolFlags.pushed = true;
+    if (GIT_COMMIT_PATTERN.test(args.command)) turnToolFlags.committed = true;
+    if (GIT_PUSH_PATTERN.test(args.command)) turnToolFlags.pushed = true;
   }
   if (tool === "Agent") turnToolFlags.agentDispatched = true;
   if (tool === "mcp__agentic-plugin__goal_done") turnToolFlags.goalDoneCalled = true;
@@ -8363,7 +8405,7 @@ export const register: Register = async (on, options) => {
     // the same reason. The text this turn opened with, and the tool activity
     // the turn's own calls wrote, are both rewritten by the next turn.start.
     const askedTextAtDelete = currentTurnAskedText;
-    const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, toolCallsThisTurn, replyCalledThisTurn);
+    const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
     // The persona's own turn end clears any owed bank here, before any await,
     // and the step below sets it again only where this turn ended durable. A
     // throw on the way there leaves nothing owed: a missed bank costs one
@@ -9299,18 +9341,19 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // Section 5 (goal-every-turn): the live-agent reading, taken once here for
-    // the record close just below and for the compaction boundary further
-    // down, and only where a turn end could be durable or a record could
-    // close: the persona's own turn, no turn still open, this session the
-    // holder, the turn not skipped and not ended on a lead. Every one of those
-    // already keeps the record open and the turn end non-durable on its own,
-    // so the list is not read where nothing it says could change either. A
-    // read that fails is no live agent, which liveTopLevelAgentRunning
+    // Section 5 (goal-every-turn): the live-agent reading, shared by the
+    // record close just below and the compaction boundary further down, and
+    // taken at most once per completion, at the first of the two that
+    // consults it. The close consults it only once its lead rule and open-ask
+    // rule have both declined, and the boundary only where a turn end could
+    // be durable, so a completion neither needs it on never reads the list.
+    // A read that fails is no live agent, which liveTopLevelAgentRunning
     // explains and logs once.
-    const liveAgent = completesGateTurn && !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead
-      ? await liveTopLevelAgentRunning($)
-      : false;
+    let liveAgentRead: Promise<boolean> | null = null;
+    const readLiveAgent = (): Promise<boolean> => {
+      if (liveAgentRead === null) liveAgentRead = liveTopLevelAgentRunning($);
+      return liveAgentRead;
+    };
 
     // Section 6 (goal-every-turn): route one, promoting a plan-touching bare
     // record into the goal tree, goes here, above the close below and under
@@ -9335,7 +9378,10 @@ export const register: Register = async (on, options) => {
       reapTurnRecords(sess.state, Date.now());
       settleExpiredDispositionStamps($);
       if (!turnOpenAfterDelete && !skipped) {
-        await closeTurnRecordAtTurnEnd($, turnLeaf ? turnLeaf.objective : "", e.answer, askedTextAtDelete, activityTextAtDelete, endedOnLead, liveAgent, jevMode, jevLive);
+        await closeTurnRecordAtTurnEnd(
+          $, turnLeaf ? turnLeaf.objective : "", e.answer, askedTextAtDelete, activityTextAtDelete, endedOnLead,
+          readLiveAgent, () => turnStartSeq !== turnStartSeqAtDelete, jevMode, jevLive,
+        );
       }
     }
 
@@ -9420,16 +9466,31 @@ export const register: Register = async (on, options) => {
     // scorer or document-complete step activates the next entry. An entry
     // this handler activates got no work in the turn, so the point between
     // plans stays durable. A background agent the main loop started and
-    // still running, read above from $.agent.list(), makes the turn not
-    // durable either: its work lands after this turn's end, so a marker here
-    // would license compaction while that work is in flight. An open turn
-    // record with no lead, no open ask and no live agent is idle, and idle is
+    // still running, read from $.agent.list() through the shared thunk
+    // above, makes the turn not durable either: its work lands after this
+    // turn's end, so a marker here would license compaction while that work
+    // is in flight. The list is read here only where every other durable
+    // signal already holds, and the record close above will already have
+    // read it on a turn its agent rule reached, so the two consult one
+    // reading. An ask open at the turn's end, read from pendingAskId after
+    // the marker step above that sets it, makes the turn not durable as a
+    // WAITING: lead does: the plan's Goal lists an open ask beside the lead
+    // and the live agent as what puts an open record in flight, and an
+    // outstanding ask is the waiting state reached by the ASK: line, which
+    // readStatusLine does not read as a lead. The open ask is a synchronous
+    // fact like the lead, so it gates the list read too. An open turn record
+    // with no lead, no open ask and no live agent is idle, and idle is
     // durable, so a record alone never withholds the bank. It runs after the
     // plan-record read, which settles the Chapter signal. Its boundary facts
     // were read at the delete. Where a newer turn has started since, this
     // completion settled too late: that turn's first tool call may have run
     // already, so a bank set now could only land mid-turn, and nothing is set
-    // or logged.
+    // or logged. The count is compared after the read below, so a turn that
+    // starts during that read is seen.
+    const openAsk = !!sess.state.pendingAskId;
+    const liveAgent = completesGateTurn && !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead && !openAsk
+      ? await readLiveAgent()
+      : false;
     if (completesGateTurn) {
       if (turnStartSeq !== turnStartSeqAtDelete) {
         pendingCompactionBank = null;
@@ -9441,7 +9502,7 @@ export const register: Register = async (on, options) => {
         const endHolderOpen = endHolder !== undefined && endHolder !== planHolder
           && endHolder.status !== "complete" && endHolder.status !== "abandoned";
         const midSection = (planHolder !== undefined && !planChapterAdvanced && !planCompletedByDocument) || endHolderOpen;
-        const durable = !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead && !midSection && !liveAgent;
+        const durable = !turnOpenAfterDelete && sess.isOwner && !skipped && !endedOnLead && !openAsk && !midSection && !liveAgent;
         pendingCompactionBank = durable ? { turnKind: turnKindAtStart } : null;
       }
     }

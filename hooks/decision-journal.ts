@@ -122,8 +122,9 @@ export const SEGMENT_MAX = 64;
 // opened or continued reached delivered within a fixed number of the
 // persona's own turns, written once as true or false. A `next_prompt_kind`
 // answers turn-disposition: the verdict the next external message took on
-// turn-open, one of its option ids, or `none` where the record expired
-// first.
+// turn-open, one of its option ids; `fallback` where no verdict was read, which
+// includes every call while the question is not live and every call that failed;
+// or `none` where the record expired first.
 //
 // The union and the array carry the same members in the same order: a member
 // in the union alone compiles and is refused by writeOutcome at runtime.

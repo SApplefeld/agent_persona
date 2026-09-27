@@ -4055,6 +4055,7 @@ async function main() {
     await caseTurnClose_theCompactionRuleInBothDirections(clock);
     await caseTurnClose_theJournaledStateCarriesTheFourFields(clock);
     await caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock);
+    await caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock);
 
     // The supervisor mailbox, the two heartbeat options, the sidecar's
     // lost-update recovery, the commons check at the session-start claim, the
@@ -25135,19 +25136,27 @@ async function caseTurnClose_theThresholdInBothDirectionsAndTheFallback(clock) {
       && journalLinesOfKind(fb, "answer").some((a) => a.callStampId === fbCalls[0].stampId && a.value === "delivered"),
     { calls: fbCalls, record: fbRecord });
 
-  // A hung live Jev. Nothing advances the harness clock on its own, so once
-  // turn.complete awaits the live call the case fires the live timer itself,
-  // the way section 3's own timeout leg does. The turn-open shadow call the
-  // message sent left a timer of its own, so the list is cleared before the
-  // turn and the timer is selected by its duration rather than by position.
+  // A hung live Jev. The response is held open for good, and nothing advances
+  // the harness clock on its own, so once turn.complete awaits the live call
+  // the case fires the live timer itself, the way section 3's own timeout leg
+  // does. The turn-open shadow call the message sent left a timer of its own,
+  // so the list is cleared before the turn and the timer is selected by its
+  // duration rather than by position. The promise pinned is that the turn end
+  // waits on that timer and on nothing else: the completion is read as
+  // unsettled before the timer fires, then polled for settlement through a
+  // bounded run of event-loop turns with the response still held open, so a
+  // turn end that waited on the response, or on anything the timer does not
+  // release, reads as a named failure here rather than as a hang of the
+  // suite. The harness clock is not read, since a reading of it would be
+  // arithmetic this case performed itself.
   const hung = await closeHarness("close_hung", LIVE_DISPOSITION);
   hung.setHttpResponse(() => new Promise(() => {}));
   await submitMessage(hung, MESSAGE);
   const hungId = openRecordOf(hung)?.id;
   await recordTurnStart(hung, "t-hung-1", MESSAGE);
   hung.sleeps.length = 0;
-  const before = clock.get();
-  const completion = recordTurnComplete(hung, "t-hung-1", "Here is the summary.");
+  let hungOutcome = null;
+  void recordTurnComplete(hung, "t-hung-1", "Here is the summary.").then(() => { hungOutcome = "returned"; }, (err) => { hungOutcome = err; });
   let timer;
   for (let i = 0; i < 200 && timer === undefined; i += 1) {
     await new Promise((r) => setImmediate(r));
@@ -25156,18 +25165,20 @@ async function caseTurnClose_theThresholdInBothDirectionsAndTheFallback(clock) {
   // A shadow question the turn end also sends leaves a timer of its own
   // length beside the live one, so the live timer is counted by its length.
   check("close hung control: the turn end started one timer of LIVE_TIMEOUT_MS and is waiting on it",
-    timer !== undefined && hung.sleeps.filter((s) => s.ms === Seam.LIVE_TIMEOUT_MS).length === 1, hung.sleeps.map((s) => s.ms));
-  clock.advance(Seam.LIVE_TIMEOUT_MS);
-  timer.resolve();
-  await completion;
-  await settleJournalWrites(hung);
-  const hungCalls = turnDispositionCallLines(hung);
-  check("close hung: the turn end returned once the live timer fired and no later, and the record is still open",
-    clock.get() - before === Seam.LIVE_TIMEOUT_MS && recordById(hung, hungId)?.status === "open" && deliveredDecisions(hung).length === 0,
-    { elapsed: clock.get() - before, record: recordById(hung, hungId) });
-  check("close hung: the call line names the timeout, and its stamp is parked on the record all the same",
-    hungCalls.length === 1 && hungCalls[0].result === "timeout" && dispositionStampsOf(recordById(hung, hungId)).join(",") === hungCalls[0].stampId,
-    { calls: hungCalls, record: recordById(hung, hungId) });
+    timer !== undefined && hung.sleeps.filter((s) => s.ms === Seam.LIVE_TIMEOUT_MS).length === 1 && hungOutcome === null,
+    { sleeps: hung.sleeps.map((s) => s.ms), outcome: hungOutcome });
+  if (timer !== undefined) timer.resolve();
+  for (let i = 0; i < 200 && hungOutcome === null; i += 1) await new Promise((r) => setImmediate(r));
+  check("close hung: the turn end returned once the live timer fired, with the response still held open, and the record is still open",
+    hungOutcome === "returned" && recordById(hung, hungId)?.status === "open" && deliveredDecisions(hung).length === 0,
+    { outcome: hungOutcome, record: recordById(hung, hungId) });
+  if (hungOutcome === "returned") {
+    await settleJournalWrites(hung);
+    const hungCalls = turnDispositionCallLines(hung);
+    check("close hung: the call line names the timeout, and its stamp is parked on the record all the same",
+      hungCalls.length === 1 && hungCalls[0].result === "timeout" && dispositionStampsOf(recordById(hung, hungId)).join(",") === hungCalls[0].stampId,
+      { calls: hungCalls, record: recordById(hung, hungId) });
+  }
 }
 
 // Every fixed rule, in both directions. Each rule holds on one drive and is
@@ -25195,15 +25206,31 @@ async function caseTurnClose_everyFixedRuleLeavesTheRecordOpenAndAsksNothing(clo
       { record: recordById(h, id), requests: turnDispositionRequests(h).length, calls: turnDispositionCallLines(h), inFlight: inFlightDetails(h) });
   };
 
+  // The agent list is a host call, read only where something consults it: a
+  // lead turn and an ask turn each read it never, since the close's rule for
+  // each declines before its agent rule and the compaction boundary reads
+  // the same two facts before the list. A counting list stub is the witness
+  // for the count. Which of the two readers declined is not readable here:
+  // the decision ring is read from the persisted store, and the rule's
+  // decision is in memory until the handler persists, so the order is a
+  // reading of the close's source and not of this case.
+  const listReads = (h) => {
+    const reads = [];
+    h.setAgentList(() => { reads.push(1); return []; });
+    return reads;
+  };
+
   // The lead rule, on both leads.
   for (const lead of ["BLOCKED: the credentials are missing.", "WAITING: on the operator's reply."]) {
     const word = lead.split(":")[0];
     const h = await closeHarness(`close_lead_${word.toLowerCase()}`, LIVE_DISPOSITION);
     h.setHttpResponse(jevAnsweringDisposition(1));
+    const leadReads = listReads(h);
     const id = await closeDrive(h, `t-lead-${word}`, MESSAGE, lead);
     check(`close lead ${word}: the record stays open and one in-flight decision names the lead rule`,
       recordById(h, id)?.status === "open" && inFlightDetails(h).length === 1 && /lead/.test(inFlightDetails(h)[0]) && deliveredDecisions(h).length === 0,
       { record: recordById(h, id), inFlight: inFlightDetails(h) });
+    check(`close lead ${word}: the agent list was never read, nothing on this turn consulting it`, leadReads.length === 0, leadReads);
     notAsked(`close lead ${word}`, h);
   }
   const leadControl = await closeHarness("close_lead_control", LIVE_DISPOSITION);
@@ -25215,12 +25242,14 @@ async function caseTurnClose_everyFixedRuleLeavesTheRecordOpenAndAsksNothing(clo
   const ASK_LINE = "Which branch should I cut from? Recommend: main.";
   const ask = await closeHarness("close_ask", LIVE_DISPOSITION);
   ask.setHttpResponse(jevAnsweringDisposition(1));
+  const askReads = listReads(ask);
   const askId = await closeDrive(ask, "t-ask-1", MESSAGE, `ASK: ${ASK_LINE}`);
   check("close ask setup: the ask step opened an ask on this turn",
     typeof getState(ask).pendingAskId === "string" && getState(ask).pendingAskId.length > 0, getState(ask).pendingAskId);
   check("close ask: the record stays open and one in-flight decision names the open ask by its id",
     recordById(ask, askId)?.status === "open" && inFlightDetails(ask).length === 1 && inFlightDetails(ask)[0].includes(getState(ask).pendingAskId),
     { record: recordById(ask, askId), inFlight: inFlightDetails(ask) });
+  check("close ask: the agent list was never read, nothing on this turn consulting it", askReads.length === 0, askReads);
   notAsked("close ask", ask);
   const askControl = await closeHarness("close_ask_control", LIVE_DISPOSITION);
   askControl.setHttpResponse(jevAnsweringDisposition(1));
@@ -25326,22 +25355,29 @@ async function caseTurnClose_aSubagentCompletionClosesNothing(clock) {
     { record: recordById(h, id), calls: turnDispositionCallLines(h) });
 }
 
-// Plan A's boundary predicate gains the live-agent rule, in both directions. A
-// turn ending with a running top-level agent owes no bank, so the next turn's
-// first main-loop tool call runs no boundary command; the same turn with the
-// agent completed banks once. An open record that is idle, with no lead, no
-// ask and no agent, is a durable boundary and banks too, which is the plan's
-// rule that a record alone never withholds compaction. The recorder is the
-// surface: it records a run in the banking legs, so an empty record in the
-// agent leg is a reading of the predicate rather than of a stub that answers
-// the same either way.
+// Plan A's boundary predicate gains the live-agent rule and the open-ask
+// rule, each in both directions. A turn ending with a running top-level agent
+// owes no bank, so the next turn's first main-loop tool call runs no boundary
+// command; the same turn with the agent completed banks once. A turn whose
+// closing text is an ASK: line owes no bank either, and the same line with no
+// marker banks. An open record that is idle, with no lead, no ask and no
+// agent, is a durable boundary and banks too, which is the plan's rule that a
+// record alone never withholds compaction. The recorder is the surface: it
+// records a run in the banking legs, so an empty record in a withholding leg
+// is a reading of the predicate rather than of a stub that answers the same
+// either way. Each withholding leg names the close's in-flight rule that read
+// the same fact, and the ask leg reads the ask the handler's own marker step
+// opened on that turn.
 async function caseTurnClose_theCompactionRuleInBothDirections(clock) {
-  console.log("\n=== Turn close: a running top-level agent withholds Plan A's bank, the same turn with the agent completed banks, and an idle open record banks ===");
+  console.log("\n=== Turn close: a running top-level agent or an open ask withholds Plan A's bank, the same turn with the agent completed or the ask line unmarked banks, and an idle open record banks ===");
   const running = { id: "agent-1", description: "a background worker", type: "general-purpose", status: "running" };
+  const ASK_ANSWER = "ASK: Which branch should I cut from? Recommend: main.";
   const legs = [
-    { label: "bank with a running agent", list: [running], banks: false },
-    { label: "bank with the agent completed", list: [{ ...running, status: "completed" }], banks: true },
-    { label: "bank with an idle open record", list: [], banks: true },
+    { label: "bank with a running agent", list: [running], answer: "Here is the answer.", banks: false, rule: /agent/ },
+    { label: "bank with the agent completed", list: [{ ...running, status: "completed" }], answer: "Here is the answer.", banks: true },
+    { label: "bank with an idle open record", list: [], answer: "Here is the answer.", banks: true },
+    { label: "bank with an open ask", list: [], answer: ASK_ANSWER, banks: false, rule: /ask is open/ },
+    { label: "bank with the ask line unmarked", list: [], answer: ASK_ANSWER.slice("ASK: ".length), banks: true },
   ];
   for (const leg of legs) {
     clock.set(T0);
@@ -25352,17 +25388,19 @@ async function caseTurnClose_theCompactionRuleInBothDirections(clock) {
     h.setAgentList(leg.list);
     await submitMessage(h, "Take the next step.");
     const id = openRecordOf(h)?.id;
-    const end = await bank2Turn(h, "t-bank", "Here is the answer.");
+    const end = await bank2Turn(h, "t-bank", leg.answer);
     bank2CheckOwedOnly(leg.label, h, runs, end);
     check(`${leg.label}: the record is open at the turn's end under the fallback`, recordById(h, id)?.status === "open", recordById(h, id));
+    check(`${leg.label}: an ask is open at the turn's end exactly where the closing text carried the marker`,
+      (typeof getState(h).pendingAskId === "string") === leg.answer.startsWith("ASK:"), getState(h).pendingAskId);
     const call = await bank2NextTurnCall(leg.label, h, runs, "t-after");
     if (leg.banks) {
       bank2CheckBanked(leg.label, h, runs, call);
       check(`${leg.label}: no in-flight decision, the record being idle`, inFlightDetails(h).length === 0, inFlightDetails(h));
     } else {
       bank2CheckNothing(`${leg.label} (first main-loop tool call)`, h, runs, call);
-      check(`${leg.label}: the in-flight decision names the agent rule, which is the rule that withheld the bank`,
-        inFlightDetails(h).length === 1 && /agent/.test(inFlightDetails(h)[0]), inFlightDetails(h));
+      check(`${leg.label}: the in-flight decision names the rule that read the fact which withheld the bank`,
+        inFlightDetails(h).length === 1 && leg.rule.test(inFlightDetails(h)[0]), inFlightDetails(h));
     }
   }
 }
@@ -25422,9 +25460,10 @@ async function caseTurnClose_theJournaledStateCarriesTheFourFields(clock) {
   check("close state: the seven flags read as the turn's calls set them",
     reading("plan_read") === "yes" && reading("plan_edited") === "yes" && reading("commit") === "yes" && reading("push") === "yes"
       && reading("agent_dispatched") === "yes" && reading("goal_done") === "no" && reading("reply") === "yes", activity);
-  // The count is the handler's own work-tool count, which reads every loop's
-  // work calls: Edit, two Bash, and the subagent's NotebookEdit.
-  check("close state: work_tools carries the handler's work-tool count", reading("work_tools") === "4", activity);
+  // The count reads the main loop's work calls alone, as the flags and the
+  // ring do: Edit and two Bash. The subagent's NotebookEdit is a work tool
+  // and is not counted, which is what holds the field to one subject.
+  check("close state: work_tools counts the main loop's work calls and not the subagent's", reading("work_tools") === "3", activity);
   check("close state: tools carries the last eight main-loop tool names in call order, and the subagent's call is not among them",
     reading("tools") === "Bash,Bash,Agent,mcp__plugin_relay_channel-relay__reply,Grep,Glob,Read,WebFetch", activity);
   // The main leg read plan_edited from the main loop's Edit; this leg is a
@@ -25440,6 +25479,42 @@ async function caseTurnClose_theJournaledStateCarriesTheFourFields(clock) {
   check("close state subagent: a subagent's plan edit sets no flag and enters no ring, and the main loop's goal_done sets its flag",
     / plan_edited=no /.test(subActivity) && / goal_done=yes /.test(subActivity) && / tools=mcp__agentic-plugin__goal_done$/.test(subActivity), subActivity);
 
+  // The bounds of the four text reads, one harness per direction, the main
+  // leg above being the accepted shape for each. Refused: a name under
+  // docs/plans/ that is not a bounded .md name sets neither plan flag, on the
+  // store's own PLAN_PATH_PATTERN, and a command carrying `commit` or `push`
+  // anywhere but as git's subcommand sets neither git flag, an option run
+  // before a different subcommand included. Caught: an option run between
+  // `git` and the subcommand, with and without an argument of its own. The
+  // option tokens in the caught leg are named nowhere in the read, so the
+  // catch is a reading of the run's shape rather than of a string the read
+  // was handed.
+  const activityOf = (h2) => turnDispositionRequests(h2)[0]?.state?.split("\n").find((l) => l.startsWith("turn_tool_activity: ")) ?? "";
+  const refused = await recordHarness("close_state_flags_refused");
+  await submitMessage(refused, "Tidy the plans folder.");
+  await recordTurnStart(refused, "t-state-refused", "Tidy the plans folder.");
+  for (const call of [
+    { tool: "Read", file_path: "docs/plans/notes.txt" },
+    { tool: "Edit", file_path: "D:/agent_persona/docs/plans/x_v1.md.bak" },
+    { tool: "Bash", command: "git -C D:/agent_persona log --oneline && echo commit" },
+    { tool: "Bash", command: "git status; echo push origin main" },
+  ]) await callTool(refused, { ...call, turnId: "t-state-refused" }, async () => ({ result: "ok" }));
+  await recordTurnComplete(refused, "t-state-refused", "Done.");
+  await settleJournalWrites(refused);
+  check("close state flag bounds: a .txt and a .md.bak under docs/plans/ set neither plan flag, and commit or push outside the subcommand sets neither git flag",
+    / plan_read=no plan_edited=no commit=no push=no /.test(activityOf(refused)), activityOf(refused));
+  const caught = await recordHarness("close_state_flags_caught");
+  await submitMessage(caught, "Commit and push.");
+  await recordTurnStart(caught, "t-state-caught", "Commit and push.");
+  for (const call of [
+    { tool: "Bash", command: "git --no-pager -c core.autocrlf=false commit -m \"x\"" },
+    { tool: "Bash", command: "git --work-tree=D:/agent_persona --no-pager push origin HEAD" },
+  ]) await callTool(caught, { ...call, turnId: "t-state-caught" }, async () => ({ result: "ok" }));
+  await recordTurnComplete(caught, "t-state-caught", "Done.");
+  await settleJournalWrites(caught);
+  check("close state flag bounds (the withheld control): an option run between git and the subcommand, on options the read names nowhere, sets commit and push",
+    / commit=yes push=yes /.test(activityOf(caught)), activityOf(caught));
+
   // The forge control: a closing text carrying a line break and a label
   // writes no fifth field.
   const forging = await recordHarness("close_state_forging");
@@ -25452,21 +25527,26 @@ async function caseTurnClose_theJournaledStateCarriesTheFourFields(clock) {
 }
 
 // next_prompt_kind is written once against every disposition stamp pending on
-// a record, at the next external message's turn-open verdict, or as `none`
-// where the record expired first. A record open across three own turn ends
-// holds three stamps and gets three lines carrying the same verdict; the
+// a record, at the next external message: a live turn-open verdict's own
+// option id where one was read, `fallback` where none was, and `none` where
+// the record expired first. The value is the verdict and never the arm the
+// handler ran, since under fallback the arm is a function of the record's own
+// status and would restate the verdict the outcome exists to score. The pin
+// for that is a pair: the same continue arm reads `fallback` under shadow and
+// `continuation` under a live verdict. A record open across three own turn
+// ends holds three stamps and gets three lines carrying the same value; the
 // list is dropped as they are written, so a later message writes none of
 // them again. A delivered record's stamps wait for the next message too,
-// since the verdict it takes is what the outcome measures. A stored list the
-// plugin cannot read as stamp ids drops the record at the load, as the
-// turn-open list does.
+// since the verdict it takes is what the outcome measures. The ask-answered
+// route asks nothing and reads `fallback`. A stored list the plugin cannot
+// read as stamp ids drops the record at the load, as the turn-open list does.
 async function caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock) {
-  console.log("\n=== Turn close: next_prompt_kind is written once against every disposition stamp, three stamps get three lines, and an expired record's read none ===");
+  console.log("\n=== Turn close: next_prompt_kind is the verdict read or `fallback`, written once against every disposition stamp, three stamps get three lines, and an expired record's read none ===");
   clock.set(T0);
   const kindLines = (h) => outcomeLinesOfKind(h, "next_prompt_kind");
 
   // Three own turn ends over one open record under the fallback, then a
-  // message that continues it.
+  // message that continues it under the fallback too, so no verdict was read.
   const h = await closeHarness("close_kind_three", []);
   await submitMessage(h, "The request this exchange is about.");
   const id = openRecordOf(h)?.id;
@@ -25481,9 +25561,9 @@ async function caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionS
   await submitMessage(h, "One correction to that.");
   await settleJournalWrites(h);
   const three = kindLines(h);
-  check("close kind: three outcome lines, one per stamp, each reading continuation, and the list is dropped",
-    three.length === 3 && three.map((l) => l.callStampId).join(",") === stamps.join(",") && three.every((l) => l.value === "continuation")
-      && dispositionStampsOf(recordById(h, id)).length === 0, { lines: three, record: recordById(h, id) });
+  check("close kind: three outcome lines, one per stamp, each reading fallback since no verdict was read, and the list is dropped",
+    three.length === 3 && three.map((l) => l.callStampId).join(",") === stamps.join(",") && three.every((l) => l.value === "fallback")
+      && recordById(h, id)?.status === "open" && dispositionStampsOf(recordById(h, id)).length === 0, { lines: three, record: recordById(h, id) });
   await recordTurn(h, "t-k-4", "One correction to that.", "Done.");
   await submitMessage(h, "Thanks, one more thing.");
   await settleJournalWrites(h);
@@ -25503,7 +25583,8 @@ async function caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionS
       && kindLines(ng)[0].callStampId === turnDispositionCallLines(ng)[0]?.stampId, { record: recordById(ng, ngId), lines: kindLines(ng) });
 
   // A record delivered at its turn end holds its stamp until the next message,
-  // whose fallback opens a bare record, which reads new-goal.
+  // whose fallback opens a bare record. The turn-open question is not live
+  // here, so the line reads fallback rather than the arm that opened it.
   const dl = await closeHarness("close_kind_delivered", LIVE_DISPOSITION);
   dl.setHttpResponse(jevAnsweringDisposition(1));
   const dlId = await closeDrive(dl, "t-dl-1", "Summarize the notes.", "Here is the summary.");
@@ -25511,9 +25592,62 @@ async function caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionS
     recordById(dl, dlId)?.status === "delivered" && dispositionStampsOf(recordById(dl, dlId)).length === 1 && kindLines(dl).length === 0, recordById(dl, dlId));
   await submitMessage(dl, "Now file it under research.");
   await settleJournalWrites(dl);
-  check("close kind delivered: the next message's bare record reads new-goal against the delivered record's stamp, and the list is dropped",
-    kindLines(dl).length === 1 && kindLines(dl)[0].value === "new-goal" && dispositionStampsOf(recordById(dl, dlId)).length === 0
+  check("close kind delivered: the next message's bare record reads fallback against the delivered record's stamp, and the list is dropped",
+    kindLines(dl).length === 1 && kindLines(dl)[0].value === "fallback" && dispositionStampsOf(recordById(dl, dlId)).length === 0
       && recordsOf(dl).filter((r) => r.status === "open").length === 1, { lines: kindLines(dl), records: recordsOf(dl) });
+
+  // The pair that pins the value as the verdict rather than the arm: the same
+  // continue arm the three-stamp leg ran under shadow, run here under a live
+  // `continuation` verdict, reads continuation. The first message lands in
+  // the fallback arm too, a continuation with nothing open, and no stamp is
+  // pending then, so the one line is the second message's.
+  const lc = await closeHarness("close_kind_live_continuation", [Catalog.TURN_OPEN]);
+  lc.setHttpResponse(jevChoiceResponse(Catalog.TURN_OPEN, "continuation", Catalog.TURN_OPEN_OPTIONS));
+  await submitMessage(lc, "First request.");
+  const lcId = openRecordOf(lc)?.id;
+  await recordTurn(lc, "t-lc-1", "First request.", "Working on it.");
+  await submitMessage(lc, "One correction to that.");
+  await settleJournalWrites(lc);
+  check("close kind live continuation: the continued record's one stamp reads continuation, the verdict read, on the arm that read fallback under shadow",
+    openRecordOf(lc)?.id === lcId && kindLines(lc).length === 1 && kindLines(lc)[0].value === "continuation"
+      && kindLines(lc)[0].callStampId === turnDispositionCallLines(lc)[0]?.stampId && turnOpenCallLines(lc).length === 2 && turnOpenCallLines(lc)[1].mode === "live",
+    { record: recordById(lc, lcId), lines: kindLines(lc), turnOpen: turnOpenCallLines(lc) });
+
+  // A live `step` verdict reads step, whichever arm it lands in: the harness
+  // starts with an entry active, and the scorer at the first turn's end may
+  // leave it so or not, which is the arm's business and not the outcome's.
+  const st = await recordHarness("close_kind_live_step", { jevLive: [Catalog.TURN_OPEN] });
+  st.setHttpResponse(jevChoiceResponse(Catalog.TURN_OPEN, "step", Catalog.TURN_OPEN_OPTIONS));
+  await submitMessage(st, "Take the next step.");
+  await recordTurn(st, "t-st-1", "Take the next step.", "Working on it.");
+  await submitMessage(st, "And the one after.");
+  await settleJournalWrites(st);
+  check("close kind live step: the pending stamp reads step, the verdict read",
+    kindLines(st).length === 1 && kindLines(st)[0].value === "step" && kindLines(st)[0].callStampId === turnDispositionCallLines(st)[0]?.stampId,
+    { lines: kindLines(st), calls: turnDispositionCallLines(st) });
+
+  // The ask-answered route asks the question of no one, so its line reads
+  // fallback. The stamp is the first turn's; the second turn ends on an ASK:
+  // line, which the close's open-ask rule refuses before any call, and the
+  // third message answers that ask.
+  const ka = await closeHarness("close_kind_ask_answered", []);
+  await submitMessage(ka, "Cut the release branch.");
+  const kaId = openRecordOf(ka)?.id;
+  await recordTurn(ka, "t-ka-1", "Cut the release branch.", "Working on it.");
+  await recordTurn(ka, "t-ka-2", "", "ASK: Which branch should I cut from? Recommend: main.");
+  await settleJournalWrites(ka);
+  const kaStamps = dispositionStampsOf(recordById(ka, kaId));
+  check("close kind ask answered setup: one stamp from the first turn, the ask open, one turn-open call line from the first message and no outcome yet",
+    kaStamps.length === 1 && turnDispositionCallLines(ka).length === 1 && typeof getState(ka).pendingAskId === "string"
+      && turnOpenCallLines(ka).length === 1 && kindLines(ka).length === 0,
+    { stamps: kaStamps, ask: getState(ka).pendingAskId, turnOpen: turnOpenCallLines(ka).length });
+  await submitMessage(ka, "Cut from main.");
+  await settleJournalWrites(ka);
+  check("close kind ask answered: the answer closed the ask and sent no turn-open call, and the one line reads fallback against the first turn's stamp",
+    getDecisions(ka).some((d) => d.action === "ask_answered_by_reply") && turnOpenCallLines(ka).length === 1
+      && recordById(ka, kaId)?.status === "superseded" && kindLines(ka).length === 1 && kindLines(ka)[0].value === "fallback"
+      && kindLines(ka)[0].callStampId === kaStamps[0] && dispositionStampsOf(recordById(ka, kaId)).length === 0,
+    { record: recordById(ka, kaId), lines: kindLines(ka), actions: recordActions(ka) });
 
   // Expiry: the record crosses its timeout with no message in between, and
   // the persona's next own turn end expires it and writes none. A message
@@ -25557,6 +25691,65 @@ async function caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionS
   await settleJournalWrites(ld);
   check("close kind load: the first own turn end wrote none against the seeded stamp",
     kindLines(ld).length === 1 && kindLines(ld)[0].value === "none" && kindLines(ld)[0].callStampId === "stamp-seeded-ok", kindLines(ld));
+}
+
+// A newer turn starting while the close awaits its live answer means the
+// completion no longer owns the turn, and it writes nothing: the record stays
+// open with no close decision, on the same turn-start count the compaction
+// boundary compares. The harness enforces no engine ordering, so the case
+// parks the completion on the disposition request, fires turn.start for a
+// second turn, then releases a delivered answer at the whole mass. The rule
+// that refused is read by elimination on surfaces this owner session writes:
+// the call line reads ok and its answer line reads delivered, so neither the
+// null-answer return nor the threshold return refused; the open record is the
+// same id before and after, so the re-read of the record refused nothing;
+// what remains is the turn-start comparison. The control is the same drive
+// with no second turn, which closes the record, so the parked call and the
+// release are the instrument working rather than a call that never went out.
+async function caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock) {
+  console.log("\n=== Turn close: a turn that starts while the close awaits its answer leaves the record open and writes nothing, and the same drive with no such start closes it ===");
+  const MESSAGE = "Summarize the notes.";
+  const drive = async (caseName, startNewerTurn) => {
+    clock.set(T0);
+    const h = await closeHarness(caseName, LIVE_DISPOSITION);
+    let release = null;
+    h.setHttpResponse((url, init) => {
+      let body;
+      try { body = JSON.parse(String(init && init.body)); } catch { body = null; }
+      if (body && body.questions && Object.hasOwn(body.questions, Catalog.TURN_DISPOSITION)) {
+        return new Promise((resolve) => { release = () => resolve(jevDispositionResponse(1)); });
+      }
+      return jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0] });
+    });
+    await submitMessage(h, MESSAGE);
+    const id = openRecordOf(h)?.id;
+    await recordTurnStart(h, `${caseName}-1`, MESSAGE);
+    const completion = recordTurnComplete(h, `${caseName}-1`, "Here is the summary.");
+    for (let i = 0; i < 200 && release === null; i += 1) await new Promise((r) => setImmediate(r));
+    check(`${caseName} setup: the completion is parked on the live disposition request with the record still open`,
+      release !== null && openRecordOf(h)?.id === id && turnDispositionRequests(h).length === 1,
+      { parked: release !== null, record: openRecordOf(h), requests: turnDispositionRequests(h).length });
+    if (startNewerTurn) await recordTurnStart(h, `${caseName}-2`, "");
+    release();
+    await completion;
+    await settleJournalWrites(h);
+    const calls = turnDispositionCallLines(h);
+    const answers = journalLinesOfKind(h, "answer").filter((a) => calls.some((c) => c.stampId === a.callStampId));
+    check(`${caseName}: one live call line reading ok and one answer line reading delivered, so the answer reached the close`,
+      calls.length === 1 && calls[0].mode === "live" && calls[0].result === "ok" && answers.length === 1 && answers[0].value === "delivered",
+      { calls, answers });
+    return { h, id };
+  };
+
+  const raced = await drive("close_newer_turn", true);
+  check("close newer turn: the record is still open under the same id, with no delivered decision and no in-flight decision",
+    recordById(raced.h, raced.id)?.status === "open" && openRecordOf(raced.h)?.id === raced.id
+      && deliveredDecisions(raced.h).length === 0 && inFlightDetails(raced.h).length === 0,
+    { record: recordById(raced.h, raced.id), decisions: getDecisions(raced.h).map((d) => d.action) });
+  const settled = await drive("close_same_turn", false);
+  check("close newer turn (the control): the same drive with no second turn closed the record delivered through that answer",
+    recordById(settled.h, settled.id)?.status === "delivered" && deliveredDecisions(settled.h).length === 1,
+    { record: recordById(settled.h, settled.id), decisions: deliveredDecisions(settled.h) });
 }
 
 // The Acceptance's first bullet: an add with a title and an objective returns

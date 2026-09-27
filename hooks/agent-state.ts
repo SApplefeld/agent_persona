@@ -306,8 +306,9 @@ export interface TurnRecordStamp {
 // carry different values: a turn-open call's record_delivered_within settles at
 // a delivery or after a counted number of the persona's own turns, while a
 // turn-disposition call's next_prompt_kind settles at the next external
-// message's turn-open verdict, or as `none` once the record has expired, and
-// so needs no turn count. The record_delivered_within writer settles and drops
+// message, to that message's turn-open verdict where one was read and to
+// `fallback` where none was, or as `none` once the record has expired, and so
+// needs no turn count. The record_delivered_within writer settles and drops
 // every entry of pendingStamps by name, so a disposition stamp parked there
 // would be answered with the wrong outcome kind and dropped before its own
 // writer ran. One entry per turn-disposition call asked over this record, each
