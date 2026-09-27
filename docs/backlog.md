@@ -712,6 +712,8 @@ Two separate things are at stake here and the deferral covers only one of them. 
 
 Section 4 of the goal-every-turn plan widened that egress, which is why this entry was rewritten rather than left standing. Before it, the widest message text the seam sent was `turn-score`'s first 500 characters, at turn end and only with an active goal. Section 4 adds a sixth call site on the prompt path, sending the first 1,200 characters of every external message, at every prompt, with or without a goal, before the model reads the text. The operator's own Discord messages are in that class, and the scrub replaces the vendor key alone, so a credential pasted into an instruction reaches the vendor and the plain-text journal.
 
+Section 5 widened it again, and by more. The record close sends the first 3,000 characters of the persona's own closing text and the first 1,200 of the message that opened the turn, plus the active goal's objective and the turn's tool activity, at every one of the persona's own turn ends. So the widest single egress is now six times what it was before section 4, and it carries the persona's own words rather than only the operator's. The seam's scrub still replaces the vendor key alone, which is what makes the width matter: a path, a commit hash, a diff excerpt or a credential the session quoted in its own close-out leaves the machine as written, and the same text lands whole in the plain-text journal under the operator's profile.
+
 What is owed before the first promotion is the trust-boundary half. What is owed now, and what section 4 did, is that `README.md` no longer claims five call sites and "Nothing else is sent". That correction took the honesty route inside section 4 rather than waiting here.
 
 Remedy: add a TypeSafe entry under `## Trust boundaries` (line 43) stating what is trusted from a live answer and what is not, and an entry under `## Accepted risks` (line 85) for state leaving the machine, naming its preconditions as the code holds them: the key floor in `send`, the state scrub, the per-primitive answer validation, and the live list that decides which question's answer is read at all. Carry the two dated operator decisions into that entry so the document and the memory store agree. `## Known gaps` (line 116) is the fallback home if the acceptance is not yet settled in the shape the other two sections need.
@@ -786,6 +788,8 @@ Reachability is low and worth stating rather than assuming. It needs more than t
 
 All three of section 4's review rounds raised some form of this, which is why it is written down rather than left on a Minor list. Each time the fix was the same shape and each time it was declined for the same reason: writing an outcome at the moment the cap drops a record is new behaviour at a new site, and a close pass may not take a fix that would owe a further review round.
 
+Section 5 widened the class rather than introducing a second one. A record now carries two lists of unsettled journal outcomes, the turn-open stamps this entry was written for and the turn-disposition stamps that answer `next_prompt_kind`, and the cap drops a record holding either. The second list is the more exposed of the two, because a disposition stamp waits for the next external message rather than for a counted number of turns, so it can sit unsettled far longer. One remedy covers both lists and should name both.
+
 Remedy: settle a dropped record's pending stamps as `false` at the drop, inside the reap, so the cap can never swallow a call's outcome. The alternative, exempting a stamp-holding record from the cap, is worse: it lets a burst of messages hold the cap open and grow the store without bound.
 
 ## The journal's state text is not the message the persona received (found 2026-09-26)
@@ -799,3 +803,28 @@ Section 4 made this wider rather than introducing it. The stored record text now
 What is not at stake: the guard itself, which is a property of the channel and is correct. What is at stake is whether the labelling pass can recover the original, and it cannot from the journal alone.
 
 Remedy, and the choice is the operator's rather than obvious. Either the journal carries the raw message in a field of its own beside the guarded state, which puts unguarded external text in a file a later reader may splice somewhere, or the labelling scripts learn the transformation and apply it to their own copy of the message before diffing. The second costs nothing on this side and is the recommendation.
+
+
+## The disposition stamp list on one turn record is unbounded, and its flush is one whole-file journal write per stamp (found 2026-09-26)
+
+A turn record holds one unsettled journal stamp per turn-disposition call asked over it, and nothing caps that list. Each own turn end that reaches the classifier adds one. The list is drained at the next external message, or as `none` once the record expires, and the drain writes one outcome line per stamp. Each of those lines is a whole-file read and rewrite of that day's journal, serialized on a per-path chain.
+
+Under the shipped default the drain is the only thing that empties the list, because the live list is empty, so no classifier answer closes a record and the record stays open. The condition that grows the list is therefore the ordinary one rather than a corner: an idle controller nudges the persona, the persona ends a turn, no external message arrives, and the count climbs. The plan's `## Intent` names that controller in the operator's own words, which is what makes the condition stated rather than assumed.
+
+Nothing on a hook awaits the drain, so no turn is delayed and no prompt is held. What it costs is disk: the work is the stamp count multiplied by the day file's size, and the day file grows all day. It also queues every later journal write that day behind it.
+
+Why this is deferred rather than fixed in the section that created it. The scope adjudicator was asked whether the finding applies to this project's stated requirements, and ruled ASK: no sentence of the plan's Goal, Intent record or acceptance bullets states that per-record state or per-event journal work must be bounded, and no sentence excludes it either. Its recommendation, quoted as the reason this entry exists: the finding leans toward applying, because the Intent's own constraint sentence admits the deployment condition the growth needs, and because the journal is a stated deliverable rather than something incidental, so its cost under the stated deployment is a property of a thing the plan asked for. The judge marked as inferred the observation that the plan bounds every sibling of this list, at twenty records, a clamped text and a ring of eight, since those bounds are not in the Goal or Intent text it was given.
+
+So what is owed is the operator's call on whether an autonomous persona nudged by an idle controller carries an implied bound on per-event journal work. If it does, the fix is in scope for a section. If it does not, this entry is the record of why not.
+
+Remedy, in preference order. Append the outcome lines for one record as a single joined write, which removes the burst without bounding anything and needs no decision about what to discard. Failing that, cap the list and settle the overflow as it is pushed, which bounds the state but must then answer what value an overflowed stamp is settled with, since it neither expired nor was answered by a message.
+
+## The loader-rule check's noun list does not name `agent`, so it cannot catch a violation on that noun (found 2026-09-26)
+
+The plugin engine judges `hooks/index.ts` statically and refuses the whole module on a loader-rule violation, which silently disables every tool the plugin registers. `.kit/check-loader-rule.mjs` mirrors that judgement, and its first rule catches an engine noun read as a value rather than called as `$.noun.verb(...)`. Its noun list does not include `agent`.
+
+Section 5 is the first code to call `$.agent.list()`. That call complies, and the check passes, so nothing is broken now. What is missing is the guard: a later edit that bound or passed `$.agent` as a value would be refused by the engine and pass this check.
+
+This is a gap in the instrument rather than in any delta. It was found by the blind lens on section 5, which read it as a production risk; the production half does not hold, because the engine declares the verb at `.claude/types/claude-code.d.ts:6121` and `:6371`, so the call is live rather than silently dead.
+
+Remedy: add `agent` to the check's noun list, and audit the list against the engine's declared nouns rather than against the ones this repository happens to call today, since the same gap exists for every noun nobody has used yet.
