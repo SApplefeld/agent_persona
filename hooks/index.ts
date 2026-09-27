@@ -4301,12 +4301,15 @@ const roundSummaryText = (state: AgentState, g: GoalNode): string =>
  * The registration-time jevLive read's own filter, pulled out of register()
  * so a test can drive it directly and see both halves of what it decides:
  * which ids liveAsk may act on, and which the manifest value carried but
- * this dropped. Trims each string member the way the settings file's own
- * shell producer trims a comma-separated JEV_LIVE before writing the array,
- * and drops a member that is not a string or is not one of
- * PROMOTABLE_SET_IDS, rather than reaching a branch that would otherwise
- * treat an unpromoted question as safe to act on live. A missing or
- * non-array `raw` reads as no members either way, never a thrown error.
+ * this dropped. The manifest declares jevLive as a comma-separated string,
+ * so a string `raw` is split on commas and a member left blank by a stray
+ * comma is skipped; an array, the shape settings files written before the
+ * string declaration still hold, is read member by member. Trims each member
+ * the way the settings file's own shell producer trims JEV_LIVE, and drops a
+ * member that is not a string or is not one of PROMOTABLE_SET_IDS, rather
+ * than reaching a branch that would otherwise treat an unpromoted question
+ * as safe to act on live. A missing `raw`, or one that is neither a string
+ * nor an array, reads as no members, never a thrown error.
  *
  * Exported so the test suite can call it directly; register() still holds
  * the one call this filter feeds, so nothing about the registration read
@@ -4315,18 +4318,19 @@ const roundSummaryText = (state: AgentState, g: GoalNode): string =>
 export function filterJevLive(raw: unknown): { kept: readonly string[]; dropped: readonly string[] } {
   const kept: string[] = [];
   const dropped: string[] = [];
-  if (Array.isArray(raw)) {
-    for (const entry of raw) {
-      if (typeof entry !== "string") {
-        dropped.push(String(entry));
-        continue;
-      }
-      const trimmed = entry.trim();
-      if (PROMOTABLE_SET_IDS.includes(trimmed)) {
-        kept.push(trimmed);
-      } else {
-        dropped.push(trimmed);
-      }
+  const members: unknown[] = typeof raw === "string"
+    ? raw.split(",").filter((part) => part.trim() !== "")
+    : Array.isArray(raw) ? raw : [];
+  for (const entry of members) {
+    if (typeof entry !== "string") {
+      dropped.push(String(entry));
+      continue;
+    }
+    const trimmed = entry.trim();
+    if (PROMOTABLE_SET_IDS.includes(trimmed)) {
+      kept.push(trimmed);
+    } else {
+      dropped.push(trimmed);
     }
   }
   return { kept, dropped };

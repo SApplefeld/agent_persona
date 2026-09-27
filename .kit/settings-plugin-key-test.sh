@@ -69,11 +69,11 @@ console.log("JEV_DEV_PRESENT=" + (!dev ? "noid" : dev.jevMode !== undefined ? 1 
 console.log("JEV_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.jevMode !== undefined ? 1 : 0) + ";");
 console.log("JEV_DEV=" + (dev && dev.jevMode !== undefined ? dev.jevMode : "") + ";");
 console.log("JEV_INSTALLED=" + (inst && inst.jevMode !== undefined ? inst.jevMode : "") + ";");
-// jevLive is array-valued, so its value line prints the JSON.stringify of
+// jevLive is a comma-separated string, and its value line prints the JSON.stringify of
 // whatever is there rather than the raw value: a key present as an empty
 // string would print identically to a key that is absent under the string
 // interpolation the other three-state legs use, and the bug this leg
-// guards against is exactly a value that looks like a list but is not one.
+// guards against is a value written in the wrong shape, a list where the manifest declares a string.
 console.log("JEVLIVE_DEV_PRESENT=" + (!dev ? "noid" : dev.jevLive !== undefined ? 1 : 0) + ";");
 console.log("JEVLIVE_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.jevLive !== undefined ? 1 : 0) + ";");
 console.log("JEVLIVE_DEV=" + (dev && dev.jevLive !== undefined ? JSON.stringify(dev.jevLive) : "") + ";");
@@ -177,17 +177,17 @@ RC=$?
 case "$RC:$ERR" in 0:*) check "emit_settings_json refuses JEV_MODE=bogus" 1 ;; *"JEV_MODE 'bogus' must be 'off' or 'shadow'"*) check "emit_settings_json refuses JEV_MODE=bogus" 0 ;; *) check "emit_settings_json refuses JEV_MODE=bogus (rc=$RC, err=$ERR)" 1 ;; esac
 [ ! -e "$TMP/jevbogus.json" ]; check "a refused JEV_MODE leaves no settings file" "$?"
 
-# --- Section 2: emit_settings_json writes JEV_LIVE as a JSON array under both ids ---
+# --- Section 2: emit_settings_json writes JEV_LIVE as a comma-separated string under both ids ---
 run_lib PERSONA="keyprobe" JEV_LIVE="turn-disposition" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevliveemit.json"
 check "emit_settings_json exits 0 with JEV_LIVE=turn-disposition" "$?"
 R=$(inspect "$TMP/jevliveemit.json")
-case "$R" in *'JEVLIVE_DEV=["turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-disposition"];'*) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as [\"turn-disposition\"] under both ids" 0 ;; *) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as [\"turn-disposition\"] under both ids (out=$R)" 1 ;; esac
+case "$R" in *'JEVLIVE_DEV="turn-disposition";'*'JEVLIVE_INSTALLED="turn-disposition";'*) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as the string turn-disposition under both ids" 0 ;; *) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as the string turn-disposition under both ids (out=$R)" 1 ;; esac
 
 # --- Section 2: surrounding whitespace on a JEV_LIVE member is trimmed ---
 run_lib PERSONA="keyprobe" JEV_LIVE=" turn-disposition " bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivespace.json"
 check "emit_settings_json exits 0 with a padded JEV_LIVE" "$?"
 R=$(inspect "$TMP/jevlivespace.json")
-case "$R" in *'JEVLIVE_DEV=["turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-disposition"];'*) check "emitted: a padded JEV_LIVE member reaches jevLive trimmed" 0 ;; *) check "emitted: a padded JEV_LIVE member reaches jevLive trimmed (out=$R)" 1 ;; esac
+case "$R" in *'JEVLIVE_DEV="turn-disposition";'*'JEVLIVE_INSTALLED="turn-disposition";'*) check "emitted: a padded JEV_LIVE member reaches jevLive trimmed" 0 ;; *) check "emitted: a padded JEV_LIVE member reaches jevLive trimmed (out=$R)" 1 ;; esac
 
 # --- Section 2: JEV_LIVE= (empty) is treated the same as unset ---
 run_lib PERSONA="keyprobe" JEV_LIVE="" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevliveempty.json"
@@ -205,7 +205,7 @@ case "$RC:$ERR" in 0:*) check "emit_settings_json refuses JEV_LIVE=turn-disposit
 [ ! -e "$TMP/jevlivebogus.json" ]; check "a refused JEV_LIVE leaves no settings file" "$?"
 
 # --- Section 2: emit_settings_json refuses a JEV_LIVE carrying a newline ---
-# `read -ra` inside jev_live_to_array_json stops at the first newline
+# `read -ra` inside jev_live_to_csv stops at the first newline
 # regardless of IFS, since that is its record separator and not a field one,
 # so a value carrying one must be refused before the split runs rather than
 # silently truncated there. The refusal must name the control-character
@@ -229,15 +229,25 @@ case "$RC:$ERR" in 0:*) check "emit_settings_json refuses a JEV_LIVE opening wit
 run_lib JEV_LIVE=$'\tturn-disposition\t' bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivetab.json"
 check "emit_settings_json exits 0 with a tab-padded JEV_LIVE" "$?"
 R=$(inspect "$TMP/jevlivetab.json")
-case "$R" in *'JEVLIVE_DEV=["turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-disposition"];'*) check "emitted: a tab-padded JEV_LIVE member reaches jevLive trimmed, not refused" 0 ;; *) check "emitted: a tab-padded JEV_LIVE member reaches jevLive trimmed, not refused (out=$R)" 1 ;; esac
+case "$R" in *'JEVLIVE_DEV="turn-disposition";'*'JEVLIVE_INSTALLED="turn-disposition";'*) check "emitted: a tab-padded JEV_LIVE member reaches jevLive trimmed, not refused" 0 ;; *) check "emitted: a tab-padded JEV_LIVE member reaches jevLive trimmed, not refused (out=$R)" 1 ;; esac
 
-# --- Section 2: ensure_settings_jev_live carries the array onto a provided file ---
+# --- Section 2: ensure_settings_jev_live carries the string onto a provided file ---
 cp "$TMP/jevliveemit.json" "$TMP/liveprovided.json"
 run_lib JEV_LIVE="turn-open,turn-disposition" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/liveprovided.json"
 check "ensure_settings_jev_live exits 0" "$?"
 R=$(inspect "$TMP/liveprovided.json")
-case "$R" in *'JEVLIVE_DEV=["turn-open","turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-open","turn-disposition"];'*) check "provided: ensure_settings_jev_live overwrites a single id with both ids under both plugin ids" 0 ;; *) check "provided: ensure_settings_jev_live overwrites a single id with both ids under both plugin ids (out=$R)" 1 ;; esac
+case "$R" in *'JEVLIVE_DEV="turn-open,turn-disposition";'*'JEVLIVE_INSTALLED="turn-open,turn-disposition";'*) check "provided: ensure_settings_jev_live overwrites a single id with both ids under both plugin ids" 0 ;; *) check "provided: ensure_settings_jev_live overwrites a single id with both ids under both plugin ids (out=$R)" 1 ;; esac
 case "$R" in *"PERSONA_DEV=keyprobe;"*) check "provided: ensure_settings_jev_live leaves the other options as written" 0 ;; *) check "provided: ensure_settings_jev_live leaves the other options as written (out=$R)" 1 ;; esac
+
+# --- Section 2: a provided file an older launch wrote jevLive into as a list is rewritten as the string ---
+# The manifest declares jevLive as a string, and Claude Code refuses a manifest
+# declaring it a list, so a run directory still holding the list shape is
+# carried onto the string shape the next time the launcher names JEV_LIVE.
+node -e 'const fs=require("fs");const s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));for(const id of Object.keys(s.pluginConfigs)){s.pluginConfigs[id].options.jevLive=["turn-open"];}fs.writeFileSync(process.argv[2],JSON.stringify(s));' "$TMP/jevliveemit.json" "$TMP/livelegacy.json"
+run_lib JEV_LIVE="turn-open" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/livelegacy.json"
+check "ensure_settings_jev_live exits 0 over a list-shaped jevLive" "$?"
+R=$(inspect "$TMP/livelegacy.json")
+case "$R" in *'JEVLIVE_DEV="turn-open";'*'JEVLIVE_INSTALLED="turn-open";'*) check "provided legacy: a list-shaped jevLive is rewritten as the string under both ids" 0 ;; *) check "provided legacy: a list-shaped jevLive is rewritten as the string under both ids (out=$R)" 1 ;; esac
 
 # --- Section 2: ensure_settings_jev_live reads a BOM-prefixed provided file ---
 # The same class the coordinatorPersona and architectPersona reads are pinned
@@ -247,7 +257,7 @@ printf '\xef\xbb\xbf%s' "$(cat "$TMP/jevliveemit.json")" > "$TMP/livebom.json"
 run_lib JEV_LIVE="turn-open,turn-disposition" bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_jev_live "$2"' _ "$ROOT" "$TMP/livebom.json"
 check "ensure_settings_jev_live exits 0 over a BOM-prefixed provided file" "$?"
 R=$(inspect "$TMP/livebom.json")
-case "$R" in *'JEVLIVE_DEV=["turn-open","turn-disposition"];'*'JEVLIVE_INSTALLED=["turn-open","turn-disposition"];'*) check "provided BOM: ensure_settings_jev_live parses past the BOM and writes both ids" 0 ;; *) check "provided BOM: ensure_settings_jev_live parses past the BOM and writes both ids (out=$R)" 1 ;; esac
+case "$R" in *'JEVLIVE_DEV="turn-open,turn-disposition";'*'JEVLIVE_INSTALLED="turn-open,turn-disposition";'*) check "provided BOM: ensure_settings_jev_live parses past the BOM and writes both ids" 0 ;; *) check "provided BOM: ensure_settings_jev_live parses past the BOM and writes both ids (out=$R)" 1 ;; esac
 
 # --- Section 2: an unset JEV_LIVE leaves a provided file exactly as it was ---
 cp "$TMP/jevliveemit.json" "$TMP/liveuntouched.json"

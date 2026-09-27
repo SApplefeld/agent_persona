@@ -443,7 +443,7 @@ else
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
-  # Same reasoning as the jevMode call above, for the array-valued jevLive:
+  # Same reasoning as the jevMode call above, for the comma-separated jevLive:
   # the emit branch writes it from JEV_LIVE, so a provided settings file
   # needs the same carry-through or a roster that names a question live would
   # reach no persona that already has a run directory.
