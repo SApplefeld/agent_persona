@@ -3947,11 +3947,14 @@ gate_sweep_pairs() {
 # --- Channel log retention ---
 # Removes the channel log files in a work directory whose last write is older
 # than a number of whole days: the frozen .agentic-channel.jsonl and each
-# numbered .agentic-channel.<digits>.jsonl segment. Only the directory's own
+# numbered .agentic-channel.<digits>.jsonl segment whose digit run is four to
+# eighteen digits long, the width the plugin writes. Only the directory's own
 # files at depth one with one of those two names are candidates, so no other
-# file is ever touched. The highest-numbered segment is the one the plugin
-# writes now, so it is exempt by name whatever its age; where no numbered
-# segment exists, nothing is exempt. Digit runs are compared as decimals, so a
+# file is ever touched, and a numbered name of another width is neither
+# removed nor counted as a segment. Eighteen digits always fit bash's integer
+# arithmetic. The highest-numbered segment is the one the plugin writes now,
+# so it is exempt by name whatever its age; where no numbered segment exists,
+# nothing is exempt. Digit runs are compared as decimals, so a
 # fifth digit sorts after four and a zero-padded run is never read as octal.
 # One log line names the count where at least one file was removed, and
 # nothing is logged where none was. A removal that fails is logged and the
@@ -3968,7 +3971,7 @@ sweep_channel_log_segments() {
       highest_num=$((10#$digits))
       highest="$name"
     fi
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -regex '.*/\.agentic-channel\.[0-9]+\.jsonl' 2>/dev/null)
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/\.agentic-channel\.[0-9]{4,18}\.jsonl' 2>/dev/null)
   while IFS= read -r path; do
     [ -n "$highest" ] && [ "${path##*/}" = "$highest" ] && continue
     if rm -f -- "$path"; then
@@ -3976,7 +3979,7 @@ sweep_channel_log_segments() {
     else
       log "CHANNEL-LOG SWEEP: could not remove $path"
     fi
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -regex '.*/\.agentic-channel\(\.[0-9]+\)?\.jsonl' -mmin +$((days * 1440)) 2>/dev/null)
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/\.agentic-channel(\.[0-9]{4,18})?\.jsonl' -mmin +$((days * 1440)) 2>/dev/null)
   if [ "$removed" -ge 1 ]; then
     log "CHANNEL-LOG SWEEP: removed $removed file(s) older than $days day(s)"
   fi
@@ -4161,7 +4164,7 @@ while true; do
     # Every launch and relaunch sweeps the work directory's old channel log
     # files first, and the poll loop's daily sweep counts from here.
     sweep_channel_log_segments "$WORKDIR" "$CHANNEL_LOG_RETENTION_DAYS"
-    LAST_CHANNEL_SWEEP_S=$(date +%s)
+    LAST_CHANNEL_SWEEP_S=$EPOCHSECONDS
 
     # The child index is allocated only now, past the gate, and never on an
     # index whose handle names a running supervisor, so the files removed
@@ -4368,9 +4371,9 @@ while true; do
 
     # A child that runs for days has its work directory swept once a day. An
     # adopted child had no launch sweep, so its first poll sweeps.
-    if [ $(( $(date +%s) - LAST_CHANNEL_SWEEP_S )) -ge 86400 ]; then
+    if [ $(( EPOCHSECONDS - LAST_CHANNEL_SWEEP_S )) -ge 86400 ]; then
       sweep_channel_log_segments "$WORKDIR" "$CHANNEL_LOG_RETENTION_DAYS"
-      LAST_CHANNEL_SWEEP_S=$(date +%s)
+      LAST_CHANNEL_SWEEP_S=$EPOCHSECONDS
     fi
     POLL_COUNT=$((POLL_COUNT + 1))
 

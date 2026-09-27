@@ -2036,8 +2036,12 @@ check "relaunch signal control: after the same sweep and relaunch, a TERM after 
 # day old, so the lower one stays on its age alone. The third holds only the
 # frozen log, so with no segment nothing is exempt. The fourth holds segments
 # whose digit runs differ in width, so the highest is found by value and a
-# zero-padded run that is not valid octal is still read. A second run over the
-# first directory finds nothing old left to remove.
+# zero-padded run that is not valid octal is still read. The fifth holds
+# segments 0003 and 0004 beside strays numbered 7 and 123, all 20 days old, so
+# a name narrower than four digits is neither the highest nor removed. The
+# sixth is swept with rm defined to fail, so a removal that fails is logged by
+# path, counted as nothing removed, and the sweep still returns 0. A second run
+# over the first directory finds nothing old left to remove.
 : > "$TMP/sweep.fn"; supervisor_extract_fn "$SCRIPT" sweep_channel_log_segments "$TMP/sweep.fn" || true
 SWEEP_SNIPPET=$(tr -d '\r' < "$TMP/sweep.fn")
 [ -n "$SWEEP_SNIPPET" ]; check "sweep_channel_log_segments is found in bin/supervise.sh" "$?"
@@ -2047,17 +2051,29 @@ LOG="$2"; : > "$LOG"
 log() { echo "$*" >> "$LOG"; }
 sweep_channel_log_segments "$1" 14
 echo "rc=$?"' > "$TMP/sweep.sh"
+  printf '%s
+%s
+%s
+' "$STUB_OPTIONS" "$SWEEP_SNIPPET" '
+LOG="$2"; : > "$LOG"
+log() { echo "$*" >> "$LOG"; }
+rm() { return 1; }
+sweep_channel_log_segments "$1" 14
+echo "rc=$?"' > "$TMP/sweep-rmfail.sh"
   # Prints each name given as present or gone in the directory, one per line.
   sweep_state() {
     local d="$1" f; shift
     for f in "$@"; do if [ -e "$d/$f" ]; then echo "present $f"; else echo "gone $f"; fi; done
   }
-  SW1=$(mktemp -d "$TMP/sweep1.XXXXXX"); SW2=$(mktemp -d "$TMP/sweep2.XXXXXX"); SW3=$(mktemp -d "$TMP/sweep3.XXXXXX"); SW4=$(mktemp -d "$TMP/sweep4.XXXXXX")
+  SW1=$(mktemp -d "$TMP/sweep1.XXXXXX"); SW2=$(mktemp -d "$TMP/sweep2.XXXXXX"); SW3=$(mktemp -d "$TMP/sweep3.XXXXXX"); SW4=$(mktemp -d "$TMP/sweep4.XXXXXX"); SW5=$(mktemp -d "$TMP/sweep5.XXXXXX"); SW6=$(mktemp -d "$TMP/sweep6.XXXXXX")
   SW1_FILES=".agentic-channel.jsonl .agentic-channel.0001.jsonl .agentic-channel.0002.jsonl .agentic-channel.0003.jsonl .agentic-personas.json .agentic-channel.0002.jsonl.bak"
   for f in $SW1_FILES; do touch -d '20 days ago' "$SW1/$f"; done
   touch -d '1 day ago' "$SW2/.agentic-channel.0002.jsonl"; touch -d '20 days ago' "$SW2/.agentic-channel.0003.jsonl"
   touch -d '20 days ago' "$SW3/.agentic-channel.jsonl"
   for f in .agentic-channel.0008.jsonl .agentic-channel.9999.jsonl .agentic-channel.10000.jsonl; do touch -d '20 days ago' "$SW4/$f"; done
+  SW5_FILES=".agentic-channel.0003.jsonl .agentic-channel.0004.jsonl .agentic-channel.7.jsonl .agentic-channel.123.jsonl"
+  for f in $SW5_FILES; do touch -d '20 days ago' "$SW5/$f"; done
+  for f in .agentic-channel.0001.jsonl .agentic-channel.0002.jsonl; do touch -d '20 days ago' "$SW6/$f"; done
 
   OUT=$(bash "$TMP/sweep.sh" "$SW1" "$TMP/sweep1.log" 2>&1)
   STATE=$(sweep_state "$SW1" $SW1_FILES | tr '\n' '|')
@@ -2080,6 +2096,20 @@ echo "rc=$?"' > "$TMP/sweep.sh"
   STATE=$(sweep_state "$SW4" .agentic-channel.0008.jsonl .agentic-channel.9999.jsonl .agentic-channel.10000.jsonl | tr '\n' '|')
   [ "$OUT" = "rc=0" ] && [ "$STATE" = "gone .agentic-channel.0008.jsonl|gone .agentic-channel.9999.jsonl|present .agentic-channel.10000.jsonl|" ]; CHECK_RC=$?
   check "channel log sweep: the highest segment is found by value, so 10000 stays over 9999, and the zero-padded 0008 is read as decimal (out=$OUT state=$STATE)" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep.sh" "$SW5" "$TMP/sweep5.log" 2>&1)
+  STATE=$(sweep_state "$SW5" $SW5_FILES | tr '
+' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "gone .agentic-channel.0003.jsonl|present .agentic-channel.0004.jsonl|present .agentic-channel.7.jsonl|present .agentic-channel.123.jsonl|" ] && [ "$(cat "$TMP/sweep5.log")" = "CHANNEL-LOG SWEEP: removed 1 file(s) older than 14 day(s)" ]; CHECK_RC=$?
+  check "channel log sweep: strays numbered 7 and 123 are outside the four-to-eighteen-digit names, so 0004 stays as the highest over 123, 0003 alone is removed, and both strays stay (out=$OUT state=$STATE log=$(tr '
+' '|' < "$TMP/sweep5.log"))" "$CHECK_RC"
+
+  OUT=$(bash "$TMP/sweep-rmfail.sh" "$SW6" "$TMP/sweep6.log" 2>&1)
+  STATE=$(sweep_state "$SW6" .agentic-channel.0001.jsonl .agentic-channel.0002.jsonl | tr '
+' '|')
+  [ "$OUT" = "rc=0" ] && [ "$STATE" = "present .agentic-channel.0001.jsonl|present .agentic-channel.0002.jsonl|" ] && [ "$(cat "$TMP/sweep6.log")" = "CHANNEL-LOG SWEEP: could not remove $SW6/.agentic-channel.0001.jsonl" ] && ! grep -q 'removed' "$TMP/sweep6.log"; CHECK_RC=$?
+  check "channel log sweep: a removal that fails logs the path it could not remove, logs no removed count, leaves the file, and returns 0 (out=$OUT state=$STATE log=$(tr '
+' '|' < "$TMP/sweep6.log"))" "$CHECK_RC"
 
   OUT=$(bash "$TMP/sweep.sh" "$SW1" "$TMP/sweep1-again.log" 2>&1)
   STATE=$(sweep_state "$SW1" $SW1_FILES | tr '\n' '|')
