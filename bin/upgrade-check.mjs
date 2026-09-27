@@ -15,7 +15,7 @@
 //         Steps 1 to 7, run from a scratch folder it creates empty so the
 //         plugin finds no persona there and stays passive. Prints
 //         "pre: clear to restart the canary onto <version> (run <id>)" where
-//         steps 2 to 5 and 7 read pass or warn and step 6 reads pass or gap,
+//         steps 1 to 5 and 7 read pass or warn and step 6 reads pass or gap,
 //         else "pre: triage <step list>".
 //
 //   post  node bin/upgrade-check.mjs post --run <id> --results <dir>
@@ -49,7 +49,7 @@
 // evidence lines cut from command output; the smoke log itself stays in the
 // scratch folder.
 //
-// Exits. 0 clear, 1 triage, 2 could not run. A missing --repo or --results, a
+// Exits. 0 clear, 1 triage, 2 could not run, 3 failed. A missing --repo or --results, a
 // --repo with no hooks/ directory, and a results directory that cannot be
 // written all exit 2 before any step runs, with the reason printed: a run
 // that cannot record its rows is not a run. A scratch folder that exists,
@@ -1095,8 +1095,15 @@ if (launchedDirectly()) {
   try {
     process.exitCode = main();
   } catch (e) {
-    if (!(e instanceof CannotRun)) throw e;
-    process.stdout.write('upgrade-check: cannot run: ' + e.message + '\n');
-    process.exitCode = 2;
+    // An error other than CannotRun is a crash, not a verdict. It exits 3 rather than node's
+    // own 1, which a reader would take for triage, and it may land after the
+    // rows were appended, so it never claims that nothing was recorded.
+    if (!(e instanceof CannotRun)) {
+      process.stdout.write('upgrade-check: failed: ' + String((e && e.message) || e).replace(/\s+/g, ' ') + '\n');
+      process.exitCode = 3;
+    } else {
+      process.stdout.write('upgrade-check: cannot run: ' + e.message + '\n');
+      process.exitCode = 2;
+    }
   }
 }

@@ -521,6 +521,16 @@ const cases = [
     assert.match(r.stdout, /cannot be written/);
     assert.equal(readCalls(paths).length, 0, 'no engine invocation was made');
   }],
+  ['an unexpected error exits 3 with a failed line, so a crash never reads as a triage verdict', () => {
+    const paths = makeCase('unexpected-error');
+    // A directory where the results file should be passes the writable check
+    // and fails the append, an error the script has no reason for.
+    fs.mkdirSync(join(paths.results, 'upgrade-checks.jsonl'), { recursive: true });
+    const r = run(paths, ['pre', '--repo', paths.repo, '--results', paths.results]);
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stdout, /^upgrade-check: failed: /m);
+    assert.doesNotMatch(r.stdout, /^pre: (clear|triage)/m);
+  }],
   ['a scratch folder holding the checkout or the results exits 2, since the scratch folder is emptied', () => {
     const paths = makeCase('scratch-guard');
     const insideRepo = run(paths, ['pre', '--repo', paths.repo, '--results', paths.results, '--scratch', join(paths.repo, 'scratch')]);
