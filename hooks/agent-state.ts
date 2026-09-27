@@ -2,6 +2,31 @@
 // Access via $.fs.* (read, write, exists).
 // One JSON file per project, one owner at a time (the Monitor loop).
 
+/**
+ * One piece of untrusted text with the delivery brackets neutralized, under
+ * the same rule bracketSafeProblem refuses on and for the same reason: a '['
+ * in text the plugin did not compose lets that text forge a delivery label
+ * such as [COORDINATOR id=7]. The two are one rule read two ways. A caller
+ * who supplies a persona name can be told to pick another, so that path
+ * refuses; a file read has nobody to ask, so this path rewrites. Text
+ * carrying no bracket comes through byte for byte.
+ * The guard belongs to the channel the text leaves by rather than to the
+ * field that first needed it, so every site that puts text out of a
+ * persona's own tree in front of a model calls this one helper: the fleet
+ * report's fields as each is read, the fleet prompt the controller tick
+ * submits, over every field it carries, and the turn record's own text, at
+ * the clamp below that every writer of that field and the load both call. The
+ * prompt takes the wider sweep because a tool result is framed as JSON and a
+ * submitted turn is not, so a path the plugin composed loses its own brackets
+ * there.
+ * It lives in this module, which imports nothing, because the store layer is
+ * one of its callers: a module this one imported would be linked eagerly by
+ * every suite that reads the store.
+ */
+export function bracketSafeText(text: string): string {
+  return text.replace(/\[/g, "(").replace(/\]/g, ")");
+}
+
 export interface MemoryEntry {
   id: string;
   kind: "fact" | "preference" | "lesson" | "goal" | "eval";
@@ -259,15 +284,22 @@ function isTurnRecordStatus(value: unknown): value is TurnRecordStatus {
 // the turn wrote, and taskId the task the record became. turnId is absent at the
 // open, since the record opens before the turn it belongs to has an id.
 //
-// The last two fields carry the record's own unsettled journal outcome rather
-// than anything about the intention. openStampId is the stamp id of the
-// turn-open call that opened or continued this record, present exactly while
-// that call's record_delivered_within outcome is still unwritten: the writer
-// clears it as it writes, which is what holds one call to one outcome line. A
-// record continued by a later call carries the later stamp, and the earlier
-// call's outcome is stranded, which the journal's readers tolerate.
-// outcomeTurns counts the persona's own turn completions since that call, which
-// is what the outcome's "within three turns" is measured over.
+// pendingStamps carries the record's own unsettled journal outcomes rather than
+// anything about the intention. One entry per turn-open call that opened or
+// continued this record, each present exactly while that call's
+// record_delivered_within outcome is still unwritten: the writer drops an entry
+// as it writes its line, which is what holds one call to one outcome line. The
+// list is what a continuation needs, because a record carried across several
+// messages was opened by one call and continued by others, and each of those
+// calls owes an outcome of its own. `turns` counts the persona's own turn
+// completions since that entry's own call, which is what the outcome's "within
+// three turns" is measured over, so a call that joined a record already three
+// messages old is still measured from where it joined.
+export interface TurnRecordStamp {
+  stampId: string;
+  turns: number;
+}
+
 export interface TurnRecord {
   id: string;
   text: string;
@@ -278,8 +310,17 @@ export interface TurnRecord {
   planPath?: string;
   taskId?: string;
   closedAt?: number;
-  openStampId?: string;
-  outcomeTurns?: number;
+  pendingStamps?: TurnRecordStamp[];
+}
+
+// Whether a stored or supplied value is one pending stamp. A stamp id that is
+// not a string names no call line, and a count the plugin cannot compare against
+// the threshold leaves an outcome that is never written, so both are read as
+// strictly as closedAt is.
+function isTurnRecordStamp(value: unknown): value is TurnRecordStamp {
+  const stamp = value as Partial<TurnRecordStamp> | null;
+  return !!stamp && typeof stamp === "object"
+    && typeof stamp.stampId === "string" && Number.isFinite(stamp.turns);
 }
 
 // The most records the store holds at once, counting only the closed ones: the
@@ -296,14 +337,22 @@ export const TURN_RECORD_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 // message or one line naming what it asked, so it is cut rather than refused.
 export const TURN_RECORD_TEXT_MAX = 80;
 
-// Cuts a record's text to the maximum above. The cut belongs to the record
-// field rather than to whichever caller first needed it, so every producer of
-// a record's text calls this: the load, which reads a store the plugin did not
-// write, and the sites that open a record from a message or from a worded
-// line. A producer that cuts the text by hand instead reproduces the length it
-// can see and drops whatever this rule gains later.
+// Cuts a record's text to the maximum above and neutralizes its brackets. Both
+// belong to the record field rather than to whichever caller first needed them,
+// so every producer of a record's text calls this: the load, which reads a store
+// the plugin did not write, and the sites that open a record from a message or
+// from a worded line. A producer that cuts the text by hand instead reproduces
+// the length it can see and drops whatever this rule gains later.
+//
+// The text is an external message, and goal_status prints it into a tool result
+// the model reads, one line above the tree, beside lines whose own text is
+// guarded there. So a '[' in it could forge a delivery or authority label such
+// as [SUPERVISOR-ASK id=1] or [COORDINATOR id=7], which bracketSafeText is the
+// one rule for. The guard runs here rather than at that print, so every reader
+// of the field inherits it and no future one has to remember.
 export function clampTurnRecordText(text: string): string {
-  return text.length > TURN_RECORD_TEXT_MAX ? text.slice(0, TURN_RECORD_TEXT_MAX) : text;
+  const cut = text.length > TURN_RECORD_TEXT_MAX ? text.slice(0, TURN_RECORD_TEXT_MAX) : text;
+  return bracketSafeText(cut);
 }
 
 // A record id, minted in the goal nodes' shape: a prefix, the clock in base 36,
@@ -956,12 +1005,8 @@ function fillTurnRecords(state: AgentState): void {
       && (record.planPath === undefined || typeof record.planPath === "string")
       && (record.taskId === undefined || typeof record.taskId === "string")
       && (record.closedAt === undefined || Number.isFinite(record.closedAt))
-      // The outcome pair is validated as strictly as closedAt, and for the
-      // same reason: a count the plugin cannot compare against the threshold
-      // leaves an outcome that is never written, and a stamp id that is not a
-      // string names no call line.
-      && (record.openStampId === undefined || typeof record.openStampId === "string")
-      && (record.outcomeTurns === undefined || Number.isFinite(record.outcomeTurns));
+      && (record.pendingStamps === undefined
+        || (Array.isArray(record.pendingStamps) && record.pendingStamps.every(isTurnRecordStamp)));
   }).map((record) => {
     const cut = clampTurnRecordText(record.text);
     return cut === record.text ? record : { ...record, text: cut };

@@ -674,12 +674,14 @@ async function send(
   // When the request wins, the timer is not cancelled: SeamHost.sleep carries
   // no abort signal, so it runs to its end as an orphan. That is accepted.
   // It is bounded at the mode's timeout and there is at most one per call.
-  // The count across a tick and a turn is the count of call sites, each of
-  // which makes one call: two on a tick, the controller decision and the plan
-  // switch, and three on a turn, the turn score, the memory kind gate and the
-  // plan health request. Five, read off those sites rather than derived, so a
-  // site added later leaves this number checkable against them. Still
-  // bounded, still harmless, and worth stating truthfully.
+  // The count across a tick, a turn and a prompt is the count of call sites,
+  // each of which makes one call: two on a tick, the controller decision and
+  // the plan switch; three on a turn, the turn score, the memory kind gate and
+  // the plan health request; and one on a prompt, the turn-open question the
+  // record step asks before the model reads the message. Six, read off those
+  // sites rather than derived, so a site added later leaves this number
+  // checkable against them. Still bounded, still harmless, and worth stating
+  // truthfully.
   // The other orphan is the request: $.http.fetch takes no abort signal
   // either, so when the timer wins, the request it raced stays open for as
   // long as the host's own fetch allows.

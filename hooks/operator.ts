@@ -109,26 +109,6 @@ function bracketSafeProblem(s: string): string | null {
 }
 
 /**
- * One piece of untrusted text with the delivery brackets neutralized, under
- * the same rule bracketSafeProblem refuses on and for the same reason: a '['
- * in text the plugin did not compose lets that text forge a delivery label
- * such as [COORDINATOR id=7]. The two are one rule read two ways. A caller
- * who supplies a persona name can be told to pick another, so that path
- * refuses; a file read has nobody to ask, so this path rewrites. Text
- * carrying no bracket comes through byte for byte.
- * The guard belongs to the channel the text leaves by rather than to the
- * field that first needed it, so every site that puts text out of a
- * persona's own tree in front of a model calls this one helper: the fleet
- * report's fields as each is read, and the fleet prompt the controller tick
- * submits, over every field it carries. The prompt takes the wider sweep
- * because a tool result is framed as JSON and a submitted turn is not, so a
- * path the plugin composed loses its own brackets there.
- */
-export function bracketSafeText(text: string): string {
-  return text.replace(/\[/g, "(").replace(/\]/g, ")");
-}
-
-/**
  * The one rule for a persona name that reaches a store key or a delivery
  * bracket: non-empty after trim, no ":", and bracket-safe once trimmed.
  * Records are keyed `inbox:<persona>:<session>:<seq>` and listed by the

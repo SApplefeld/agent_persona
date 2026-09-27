@@ -60,9 +60,10 @@ import {
   openTurnRecord,
   clampTurnRecordText,
   newTurnRecordId,
+  bracketSafeText,
 } from "./agent-state";
 import { readPlanRecord, resolvePlanDir } from "./plan-record";
-import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem, TurnRecord } from "./agent-state";
+import type { AgentState, AutonomyLevel, FleetHealth, FleetHealthMemo, GoalNode, LongTermGoal, NudgeBudget, EnvGit, EnvState, SentFinding, SentPlanRecord, TaskItem, TurnRecord, TurnRecordStamp } from "./agent-state";
 import {
   claimResource,
   readAllClaims,
@@ -90,7 +91,6 @@ import {
   deliveryPrefix,
   deliveryText,
   personaNameProblem,
-  bracketSafeText,
   sweepExpiredRecords,
   SweepDeleteError,
   enforceChannelWindow,
@@ -330,8 +330,9 @@ function shadowAsk(
  * to. The return carries the answer a branch may read and nothing else, so the
  * stamp id comes out this way instead: it is called once per call, on both
  * paths, with the stamp id the journal lines carry, or null where no line was
- * written at all (the kill switch off, which mints no id). A caller with no
- * outcome to write passes nothing.
+ * written at all (the kill switch off, which mints no id). The comment at the
+ * call itself names the one case where a minted id reaches no line. A caller
+ * with no outcome to write passes nothing.
  *
  * Exported so the test suite can call it directly over the fake host.
  */
@@ -357,9 +358,13 @@ export async function liveAsk(
   const session = sess.mySessionId;
   const stampId = newStampId(persona, session);
   // Handed over before the await, so a caller holds the stamp whatever the
-  // request then does: the call line is written for a failure too, and the
-  // outcome that joins it is about what the plugin observed rather than about
-  // an answer that came back.
+  // request then does: a result carrying a failure reason writes its call line
+  // all the same, and the outcome that joins it is about what the plugin
+  // observed rather than about an answer that came back. The one stamp that
+  // joins nothing is the catch below: a host that broke the seam's never-
+  // rejects contract sends this call back before any line is written, and the
+  // caller is already holding the id. A labelling pass reads that as an
+  // outcome line whose call line is absent.
   if (onStamp) onStamp(stampId);
   let result: SeamResult;
   try {
@@ -550,16 +555,27 @@ function turnOpenStateText(activeGoal: string, openRecord: string, message: stri
 // caller's fallback is the message excerpt. The line is not cut here: the
 // record field's own clamp is what bounds it, so the prompt's "under 80
 // characters" is a request to Haiku rather than the guard.
+//
+// The call is billed to the `reason` bucket, beside the controller's own reason
+// call whose shape this one clones: a one-line Haiku completion over text the
+// plugin composed. Every completion site in this file bumps a bucket next to
+// itself and the cost summary sums exactly those buckets, so a site with none
+// would drop one Haiku call per external message out of the spend line the
+// operator reads. The per-hour call window is not bumped: that cap bounds the
+// controller's own tick, which is the only thing that can back itself off.
 async function wordNewRecordText(dp: any, message: string): Promise<string | null> {
+  const prompt =
+    `A message has just arrived for an autonomous agent. In one line of under 80 characters, ` +
+    `plain text with no Markdown, name what the message asks for. Answer with that line alone.\n` +
+    message;
   try {
     const raw = await dp.model.complete({
       model: "haiku",
-      prompt:
-        `A message has just arrived for an autonomous agent. In one line of under 80 characters, ` +
-        `plain text with no Markdown, name what the message asks for. Answer with that line alone.\n` +
-        message,
+      prompt,
       maxTokens: 40,
     });
+    sess.state.monitor.cost.reason.count += 1;
+    sess.state.monitor.cost.reason.estTokens += estimateTokens(prompt.length, 40);
     const text = completionText(raw);
     if (text === null) {
       noteCompletionShape("turn-record-wording", raw);
@@ -598,11 +614,15 @@ async function wordNewRecordText(dp: any, message: string): Promise<string | nul
  * an active entry attaches to it, and anything else opens a bare record holding
  * the message's own opening. No route opens a goal, which is the plan's ruling.
  *
- * Nothing here is fatal to the prompt. The handler's job is to deliver the
- * message, so a store write that fails leaves the record in memory and the turn
- * goes on. A record opened for a prompt a hook beneath then drops stays open and
- * is what the next message continues, which is the carry-over the plan asks for
- * rather than a leak.
+ * The store write is the one failure this step catches, and the handler's job
+ * is to deliver the message: a write that fails leaves the record in memory and
+ * the turn goes on. The step is not wrapped beyond that, so what keeps the rest
+ * of it off the prompt's path is that each await here answers with a value
+ * rather than throwing. The wording call catches its own failure and returns
+ * null, and liveAsk catches a host that broke the seam's never-rejects
+ * contract. A record opened for a prompt a hook beneath then drops stays open
+ * and is what the next message continues, which is the carry-over the plan asks
+ * for rather than a leak.
  */
 async function holdMessageAsRecord(
   dp: any,
@@ -612,7 +632,12 @@ async function holdMessageAsRecord(
   jevLive: readonly string[],
 ): Promise<void> {
   const now = Date.now();
-  const open = openTurnRecord(sess.state);
+  // The reap runs before the open record is read, so what this step reads as
+  // open is a record the timeout has already judged. Reading first instead
+  // loses the arriving message outright: the step would carry over a record
+  // already past its timeout, and the persist at the end of this same step
+  // would then expire it, leaving the message with no record at all.
+  reapTurnRecords(sess.state, now);
   // The same two-part reading the [GOAL TREE] block takes: activeGoalId names
   // the entry, and its status is what says the persona is working on it.
   const activeNode = sess.state.activeGoalId
@@ -628,12 +653,16 @@ async function holdMessageAsRecord(
     sess.state.decisions.push({ timestamp: Date.now(), loop: "monitor", action, detail });
   };
   // Closes the open record as the act that replaced it. The record layer holds
-  // at most one open record, so every route that opens one runs this first.
-  const supersede = (): void => {
-    if (open === null) return;
-    open.status = "superseded";
-    open.closedAt = now;
-    logRecord("turn_record_superseded", `record ${open.id} superseded by a new message`);
+  // at most one open record, so every route that opens one runs this first. The
+  // record is passed in rather than read here, because a caller that awaited
+  // anything reads the open record again first: another invocation of this hook,
+  // for a message that arrived while this one was in a call, can have opened one
+  // since.
+  const supersede = (record: TurnRecord | null): void => {
+    if (record === null) return;
+    record.status = "superseded";
+    record.closedAt = now;
+    logRecord("turn_record_superseded", `record ${record.id} superseded by a new message`);
   };
   const openNew = (text: string, goalId: string | null, stampId: string | null): void => {
     const record: TurnRecord = {
@@ -643,10 +672,7 @@ async function holdMessageAsRecord(
       status: "open",
     };
     if (goalId !== null) record.goalId = goalId;
-    if (stampId !== null) {
-      record.openStampId = stampId;
-      record.outcomeTurns = 0;
-    }
+    if (stampId !== null) record.pendingStamps = [{ stampId, turns: 0 }];
     sess.state.turnRecords.push(record);
     logRecord(
       goalId === null ? "turn_record_opened" : "turn_record_attached",
@@ -655,23 +681,27 @@ async function holdMessageAsRecord(
   };
   // Keeps the open record for the turn about to open. Its text stands, because
   // a continuation adds to the same request rather than replacing it, and the
-  // turn id is stamped by turn.start, the first point at which one exists.
-  const continueOpen = (stampId: string | null): void => {
-    if (open === null) return;
+  // turn id is stamped by turn.start, the first point at which one exists. The
+  // continuing call's stamp joins the pending list rather than replacing what is
+  // there: the call that opened the record owes an outcome of its own, and each
+  // pending entry counts the turns from where it joined.
+  const continueOpen = (record: TurnRecord, stampId: string | null): void => {
     if (stampId !== null) {
-      open.openStampId = stampId;
-      open.outcomeTurns = 0;
+      const pending = record.pendingStamps ?? [];
+      pending.push({ stampId, turns: 0 });
+      record.pendingStamps = pending;
     }
-    logRecord("turn_record_continued", `record ${open.id} continued: ${kaizenLine(open.text)}`);
+    logRecord("turn_record_continued", `record ${record.id} continued: ${kaizenLine(record.text)}`);
   };
 
   if (answeredAskNodeId !== null) {
     // An asked entry the tree no longer holds leaves the record bare rather
     // than pointing its goalId at an id nothing resolves.
     const asked = sess.state.goals.find((g) => g.id === answeredAskNodeId);
-    supersede();
+    supersede(openTurnRecord(sess.state));
     openNew(excerpt, asked === undefined ? null : asked.id, null);
   } else {
+    const openAtEntry = openTurnRecord(sess.state);
     // The stamp id rides a holder rather than the return, because the return is
     // the answer a branch reads. Null where no journal line was written at all.
     const call: { stampId: string | null } = { stampId: null };
@@ -681,17 +711,24 @@ async function holdMessageAsRecord(
       TURN_OPEN,
       TURN_OPEN,
       TURN_OPEN_OPTIONS,
-      turnOpenStateText(activeEntry === null ? "" : activeEntry.objective, open === null ? "" : open.text, excerpt),
+      turnOpenStateText(activeEntry === null ? "" : activeEntry.objective, openAtEntry === null ? "" : openAtEntry.text, excerpt),
       jevMode,
       jevLive,
       (stampId) => { call.stampId = stampId; },
     );
+    // The open record is read again here, after the call: at most one record is
+    // open at a time, and a message that arrived while this one was in the call
+    // runs this same step, so the record read before it may already be closed
+    // and a record it opened is the one this act has to answer to.
+    const open = openTurnRecord(sess.state);
     const verdict = answer === null ? null : answer.choice;
     if (verdict === "new-goal") {
-      supersede();
-      openNew((await wordNewRecordText(dp, excerpt)) ?? excerpt, null, call.stampId);
+      const worded = await wordNewRecordText(dp, excerpt);
+      // Read again for the same reason, the wording call being a second await.
+      supersede(openTurnRecord(sess.state));
+      openNew(worded ?? excerpt, null, call.stampId);
     } else if (verdict === "step" && activeEntry !== null) {
-      supersede();
+      supersede(open);
       openNew(excerpt, activeEntry.id, call.stampId);
     } else if (open !== null) {
       // The fallback's first arm, and where a live `continuation` verdict
@@ -699,7 +736,7 @@ async function holdMessageAsRecord(
       // verdict with nothing open take the fallback too, which is what the
       // plan means by treating the latter as the fallback: neither names a
       // record the plugin could act on.
-      continueOpen(call.stampId);
+      continueOpen(open, call.stampId);
     } else if (activeEntry !== null) {
       openNew(excerpt, activeEntry.id, call.stampId);
     } else {
@@ -8713,38 +8750,6 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // Section 4 (goal-every-turn): the record_delivered_within outcome, which
-    // answers the turn-open call that opened or continued a record. Each such
-    // call is held on its record by its stamp id and settles exactly once: true
-    // at the first of the persona's own completions that finds the record
-    // delivered, false at the third of them without one. The stamp is cleared
-    // as the line is written, which is what holds one call to one outcome.
-    //
-    // Only the persona's own turn end counts a turn, which completesGateTurn is
-    // the test for: a background subagent's completion arrives while the
-    // persona's turn is still open and carries the subagent's agentId, so it
-    // advances nothing here. A reader session counts nothing either, since the
-    // records are the holder's. A record with no stamp is a record no call is
-    // waiting on, which is every record under the kill switch, so the absence
-    // of a stamp is the mode gate and no mode is read here.
-    if (completesGateTurn && sess.isOwner) {
-      for (const record of sess.state.turnRecords) {
-        const callStampId = record.openStampId;
-        if (callStampId === undefined) continue;
-        if (record.status === "delivered") {
-          record.openStampId = undefined;
-          shadowOutcome(hostOf($), callStampId, "record_delivered_within", "true");
-          continue;
-        }
-        const turns = (record.outcomeTurns ?? 0) + 1;
-        record.outcomeTurns = turns;
-        if (turns >= RECORD_OUTCOME_TURNS) {
-          record.openStampId = undefined;
-          shadowOutcome(hostOf($), callStampId, "record_delivered_within", "false");
-        }
-      }
-    }
-
     // Section 5 (plan-health-from-the-record): the four shadow questions
     // and their outcome joiners. Everything here writes journal lines and
     // session memory and nothing else: no branch above or below reads a
@@ -8979,6 +8984,58 @@ export const register: Register = async (on, options) => {
             detail: `record ${record.id} reply refused, left ${record.status}: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
           });
         }
+      }
+    }
+
+    // Section 4 (goal-every-turn): the record_delivered_within outcome, which
+    // answers every turn-open call that opened or continued a record. Each such
+    // call is held on its record as a pending stamp and settles exactly once:
+    // true at the first of the persona's own completions that finds the record
+    // delivered, false at the third of them without one. The entry is dropped as
+    // its line is written, which is what holds one call to one outcome line.
+    //
+    // A record carried across several messages holds several pending stamps, one
+    // per call, and each counts its own turns from where it joined, so the call
+    // that opened the record settles earlier than the call that continued it.
+    //
+    // Only the persona's own turn end counts a turn, which completesGateTurn is
+    // the test for: a background subagent's completion arrives while the
+    // persona's turn is still open and carries the subagent's agentId, so it
+    // advances nothing here. A reader session counts nothing either, since the
+    // records are the holder's. A record with no pending stamp is a record no
+    // call is waiting on, which is every record under the kill switch, so the
+    // absence of a stamp is the mode gate and no mode is read here.
+    //
+    // Position is load-bearing: this reads `record.status` and must run after
+    // everything on this handler that can set it. The step that closes a record
+    // `delivered` belongs between the lead read above and the compaction
+    // boundary below, so this block sits at the far end of that window, right
+    // before the boundary. Anything inserted into the window therefore lands
+    // ahead of it. Put a status-setting step below this block instead and a
+    // record delivered on its own third turn has `false` written for that call:
+    // the outcome reads the status one step before it is set, which is exactly
+    // the boundary case the journal's labelling pass is for, and no assertion
+    // on a record delivered earlier than its third turn can see it.
+    if (completesGateTurn && sess.isOwner) {
+      for (const record of sess.state.turnRecords) {
+        const pending = record.pendingStamps;
+        if (pending === undefined || pending.length === 0) continue;
+        const delivered = record.status === "delivered";
+        const held: TurnRecordStamp[] = [];
+        for (const stamp of pending) {
+          if (delivered) {
+            shadowOutcome(hostOf($), stamp.stampId, "record_delivered_within", "true");
+            continue;
+          }
+          const turns = stamp.turns + 1;
+          if (turns >= RECORD_OUTCOME_TURNS) {
+            shadowOutcome(hostOf($), stamp.stampId, "record_delivered_within", "false");
+            continue;
+          }
+          held.push({ stampId: stamp.stampId, turns });
+        }
+        if (held.length === 0) delete record.pendingStamps;
+        else record.pendingStamps = held;
       }
     }
 
@@ -10431,7 +10488,10 @@ export const register: Register = async (on, options) => {
       // between turns. Both fields are strings by the time they reach here,
       // fillTurnRecords having dropped any stored entry whose status or text is
       // anything else, so the only shaping this line does is the one the
-      // long-term lines do: fold the text onto one line.
+      // long-term lines do: fold the text onto one line. The bracket guard the
+      // sibling lines apply here is applied to the field instead, by
+      // clampTurnRecordText, which every producer of the text and the load both
+      // call, so the text arrives bracket-safe.
       const openRecord = openTurnRecord(sess.state);
       const recordLines = openRecord === null
         ? []
@@ -11215,7 +11275,11 @@ export const register: Register = async (on, options) => {
     // holds the claim, and a session that does not hold it must not write the
     // holder's records. A priming or supervisor-ask turn opens nothing, since
     // the text it carries is the supervisor's rather than the persona's own.
-    if (sess.isOwner && !isPrimingTurn) {
+    // Hoisted rather than tested inline, because the [NO GOAL] block below
+    // tells the model what the plugin has already done with this message and
+    // must not say a record was opened on a turn that opened none.
+    const recordOpened = sess.isOwner && !isPrimingTurn;
+    if (recordOpened) {
       await holdMessageAsRecord($, e.text, answeredAskNodeId, jevMode, jevLive);
     }
 
@@ -11300,21 +11364,30 @@ export const register: Register = async (on, options) => {
         try { $.ui.log(`Agentic: [GOAL QUEUE] injected with ${open.length} open entries`); } catch { /* non-fatal */ }
       } else if (sess.state.goals.length === 0) {
         // With no goal at all (never created, or the root already completed),
-        // this block says what the plugin has already done with the message and
-        // what a goal is now for. The plugin holds every arriving message as a
-        // turn record, so the request is tracked whether or not a goal entry
-        // exists, and the size test the block used to carry is gone with it: a
-        // goal is for an effort that outlasts the turn, and a one-turn request
-        // that opened one would leave an entry the controller nudges after the
-        // answer was already given.
-        // A fully literal chain, no interpolation: the injection ledger reads
-        // this declaration by name and sizes it.
-        const idleBlock =
-          `No goal is active. The plugin is already holding the message above ` +
-          `as this turn's record, so the request is tracked without a goal ` +
-          `entry. Open a goal with goal_create only for an effort that outlasts ` +
-          `this turn, or one the operator asks you to track. Otherwise answer ` +
-          `the message and say what you did.`;
+        // this block says what a goal is now for, and on the turns that opened
+        // one, what the plugin has already done with the message. The size test
+        // the block used to carry is gone: a goal is for an effort that outlasts
+        // the turn, and a one-turn request that opened one would leave an entry
+        // the controller nudges after the answer was already given.
+        //
+        // Two texts, selected on whether the record step above actually ran.
+        // The record sentence is a claim about this turn, so a turn that opened
+        // no record - a priming or supervisor-ask turn, or an owner-armed
+        // session that does not hold the claim - carries the rule without it.
+        // Saying otherwise would tell the model its request is tracked while
+        // talking it out of opening the goal that would have tracked it.
+        //
+        // Both are fully literal chains with no interpolation: the injection
+        // ledger reads each declaration by name and sizes it as its own entry,
+        // and reads the selection below to hold the pair to this shape.
+        const idleBlockCommon =
+          `No goal is active. Open a goal with goal_create only for an effort ` +
+          `that outlasts this turn, or one the operator asks you to track. ` +
+          `Otherwise answer the message and say what you did.`;
+        const idleRecordSentence =
+          ` The plugin is already holding this message as the turn's record, so ` +
+          `the request is tracked whether or not a goal entry exists.`;
+        const idleBlock = recordOpened ? idleBlockCommon + idleRecordSentence : idleBlockCommon;
         contextBlocks.push(idleBlock);
         try { $.ui.log(`Agentic: [NO GOAL] reminder injected`); } catch { /* non-fatal */ }
       }

@@ -208,8 +208,14 @@
     {
       "name": "NO_GOAL_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 300,
-      "words": 55
+      "chars": 181,
+      "words": 34
+    },
+    {
+      "name": "NO_GOAL_RECORD_SENTENCE",
+      "file": "hooks/index.ts",
+      "chars": 127,
+      "words": 23
     },
     {
       "name": "STANDING_IDLE_ORDER_TEXT",

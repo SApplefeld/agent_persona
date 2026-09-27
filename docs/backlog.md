@@ -708,7 +708,11 @@ Two operator decisions on exactly this already exist, in the kit's operator memo
 
 No section of the goal-every-turn plan discharges this. Its section 7 holds `README.md`, `docs/architecture.md` and `docs/README.md`, and no section holds `docs/security-model.md`.
 
-This is not owed before that plan closes, because `jevLive` is empty by default, so no answer reaches any branch until the operator names a question, and the plan's own Operator Verification already gates promotion on a labeling pass over the shadow journal. It is owed before the first question is promoted.
+Two separate things are at stake here and the deferral covers only one of them. A vendor answer steering persona state is gated on promotion: `jevLive` is empty by default, so no answer reaches any branch until the operator names a question, and the plan's own Operator Verification gates that on a labeling pass. State leaving the machine is not gated at all. The default `jevMode` is `shadow`, and shadow sends. So the egress is current behaviour wherever the key is present, and only the steering waits.
+
+Section 4 of the goal-every-turn plan widened that egress, which is why this entry was rewritten rather than left standing. Before it, the widest message text the seam sent was `turn-score`'s first 500 characters, at turn end and only with an active goal. Section 4 adds a sixth call site on the prompt path, sending the first 1,200 characters of every external message, at every prompt, with or without a goal, before the model reads the text. The operator's own Discord messages are in that class, and the scrub replaces the vendor key alone, so a credential pasted into an instruction reaches the vendor and the plain-text journal.
+
+What is owed before the first promotion is the trust-boundary half. What is owed now, and what section 4 did, is that `README.md` no longer claims five call sites and "Nothing else is sent". That correction took the honesty route inside section 4 rather than waiting here.
 
 Remedy: add a TypeSafe entry under `## Trust boundaries` (line 43) stating what is trusted from a live answer and what is not, and an entry under `## Accepted risks` (line 85) for state leaving the machine, naming its preconditions as the code holds them: the key floor in `send`, the state scrub, the per-primitive answer validation, and the live list that decides which question's answer is read at all. Carry the two dated operator decisions into that entry so the document and the memory store agree. `## Known gaps` (line 116) is the fallback home if the acceptance is not yet settled in the shape the other two sections need.
 
@@ -749,3 +753,49 @@ Exploitability is low rather than nil, and the reason is the one thing worth re-
 It is pre-existing across all seven helpers rather than introduced by any one of them, which is why it sits here rather than in the section that added the seventh.
 
 Remedy: create the temp file with exclusive intent, `fs.openSync(tmp, "wx")`, in one shared place all seven use, so an existing path at that name is a refusal rather than a followed link. The same shared place is where the timeout the entry above asks for belongs, so the two are one change.
+
+## An awaited model completion on the prompt-delivery path carries no bound (found 2026-09-26)
+
+`wordNewRecordText` in `hooks/index.ts` awaits `$.model.complete` with no timer, inside the `prompt.submit` hook and ahead of the call that delivers the prompt. Under a live `turn-open` verdict of `new-goal` the operator's message does not reach the model until that completion returns, and it returns whenever the harness lets it, after the classifier has already spent up to its own 2,000 ms bound on the same prompt.
+
+This is conformant rather than a defect, which is why it sits here. Section 4 of the goal-every-turn plan asks for "the same `$.model.complete` call shape the controller's reason call uses", and that call, in the controller tick, is equally unbounded. Both the adversarial lens, which held the spec, and the performance lens, which marked its own requirement assumed rather than quoted, read it as a plan-level acceptance. Adding a timer would have been a mechanism no clause of that plan names.
+
+The class is wider than the one call. The seam bounds its own request and nothing bounds the model completions beside it, so the question is whether a hook that runs ahead of prompt delivery should be allowed to await anything unbounded at all. The controller's own call is on a tick rather than in front of a prompt, which is why it has cost nothing so far.
+
+It is reachable only once `turn-open` is named in `jevLive`, which is empty by default, so nothing is exposed today.
+
+Remedy: one shared bounded wrapper for a model completion awaited on a delivery path, racing the call against a stated bound and taking the caller's own fallback when the timer wins. For the record wording that fallback already exists and is the message excerpt. Deciding the bound is the operator's, since the tradeoff is a worded record against a delayed message.
+
+## The seam's live timer starts after up to seven local host calls (found 2026-09-26)
+
+`hooks/decision-seam.ts` starts the live timeout race after the key read and the override resolver have both run. Up to seven awaited host calls sit before it: the environment read for the key, up to two more resolving the home, and a file-exists plus read for `active.json` and again for a version file where one is named. All are local, and none is inside the 2,000 ms the mode's bound promises.
+
+So the bound the plan states for a live call describes the request alone rather than the call. On a healthy box the difference is small and unmeasured. On a loaded one, or with a slow file system, a caller that was promised 2,000 ms can wait longer with no failure reason naming why.
+
+This is section 3's code, inherited by section 4's prompt path and by section 5's turn-end path, which is what makes it worth an entry rather than a comment: the turn-end path is the one the plan cares about bounding.
+
+Remedy: start the race before the resolver, or bound the resolver with the same timer. The first is smaller and changes no failure vocabulary.
+
+## A turn record's journal outcome is lost when the cap drops the record (found 2026-09-26)
+
+A turn record carries the pending journal stamps of the calls that opened or continued it, and the writer settles each one at the third of the persona's own turn completions after it joined. The record store caps closed records at twenty and drops the oldest beyond that. So a record closed and dropped inside three turns takes its unsettled stamps with it, and those calls never get a `record_delivered_within` line at all.
+
+Section 4's own acceptance says the outcome is written once, `true` or `false`. This is the one path on which it is written neither. The promotion bar under that plan's `## Operator Verification` is a labelling pass over exactly those lines, so a missing line is a call the pass cannot score rather than a call it scores wrongly.
+
+Reachability is low and worth stating rather than assuming. It needs more than twenty records to close inside three of the persona's own turns, which means a burst of messages each superseding the last, under a live verdict that supersedes. With the live list empty, the fallback continues an open record rather than superseding it, so the burst does not arise.
+
+All three of section 4's review rounds raised some form of this, which is why it is written down rather than left on a Minor list. Each time the fix was the same shape and each time it was declined for the same reason: writing an outcome at the moment the cap drops a record is new behaviour at a new site, and a close pass may not take a fix that would owe a further review round.
+
+Remedy: settle a dropped record's pending stamps as `false` at the drop, inside the reap, so the cap can never swallow a call's outcome. The alternative, exempting a stamp-holding record from the cap, is worse: it lets a burst of messages hold the cap open and grow the store without bound.
+
+## The journal's state text is not the message the persona received (found 2026-09-26)
+
+Every field the turn-open question sends passes through the plugin's own line guard, which folds each line terminator to a space and rewrites each bracket to a parenthesis. The guard is there for a real reason: the state is three labelled lines the plugin authors, and a message carrying its own newline and the text of a label would otherwise write a fourth field into it. Section 4's own test drives that case.
+
+The cost falls on the labelling pass. A labeller diffing the journal's state against what the operator actually sent finds every bracket changed, and the plugin's own conventions put brackets around the markers that carry meaning: a supervisor priming marker, a coordinator record, a proposal. So a turn whose message opened with one of those reads in the journal as though it carried parentheses instead, and a pass keyed on the marker sees nothing.
+
+Section 4 made this wider rather than introducing it. The stored record text now takes the same guard, because that text reaches a tool result the model reads and an unguarded label there is a forged authority marker.
+
+What is not at stake: the guard itself, which is a property of the channel and is correct. What is at stake is whether the labelling pass can recover the original, and it cannot from the journal alone.
+
+Remedy, and the choice is the operator's rather than obvious. Either the journal carries the raw message in a field of its own beside the guarded state, which puts unguarded external text in a file a later reader may splice somewhere, or the labelling scripts learn the transformation and apply it to their own copy of the message before diffing. The second costs nothing on this side and is the recommendation.
