@@ -18,7 +18,7 @@ The operator armed execution on 2026-09-19, naming this plan in a `/kit-goal` in
 
 This section owns the policy. The queued plans point here, and a Chapter that cites it cites this file.
 
-The policy applies to `docs/archive/agent_persona_steward-architect_v1.md` from its finishing pass onward, and to `docs/archive/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` whole. It ends when this plan closes.
+The policy applies to `docs/archive/agent_persona_steward-architect_v1.md` from its finishing pass onward, and to `docs/archive/agent_persona_context-budget-removal_v1.md`, `docs/plans/agent_persona_lean-injection_v1.md` and `docs/plans/agent_persona_supervisor-peer_v1.md` whole. It also covers the live suites of `docs/archive/agent_persona_upgrade-check-and-restart-recap_spec_v1.md`, by the operator's ruling on the relay on 2026-09-27, since `.kit/live-all.sh` refuses to start beside a live fleet. It ends when this plan closes.
 
 Deferred to this plan's run: `.kit/live-all.sh`, every `.kit/live-*-test.sh`, `.kit/supervisor-natural-exit-test.sh`, and any other check that launches a `claude` child, real or stub, or runs past two minutes of wall clock. The named files are instances; the class is any run that holds the box.
 
