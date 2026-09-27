@@ -5517,7 +5517,10 @@ export const register: Register = async (on, options) => {
         sess.myEpoch = sess.state.epoch;
         sess.isOwner = true;
         const prevId = holderHb?.sessionId ?? existingPersona.activeSessionId;
-        recordPreviousSession(sess.state, prevId, sess.mySessionId);
+        // The lineage records the store's holder rather than prevId: every
+        // persona in this directory rewrites the sidecar whole, so a lost round
+        // can leave it naming an older holder than the store does.
+        recordPreviousSession(sess.state, existingPersona.activeSessionId, sess.mySessionId);
         sess.state.decisions.push({
           timestamp: now,
           loop: "monitor",
@@ -5906,7 +5909,8 @@ export const register: Register = async (on, options) => {
             // before the yield is not added to this tree's count either.
             sess.nudgedAnswersWithoutStatus = 0;
             countResetSinceNudgeOpened = true;
-            recordPreviousSession(sess.state, holderHb?.sessionId ?? sess.state.activeSessionId, sess.mySessionId);
+            // The store's holder, not the sidecar's, as at the session.start claim.
+            recordPreviousSession(sess.state, sess.state.activeSessionId, sess.mySessionId);
             sess.state.activeSessionId = sess.mySessionId;
             sess.state.epoch += 1;
             sess.myEpoch = sess.state.epoch;

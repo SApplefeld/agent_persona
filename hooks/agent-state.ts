@@ -713,10 +713,13 @@ export function holdOf(state: AgentState, now: number): HoldReason | null {
 }
 
 // How many earlier holders the lineage ring keeps. The restart recap reads the
-// newest two by default, and the third keeps the session that did the work in
-// reach when a relaunch after it died before its first turn, which leaves a
-// transcript with nothing in it to read.
+// newest two by default, and the third keeps the working session in reach when
+// the relaunch after it died before its first turn and left an empty transcript.
 export const PREVIOUS_SESSIONS_MAX = 3;
+
+// The longest a stored id runs in agentic_identity's answer. A session id is
+// 36 characters, so the cut touches only text no session wrote.
+export const PREVIOUS_SESSION_ID_TEXT_MAX = 64;
 
 // The lineage write every claim site makes on the state before the write that
 // publishes its claim, so that one write carries both. outgoingId is the
@@ -734,12 +737,12 @@ export function recordPreviousSession(state: AgentState, outgoingId: unknown, ow
 }
 
 // The lineage as agentic_identity reports it, one sentence. The ids come out
-// of a store file any local process can write, so each is folded to one line
-// and has its brackets neutralized, the guard every site putting store text in
-// front of a model applies.
+// of a store file any local process can write, so each takes the guard every
+// site putting store text in front of a model applies, in its order: cut to
+// length, fold to one line, then neutralize the brackets.
 export function previousSessionsText(state: AgentState): string {
   if (state.previousSessionIds.length === 0) return "Previous sessions: none recorded.";
-  return `Previous sessions, newest first: ${state.previousSessionIds.map((id) => bracketSafeText(oneLine(id))).join(", ")}.`;
+  return `Previous sessions, newest first: ${state.previousSessionIds.map((id) => bracketSafeText(oneLine(id.slice(0, PREVIOUS_SESSION_ID_TEXT_MAX)))).join(", ")}.`;
 }
 
 // Default state (per persona)
@@ -1109,11 +1112,12 @@ function fillTurnRecords(state: AgentState): void {
 // The lineage ring, filled at every load exit. A stored value that is not a
 // list reads as an empty one, which is how a store written before the ring
 // existed loads, with no decision line and no version bump. An entry that is
-// not a non-empty string is dropped, since it names no session.
+// not a non-empty string is dropped, since it names no session, and the ring
+// is cut to PREVIOUS_SESSIONS_MAX, since a claim write never stores more.
 function fillPreviousSessionIds(state: AgentState): void {
   const stored = (state as { previousSessionIds?: unknown }).previousSessionIds;
   state.previousSessionIds = Array.isArray(stored)
-    ? stored.filter((id): id is string => typeof id === "string" && id !== "")
+    ? stored.filter((id): id is string => typeof id === "string" && id !== "").slice(0, PREVIOUS_SESSIONS_MAX)
     : [];
 }
 

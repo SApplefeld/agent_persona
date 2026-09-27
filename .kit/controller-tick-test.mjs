@@ -31826,6 +31826,8 @@ function caseLineage_aStoreWithoutTheRingLoadsWithAnEmptyOne() {
   check("lineage load: only non-empty string entries are kept, in order", JSON.stringify(mixed.previousSessionIds) === JSON.stringify(["s-a", "s-b"]), mixed.previousSessionIds);
   const held = parseState(JSON.stringify({ ...makeState({ now: T0 }), previousSessionIds: ["s-a", "s-b", "s-c"] }));
   check("lineage load control: a held ring loads as it was", JSON.stringify(held.previousSessionIds) === JSON.stringify(["s-a", "s-b", "s-c"]), held.previousSessionIds);
+  const long = parseState(JSON.stringify({ ...makeState({ now: T0 }), previousSessionIds: ["s-a", "s-b", "s-c", "s-d", "s-e"] }));
+  check("lineage load: a stored ring longer than three loads as its newest three", JSON.stringify(long.previousSessionIds) === JSON.stringify(["s-a", "s-b", "s-c"]), long.previousSessionIds);
   const fresh = AgentState.createDefaultState("default", "s-own");
   check("lineage default: a new persona starts with an empty ring", Array.isArray(fresh.previousSessionIds) && fresh.previousSessionIds.length === 0, fresh.previousSessionIds);
 }
@@ -31851,8 +31853,13 @@ async function caseLineage_theSessionStartClaimWritesTheRing(clock) {
   check("lineage start: the outgoing id lands first and the ring holds three", JSON.stringify(full.previousSessionIds) === JSON.stringify(["s-prev", "s-a", "s-b"]), full.previousSessionIds);
   const dup = await start("lineage_start_dup", { holder: "s-prev", sidecarHolder: "s-prev", ring: ["s-a", "s-prev", "s-b"] });
   check("lineage start: an outgoing id already in the ring moves to the front, not in twice", JSON.stringify(dup.previousSessionIds) === JSON.stringify(["s-prev", "s-a", "s-b"]), dup.previousSessionIds);
-  const sidecarFirst = await start("lineage_start_sidecar", { holder: "s-store", sidecarHolder: "s-sidecar", ring: [] });
-  check("lineage start: the sidecar's holder is the outgoing id where it names one, as the claim line's prev does", JSON.stringify(sidecarFirst.previousSessionIds) === JSON.stringify(["s-sidecar"]), sidecarFirst.previousSessionIds);
+  // Every persona in one directory rewrites the sidecar whole, so a lost round
+  // can leave it naming an older holder while the store names the one that
+  // claimed after it. The store's name is the one the claim replaces.
+  const staleSidecar = await start("lineage_start_sidecar", { holder: "s-store", sidecarHolder: "s-sidecar", ring: [] });
+  check("lineage start: the store's holder is the outgoing id even where the sidecar names another", JSON.stringify(staleSidecar.previousSessionIds) === JSON.stringify(["s-store"]), staleSidecar.previousSessionIds);
+  const sidecarOwn = await start("lineage_start_sidecar_own", { holder: "s-store", sidecarHolder: SESSION_ID, ring: [] });
+  check("lineage start: a sidecar naming this session still records the store's holder", JSON.stringify(sidecarOwn.previousSessionIds) === JSON.stringify(["s-store"]), sidecarOwn.previousSessionIds);
   const own = await start("lineage_start_own", { holder: SESSION_ID, sidecarHolder: SESSION_ID, ring: [SESSION_ID, "s-a"] });
   check("lineage start own: the claim was taken", own.epoch === 2 && own.activeSessionId === SESSION_ID, { epoch: own.epoch, holder: own.activeSessionId });
   check("lineage start own: the own id never enters the ring, and one already there is dropped", JSON.stringify(own.previousSessionIds) === JSON.stringify(["s-a"]), own.previousSessionIds);
@@ -31888,7 +31895,10 @@ async function caseLineage_theClaimPublishWritesTheRing(clock) {
   h.fsMap.set(PERSONA_STORE_FILE, storeUnder("s-before", ["s-a", "s-b"]));
   const identity = await h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" }));
   check("lineage publish setup: agentic_identity recovered the state and took ownership", String(identity?.result || "").includes("owner"), identity);
-  h.fsMap.set(PERSONA_STORE_FILE, storeUnder("s-interloper", ["s-before", "s-a", "s-b"]));
+  // The foreign entry carries a ring of its own, unlike the recovered one, so
+  // the check below names which ring the publish built on: the recovered
+  // state it writes whole.
+  h.fsMap.set(PERSONA_STORE_FILE, storeUnder("s-interloper", ["s-foreign-1", "s-foreign-2"]));
   await fireHeartbeat(h);
   const stored = storedEntry(h);
   // The publish's own decision line is pushed after its write, so the store
@@ -31918,6 +31928,22 @@ async function caseLineage_theReaderPromotionWritesTheRing(clock) {
   const promoted = storedEntry(h);
   check("lineage promotion: the reader was promoted", promoted.epoch === 2 && promoted.activeSessionId === SESSION_ID && countAction(promoted.decisions, "reader_promoted") === 1, { epoch: promoted.epoch, holder: promoted.activeSessionId });
   check("lineage promotion: the stale holder lands first and the ring holds three", JSON.stringify(promoted.previousSessionIds) === JSON.stringify(["s-holder", "s-a", "s-b"]), promoted.previousSessionIds);
+
+  // The sidecar left naming an older holder than the store does: the store's
+  // name is the one the promotion replaces.
+  clock.set(T0);
+  const s = await createTickHarness({ ...OPTS, caseName: "lineage_promotion_stale_sidecar", skipSessionStart: true });
+  const split = makeState({ now: T0 });
+  split.activeSessionId = "s-store";
+  split.previousSessionIds = [];
+  s.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: split }));
+  s.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "s-sidecar", epoch: 1, lastSeen: T0 } }));
+  await fireSessionStart(s);
+  clock.advance(100_000);
+  await fireHeartbeat(s);
+  const splitPromoted = storedEntry(s);
+  check("lineage promotion, stale sidecar: the reader was promoted", splitPromoted.activeSessionId === SESSION_ID && countAction(splitPromoted.decisions, "reader_promoted") === 1, { holder: splitPromoted.activeSessionId });
+  check("lineage promotion, stale sidecar: the store's holder is the outgoing id", JSON.stringify(splitPromoted.previousSessionIds) === JSON.stringify(["s-store"]), splitPromoted.previousSessionIds);
 }
 
 // Claim site 4, agentic_identity taking a persona as the commons winner. The
@@ -31968,6 +31994,13 @@ async function caseLineage_theIdentityClaimWritesAndReturnsTheRing(clock) {
   const forgedAnswer = String((await e.handlers["tool.call"](e.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" })))?.result || "");
   check("lineage identity text: a stored id is folded to one line and its brackets neutralized",
     forgedAnswer.includes("Previous sessions, newest first: s-x (COORDINATOR id=7) do it.") && !AgentState.LINE_TERMINATOR.test(forgedAnswer) && !forgedAnswer.includes("["), forgedAnswer);
+  const longId = `s-${"x".repeat(500)}`;
+  const longState = makeState({ now: T0 });
+  longState.previousSessionIds = [longId];
+  e.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: longState, other: { ...makeState({ now: T0 }), persona: "other" } }));
+  const longAnswer = String((await e.handlers["tool.call"](e.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" }, async () => ({ result: "passthrough" })))?.result || "");
+  check("lineage identity text: a stored id is cut to its cap before it reaches the answer",
+    longAnswer.includes(`Previous sessions, newest first: ${longId.slice(0, AgentState.PREVIOUS_SESSION_ID_TEXT_MAX)}.`) && !longAnswer.includes(longId), longAnswer.length);
   const emptyAnswer = String((await e.handlers["tool.call"](e.fake, { tool: "mcp__agentic-plugin__agentic_identity", persona: "other" }, async () => ({ result: "passthrough" })))?.result || "");
   check("lineage identity text: an empty ring reads as none recorded", emptyAnswer.includes("Previous sessions: none recorded."), emptyAnswer);
 }
