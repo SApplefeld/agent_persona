@@ -530,6 +530,9 @@ const cases = [
     assert.equal(r.status, 3, r.stdout + r.stderr);
     assert.match(r.stdout, /^upgrade-check: failed: /m);
     assert.doesNotMatch(r.stdout, /^pre: (clear|triage)/m);
+    assert.match(r.stdout, /^7\. smoke: /m, 'the step lines print before the append that failed');
+    assert.match(r.stdout.trim().split('\n').pop(), /^upgrade-check: failed: /, 'the failed line is last');
+    assert.match(r.stderr, /EISDIR|EPERM|illegal operation/i, 'the stack goes to stderr');
   }],
   ['a scratch folder holding the checkout or the results exits 2, since the scratch folder is emptied', () => {
     const paths = makeCase('scratch-guard');

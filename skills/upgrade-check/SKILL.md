@@ -50,7 +50,8 @@ The script makes its own scratch folder, `cc-validate-<version>` under the syste
    - **Exit 0, `pre: clear to restart the canary onto <version> (run <id>)`.** Go to step 3.
    - **Exit 1, `pre: triage <steps> (run <id>)`.** Reply to the operator as the last section says, and stop. Do not restart unless the operator then tells you to restart anyway. In that case, go on from step 3.
    - **Exit 2, `upgrade-check: cannot run: <reason>`.** Nothing was recorded. Fix what the reason names if it is yours to fix, and send the operator the reason otherwise. One reason is a scratch folder that holds files but no `.upgrade-check-scratch` marker, which means the script did not make it. Delete it by hand only after reading what is in it, or pass `--scratch` naming an empty folder.
-   - **Exit 3, `upgrade-check: failed: <reason>`.** The script hit an error it has no verdict for. Its rows may be partly recorded. Do not restart, and send the operator the reason and the path of `upgrade-pre.log`.
+   - **Exit 3, `upgrade-check: failed: <reason>`.** The script hit an error it has no verdict for. Its rows may be partly recorded. Do not restart, and send the operator the reason and the path of `upgrade-pre.log`. The rows it did record are in `upgrade-checks.jsonl` under `--results`.
+   - **Any other last line.** The script crashed before it could print a line of its own. Read it as exit 3, whatever the exit code says.
 3. Create the goal that carries the second half, with `goal_create`. The new session starts with no memory of this one, and the goal tree is what survives the restart. The objective must name this skill, the run id from the verdict line, and the whole `post` command, for example:
 
    > Finish upgrade check run <id> by following the upgrade-check skill's "After the restart" section. Call goal_status, call agentic_inbox on <coordinator persona>, and send one relay reply. Then run: node <script> post --run <id> --results D:/personas --rundir <run directory> --tools "ok", or --tools "fail: <which call failed and how>".
@@ -62,7 +63,7 @@ The script makes its own scratch folder, `cc-validate-<version>` under the syste
 The goal carries the commands, and this section says how to read them.
 
 1. Call `goal_status`, `agentic_inbox` on the coordinator persona, and send one relay reply. A call works when it returns its result rather than an error. An empty inbox counts as working. Pass `--tools "ok"` where all three worked, else `--tools "fail: <reason>"` naming the one that did not.
-2. Run the `post` command from the goal. It takes one heartbeat interval plus five seconds, 35 seconds by default, since it watches the heartbeat advance. Its exit codes read as `pre`'s do, and exit 3 means it failed rather than reaching a verdict.
+2. Run the `post` command from the goal. It takes one heartbeat interval plus five seconds, 35 seconds by default, since it watches the heartbeat advance. Its exit codes read as `pre`'s do. On exit 3, or a last line that is not a verdict, send the operator the reason from the command's output.
 3. Reply to the operator as the last section says.
 4. Call `goal_done` on the goal.
 

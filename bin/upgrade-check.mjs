@@ -1082,11 +1082,12 @@ function main() {
     cannotRun('the verb is "pre" or "post"; usage: upgrade-check.mjs pre --repo <checkout> --results <dir> [--scratch <dir>] [--canary <persona>] | upgrade-check.mjs post --run <id> --results <dir> --rundir <dir> --tools <ok | fail: reason>');
   }
   const outcome = parsed.verb === 'pre' ? pre(parsed.flags) : post(parsed.flags);
-  // The rows are recorded before the verdict prints, so a reader of the table
-  // and a reader of the verdict never disagree.
+  // The step lines print first, so a failed append still leaves each step's
+  // reading in the log. The rows are recorded before the verdict prints, so a
+  // reader of the table and a reader of the verdict never disagree.
+  for (const r of outcome.rows) process.stdout.write(r.step + ': ' + r.result + ' - ' + r.evidence + '\n');
   appendRows(outcome.resultsDir, outcome.rows);
   regenerate(outcome.resultsDir);
-  for (const r of outcome.rows) process.stdout.write(r.step + ': ' + r.result + ' - ' + r.evidence + '\n');
   process.stdout.write(outcome.line + '\n');
   return outcome.code;
 }
@@ -1095,11 +1096,13 @@ if (launchedDirectly()) {
   try {
     process.exitCode = main();
   } catch (e) {
-    // An error other than CannotRun is a crash, not a verdict. It exits 3 rather than node's
-    // own 1, which a reader would take for triage, and it may land after the
-    // rows were appended, so it never claims that nothing was recorded.
+    // An error other than CannotRun is a crash, not a verdict. It exits 3
+    // rather than node's own 1, which a reader would take for triage, and it
+    // may land after the rows were appended, so it never claims that nothing
+    // was recorded. The stack goes to stderr, and the failed line stays last.
     if (!(e instanceof CannotRun)) {
-      process.stdout.write('upgrade-check: failed: ' + String((e && e.message) || e).replace(/\s+/g, ' ') + '\n');
+      process.stderr.write(String((e && e.stack) || e) + '\n');
+      process.stdout.write('upgrade-check: failed: ' + evidenceLine((e && e.message) || e) + '\n');
       process.exitCode = 3;
     } else {
       process.stdout.write('upgrade-check: cannot run: ' + e.message + '\n');
