@@ -106,3 +106,17 @@ Not a Chapter. The plan has started and no section is in flight, so this entry c
 **Next action.** The intake gap check, then section 1 at opus.
 
 **Rulings adopted since the last boundary.** None.
+
+### Interim board 2 - 2026-09-27
+
+Not a Chapter. Sections 1 and 2 are in flight, so this entry carries no `Completed:` line.
+
+**Intake gap check.** Section 1: `find` resolves to GNU findutils 4.10.0 at `/usr/bin/find` under the keeper's launcher `C:\Program Files\Git\bin\bash.exe` (a run of `type -a find; find --version` there), so the Approach's premise holds; `refused_by` asserts exit 1, the expected text and no launch marker (`.kit/supervisor-model-test.sh:41`), so it locks the refusal-before-launch requirement. Declared defaults, for section 1's Chapter: `LAST_CHANNEL_SWEEP_S=0` beside `CHILD_INDEX=0` (`bin/supervise.sh:3941`); the daily check right after the poll loop's `sleep`; one `rm -f --` per file so a failure names its path. Section 2: current anchors are the fixture at `.kit/keeper-unit-test.mjs:256`, the expected environment at 327, and the `.DESCRIPTION` list at `bin/keeper-functions.ps1:211-213`; the implementer was asked whether the test's environment scrub at line 49 needs the new key.
+
+**Live dispatches.** Section 1 at implementer-opus: the sweep, the setting and its check, two call sites, and the suite's pins. Section 2 at implementer-sonnet, staggered on disjoint files: the keeper map entry, its description, and the unit test's pins.
+
+**Gate baseline.** `.kit/supervisor-model-test.sh` exited 0 on 097503e of the upgrade check branch (whole gate, 2026-09-27, this box, fleet live); no baseline yet on this branch's ccfeb16 base.
+
+**Next action.** Section 1's and section 2's review pairs as each returns; section 3 inline once both have landed.
+
+**Rulings adopted since the last boundary.** None.
