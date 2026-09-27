@@ -70,6 +70,7 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 import type { CommonsStore, CommonsMeta, UnionedClaim } from "./commons";
 import { claimResource, releaseResource, readAllClaims, commonsWinner } from "./commons";
+import { LINE_TERMINATOR } from "./agent-state";
 
 // --- Key helpers ---
 
@@ -106,26 +107,6 @@ function bracketSafeProblem(s: string): string | null {
   if (s.includes(",")) return "cannot contain ','";
   if (/[\s\p{Cc}\p{Cf}]/u.test(s)) return "cannot contain whitespace, a control character or a format character";
   return null;
-}
-
-/**
- * One piece of untrusted text with the delivery brackets neutralized, under
- * the same rule bracketSafeProblem refuses on and for the same reason: a '['
- * in text the plugin did not compose lets that text forge a delivery label
- * such as [COORDINATOR id=7]. The two are one rule read two ways. A caller
- * who supplies a persona name can be told to pick another, so that path
- * refuses; a file read has nobody to ask, so this path rewrites. Text
- * carrying no bracket comes through byte for byte.
- * The guard belongs to the channel the text leaves by rather than to the
- * field that first needed it, so every site that puts text out of a
- * persona's own tree in front of a model calls this one helper: the fleet
- * report's fields as each is read, and the fleet prompt the controller tick
- * submits, over every field it carries. The prompt takes the wider sweep
- * because a tool result is framed as JSON and a submitted turn is not, so a
- * path the plugin composed loses its own brackets there.
- */
-export function bracketSafeText(text: string): string {
-  return text.replace(/\[/g, "(").replace(/\]/g, ")");
 }
 
 /**
@@ -776,16 +757,6 @@ export function deliveryRecordProblem(rec: { id: unknown; text: unknown }): stri
 export function deliveryPrefix(ground: string, id: string, mark: "plain" | "urgent" | "waited"): string {
   return `[${ground} id=${id}${mark === "plain" ? "" : `, ${mark}`}]`;
 }
-
-/**
- * Where one line of text ends: CRLF, or any one of LF, CR, VT, FF, NEL
- * (U+0085), LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029). These
- * are the terminators the bracket rule refuses as field splitters, and every
- * site that splits store-sourced or file-sourced text into lines reads the
- * set from here: a splitter that knows only LF and CR leaves a persona four
- * more characters that start a line the reader of that text will see.
- */
-export const LINE_TERMINATOR = /\r\n|[\n\r\v\f\u{85}\u{2028}\u{2029}]/u;
 
 /**
  * Every line of `body` after the first, quoted with `> `, split on

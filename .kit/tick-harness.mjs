@@ -234,6 +234,11 @@ function createFake$(opts = {}) {
   // parkedStoreGets until releaseStoreGet() lets it resolve.
   let storeGetHoldKey = null;
   const parkedStoreGets = [];
+  // What $.agent.list() answers: an array of AgentInfo-shaped rows, or a
+  // function returning one, which may throw or return a non-array so a case
+  // can drive the read's failure path. Empty by default, the shape of a
+  // session that has spawned nothing.
+  let agentList = [];
 
   const fake = {
     ui: {
@@ -406,6 +411,14 @@ function createFake$(opts = {}) {
     process: {
       run() { return Promise.resolve({ exitCode: 128 }); },
     },
+    // The session's agents so far, as the real $.agent.list() lists the ones
+    // the model spawned and the ones plugins did alike. A function value is
+    // called at each read, so a case can make one read throw.
+    agent: {
+      list() {
+        return Promise.resolve().then(() => (typeof agentList === "function" ? agentList() : agentList));
+      },
+    },
   };
 
   // Attach maps to fake for convenient access (h.fake.fsMap === h.fsMap).
@@ -443,6 +456,9 @@ function createFake$(opts = {}) {
     setHttpResponse(v) { httpResponse = v; },
     // Refuse every write whose path the predicate accepts. Pass null to lift.
     setWriteRefusal(predicate) { writeRefusal = predicate; },
+    // What every subsequent $.agent.list() resolves with: an array of rows,
+    // or a function of no arguments returning one (or throwing).
+    setAgentList(v) { agentList = v; },
     fsWriteRefusals,
     // Set (or, with undefined, unset) a variable $.env.get reads.
     setEnv(name, value) {
@@ -666,7 +682,7 @@ function makeGoalNode(overrides = {}) {
 function makeState(opts = {}) {
   const now = opts.now || 1_700_000_000_000;
   const hasActiveLeaf = opts.hasActiveLeaf !== false;
-  const version = opts.version || 5;
+  const version = opts.version || 6;
   let goals = [];
   let activeGoalId = null;
   // BM2: allow custom goals array (for testing planner with root-only state)
@@ -692,6 +708,8 @@ function makeState(opts = {}) {
     // migration actually meets, rather than a v5 shape with an old version
     // number stamped on it.
     ...(version >= 5 || opts.tasks ? { tasks: opts.tasks || [] } : {}),
+    // The same rule for the turn records, which arrived with version 6.
+    ...(version >= 6 || opts.turnRecords ? { turnRecords: opts.turnRecords || [] } : {}),
     monitor: {
       sessionStart: now,
       turnCount: 0,

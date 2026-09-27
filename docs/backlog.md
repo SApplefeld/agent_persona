@@ -43,7 +43,7 @@ The reply backstop in `hooks/index.ts` now reads `e.answer` only at the persona'
 
 ## The persisted nudge budget still carries a count nothing reads (found 2026-09-25)
 
-`NudgeBudget.consecutiveNudgesWithoutOnGoal` in `hooks/agent-state.ts` is still declared, and four sites fill it with zero: `createDefaultState`, the v2 migration, the v3 load branch, and the load branch v4 and v5 stores share, the last two where the store carries no `nudge` object. `.kit/tick-harness.mjs` seeds it too. The nudge-state plan moved the count to the controller's own per-session reading, so no production code reads the persisted field. It costs a few bytes per store and misleads a reader into thinking the count survives a relaunch. Remedy: drop the field from the type, the four fills and the harness seed, and let the parser ignore it in an older store. Proof: `tsc --noEmit` exits 0 and the tick suite's counts are unchanged. Raised by the nudge-state plan's section 3 security review.
+`NudgeBudget.consecutiveNudgesWithoutOnGoal` in `hooks/agent-state.ts` is still declared, and four sites fill it with zero: `createDefaultState`, the v2 migration, the v3 load branch, and the load branch v4, v5 and v6 stores share, the last two where the store carries no `nudge` object. `.kit/tick-harness.mjs` seeds it too. The nudge-state plan moved the count to the controller's own per-session reading, so no production code reads the persisted field. It costs a few bytes per store and misleads a reader into thinking the count survives a relaunch. Remedy: drop the field from the type, the four fills and the harness seed, and let the parser ignore it in an older store. Proof: `tsc --noEmit` exits 0 and the tick suite's counts are unchanged. Raised by the nudge-state plan's section 3 security review.
 
 ## The openTurns comment says two turns can be open at once, which the map never holds (found 2026-09-25)
 
@@ -460,7 +460,7 @@ failure is not specific to this repo. Operator's call.
 
 ## A v2 or v3 persona store reaches the tick with no cost ledger (found 2026-09-14)
 
-`parseState` in `hooks/agent-state.ts` fills `monitor.cost` at the E11 site near the end of the function, but its v2 branch and its v3 branch both return before that fill, and the v2 branch copies `old.monitor` whole. Cited by symbol rather than by line, because the line numbers move. `enforceInvariants` never touches `cost`. So a store written before the cost ledger existed is migrated to version 5 with no `monitor.cost`, and the first controller tick reads `monitor.cost.callWindow` on undefined. `.kit/cost-migration-test.mjs` covers a v4 store missing the block and never a v2 or v3 one. The remedy is to move the cost fill above both early returns, or into `enforceInvariants`, with one fixture per old version. Found by Section 13's audit while reading the migration suite; outside that section's goal.
+`parseState` in `hooks/agent-state.ts` fills `monitor.cost` at the E11 site near the end of the function, but its v2 branch and its v3 branch both return before that fill, and the v2 branch copies `old.monitor` whole. Cited by symbol rather than by line, because the line numbers move. `enforceInvariants` never touches `cost`. So a store written before the cost ledger existed is migrated to version 6 with no `monitor.cost`, and the first controller tick reads `monitor.cost.callWindow` on undefined. `.kit/cost-migration-test.mjs` covers a v4 store missing the block and never a v2 or v3 one. The remedy is to move the cost fill above both early returns, or into `enforceInvariants`, with one fixture per old version. Found by Section 13's audit while reading the migration suite; outside that section's goal.
 
 ## The hourly cost-cap ask is controller prose of the kind Round 58 finding 3 removed elsewhere (found 2026-09-14)
 
@@ -680,13 +680,11 @@ Remedy: a log line in the catch naming the held count, or rolling held lines to 
 
 The coordinator role instruction in `bin/supervise.sh` says "A prompt labelled [WORKER:<persona> id=<record id>] is that worker's finding or escalation". A worker's record also takes the break-in, reaching a busy steward inside a tool result under a `, waited` or `, urgent` marker (`hooks/index.ts`, the wait leg skips only coordinator-ground records). The architect's and the worker's charters name both tool-result forms, and the steward's does not. The gap predates the direct-lines plan, which found it in review. Remedy: name the two tool-result forms in that sentence, as the architect's charter does, with a pin in `.kit/channel-reply-instruction-test.sh`.
 
-## Plan B: the task-to-goal promotion seam (surfaced 2026-09-24)
+## Plan B has landed and one of its three promotion branches is still undesigned (2026-09-27, surfaced 2026-09-24)
 
-The task-list tier (`docs/archive/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion leave one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, `docs/plans/agent_persona_goal-every-turn_spec_v1.md`, authored by the ARCHITECT persona and coordinated with the ASSISTANT persona's discussion through the coordinator seat, owns the whole promotion design. The task-list spec names the seam in its Open Questions and cross-references Plan B when it lands. It also depends on the turn-record field, which the ASSISTANT discussion's ruling defines and which is out of scope for the task-list spec.
+The task-list tier (`docs/archive/agent_persona_task-list_spec_v1.md`) and the ASSISTANT persona's memory-structure discussion left one interface undesigned: when a turn record or a task graduates upward, and into what. It has three branches, a turn record into a task under the active goal, a turn record into a new goal, and a task into a goal. Plan B, now `docs/archive/agent_persona_goal-every-turn_spec_v1.md`, built the two branches that start from a turn record: a record whose turn edited a plan document is promoted into the goal tree through the autonomy dial, and a record the model turned into a goal or a task by its own tool call is marked promoted so nothing dangles beside the entry it became.
 
-## The [GOAL TREE] block splices stored goal text with no label guard (found 2026-09-25)
-
-The `prompt.submit` hook in `hooks/index.ts` builds `[GOAL TREE]` from the active goal's objective, the parent and active titles, the pending siblings' titles and the last note. It slices the titles but folds no line breaks and applies no `bracketSafeText`, and the objective and the note reach the block as stored. A persona can write any of that text through `goal_add` or a `goal_done` note, so text it read as data can come back as a labelled line in its own prompt. The `[TASK LIST]` block beside it guards every stored field with the slice, `oneLine` and `bracketSafeText` chain in `taskListBlock`. The task-list plan's finishing security review found the gap, which predates that plan. Remedy: route the goal block's stored fields through the same guard, with a forgery pin like the task-list cases in `.kit/controller-tick-test.mjs`.
+The third branch is not built. No task-into-goal promotion exists in `hooks/index.ts`, confirmed by a sweep under a control. That branch was never in Plan B's own Goal, so it is not a gap in what that plan delivered; it is the part of the original design question that no plan has answered yet. Remedy: decide whether a task ever graduates into a goal on its own, or whether the task tier is deliberately terminal and this branch should be retired rather than designed.
 
 ## Task list: the operator's live check (found 2026-09-26)
 
@@ -699,6 +697,258 @@ The `goal_longterm` handler in `hooks/index.ts` saves with a bare `persist($)` a
 `goal_add` has the same gap on every path but one. Its unprompted plan add, the one outside the operator's and the coordinator persona's turns, saves through `persistOrRollBack` since the autonomy-dial plan's second section, because a record to the coordinator persona must never name an entry the store lacks. Every other `goal_add`, a task or a plan added in the operator's or the coordinator persona's turn, still saves with a bare `persist($)`, so a yield leaves the new node in memory while the tool reports it was not saved.
 
 Remedy: save `goal_longterm` and the remaining `goal_add` paths through `persistOrRollBack`, restoring what each changed and dropping its decision lines on a save that does not land, with a tick-suite case for each yield. The unprompted plan add's `rollBackAdd` in `hooks/index.ts` is the pattern for `goal_add`.
+
+## The security model is silent on the classifier vendor whose answer will steer persona state (found 2026-09-26)
+
+`docs/security-model.md` names no external party and no egress path. A grep over the whole file for `Jev`, `TypeSafe`, `typesafe` and `TYPESAFE_API_KEY` returns nothing. Yet the decision seam sends persona state to `https://api.typesafe.ai/v1/systemone`, holds the one third-party credential the plugin carries, and after the goal-every-turn plan a vendor answer will set a turn record's delivered status, which that plan reads into compaction banking and nudge suppression.
+
+Two operator decisions on exactly this already exist, in the kit's operator memory tier and dated 2026-09-20: `source-code-may-leave-the-lan-to-typesafe` and `typesafe-request-body-retention-risk-accepted`. So the acceptance is recorded where a session finds it and absent from the document a reader of this repository would open.
+
+No section of the goal-every-turn plan discharges this. Its section 7 holds `README.md`, `docs/architecture.md` and `docs/README.md`, and no section holds `docs/security-model.md`.
+
+Two separate things are at stake here and the deferral covers only one of them. A vendor answer steering persona state is gated on promotion: `jevLive` is empty by default, so no answer reaches any branch until the operator names a question, and the plan's own Operator Verification gates that on a labeling pass. State leaving the machine is not gated at all. The default `jevMode` is `shadow`, and shadow sends. So the egress is current behaviour wherever the key is present, and only the steering waits.
+
+Section 4 of the goal-every-turn plan widened that egress, which is why this entry was rewritten rather than left standing. Before it, the widest message text the seam sent was `turn-score`'s first 500 characters, at turn end and only with an active goal. Section 4 adds a sixth call site on the prompt path, sending the first 1,200 characters of every external message, at every prompt, with or without a goal, before the model reads the text. The operator's own Discord messages are in that class, and the scrub replaces the vendor key alone, so a credential pasted into an instruction reaches the vendor and the plain-text journal.
+
+Section 5 widened it again, and by more. The record close sends the first 3,000 characters of the persona's own closing text and the first 1,200 of the message that opened the turn, plus the active goal's objective and the turn's tool activity, at every one of the persona's own turn ends. So the widest single egress is now six times what it was before section 4, and it carries the persona's own words rather than only the operator's. The seam's scrub still replaces the vendor key alone, which is what makes the width matter: a path, a commit hash, a diff excerpt or a credential the session quoted in its own close-out leaves the machine as written, and the same text lands whole in the plain-text journal under the operator's profile.
+
+What is owed before the first promotion is the trust-boundary half. What is owed now, and what section 4 did, is that `README.md` no longer claims five call sites and "Nothing else is sent". That correction took the honesty route inside section 4 rather than waiting here.
+
+Remedy: add a TypeSafe entry under `## Trust boundaries` (line 43) stating what is trusted from a live answer and what is not, and an entry under `## Accepted risks` (line 85) for state leaving the machine, naming its preconditions as the code holds them: the key floor in `send`, the state scrub, the per-primitive answer validation, and the live list that decides which question's answer is read at all. Carry the two dated operator decisions into that entry so the document and the memory store agree. `## Known gaps` (line 116) is the fallback home if the acceptance is not yet settled in the shape the other two sections need.
+
+## The journal call-line and answer-line shape is written twice in hooks/index.ts (found 2026-09-26)
+
+`shadowAsk` and `liveAsk` in `hooks/index.ts` each build the same `writeCall` payload and the same single-element `writeAnswers` payload, about twenty-five lines that differ in two places: the `haikuValue` each passes, and whether the writes sit on the caller's awaited path. Two copies of one line shape can drift, and the journal's columns are what a labeling pass reads.
+
+The extraction was not taken in the goal-every-turn plan's section 3 because that section's own text states `shadowAsk` is untouched, and a shared helper cannot be introduced without editing it.
+
+Remedy: one private `journalResult(host, site, stampId, questionSetId, mode, result, haikuValue)` in `hooks/index.ts` that both wrappers call, taken in a change that is already allowed to touch `shadowAsk`. Keep the two callers' own difference outside it: `shadowAsk` fires the helper detached and `liveAsk` fires it detached as well, so the helper itself awaits its two writes and neither caller does.
+
+## Thirteen plugin options are read without being declared in the manifest (found 2026-09-26)
+
+`.claude-plugin/plugin.json` declares 22 fields under `userConfig`. `hooks/index.ts` reads 35 `cfg.*` options. The thirteen it reads undeclared are `breakInAfterMs`, `costBackoffAfterTicks`, `costBackoffMaxMs`, `costEnabled`, `costMaxNudgesPerHour`, `costMaxPluginCallsPerHour`, `costSummaryEveryNTicks`, `operatorRecordTtlMs`, `selfReviewDebounceTurns`, `selfReviewEveryTurns`, `selfReviewMaxPerHour`, `selfReviewStreak` and `urgentCheckMinMs`. The counts come from `Object.keys(manifest.userConfig).length` and a sorted unique grep of `cfg.` over that file.
+
+The engine's own type file states that `register(on, options)` receives the values of the fields its manifest's `userConfig` declares, defaults filled in, and that stored options are validated against the declared type before the module loads. Read strictly, that makes all thirteen reads permanently undefined, so the cost layer, the self-review layer, the urgent break-in floor and the operator record lifetime would each run on their code fallbacks with no settings value able to move them.
+
+What is established and what is not. That the declared path works is confirmed: a live session with `heartbeatMs` in `pluginConfigs` changed the heartbeat cadence, which the operator memory `plugin-options-come-from-settings-pluginconfigs` records, and `heartbeatMs` is declared. Whether an undeclared key reaches `register` is not established either way from this repository. No suite can settle it, because every suite passes its own options object straight to `register` and so bypasses the manifest entirely.
+
+The goal-every-turn plan's section 2 declared its own new key rather than joining this set, so nothing here blocks that plan. What is owed is the reading itself, because the answer decides whether four shipped features are configurable or silently fixed.
+
+Remedy: settle the delivery rule once, by writing a settings file that sets one undeclared numeric option to a value whose effect is observable and reading whether the behaviour moves, then either declare all thirteen under `userConfig` or delete the reads and their README rows. Do not infer it from the type file's docstring alone, which is documentation rather than the engine's behaviour.
+
+## The settings helpers spawn four unbounded node processes on the launch path (found 2026-09-26)
+
+The provided-settings branch of `bin/supervise.sh` calls four helpers in `bin/agentic-common.sh` that each run a `node -e` script over the same settings file, and two more read values back. So four to six node processes run before the child starts, the count depending on which of the two Jev variables the launch environment sets. None of the six carries a timeout. A settings file on a stalled or contended filesystem therefore blocks the launch at a point where the supervisor has written no heartbeat yet, so the keeper sees a launch that neither starts nor fails.
+
+The two Jev helpers cost nothing on a launch that names neither value: `ensure_settings_jev_mode` and `ensure_settings_jev_live` each return in bash before reaching their `node -e`, so the default fleet pays no spawn for either. The other four spawn unconditionally, and each parses and re-serializes the whole file independently.
+
+Remedy: one bounded wrapper shared by all four helpers, so a hang becomes a named refusal the keeper can act on rather than an indefinite wait. Folding the helpers into fewer node processes is the separate and larger change; the timeout is the part that turns a hang into a signal.
+
+## The settings helpers write a predictable temp path a link could redirect (found 2026-09-26)
+
+Seven helpers in `bin/agentic-common.sh` rewrite a settings file by writing `<file>.tmp-<pid>` beside it and renaming. The run directory those files sit in is modifiable by Authenticated Users under the accepted risk recorded in `docs/security-model.md`, and Node's `writeFileSync` follows an existing link. So a process that is not the operator, which that accepted risk already admits can write under `D:/`, could pre-create that predictable path as a link and have the supervisor write settings JSON to a path of its choosing under the operator's account, including outside `D:/` where that class otherwise cannot reach.
+
+Exploitability is low rather than nil, and the reason is the one thing worth re-reading before acting: creating a symbolic link on Windows normally needs a privilege a service account does not hold. So this is a gap in a guard rather than a live path, and the accepted risk it leans on is the one the security model already records.
+
+It is pre-existing across all seven helpers rather than introduced by any one of them, which is why it sits here rather than in the section that added the seventh.
+
+Remedy: create the temp file with exclusive intent, `fs.openSync(tmp, "wx")`, in one shared place all seven use, so an existing path at that name is a refusal rather than a followed link. The same shared place is where the timeout the entry above asks for belongs, so the two are one change.
+
+## An awaited model completion on the prompt-delivery path carries no bound (found 2026-09-26)
+
+`wordNewRecordText` in `hooks/index.ts` awaits `$.model.complete` with no timer, inside the `prompt.submit` hook and ahead of the call that delivers the prompt. Under a live `turn-open` verdict of `new-goal` the operator's message does not reach the model until that completion returns, and it returns whenever the harness lets it, after the classifier has already spent up to its own 2,000 ms bound on the same prompt.
+
+This is conformant rather than a defect, which is why it sits here. Section 4 of the goal-every-turn plan asks for "the same `$.model.complete` call shape the controller's reason call uses", and that call, in the controller tick, is equally unbounded. Both the adversarial lens, which held the spec, and the performance lens, which marked its own requirement assumed rather than quoted, read it as a plan-level acceptance. Adding a timer would have been a mechanism no clause of that plan names.
+
+The class is wider than the one call. The seam bounds its own request and nothing bounds the model completions beside it, so the question is whether a hook that runs ahead of prompt delivery should be allowed to await anything unbounded at all. The controller's own call is on a tick rather than in front of a prompt, which is why it has cost nothing so far.
+
+It is reachable only once `turn-open` is named in `jevLive`, which is empty by default, so nothing is exposed today.
+
+Remedy: one shared bounded wrapper for a model completion awaited on a delivery path, racing the call against a stated bound and taking the caller's own fallback when the timer wins. For the record wording that fallback already exists and is the message excerpt. Deciding the bound is the operator's, since the tradeoff is a worded record against a delayed message.
+
+## The seam's live timer starts after up to seven local host calls (found 2026-09-26)
+
+`hooks/decision-seam.ts` starts the live timeout race after the key read and the override resolver have both run. Up to seven awaited host calls sit before it: the environment read for the key, up to two more resolving the home, and a file-exists plus read for `active.json` and again for a version file where one is named. All are local, and none is inside the 2,000 ms the mode's bound promises.
+
+So the bound the plan states for a live call describes the request alone rather than the call. On a healthy box the difference is small and unmeasured. On a loaded one, or with a slow file system, a caller that was promised 2,000 ms can wait longer with no failure reason naming why.
+
+This is section 3's code, inherited by section 4's prompt path and by section 5's turn-end path, which is what makes it worth an entry rather than a comment: the turn-end path is the one the plan cares about bounding.
+
+Remedy: start the race before the resolver, or bound the resolver with the same timer. The first is smaller and changes no failure vocabulary.
+
+## A turn record's journal outcome is lost when the cap drops the record (found 2026-09-26)
+
+A turn record carries the pending journal stamps of the calls that opened or continued it, and the writer settles each one at the third of the persona's own turn completions after it joined. The record store caps closed records at twenty and drops the oldest beyond that. So a record closed and dropped inside three turns takes its unsettled stamps with it, and those calls never get a `record_delivered_within` line at all.
+
+Section 4's own acceptance says the outcome is written once, `true` or `false`. This is the one path on which it is written neither. The promotion bar under that plan's `## Operator Verification` is a labelling pass over exactly those lines, so a missing line is a call the pass cannot score rather than a call it scores wrongly.
+
+Reachability is low and worth stating rather than assuming. It needs more than twenty records to close inside three of the persona's own turns, which means a burst of messages each superseding the last, under a live verdict that supersedes. With the live list empty, the fallback continues an open record rather than superseding it, so the burst does not arise.
+
+All three of section 4's review rounds raised some form of this, which is why it is written down rather than left on a Minor list. Each time the fix was the same shape and each time it was declined for the same reason: writing an outcome at the moment the cap drops a record is new behaviour at a new site, and a close pass may not take a fix that would owe a further review round.
+
+Section 5 widened the class rather than introducing a second one. A record now carries two lists of unsettled journal outcomes, the turn-open stamps this entry was written for and the turn-disposition stamps that answer `next_prompt_kind`, and the cap drops a record holding either. The second list is the more exposed of the two, because a disposition stamp waits for the next external message rather than for a counted number of turns, so it can sit unsettled far longer. One remedy covers both lists and should name both.
+
+Remedy: settle a dropped record's pending stamps as `false` at the drop, inside the reap, so the cap can never swallow a call's outcome. The alternative, exempting a stamp-holding record from the cap, is worse: it lets a burst of messages hold the cap open and grow the store without bound.
+
+## The journal's state text is not the message the persona received (found 2026-09-26)
+
+Every field the turn-open question sends passes through the plugin's own line guard, which folds each line terminator to a space and rewrites each bracket to a parenthesis. The guard is there for a real reason: the state is three labelled lines the plugin authors, and a message carrying its own newline and the text of a label would otherwise write a fourth field into it. Section 4's own test drives that case.
+
+The cost falls on the labelling pass. A labeller diffing the journal's state against what the operator actually sent finds every bracket changed, and the plugin's own conventions put brackets around the markers that carry meaning: a supervisor priming marker, a coordinator record, a proposal. So a turn whose message opened with one of those reads in the journal as though it carried parentheses instead, and a pass keyed on the marker sees nothing.
+
+Section 4 made this wider rather than introducing it. The stored record text now takes the same guard, because that text reaches a tool result the model reads and an unguarded label there is a forged authority marker.
+
+What is not at stake: the guard itself, which is a property of the channel and is correct. What is at stake is whether the labelling pass can recover the original, and it cannot from the journal alone.
+
+Remedy, and the choice is the operator's rather than obvious. Either the journal carries the raw message in a field of its own beside the guarded state, which puts unguarded external text in a file a later reader may splice somewhere, or the labelling scripts learn the transformation and apply it to their own copy of the message before diffing. The second costs nothing on this side and is the recommendation.
+
+
+## The disposition stamp list on one turn record is unbounded, and its flush is one whole-file journal write per stamp (found 2026-09-26)
+
+A turn record holds one unsettled journal stamp per turn-disposition call asked over it, and nothing caps that list. Each own turn end that reaches the classifier adds one. The list is drained at the next external message, or as `none` once the record expires, and the drain writes one outcome line per stamp. Each of those lines is a whole-file read and rewrite of that day's journal, serialized on a per-path chain.
+
+Under the shipped default the drain is the only thing that empties the list, because the live list is empty, so no classifier answer closes a record and the record stays open. The condition that grows the list is therefore the ordinary one rather than a corner: an idle controller nudges the persona, the persona ends a turn, no external message arrives, and the count climbs. The plan's `## Intent` names that controller in the operator's own words, which is what makes the condition stated rather than assumed.
+
+Nothing on a hook awaits the drain, so no turn is delayed and no prompt is held. What it costs is disk: the work is the stamp count multiplied by the day file's size, and the day file grows all day. It also queues every later journal write that day behind it.
+
+Why this is deferred rather than fixed in the section that created it. The scope adjudicator was asked whether the finding applies to this project's stated requirements, and ruled ASK: no sentence of the plan's Goal, Intent record or acceptance bullets states that per-record state or per-event journal work must be bounded, and no sentence excludes it either. Its recommendation, quoted as the reason this entry exists: the finding leans toward applying, because the Intent's own constraint sentence admits the deployment condition the growth needs, and because the journal is a stated deliverable rather than something incidental, so its cost under the stated deployment is a property of a thing the plan asked for. The judge marked as inferred the observation that the plan bounds every sibling of this list, at twenty records, a clamped text and a ring of eight, since those bounds are not in the Goal or Intent text it was given.
+
+So what is owed is the operator's call on whether an autonomous persona nudged by an idle controller carries an implied bound on per-event journal work. If it does, the fix is in scope for a section. If it does not, this entry is the record of why not.
+
+Remedy, in preference order. Append the outcome lines for one record as a single joined write, which removes the burst without bounding anything and needs no decision about what to discard. Failing that, cap the list and settle the overflow as it is pushed, which bounds the state but must then answer what value an overflowed stamp is settled with, since it neither expired nor was answered by a message.
+
+## The loader-rule check's noun list does not name `agent`, so it cannot catch a violation on that noun (found 2026-09-26)
+
+The plugin engine judges `hooks/index.ts` statically and refuses the whole module on a loader-rule violation, which silently disables every tool the plugin registers. `.kit/check-loader-rule.mjs` mirrors that judgement, and its first rule catches an engine noun read as a value rather than called as `$.noun.verb(...)`. Its noun list does not include `agent`.
+
+Section 5 is the first code to call `$.agent.list()`. That call complies, and the check passes, so nothing is broken now. What is missing is the guard: a later edit that bound or passed `$.agent` as a value would be refused by the engine and pass this check.
+
+This is a gap in the instrument rather than in any delta. It was found by the blind lens on section 5, which read it as a production risk; the production half does not hold, because the engine declares the verb at `.claude/types/claude-code.d.ts:6121` and `:6371`, so the call is live rather than silently dead.
+
+Remedy: add `agent` to the check's noun list, and audit the list against the engine's declared nouns rather than against the ones this repository happens to call today, since the same gap exists for every noun nobody has used yet.
+
+## The generated MCP tool declarations do not carry `goal_add`'s `taskId` argument (found 2026-09-27)
+
+`.claude/types/claude-code-mcp.d.ts` is tracked and is a generated snapshot of every MCP tool's input schema, written by the engine's own `mcp-tool-declarations.ts` and carrying a header that says to regenerate rather than edit. Section 6 of the goal-every-turn plan gave `goal_add` a `taskId` argument and dropped `title` from its required list. The snapshot carries neither change.
+
+What it costs is type narrowing rather than behaviour. The declarations merge into the engine's tool-input type so a handler reading `e.tool === "mcp__...__goal_add"` narrows to that tool's arguments; a snapshot that predates the argument narrows to a shape without it. Nothing in this repository reads the new argument through that type today, so no code is wrong. What is missing is the guard the file exists to give.
+
+It is not edited by hand on its own instruction, and it sits in no section's scope, which is why it is here rather than folded into the section that made it stale.
+
+Remedy: regenerate it. The sibling record in the operator memory tier, `function-hooks-prototype-ships-behind-a-flag`, states that the `/plugin-types` command works in a headless session with the function-hooks flag set, and that a leading slash passed from Git Bash needs `MSYS_NO_PATHCONV=1` or the CLI never sees the command. That record names the sibling file and a different generator, so confirm which command writes this one before running it. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
+
+## A promoted turn record has `false` written for the outcome that scores the turn-open question (found 2026-09-27)
+
+The `record_delivered_within` outcome answers every turn-open call that opened or continued a record: `true` where that record reached `delivered` inside the outcome window, `false` otherwise. Its writer reads the status and treats only `delivered` as the true arm.
+
+Section 6 added a second way for a record to close. A record the model turned into a goal or a task, or one route one promoted, reads `promoted` rather than `delivered`. It keeps its pending stamps, and the writer then puts `false` against every one of them when the window closes, even though the message was acted on in full and the record became real work.
+
+What it costs is the promotion bar rather than any behaviour. That bar is a labelling pass over these outcome lines, and a `false` on a record that became a goal entry is the wrong label on exactly the case the question is meant to get right. The blind lens on section 6 found it.
+
+It is here rather than in a section because the fix belongs to section 4's outcome writer and turns on a question nobody has answered: whether `promoted` settles the stamps true, or drops them as not applicable. Those are different claims about what the question is being scored on, and picking one inside a close pass would decide it quietly.
+
+Remedy: decide which of the two `promoted` means, then handle that status in the settling loop beside `delivered`. Either choice is a few lines; the decision is the work.
+
+## Two handlers read state and act on it across an await, the shape section 6's fix round closed in a third (found 2026-09-27)
+
+Section 6's fix round closed a defect where the shared goal-entry add read the open turn record, awaited a reach check, and then marked whichever record was open by the time the mark ran. A message arriving inside that await would have had its own record marked against an entry it never asked for.
+
+The implementer that fixed it reported two further sites in other handlers with the same shape: a read of state, an awaited reach check, then an act on the value read before the await. Both are outside section 6's scope and neither was touched.
+
+Whether either is reachable is unestablished. The engine probe recorded in this plan's interim board 3 found that no turn starts while a turn-completion chain is open on this build, and the same reasoning may cover these two, but they sit in different handlers and the probe was not run against them.
+
+Remedy: read both sites against that probe's finding. Where the window is reachable, take the same fix, which is to thread the value already read rather than re-reading it after the await. Where it is not, say so in a comment at each site so the next reader does not re-derive it, as the record-close beside it does.
+
+## A test sweep in the controller suite is calibrated against a commons read it does not name (found 2026-09-27)
+
+Section 6's fix round proved that a promotion marks the record the entry was made for, not whichever record is open when the mark runs. The case that proves it walks the boundary one parked commons read at a time and runs one drive per read a control drive counted, asserting each time that the promoted record is the one whose text the entry carries as its title.
+
+The instrument is calibrated rather than anchored. It discovers how many reads the boundary makes by counting them, and two of those reads are the reach check the fix is about. If a later change removes the commons read from that check, the sweep keeps passing while covering nothing, and the only thing standing against that is a control assertion that at least two parks exist, which the implementer itself named as weak.
+
+Nothing is wrong today: the sweep reddens on the defect it was written for, proven by a withheld mutation that made the mark read the open slot again.
+
+Remedy: assert what the reach check itself contributes rather than what the boundary totals, so the sweep names the read it depends on and reddens when that read goes away. The general form is the one this repository keeps relearning: a check calibrated from the subject's own behaviour cannot tell a covered absence from an uncovered one.
+
+## The plan index states two different running orders for the same two plans (found 2026-09-27)
+
+`docs/README.md` gives the persona memory port plan as running last, "after boundary-compaction, goal-every-turn and jev-memory-gate merge". Four lines later it gives the Jev memory gate plan as "second behind the persona memory curation plan in the persona queue". The first sentence puts the memory port after the gate and the second puts the gate after the memory plan, so one of the two is wrong and a reader picking up either plan takes the wrong predecessor.
+
+A blind reader of the index found it while reviewing section 7 of the goal-every-turn plan. It is not that section's subject: both sentences predate it, neither names the record layer, and the running order of two parked plans is the operator's to set rather than a fact recoverable from the code. Fixing it here would mean guessing which order was meant.
+
+Remedy: ask the operator which of the two runs first, then state that one order in both rows. The general form is worth carrying, since this index carries one row per plan and every row states its own position: a running order written once per participant has no single place to be wrong, so the rows drift against each other rather than against a source.
+
+## A message the plugin delivers from the inbox is held by no turn record (found 2026-09-27)
+
+The goal-every-turn plan's Goal opens with every message a persona receives being held as a turn record before the model reads it. The record step runs inside the real `prompt.submit` hook alone, and the plugin's own deliveries bypass that hook by design, which the plan's Approach states. So a coordinator persona's ruling, which reaches the persona through the inbox drain's own submit, arrives with no record held. A peer session's message is not in that class: the harness delivers it through the real hook, so it does open a record. The operator's own messages split by route: one posted to an idle session arrives as a turn of its own and opens a record, while one the controller drains from the inbox does not.
+
+The code is what the plan specified, and the documents that claimed otherwise were corrected in the same pass. What is left is the Goal's own reach: the one class of received message it names and the code skips. The whole-changeset goal read ruled that filling it would be a new call site on the plugin's own submit path, so it is the operator's call rather than a defect to fix quietly.
+
+Remedy: the operator decides whether "receives" was meant to include a plugin-delivered record. If it was, the record step becomes a shared function the inbox drain calls before its `$.prompt.submit`, which also settles what `turnId` such a record carries, since the drain creates the turn it is delivering into. If it was not, the Goal sentence is narrowed to a message arriving as a turn of its own.
+
+## Route one never fires once a goal is active, so only a bare record is ever promoted (found 2026-09-27)
+
+Route one returns wherever the open record carries a `goalId` (`hooks/index.ts:1415`). The opening fallback attaches a new record to the active entry whenever one is active, and continues that record on every later message. So once any goal is active, every record carries a `goalId` and route one cannot run. Promotion from plan activity reaches exactly the case where the persona had no active goal when the message arrived.
+
+That is what the plan's Approach specifies, in the words "where the open record has no `goalId`", and the goal read accepted route one's shape. So this is a narrowing of the Goal sentence about a record that touched a plan document rather than a defect, and no document states the narrowing.
+
+Remedy: state the precondition where a reader meets the route, in `README.md`'s promotion routes and `docs/architecture.md`'s. Widening it is a separate question, because a record already attached to an entry has a home and promoting it would mean deciding whether the new plan entry hangs under that entry or beside it.
+
+## A record attached to an entry outlives that entry's completion (found 2026-09-27)
+
+A record whose `goalId` names an entry keeps that pointer for up to the 24-hour timeout, and nothing clears it when `goal_done` completes the entry. So `goal_status` prints the record as open, every later message continues it under the fallback, and the five statuses have no member that expresses "attached to an entry that has finished". The nearest, `promoted`, means the record became the entry rather than outlived it.
+
+Nothing is wrong on a reachable path today beyond the stale reading: the record is never nudged and an idle open record is a durable compaction boundary, so the cost is one line of goal status naming a finished node and a follow-up continuing an intention whose goal is closed.
+
+Remedy: decide first whether the completion should close the record or re-bare it. Closing it needs a sixth status or a reuse of `expired` with a different reason, which is a store change. Re-baring it, clearing `goalId` and leaving the record open, needs no new status and keeps the intention alive for the follow-up, which is the behaviour the carry-over ruling asks for. Prefer the second on that ground.
+
+## The two new journal sites roughly double a day file that is rewritten whole on every append (found 2026-09-27)
+
+`hooks/decision-journal.ts:272-289` reads and rewrites the whole day file on every append, so a day's disk work grows with the square of its line count. One 2026-09-23 day file on the trunk measures 1,762,069 bytes over 1,703 lines. The goal-every-turn plan adds two call sites, one per external message and one per own turn end, which is inferred to add about 950 lines a day, or 56 percent.
+
+The plan states no bound of any kind on journal volume, so this is a measurement rather than a violated requirement. It is recorded as an aggregate because no single section saw it: each section added its own site and the cost is in the total.
+
+Remedy: append rather than rewrite. The writer holds the day's path already, so an open-append-close per line removes the quadratic term outright. Where a whole-file rewrite is load-bearing for some reader, bound the day file instead and roll over at a line count.
+
+## The closing question is asked about the wrong turn's text once it goes live (found 2026-09-27)
+
+A record stays open across several of the persona's own turn ends, and each of those ends asks the closing question about that turn's own closing text. The record's own text is not in the state the question is given. So the sequence is: the operator's message opens a record, the persona replies with a `WAITING:` lead which leaves it open by a fixed rule, a controller nudge then opens a turn of its own, and that turn's end asks the classifier how it went. A `delivered` verdict there closes the operator's record on the strength of a turn that answered a nudge.
+
+This is unreachable as shipped. The live list is empty by default, and the close is the only writer of `delivered`, so the status is never written at all. It is recorded rather than fixed because the operator ruled on 2026-09-27 that the whole closing path ships dormant, and because the held-out pass established the question needs replacing rather than patching: no single question about one reply can decide closure, since answering the request and waiting on the operator are independent facts. A one-condition guard added now would sit on a path whose shape is going to change.
+
+Remedy: it is a precondition of promoting `turn-disposition`, not a change to make first. Whatever question replaces the shipped one has to be asked about the record's own ask as well as the ending turn's reply, which is the two-sided shape the plan's own Open Questions section argues for. The narrow guard, gating the close on the turn's kind so only a turn the record itself opened can close it, is the floor any replacement still needs.
+
+## The in-flight journal line repeats where its sibling route suppresses (found 2026-09-27)
+
+The boundary step writes a `turn_record_in_flight` decision naming the rule that left an open record open, at `hooks/index.ts:958`. The promotion route beside it writes its own refusal lines through a `logOnce` helper at `hooks/index.ts:1454`, which drops a line whose action, record and text match the one it last wrote. Both run at every own-turn end a record stays open for, so the two have the same cadence and only one of them guards against repeating itself.
+
+The consequence is a redundant line rather than pressure on the decisions ring. One line per own-turn end is the rate the ring is already sized for, and `DECISIONS_MAX` at `hooks/agent-state.ts:620` caps it at 200 entries, so nothing is evicted earlier than it otherwise would be. That is why the finishing pass left it rather than fixing it: the fix is a new module-level memo that no requirement in the plan names.
+
+Remedy: give the in-flight writer the same last-line memo route one already has, keyed on the record id, the action and the detail text. Route one's helper is the shape to mirror and its own comment carries the argument for why a repeated identical reading says nothing new.
+
+## The git command patterns are quadratic on a long crafted command (found 2026-09-27)
+
+The Bash-command classifier tests two patterns built from a nested option run, `GIT_COMMIT_PATTERN` and `GIT_PUSH_PATTERN` at `hooks/index.ts:2441`. The option run nests a quantified group inside a quantified group, which is the shape that backtracks catastrophically when the subject nearly matches and then fails. Measured at 2,633 ms on 140,001 characters of crafted input.
+
+The input's author is the model itself rather than an outside party, so nothing here is attacker-supplied in the ordinary sense. What it costs is the hook's own latency on a pathological command the model could compose by accident, on a path that runs for every Bash call.
+
+Remedy: anchor the option run or parse the command's tokens rather than matching them with one pattern. A tokenizing read of the leading options is linear and expresses the same rule the pattern's own comment states, which is that a token that is not an option ends the run.
+
+## The goal-tree block folds its stored fields but does not neutralize their brackets (found 2026-09-27)
+
+The `[GOAL TREE]` and `[GOAL QUEUE]` blocks now fold every stored field they splice onto one line, so no field can start a line the model reads as the plugin's own. They do not rewrite square brackets in those fields. The two sibling blocks do both: `taskListBlock` guards with `bracketSafeText(oneLine(text.slice(0, cap)))` at `hooks/index.ts:1768`, and `proposeFrame` does the same at `:1638`, whose comment states the reason as stopping a stored goal from forging a label in the prompt it is spliced into.
+
+What that leaves open is a label rather than a status line. A title reaching the goal-tree block through `goal_add` or `goal_create` is the model's own text, cut to 80 characters and never bracket-guarded, so a title such as `Fix the build [SUPERVISOR-ASK id=7]` reaches the block with its brackets intact. The record layer's own field is not exposed this way, because `clampTurnRecordText` neutralizes brackets at the field and every producer and the load all call it.
+
+This was left rather than fixed because the fold was the finding under review and the brackets are a second, wider change: it alters how every legitimately bracketed title reads in every prompt, and no review has yet weighed that against the label risk. The scoped fix that a round would take is the one the siblings already use.
+
+Remedy: apply the same guard the sibling blocks apply, `bracketSafeText` over each folded field at the goal-tree and goal-queue prints, and weigh it against titles that carry brackets for good reasons. Reuse the exported guard rather than writing a third copy.
+## Seven older backlog entries cite lines about 1,300 off in hooks/index.ts (found 2026-09-27)
+
+Seven `hooks/index.ts` citations in entries predating the goal-every-turn plan point into unrelated code. Two were sampled: `boundedText` is cited at 1484 and sits at 2776, and `fleetPromptText` is cited at 2560 and sits at 3833. The entries are at `docs/backlog.md` lines 541, 549, 571, 573, 581, 583 and 617.
+
+This changeset did not cause it. At the goal-every-turn base ref `8b780bd`, `hooks/index.ts:1484` held a comment about `UTF8Encoding` and `:2560` a comment about roster-supplied text, so neither line held the construct its entry names before this effort opened the file. The drift is older than that ref.
+
+Re-anchoring each one needs a decision rather than an edit, because a citation that far off no longer identifies which symbol the entry meant. Remedy: for each of the seven, read the entry's prose, find the construct it describes, and re-anchor to it; retire any entry whose subject no longer exists. The goal-every-turn finishing pass re-anchored only the seven citations in its own entries, since those were the ones its own changes moved.
 
 ## The upgrade check's step timeout leaves claude's child processes running (found 2026-09-27)
 

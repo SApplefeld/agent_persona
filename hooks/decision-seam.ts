@@ -1,7 +1,11 @@
 // decision-seam.ts: the one path a closed question takes to Jev, TypeSafe's
-// classifier service. Shadow only: the caller passes Haiku's value in, the
-// result carries it back out beside Jev's answer, and no branch anywhere
-// reads a Jev answer into a decision.
+// classifier service, in one of two modes. In shadow the caller passes
+// Haiku's value in, the result carries it back out beside Jev's answer, and
+// no branch reads the answer into a decision. In live the same path sends the
+// same request under a shorter timeout, because a live call is awaited by the
+// wrapper that made it where a shadow call is not; which questions may be
+// asked live, and what their answers reach, is that wrapper's rule in
+// hooks/index.ts (liveAsk) and never this module's.
 //
 // No `import $` and no side effects at load. The engine's loader follows `$`
 // only into functions declared in hooks/index.ts and refuses the whole module
@@ -31,8 +35,13 @@ import type { PluginHost } from "./host";
 // The live contract, endpoint included: https://docs.typesafe.ai/api.md
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
-// $.http.fetch takes no timeout, so every request is raced against this timer.
+// $.http.fetch takes no timeout, so every request is raced against a timer,
+// and the timer is the mode's. A shadow call is awaited by nothing, so its
+// bound only caps how long an orphaned request stays open. A live call is
+// awaited on the path that asked it, a turn end among them, so its bound is
+// the longest that path may be delayed.
 export const SHADOW_TIMEOUT_MS = 10_000;
+export const LIVE_TIMEOUT_MS = 2_000;
 // The longest model name the result carries; the vendor's is under 16.
 export const MODEL_MAX_CHARS = 64;
 
@@ -107,8 +116,8 @@ export type QuestionAsk =
 // that is not a question, the seam reads that as no_question.
 export type QuestionResolver = (questionSetId: string) => Promise<ResolvedQuestion>;
 
-// The closed set of ways a shadow call ends short of an answer.
-//   off         any mode other than the exact string "shadow"; nothing is read or sent
+// The closed set of ways a call ends short of an answer.
+//   off         any mode other than the exact strings "shadow" and "live"; nothing is read or sent
 //   no_key      TYPESAFE_API_KEY absent, unreadable, or shorter than KEY_MIN_CHARS
 //               once trimmed; nothing is sent and no state is carried
 //   no_question the resolver rejected or returned a shape carrying no options; local,
@@ -292,8 +301,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // event a co-loaded hook may answer with a value of its own, so a hostile
 // shape here is reachable rather than exotic. The guard is exported-shaped
 // (one helper, every site) rather than repeated inline, because it is a
-// property of the channel and not of the site that first needed it: three of
-// the four sites were written by hand without it and the fourth with it.
+// property of the channel and not of the site that first needed it, so every
+// site that stringifies a value off the injected host calls it.
 function safeString(v: unknown, fallback: string): string {
   try {
     return String(v);
@@ -360,6 +369,17 @@ function countOf(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
 }
 
+// Whether a probability the body carried lies in 0 to 1, the range every
+// probability the vendor returns runs over (https://docs.typesafe.ai/api.md).
+// One helper for every validator that reads one, because the bound is a
+// property of the channel and not of the validator that first needed it: a
+// live answer is read by comparing a probability against a threshold, so a
+// value past 1 admitted by one validator and refused by another would read
+// as a certain answer on the path that admitted it.
+function inUnitInterval(p: number): boolean {
+  return p >= 0 && p <= 1;
+}
+
 // The first way a resolver's value fails to be a ResolvedQuestion of the
 // primitive the caller asked for, or null where it is one. The detail names
 // the field and never quotes the value. A primitive other than the one asked
@@ -393,8 +413,9 @@ function questionProblem(v: unknown, expected: QuestionPrimitive): string | null
 
 // The validated ChoiceAnswer built from the body's answer for the asked
 // question, or the first field that failed. Only the four fields are copied,
-// the choice must be one of the ids the request offered, and every number
-// must be finite. The problem text is fixed per field and never quotes the
+// the choice must be one of the ids the request offered, every number must
+// be finite, and every probability must lie in 0 to 1 on the same ground the
+// Noul's value must. The problem text is fixed per field and never quotes the
 // body, since the body is a detail bound for the journal.
 function choiceAnswerOf(v: unknown, optionIds: readonly string[]): { answer: ChoiceAnswer } | { problem: string } {
   if (!isRecord(v)) return { problem: "answer is not an object" };
@@ -415,6 +436,7 @@ function choiceAnswerOf(v: unknown, optionIds: readonly string[]): { answer: Cho
     // whole day's file and would carry that cost for every later line.
     if (!optionIds.includes(id)) return { problem: "answer probabilities carry an option that was not offered" };
     if (typeof p !== "number" || !Number.isFinite(p)) return { problem: "answer probabilities carry a value that is not a finite number" };
+    if (!inUnitInterval(p)) return { problem: "answer probabilities carry a value that is outside 0 to 1" };
     probabilities[id] = p;
   }
   if (typeof v.confidence !== "number" || !Number.isFinite(v.confidence)) return { problem: "answer confidence is not a finite number" };
@@ -430,7 +452,7 @@ function noulAnswerOf(v: unknown): { answer: NoulAnswer } | { problem: string } 
   if (!isRecord(v)) return { problem: "answer is not an object" };
   if (v.type !== "noul") return { problem: "answer type is not noul" };
   if (typeof v.noul !== "number" || !Number.isFinite(v.noul)) return { problem: "answer noul is not a finite number" };
-  if (v.noul < 0 || v.noul > 1) return { problem: "answer noul is outside 0 to 1" };
+  if (!inUnitInterval(v.noul)) return { problem: "answer noul is outside 0 to 1" };
   return { answer: { type: "noul", noul: v.noul } };
 }
 
@@ -458,6 +480,7 @@ function scoreAnswerOf(v: unknown, levelCount: number): { answer: ScoreAnswer } 
     // thousand keys cannot reach a line.
     if (!levelKeys.includes(level)) return { problem: "answer probabilities carry a level that was not sent" };
     if (typeof p !== "number" || !Number.isFinite(p)) return { problem: "answer probabilities carry a value that is not a finite number" };
+    if (!inUnitInterval(p)) return { problem: "answer probabilities carry a value that is outside 0 to 1" };
     probabilities[level] = p;
   }
   if (typeof v.confidence !== "number" || !Number.isFinite(v.confidence)) return { problem: "answer confidence is not a finite number" };
@@ -527,8 +550,9 @@ function coreFailure(
 // timeout race and the answer validation are written once and cover every
 // primitive.
 //
-// The mode check comes first, so anything but "shadow" reads no key, resolves
-// no question and sends nothing. The key check comes second, so a VM with no
+// The mode check comes first, so anything but "shadow" or "live" reads no
+// key, resolves no question and sends nothing; the two that send differ only
+// in the timer they race. The key check comes second, so a VM with no
 // key, or one holding a value too short to be a bearer token, sends nothing
 // either. The state is scrubbed third, immediately after that check, so every
 // path past it carries the scrubbed text and no caller can reach the vendor or
@@ -545,7 +569,10 @@ async function send(
   mode: string,
   resolve: QuestionResolver,
 ): Promise<CoreResult> {
-  if (mode !== "shadow") return coreFailure("off", null, null, null, null);
+  // The exact strings and nothing else: a value that is not one of the two
+  // folds to off rather than to a default mode, and never to a throw.
+  const timeoutMs = mode === "shadow" ? SHADOW_TIMEOUT_MS : mode === "live" ? LIVE_TIMEOUT_MS : null;
+  if (timeoutMs === null) return coreFailure("off", null, null, null, null);
 
   let key: unknown;
   try {
@@ -646,16 +673,22 @@ async function send(
   //
   // When the request wins, the timer is not cancelled: SeamHost.sleep carries
   // no abort signal, so it runs to its end as an orphan. That is accepted.
-  // It is bounded at SHADOW_TIMEOUT_MS and there is at most one per call.
-  // The wiring puts two shadow calls on a tick, the controller decision and
-  // the plan switch, and up to three on a turn, the turn score, the memory
-  // kind gate and the plan health request, so up to five orphans can be live
-  // across a tick and a turn. Still bounded, still harmless, and worth
-  // stating truthfully.
+  // It is bounded at the mode's timeout and there is at most one per call.
+  // The count across a tick, a turn and a prompt is the count of call sites,
+  // each of which makes one call: two on a tick, the controller decision and
+  // the plan switch; four on a turn, the turn score, the memory kind gate, the
+  // plan health request and the turn-disposition question the record close
+  // asks; and one on a prompt, the turn-open question the record step asks
+  // before the model reads the message. Seven, read off those sites rather
+  // than derived, so a site added later leaves this number checkable against
+  // them. Still bounded, still harmless, and worth stating truthfully.
+  // The other orphan is the request: $.http.fetch takes no abort signal
+  // either, so when the timer wins, the request it raced stays open for as
+  // long as the host's own fetch allows.
   // Its settling is handled here, so it can neither reject nor touch the
   // result.
   const timer: Promise<Settled> = Promise.resolve()
-    .then(() => host.sleep(SHADOW_TIMEOUT_MS))
+    .then(() => host.sleep(timeoutMs))
     .then(
       () => ({ kind: "timeout" as const }),
       () => ({ kind: "timeout" as const }),
