@@ -104,6 +104,12 @@
       "title": "Jev shadow mode",
       "description": "off or shadow, and shadow is the default. shadow has the decision seam put each closed question the plugin already asks Haiku to Jev as well, beside it, and write the answer to the decision journal, acting on nothing it gets back. off makes no such call and writes no journal line. The supervisor refuses any other value rather than writing it, so a typo stops that launch instead of quietly disabling the seam."
     },
+    "restartRecap": {
+      "type": "string",
+      "default": "auto",
+      "title": "Automatic restart recap",
+      "description": "auto or skill, and auto is the default. auto runs bin/restart-recap.mjs at the supervisor's priming turn and injects its digest as a [RESTART RECAP] block, only where the previous session's last record is under 24 hours old and either the persona has an active goal or the operator wrote within 6 hours. skill runs nothing at launch, leaving the recap to the restart-recap skill. Any other value reads as auto at the plugin's own read. A supervisor launch given RESTART_RECAP outside that pair stops rather than writing it."
+    },
     "reconcileEveryMs": {
       "type": "number",
       "default": 14400000,
