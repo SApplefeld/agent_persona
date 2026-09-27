@@ -1006,6 +1006,434 @@ async function closeTurnRecordAtTurnEnd(
   });
 }
 
+// Section 6 (goal-every-turn): marks the open turn record promoted with the id
+// of the goal node or the task it became, and returns the undo of that mark, or
+// null where no record was open. Route two's three handlers and route one all
+// promote through this one function, so the fields a promotion writes are one
+// rule: the closed status, the id on whichever field names its kind, and the
+// clock the promotion happened at. A promoted record is no longer open, so it
+// drops out of the close's view and out of the status line's, which is what
+// keeps a record from dangling beside the entry it became.
+//
+// The undo is returned rather than applied by the caller's own hand because a
+// caller that can roll its add back has to put every field of the record back
+// as it was, including the ones it never wrote, and a caller that cannot roll
+// back simply drops the undo.
+function promoteOpenRecord(id: string, field: "goalId" | "taskId", now: number): (() => void) | null {
+  const record = openTurnRecord(sess.state);
+  if (record === null) return null;
+  const before = { status: record.status, goalId: record.goalId, taskId: record.taskId, closedAt: record.closedAt };
+  record.status = "promoted";
+  record[field] = id;
+  record.closedAt = now;
+  const decision: AgentState["decisions"][number] = {
+    timestamp: now,
+    loop: "monitor",
+    action: "turn_record_promoted",
+    detail: `record ${record.id} promoted to ${field === "goalId" ? "entry" : "task"} ${id}`,
+  };
+  sess.state.decisions.push(decision);
+  return () => {
+    record.status = before.status;
+    if (before.goalId === undefined) delete record.goalId; else record.goalId = before.goalId;
+    if (before.taskId === undefined) delete record.taskId; else record.taskId = before.taskId;
+    if (before.closedAt === undefined) delete record.closedAt; else record.closedAt = before.closedAt;
+    dropDecision(decision);
+  };
+}
+
+// Section 6 (goal-every-turn): what an add of a goal entry does once its
+// arguments are settled, and the one path that does it. The goal_add handler
+// calls this with the arguments the model gave, and route one of the promotion
+// routes calls it at a turn's end with the arguments it read off the record, so
+// the paused-awaiting-yes shape, the [PROPOSAL] and [STARTED] records and the
+// rollback are the autonomy dial's own on both routes rather than a second copy
+// of them. `unprompted` and `awaitingYes` are the caller's readings, since only
+// a tool call can read a turn's origin: route one is the plugin's own act and is
+// unprompted whatever turn it lands in.
+//
+// What it does not do is build the caller's message. The deny text of a refusal
+// is returned, so the tool can pass it to the model and the boundary can log it,
+// and the entry is returned, so the tool can name what is active now.
+type GoalEntryAdd =
+  | { ok: true; node: GoalNode }
+  | { ok: false; deny: string };
+
+async function addGoalEntry(
+  dp: any,
+  a: {
+    kind: "plan" | "task";
+    title: string;
+    objective: string;
+    parentId: string;
+    root: GoalNode;
+    maxRounds: number;
+    planPath: string | undefined;
+    unprompted: boolean;
+    awaitingYes: boolean;
+    dropTaskId: string | undefined;
+    coordinatorPersona: string;
+    architectPersona: string;
+  },
+): Promise<GoalEntryAdd> {
+  const { kind, parentId, root, planPath, unprompted, awaitingYes, coordinatorPersona, architectPersona } = a;
+  // A plan the gate admitted outside the operator's and the coordinator
+  // persona's turns was admitted by the autonomy level, and one record
+  // tells the coordinator persona about it: a [PROPOSAL] at plan-and-ask,
+  // where the entry waits paused for the operator's yes, and a [STARTED]
+  // at plan-and-start. The road to the coordinator persona is checked
+  // here, with the other refusals. The record goes out only after the
+  // entry is saved, so the coordinator's inbox never names an entry the
+  // store does not hold, and a record that then cannot be written takes
+  // the add back out of the tree and the store.
+  if (unprompted) {
+    let noRoad: string | null = null;
+    try {
+      if (sess.persona === "default") {
+        noRoad = "the session is on the default persona, which has no road to a coordinator persona";
+      } else if (!await mayReachPersona(commonsStoreOf(dp), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
+        noRoad = `the reach rule refuses this session's write to '${coordinatorPersona}'`;
+      }
+    } catch (err) {
+      noRoad = `the reach check for '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (noRoad !== null) {
+      return { ok: false, deny: unpromptedPlanRefusedText(noRoad) };
+    }
+  }
+
+  const now = Date.now();
+  const newNode: GoalNode = {
+    id: `${kind}-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    parentId,
+    kind,
+    title: a.title.slice(0, 80),
+    objective: a.objective.slice(0, 500),
+    status: awaitingYes ? "paused" : "pending",
+    ...(awaitingYes ? { blockedReason: AWAITING_YES_REASON, awaitingYes: true } : {}),
+    source: "worker",
+    planningRounds: 0,
+    consecutiveBlockedPlannings: 0,
+    consecutivePlanningFailures: 0,
+    planningRound: 0,
+    maxRounds: a.maxRounds,
+    completedRounds: 0,
+    scores: [],
+    notes: [],
+    createdAt: now,
+    updatedAt: now,
+    ...(planPath ? { planPath } : {}),
+  };
+  // What this add changes, so an unprompted add whose save yields or
+  // whose record cannot be written can take it back: the root's fields
+  // where the add reopened it, the active slot before any activation,
+  // the task route three drops, the open record it promotes, and the
+  // decision lines the add pushed.
+  const priorActiveGoalId = sess.state.activeGoalId;
+  let reopenedRoot: { status: GoalNode["status"]; blockedReason: string | undefined; updatedAt: number } | null = null;
+  const addDecisions: AgentState["decisions"] = [];
+  let nudgeBefore: { answers: number; resetSinceOpened: boolean; lastNudgeAt: number } | null = null;
+  // A node added directly under a finished root reopens the root, so the
+  // tree never holds live work under a root that reads finished. A node
+  // added under a plan leaves the root as it was, since a finished plan
+  // keeps its child out of reach and a reopened root over it would read
+  // live with nothing to activate. It runs after every refusal above, so a
+  // refused add reopens nothing, and it touches no other node: finished
+  // children stay finished.
+  if (parentId === root.id && (root.status === "complete" || root.status === "abandoned")) {
+    const priorStatus = root.status;
+    reopenedRoot = { status: root.status, blockedReason: root.blockedReason, updatedAt: root.updatedAt };
+    root.status = "pending";
+    root.blockedReason = undefined;
+    root.updatedAt = now;
+    const reopenDecision: AgentState["decisions"][number] = {
+      timestamp: now,
+      loop: "goal",
+      action: "root_reopened",
+      detail: `${root.id} reopened from ${priorStatus} to pending for a new ${kind}`,
+    };
+    sess.state.decisions.push(reopenDecision);
+    addDecisions.push(reopenDecision);
+  }
+  sess.state.goals.push(newNode);
+
+  const addDecision: AgentState["decisions"][number] = {
+    timestamp: now,
+    loop: "goal",
+    action: "add",
+    detail: `${newNode.id} (${kind}) under ${parentId}: "${a.title.slice(0, 50)}"`,
+  };
+  sess.state.decisions.push(addDecision);
+  addDecisions.push(addDecision);
+
+  // R4: adding a task under the active plan demotes the plan to pending
+  // and activates the new task.
+  if (kind === "task") {
+    const parent = sess.state.goals.find((g) => g.id === parentId)!;
+    if (parent.status === "active") {
+      parent.status = "pending";
+      parent.updatedAt = now;
+      newNode.status = "active";
+      sess.state.activeGoalId = newNode.id;
+      activate(dp, newNode.id, `${parent.id} demoted to pending; ${newNode.id} activated`);
+    }
+  }
+
+  // Section 10: if the tree still has no active leaf, activate the node
+  // just created rather than deferring to the next tick, mirroring the
+  // task branch above (set status and activeGoalId directly, then call
+  // activate() to log the decision and reset the nudge budget). Without
+  // this, the node stays pending for the rest of this turn, so a
+  // same-turn goal_done has nothing of this node's to close.
+  //
+  // isActivationEligible carries activateNext's own ancestor rule, so a
+  // node added under an abandoned or blocked parent is refused here the
+  // same way activateNext's DFS would refuse it - this branch never
+  // activates into a closed subtree.
+  //
+  // The hold check beside it is one thing: an open ask (pendingAskId)
+  // is the operator's own open question, whatever opened it, and the
+  // controller keeps no other hold. A paused node, dropped by an
+  // operator pause or left over from a plan switch, is not a hold and
+  // must not disable this branch for the rest of the session.
+  if (
+    !sess.state.goals.some((g) => g.status === "active") &&
+    !sess.state.pendingAskId &&
+    isActivationEligible(sess.state, newNode)
+  ) {
+    newNode.status = "active";
+    newNode.updatedAt = now;
+    sess.state.activeGoalId = newNode.id;
+    nudgeBefore = { answers: sess.nudgedAnswersWithoutStatus, resetSinceOpened: countResetSinceNudgeOpened, lastNudgeAt: sess.lastNudgeAt };
+    activate(dp, newNode.id, `${newNode.id} added with no active leaf`);
+    // activate() pushes its one decision line last.
+    addDecisions.push(sess.state.decisions[sess.state.decisions.length - 1]);
+  }
+
+  // Route three's reap: the task this entry was made from leaves the list as
+  // the entry replaces it, in this add's own write rather than in a second
+  // one, so a save that does not land leaves both the task and the tree as
+  // they were. The prior array is kept whole for the rollback, the way
+  // task_clear keeps it, since a task put back by hand would lose its place
+  // in the list.
+  const tasksBefore = sess.state.tasks;
+  const droppedTask = a.dropTaskId === undefined
+    ? undefined
+    : sess.state.tasks.find((t) => t.id === a.dropTaskId);
+  if (droppedTask !== undefined) sess.state.tasks = sess.state.tasks.filter((t) => t !== droppedTask);
+
+  // Route two of the promotion routes, and the mark route one takes as well:
+  // where the turn holding this add holds an open turn record, that record is
+  // the intention the message arrived with and this entry is what the
+  // intention became. Any open record counts, bare or attached, since a record
+  // attached to the active entry is still the message this add answered. The
+  // mark rides this add's own write and the rollback takes it back, so no
+  // record reads promoted against an entry the store does not hold.
+  const undoPromotion = promoteOpenRecord(newNode.id, "goalId", now);
+
+  // Takes this add back out of memory: the node, the root's reopening,
+  // the activation with the session-local nudge fields activate() reset,
+  // the dropped task, the promoted record, and the decision lines. The
+  // active slot goes back only where it names this entry.
+  const rollBackAdd = (): void => {
+    const at = sess.state.goals.indexOf(newNode);
+    if (at !== -1) sess.state.goals.splice(at, 1);
+    if (reopenedRoot !== null) {
+      root.status = reopenedRoot.status;
+      root.blockedReason = reopenedRoot.blockedReason;
+      root.updatedAt = reopenedRoot.updatedAt;
+    }
+    if (sess.state.activeGoalId === newNode.id) sess.state.activeGoalId = priorActiveGoalId;
+    if (nudgeBefore !== null) {
+      sess.nudgedAnswersWithoutStatus = nudgeBefore.answers;
+      countResetSinceNudgeOpened = nudgeBefore.resetSinceOpened;
+      sess.lastNudgeAt = nudgeBefore.lastNudgeAt;
+    }
+    if (droppedTask !== undefined) sess.state.tasks = tasksBefore;
+    if (undoPromotion !== null) undoPromotion();
+    for (const d of addDecisions) dropDecision(d);
+  };
+
+  const writeOk = unprompted ? await persistOrRollBack(dp, rollBackAdd) : await persist(dp);
+  if (writeOk && unprompted) {
+    const recordText = unpromptedPlanRecordText(awaitingYes, sess.persona, newNode.id, newNode.title, planPath);
+    let sent: { id: string; writer: string; seq: number };
+    try {
+      sent = await sendPluginRecord(commonsStoreOf(dp), coordinatorPersona, sess.mySessionId, recordText);
+    } catch (err) {
+      const cause = `the write to '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
+      rollBackAdd();
+      let undone = false;
+      try { undone = await persist(dp); } catch { /* read below as not undone */ }
+      if (!undone) return { ok: false, deny: unpromptedPlanNotUndoneText(cause, newNode.id) };
+      return { ok: false, deny: unpromptedPlanRefusedText(cause) };
+    }
+    sess.state.decisions.push({
+      timestamp: now,
+      loop: "goal",
+      action: awaitingYes ? "plan_awaiting_yes" : "plan_started_unprompted",
+      detail: `${newNode.id}: record ${sent.id} to '${coordinatorPersona}'`,
+    });
+    // The record is ledgered so a quiet tick can send it again where the
+    // coordinator persona's inbox skips it; see the plan record settle step.
+    sess.state.monitor.planRecords.push({ nodeId: newNode.id, awaitingYes, text: recordText, writer: sent.writer, seq: sent.seq, resends: 0 });
+    // The entry and the record have both landed, so only this line and the
+    // ledger entry are lost on a failed save.
+    try { await persist(dp); } catch { /* the add's success stands */ }
+  }
+  if (!writeOk) {
+    return { ok: false, deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+  }
+  return { ok: true, node: newNode };
+}
+
+/**
+ * Route one of the promotion routes: a turn record whose own turn wrote a plan
+ * document becomes a plan entry in the goal tree, through the autonomy dial.
+ * Called from turn.complete under the same true-boundary guard as the record
+ * close, and ahead of it, because the close can set the open record `delivered`
+ * on a live verdict and a plan-touching record is promoted rather than
+ * delivered.
+ *
+ * Only a bare record takes this route. A record carrying a goalId is already a
+ * step of an entry the tree holds, so there is nothing to promote it into, and
+ * the architect persona the settings name never takes it at all: that seat
+ * authors plan documents for other workers by charter, so every one of its turns
+ * would otherwise queue an entry for somebody else's plan. An unset architect
+ * seat, which is what the plugin holds where the setting is absent, blank,
+ * "default" or the coordinator's own name, excludes nobody.
+ *
+ * The path is this turn's own edit where the turn made one, and otherwise the
+ * path the record already carries, which is what makes a refused promotion
+ * retry at the next boundary. An edit is read through PLAN_PATH_PATTERN after
+ * the working directory's prefix comes off, so a plan document in another
+ * checkout, in a subdirectory, or under a working directory the host will not
+ * name yields no path and the record keeps whatever it had: the entry's planPath
+ * is joined back onto this working directory by every later reader, so a path
+ * that is not this directory's names a file none of them will find. A path the
+ * record carried is re-tested against that same pattern before anything is
+ * built on it, which the store's own comment puts at the reader: goal_add
+ * enforces the shape on what it writes, and a hand-edited or foreign-written
+ * store is the second producer no validation saw.
+ *
+ * Then the autonomy dial decides, and two readings stop before it. A tree the
+ * operator has not opened takes no entry, since only the operator opens one, and
+ * a path some record was already promoted for takes no second entry, since the
+ * tree would otherwise gain one entry per turn that touched the document. Both
+ * leave the record open with its planPath and log one turn_record_plan_noted
+ * naming which of them held. At `propose` the same line is logged and nothing
+ * else happens, which is the level's own rule: the standing block already tells
+ * a persona how to propose, and an entry here would propose the plan to the
+ * steward on the author's behalf. At `plan-and-ask` and `plan-and-start` the
+ * entry is added through addGoalEntry, so the paused-awaiting-yes shape and the
+ * [PROPOSAL] or [STARTED] record are the dial's own, and the record is marked
+ * promoted by that same path. A refused add logs one
+ * turn_record_promotion_refused naming the cause and leaves the record open with
+ * its planPath, so the next boundary tries again.
+ *
+ * The record's own text is the entry's title. It arrives cut to the record
+ * field's bound and with its brackets already neutralized, by the one clamp
+ * every producer of that field and the load call, so no guard is repeated here.
+ *
+ * Nothing here throws to the caller: the working-directory read is caught, and
+ * addGoalEntry answers a refusal rather than raising it.
+ */
+async function promotePlanTouchingRecord(
+  dp: any,
+  editedPath: string | null,
+  coordinatorPersona: string,
+  architectPersona: string,
+  newerTurnStarted: () => boolean,
+): Promise<void> {
+  const open = openTurnRecord(sess.state);
+  if (open === null || open.goalId !== undefined) return;
+  if (architectPersona !== "" && sess.persona === architectPersona) return;
+
+  // The working directory is read only where this turn edited something that
+  // named a plan document, so a turn that touched none costs no host call on
+  // the turn-end path. A read that fails or answers no directory leaves the
+  // edit unresolved, which reads the same way as an edit outside this
+  // directory: no path, and the record keeps what it had.
+  let edited: string | null = null;
+  if (editedPath !== null) {
+    let cwd: string | null = null;
+    try {
+      const answered = await dp.session.cwd();
+      if (typeof answered === "string" && answered.length > 0) cwd = answered;
+    } catch { /* read as an unresolvable edit below */ }
+    if (cwd !== null) edited = planPathUnderCwd(editedPath, cwd);
+  }
+  // After the one await above, two facts are read again before anything is
+  // written, the way the record close beside this reads them. A newer turn
+  // started during the read means this completion no longer owns the turn, and
+  // a completion that does not own the turn writes nothing. And the open record
+  // is read again, since a store write in between can have expired it.
+  if (newerTurnStarted()) return;
+  const record = openTurnRecord(sess.state);
+  if (record === null || record.id !== open.id) return;
+
+  const noted = (rule: string): void => {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "turn_record_plan_noted",
+      detail: `record ${record.id} holds ${record.planPath}, no entry added: ${rule}`,
+    });
+  };
+  const refused = (cause: string): void => {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "monitor",
+      action: "turn_record_promotion_refused",
+      detail: `record ${record.id} keeps ${record.planPath} for the next boundary: ${cause}`.slice(0, 300),
+    });
+  };
+
+  const path = edited ?? record.planPath;
+  if (path === undefined) return;
+  if (!PLAN_PATH_PATTERN.test(path)) {
+    record.planPath = path;
+    refused("the plan path the record carries fails the shape the store's own pattern names");
+    return;
+  }
+  record.planPath = path;
+
+  const root = sess.state.goals.find((g) => g.parentId === null);
+  if (root === undefined) {
+    noted("no goal tree exists, and only the operator opens one");
+    return;
+  }
+  if (sess.state.turnRecords.some((r) => r.id !== record.id && r.status === "promoted" && r.planPath === path)) {
+    noted("an earlier record was already promoted for that plan document");
+    return;
+  }
+  const autonomy = sess.state.autonomy;
+  if (autonomy === "propose") {
+    noted("the autonomy level is propose, which proposes through the standing block rather than the tree");
+    return;
+  }
+
+  const added = await addGoalEntry(dp, {
+    kind: "plan",
+    title: record.text,
+    objective: `Work the plan document ${path} to completion; its own sections say what done looks like.`,
+    parentId: root.id,
+    root,
+    // The round budget goal_add gives an add that names none.
+    maxRounds: 10,
+    planPath: path,
+    // The plugin's own act, so it announces itself to the coordinator persona
+    // at either level, as an add the dial admitted outside the operator's turn
+    // does.
+    unprompted: true,
+    awaitingYes: autonomy === "plan-and-ask",
+    dropTaskId: undefined,
+    coordinatorPersona,
+    architectPersona,
+  });
+  if (!added.ok) refused(added.deny);
+}
+
 // The persona an agentic_say or agentic_inbox call addresses: the `persona`
 // argument when given, else the session's own persona. A given name passes
 // personaNameProblem, the one rule for a name that reaches a store key.
@@ -1818,6 +2246,19 @@ let turnToolFlags: TurnToolFlags = freshTurnToolFlags();
 let turnToolRing: string[] = [];
 let turnWorkToolCalls = 0;
 
+// Section 6 (goal-every-turn): the path of the first plan document this turn
+// wrote or edited, as the model wrote it, or null where it edited none. It sits
+// beside the flags above rather than inside them because route one of the
+// promotion routes needs the path itself and a boolean cannot carry one: the
+// record it promotes stores that path, and the entry it adds is judged against
+// the document the path names. Reset and written where the flags are, so it is
+// the same turn's reading, and the first such edit is the one kept: a turn that
+// writes its own plan document and then touches a second one (an archive move,
+// another worker's spec) set out on the first, and promoting the second would
+// name the wrong document. The value is unresolved here; route one is what
+// resolves it against the working directory and tests the result.
+let turnPlanEditedPath: string | null = null;
+
 // Whether a tool argument names a plan document: a file directly under a
 // docs/plans/ directory, at any depth and with either separator, whose
 // docs/plans/ suffix is a name PLAN_PATH_PATTERN accepts once the separators
@@ -1829,6 +2270,56 @@ function namesPlanDocument(value: unknown): boolean {
   if (typeof value !== "string") return false;
   const suffix = /(^|[\\/])(docs[\\/]plans[\\/][^\\/]+)$/.exec(value);
   return suffix !== null && PLAN_PATH_PATTERN.test(suffix[2].replace(/\\/g, "/"));
+}
+
+// Section 6 (goal-every-turn): the project-relative plan path a tool argument
+// names under `cwd`, or null where it names none. This is route one's own
+// match, stricter than namesPlanDocument above in the one way that matters:
+// the document has to be this working directory's, since the path becomes a
+// plan entry's planPath and every later reader joins that value back onto the
+// working directory to read the file.
+//
+// Both sides are read as text and nothing is resolved against the filesystem,
+// which the plugin loader offers no path API for. Separators are folded to "/"
+// on both sides, since this host's own paths carry "\" and the store's pattern
+// admits neither separator inside a name. A path already relative is relative
+// to cwd by definition and is tested as it stands. An absolute one keeps only
+// what follows the directory's own prefix, the trailing-separator-plus-"/" rule
+// the plan reader's join uses, so the strip and that join are inverses.
+//
+// PLAN_PATH_PATTERN on the remainder is what makes the strip safe, and it is
+// the only guard here: it is anchored at both ends and admits no separator and
+// no "." segment inside the name, so every path that escapes the directory
+// fails it rather than being admitted. "D:/root/../other/docs/plans/a.md"
+// leaves "../other/docs/plans/a.md", "D:/root/x/../docs/plans/a.md" leaves
+// "x/../docs/plans/a.md", and a path under another checkout keeps its whole
+// absolute self; none of the three matches. A drive letter's case is folded,
+// because a Windows path names one file whichever case its drive carries and
+// the model writes either; the rest of the comparison stays case-sensitive,
+// since a case-insensitive one would accept "DOCS/PLANS/a.md" as a directory
+// this one does not hold on a case-sensitive host.
+function planPathUnderCwd(filePath: string, cwd: string): string | null {
+  const slashed = filePath.replace(/\\/g, "/");
+  const root = cwd.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
+  const rooted = /^([A-Za-z]:|\/)/.test(slashed);
+  let candidate: string;
+  if (!rooted) {
+    candidate = slashed;
+  } else if (slashed.startsWith(root)) {
+    candidate = slashed.slice(root.length);
+  } else if (driveFolded(slashed).startsWith(driveFolded(root))) {
+    candidate = slashed.slice(root.length);
+  } else {
+    return null;
+  }
+  return PLAN_PATH_PATTERN.test(candidate) ? candidate : null;
+}
+
+// A path with a leading drive letter lowercased, for the one comparison above
+// that a drive's case must not decide. A path with no drive letter is returned
+// as it is.
+function driveFolded(path: string): string {
+  return /^[A-Za-z]:/.test(path) ? path.charAt(0).toLowerCase() + path.slice(1) : path;
 }
 
 // A git subcommand read off a Bash command: the word `git`, then any run of
@@ -1844,6 +2335,7 @@ function resetTurnToolActivity(): void {
   turnToolFlags = freshTurnToolFlags();
   turnToolRing = [];
   turnWorkToolCalls = 0;
+  turnPlanEditedPath = null;
 }
 
 // One main-loop tool call's contribution to the flags, the ring and the
@@ -1855,7 +2347,10 @@ function noteTurnToolCall(tool: string, args: { file_path?: unknown; command?: u
   if (turnToolRing.length > TURN_TOOL_RING_MAX) turnToolRing.splice(0, turnToolRing.length - TURN_TOOL_RING_MAX);
   if (isWorkTool(tool)) turnWorkToolCalls += 1;
   if (tool === "Read" && namesPlanDocument(args.file_path)) turnToolFlags.planRead = true;
-  if ((tool === "Write" || tool === "Edit") && namesPlanDocument(args.file_path)) turnToolFlags.planEdited = true;
+  if ((tool === "Write" || tool === "Edit") && namesPlanDocument(args.file_path)) {
+    turnToolFlags.planEdited = true;
+    if (turnPlanEditedPath === null) turnPlanEditedPath = args.file_path as string;
+  }
   if (tool === "Bash" && typeof args.command === "string") {
     if (GIT_COMMIT_PATTERN.test(args.command)) turnToolFlags.committed = true;
     if (GIT_PUSH_PATTERN.test(args.command)) turnToolFlags.pushed = true;
@@ -4368,8 +4863,14 @@ export const register: Register = async (on, options) => {
               'planPath is only allowed on kind "plan". Its plan document\'s path: ' +
               '"docs/plans/<name>.md", project-relative, no subdirectories.',
           },
+          taskId: {
+            type: "string",
+            description:
+              "taskId names a task of the working list this node is made from. That task's text is " +
+              "the title where none is given, and the task leaves the list. An unknown id is refused.",
+          },
         },
-        required: ["title", "objective"],
+        required: ["objective"],
       },
     }));
 
@@ -8406,6 +8907,10 @@ export const register: Register = async (on, options) => {
     // the turn's own calls wrote, are both rewritten by the next turn.start.
     const askedTextAtDelete = currentTurnAskedText;
     const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
+    // Section 6 (goal-every-turn): route one's own fact, read here for the same
+    // reason. The plan document this turn edited is rewritten by the next
+    // turn.start too, and route one reads it after an await of its own.
+    const planEditedPathAtDelete = turnPlanEditedPath;
     // The persona's own turn end clears any owed bank here, before any await,
     // and the step below sets it again only where this turn ended durable. A
     // throw on the way there leaves nothing owed: a missed bank costs one
@@ -9356,11 +9861,16 @@ export const register: Register = async (on, options) => {
     };
 
     // Section 6 (goal-every-turn): route one, promoting a plan-touching bare
-    // record into the goal tree, goes here, above the close below and under
-    // its guard. The order is load-bearing: the close can set the open record
-    // `delivered` on a live verdict, and route one reads the open record, so
-    // a plan-touching bare record must be promoted before the close judges
-    // it, or it reads `delivered` where the plan says `promoted`.
+    // record into the goal tree, runs inside the record block below, above the
+    // close and under the same guard. The order is load-bearing: the close can
+    // set the open record `delivered` on a live verdict, and route one reads the
+    // open record, so a plan-touching bare record is promoted before the close
+    // judges it, or it reads `delivered` where the plan says `promoted`. It sits
+    // after the reap for the same reason the close does, so a record the timeout
+    // has already judged is never promoted, and it shares the close's own
+    // skipped-turn rule: a turn the operator aborted leaves the record as it
+    // was, and an entry queued off an aborted turn would announce itself to the
+    // coordinator persona all the same.
 
     // Section 5 (goal-every-turn): the record close, at the persona's own turn
     // end under the true-boundary guard, and the `none` arm of the
@@ -9378,6 +9888,10 @@ export const register: Register = async (on, options) => {
       reapTurnRecords(sess.state, Date.now());
       settleExpiredDispositionStamps($);
       if (!turnOpenAfterDelete && !skipped) {
+        await promotePlanTouchingRecord(
+          $, planEditedPathAtDelete, coordinatorPersona, architectPersona,
+          () => turnStartSeq !== turnStartSeqAtDelete,
+        );
         await closeTurnRecordAtTurnEnd(
           $, turnLeaf ? turnLeaf.objective : "", e.answer, askedTextAtDelete, activityTextAtDelete, endedOnLead,
           readLiveAgent, () => turnStartSeq !== turnStartSeqAtDelete, jevMode, jevLive,
@@ -9879,6 +10393,13 @@ export const register: Register = async (on, options) => {
         action: "create",
         detail: `Root ${rootId} "${objective.slice(0, 80)}" created (max ${maxRounds} rounds)`,
       });
+      // Route two of the promotion routes: the message this turn is answering
+      // is what the operator turned into this tree, so its record is marked
+      // promoted with the root's id and rides the same write. The undo is
+      // dropped rather than kept, since this handler rolls nothing back on a
+      // refused write: the replaced tree stands in memory either way, and a
+      // record marked against the root it names is no worse off than the tree.
+      promoteOpenRecord(rootId, "goalId", now);
       // H2b: a new goal inherits a clean nudge budget.
       sess.nudgedAnswersWithoutStatus = 0;
       countResetSinceNudgeOpened = true;
@@ -9904,8 +10425,27 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
-      const title = String((e as any).title || "").trim();
+      const givenTitle = String((e as any).title || "").trim();
       const objective = String((e as any).objective || "").trim();
+      // Route three of the promotion routes: an add made from a task of the
+      // working list. The task's own text is the title where the call gives
+      // none, so turning a working item into a tree entry is one call rather
+      // than a copy, and the task leaves the list inside this add's own write.
+      // An id no task carries is refused before anything is read off it, the
+      // way an unknown parentId is. The lookup is over the whole list rather
+      // than under the active goal alone, since the entry this add builds is
+      // placed by parentId and need not sit under the goal the task did.
+      const rawTaskId = (e as any).taskId;
+      let sourceTask: TaskItem | undefined;
+      if (rawTaskId !== undefined && rawTaskId !== null) {
+        const taskId = String(rawTaskId).trim();
+        sourceTask = sess.state.tasks.find((t) => t.id === taskId);
+        if (sourceTask === undefined) {
+          toolErrorsThisTurn++;
+          return { deny: `taskId "${taskId.slice(0, TASK_ID_MAX_CHARS)}" not found in the task list.` };
+        }
+      }
+      const title = givenTitle || (sourceTask === undefined ? "" : sourceTask.text);
       if (!title || !objective) {
         toolErrorsThisTurn++;
         return { deny: "goal_add requires non-empty 'title' and 'objective'." };
@@ -10015,205 +10555,47 @@ export const register: Register = async (on, options) => {
         return { deny: "Cannot add a node under a task. The tree is root > plan > task; nothing deeper." };
       }
 
-      // A plan the gate admitted outside the operator's and the coordinator
-      // persona's turns was admitted by the autonomy level, and one record
-      // tells the coordinator persona about it: a [PROPOSAL] at plan-and-ask,
-      // where the entry waits paused for the operator's yes, and a [STARTED]
-      // at plan-and-start. The road to the coordinator persona is checked
-      // here, with the other refusals. The record goes out only after the
-      // entry is saved, so the coordinator's inbox never names an entry the
-      // store does not hold, and a record that then cannot be written takes
-      // the add back out of the tree and the store.
+      // The add itself, the coordinator record it sends, the task it drops and
+      // the open turn record it promotes all run in addGoalEntry, which route
+      // one of the promotion routes calls too, so neither route holds a second
+      // copy of the dial's shape. What stays here is what only a tool call can
+      // read: whether this turn's origin makes the add unprompted, and the text
+      // the model is answered with.
       const unprompted = kind === "plan" && !turnIsOperatorsOrCoordinators();
       const awaitingYes = unprompted && autonomy === "plan-and-ask";
-      if (unprompted) {
-        let noRoad: string | null = null;
-        try {
-          if (sess.persona === "default") {
-            noRoad = "the session is on the default persona, which has no road to a coordinator persona";
-          } else if (!await mayReachPersona(commonsStoreOf($), coordinatorPersona, sess.mySessionId, coordinatorPersona, architectPersona, sess.staleAfterMs)) {
-            noRoad = `the reach rule refuses this session's write to '${coordinatorPersona}'`;
-          }
-        } catch (err) {
-          noRoad = `the reach check for '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
-        }
-        if (noRoad !== null) {
-          toolErrorsThisTurn++;
-          return { deny: unpromptedPlanRefusedText(noRoad) };
-        }
-      }
-
-      const now = Date.now();
-      const newNode: GoalNode = {
-        id: `${kind}-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        parentId,
+      const added = await addGoalEntry($, {
         kind,
-        title: title.slice(0, 80),
-        objective: objective.slice(0, 500),
-        status: awaitingYes ? "paused" : "pending",
-        ...(awaitingYes ? { blockedReason: AWAITING_YES_REASON, awaitingYes: true } : {}),
-        source: "worker",
-        planningRounds: 0,
-        consecutiveBlockedPlannings: 0,
-        consecutivePlanningFailures: 0,
-        planningRound: 0,
+        title,
+        objective,
+        parentId,
+        root,
         maxRounds,
-        completedRounds: 0,
-        scores: [],
-        notes: [],
-        createdAt: now,
-        updatedAt: now,
-        ...(planPath ? { planPath } : {}),
-      };
-      // What this add changes, so an unprompted add whose save yields or
-      // whose record cannot be written can take it back: the root's fields
-      // where the add reopened it, the active slot before any activation,
-      // and the decision lines the add pushed.
-      const priorActiveGoalId = sess.state.activeGoalId;
-      let reopenedRoot: { status: GoalNode["status"]; blockedReason: string | undefined; updatedAt: number } | null = null;
-      const addDecisions: AgentState["decisions"] = [];
-      let nudgeBefore: { answers: number; resetSinceOpened: boolean; lastNudgeAt: number } | null = null;
-      // A node added directly under a finished root reopens the root, so the
-      // tree never holds live work under a root that reads finished. A node
-      // added under a plan leaves the root as it was, since a finished plan
-      // keeps its child out of reach and a reopened root over it would read
-      // live with nothing to activate. It runs after every refusal above, so a
-      // refused add reopens nothing, and it touches no other node: finished
-      // children stay finished.
-      if (parentId === root.id && (root.status === "complete" || root.status === "abandoned")) {
-        const priorStatus = root.status;
-        reopenedRoot = { status: root.status, blockedReason: root.blockedReason, updatedAt: root.updatedAt };
-        root.status = "pending";
-        root.blockedReason = undefined;
-        root.updatedAt = now;
-        const reopenDecision: AgentState["decisions"][number] = {
-          timestamp: now,
-          loop: "goal",
-          action: "root_reopened",
-          detail: `${root.id} reopened from ${priorStatus} to pending for a new ${kind}`,
-        };
-        sess.state.decisions.push(reopenDecision);
-        addDecisions.push(reopenDecision);
+        planPath,
+        unprompted,
+        awaitingYes,
+        dropTaskId: sourceTask?.id,
+        coordinatorPersona,
+        architectPersona,
+      });
+      if (!added.ok) {
+        toolErrorsThisTurn++;
+        return { deny: added.deny };
       }
-      sess.state.goals.push(newNode);
-
-      const addDecision: AgentState["decisions"][number] = {
-        timestamp: now,
-        loop: "goal",
-        action: "add",
-        detail: `${newNode.id} (${kind}) under ${parentId}: "${title.slice(0, 50)}"`,
-      };
-      sess.state.decisions.push(addDecision);
-      addDecisions.push(addDecision);
-
-      // R4: adding a task under the active plan demotes the plan to pending
-      // and activates the new task.
-      if (kind === "task") {
-        const parent = sess.state.goals.find((g) => g.id === parentId)!;
-        if (parent.status === "active") {
-          parent.status = "pending";
-          parent.updatedAt = now;
-          newNode.status = "active";
-          sess.state.activeGoalId = newNode.id;
-          activate($, newNode.id, `${parent.id} demoted to pending; ${newNode.id} activated`);
-        }
-      }
-
-      // Section 10: if the tree still has no active leaf, activate the node
-      // just created rather than deferring to the next tick, mirroring the
-      // task branch above (set status and activeGoalId directly, then call
-      // activate() to log the decision and reset the nudge budget). Without
-      // this, the node stays pending for the rest of this turn, so a
-      // same-turn goal_done has nothing of this node's to close.
-      //
-      // isActivationEligible carries activateNext's own ancestor rule, so a
-      // node added under an abandoned or blocked parent is refused here the
-      // same way activateNext's DFS would refuse it - this branch never
-      // activates into a closed subtree.
-      //
-      // The hold check beside it is one thing: an open ask (pendingAskId)
-      // is the operator's own open question, whatever opened it, and the
-      // controller keeps no other hold. A paused node, dropped by an
-      // operator pause or left over from a plan switch, is not a hold and
-      // must not disable this branch for the rest of the session.
-      if (
-        !sess.state.goals.some((g) => g.status === "active") &&
-        !sess.state.pendingAskId &&
-        isActivationEligible(sess.state, newNode)
-      ) {
-        newNode.status = "active";
-        newNode.updatedAt = now;
-        sess.state.activeGoalId = newNode.id;
-        nudgeBefore = { answers: sess.nudgedAnswersWithoutStatus, resetSinceOpened: countResetSinceNudgeOpened, lastNudgeAt: sess.lastNudgeAt };
-        activate($, newNode.id, `${newNode.id} added with no active leaf`);
-        // activate() pushes its one decision line last.
-        addDecisions.push(sess.state.decisions[sess.state.decisions.length - 1]);
-      }
-
-      // Takes this add back out of memory: the node, the root's reopening,
-      // the activation with the session-local nudge fields activate() reset,
-      // and the decision lines. The active slot goes back only where it names
-      // this entry.
-      const rollBackAdd = (): void => {
-        const at = sess.state.goals.indexOf(newNode);
-        if (at !== -1) sess.state.goals.splice(at, 1);
-        if (reopenedRoot !== null) {
-          root.status = reopenedRoot.status;
-          root.blockedReason = reopenedRoot.blockedReason;
-          root.updatedAt = reopenedRoot.updatedAt;
-        }
-        if (sess.state.activeGoalId === newNode.id) sess.state.activeGoalId = priorActiveGoalId;
-        if (nudgeBefore !== null) {
-          sess.nudgedAnswersWithoutStatus = nudgeBefore.answers;
-          countResetSinceNudgeOpened = nudgeBefore.resetSinceOpened;
-          sess.lastNudgeAt = nudgeBefore.lastNudgeAt;
-        }
-        for (const d of addDecisions) dropDecision(d);
-      };
-
-      const writeOk = unprompted ? await persistOrRollBack($, rollBackAdd) : await persist($);
-      if (writeOk && unprompted) {
-        const recordText = unpromptedPlanRecordText(awaitingYes, sess.persona, newNode.id, newNode.title, planPath);
-        let sent: { id: string; writer: string; seq: number };
-        try {
-          sent = await sendPluginRecord(commonsStoreOf($), coordinatorPersona, sess.mySessionId, recordText);
-        } catch (err) {
-          toolErrorsThisTurn++;
-          const cause = `the write to '${coordinatorPersona}' failed: ${err instanceof Error ? err.message : String(err)}`;
-          rollBackAdd();
-          let undone = false;
-          try { undone = await persist($); } catch { /* read below as not undone */ }
-          if (!undone) return { deny: unpromptedPlanNotUndoneText(cause, newNode.id) };
-          return { deny: unpromptedPlanRefusedText(cause) };
-        }
-        sess.state.decisions.push({
-          timestamp: now,
-          loop: "goal",
-          action: awaitingYes ? "plan_awaiting_yes" : "plan_started_unprompted",
-          detail: `${newNode.id}: record ${sent.id} to '${coordinatorPersona}'`,
-        });
-        // The record is ledgered so a quiet tick can send it again where the
-        // coordinator persona's inbox skips it; see the plan record settle step.
-        sess.state.monitor.planRecords.push({ nodeId: newNode.id, awaitingYes, text: recordText, writer: sent.writer, seq: sent.seq, resends: 0 });
-        // The entry and the record have both landed, so only this line and the
-        // ledger entry are lost on a failed save.
-        try { await persist($); } catch { /* the add's success stands */ }
-      }
-      if (writeOk) {
+      const newNode = added.node;
+      {
         const nextActive = sess.state.activeGoalId
           ? sess.state.goals.find((g) => g.id === sess.state.activeGoalId)
           : null;
         const told = !unprompted ? ""
           : awaitingYes ? ` It waits paused for the operator's yes, and a [PROPOSAL] record naming ${newNode.id} went to the coordinator persona.`
           : ` A [STARTED] record naming ${newNode.id} went to the coordinator persona.`;
+        const fromTask = sourceTask === undefined ? "" : ` The task ${sourceTask.id} it was made from left the list.`;
         return {
           result: (nextActive
             ? `Added ${kind} "${title.slice(0, 50)}". Now active: ${nextActive.id} "${nextActive.title}".`
-            : `Added ${kind} "${title.slice(0, 50)}". No active goal; planning or activation will occur at the next tick.`) + told,
+            : `Added ${kind} "${title.slice(0, 50)}". No active goal; planning or activation will occur at the next tick.`) + told + fromTask,
         };
       }
-      toolErrorsThisTurn++;
-      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
     // Serve goal_edit (plan item 3: drop / pause / reprioritize a node in
@@ -10741,7 +11123,21 @@ export const register: Register = async (on, options) => {
         addedAt: now,
       };
       sess.state.tasks.push(task);
-      const writeOk = await persistOrRollBack($, () => { sess.state.tasks.pop(); });
+      // Route two of the promotion routes: a turn holding an open record that
+      // is a step of this very entry marks that record promoted with the task's
+      // id, since the step the message asked for is now this working item. A
+      // bare record is left alone, and so is one attached to another entry:
+      // neither named the goal this task sits under, so neither is what the
+      // task was made from. The mark rides the add's own write and the rollback
+      // takes it back with the task.
+      const stepRecord = openTurnRecord(sess.state);
+      const undoPromotion = stepRecord !== null && stepRecord.goalId === active.id
+        ? promoteOpenRecord(task.id, "taskId", now)
+        : null;
+      const writeOk = await persistOrRollBack($, () => {
+        sess.state.tasks.pop();
+        if (undoPromotion !== null) undoPromotion();
+      });
       if (writeOk) {
         return { result: `Task added: ${task.id} "${task.text}" under ${active.id}.` };
       }

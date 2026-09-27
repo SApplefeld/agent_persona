@@ -4057,6 +4057,17 @@ async function main() {
     await caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock);
     await caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock);
 
+    // Section 6 (goal-every-turn): the three promotion routes.
+    await casePromote_routeOneAtEachAutonomyLevel(clock);
+    await casePromote_routeOnesOwnMatchAgainstTheWorkingDirectory(clock);
+    await casePromote_theArchitectPersonaTakesNoPromotion(clock);
+    await casePromote_withNoGoalTreeTheRecordKeepsThePath(clock);
+    await casePromote_theSamePlanIsNotPromotedTwice(clock);
+    await casePromote_aStoredPlanPathIsRetestedAndARefusalRetries(clock);
+    await casePromote_routeOneRunsAboveTheCloseUnderALiveVerdict(clock);
+    await casePromote_routeTwoMarksTheRecordTheToolCallBecame(clock);
+    await casePromote_routeThreeTakesATaskIntoTheTree(clock);
+
     // The supervisor mailbox, the two heartbeat options, the sidecar's
     // lost-update recovery, the commons check at the session-start claim, the
     // final ask's exemption, and the round trips between the plugin's writes
@@ -25750,6 +25761,566 @@ async function caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock
   check("close newer turn (the control): the same drive with no second turn closed the record delivered through that answer",
     recordById(settled.h, settled.id)?.status === "delivered" && deliveredDecisions(settled.h).length === 1,
     { record: recordById(settled.h, settled.id), decisions: deliveredDecisions(settled.h) });
+}
+
+// ============================================================
+// Section 6 (goal-every-turn): the promotion routes
+// ============================================================
+
+// The plan document every route-one case drives, project-relative and as the
+// model writes it under the harness's own working directory.
+const PRO_PLAN = "docs/plans/found-at-the-boundary_v1.md";
+const PRO_ABS = `${HARNESS_CWD}/${PRO_PLAN}`;
+const PRO_MESSAGE = "Draft the retention plan and take it from there.";
+// The persona these cases run on. It is not "default", because the dial's own
+// road to the coordinator persona refuses that one by name, and route one adds
+// through that road at both live levels.
+const PRO_PERSONA = "dev";
+const PRO_AWAITING_REASON = "Awaiting the operator's yes";
+
+// A tree holding a root and nothing under it, so an arriving message opens a
+// bare record and the one plan entry in the tree afterwards is the entry route
+// one added.
+function proTree() {
+  return gtc4Tree("pending");
+}
+
+// An owner session over `goals` at `autonomy`, with no active entry, the persona
+// claim held and the store seeded before the session starts. `jevLive` also
+// plants the seam's key, since a live question with no key sends nothing.
+async function proHarness(caseName, options = {}) {
+  const {
+    autonomy = "plan-and-start", persona = PRO_PERSONA, goals = proTree(),
+    activeGoalId = null, jevLive, architectPersona, turnRecords, tasks,
+  } = options;
+  const h = await createTickHarness({
+    ...OPTS, caseName, persona, skipSessionStart: true,
+    ...(jevLive === undefined ? {} : { jevLive }),
+    ...(architectPersona === undefined ? {} : { architectPersona }),
+  });
+  const state = makeState({ now: T0, goals, activeGoalId, autonomy, turnRecords, tasks });
+  state.persona = persona;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ [persona]: state }));
+  h.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: `persona:${persona}`, claimedAt: T0 - 2000 }],
+  });
+  if (jevLive !== undefined) h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  await h.handlers["session.start"](h.fake, {}, () => {});
+  return h;
+}
+
+function proState(h, persona = PRO_PERSONA) {
+  return getStateForPersona(h, persona);
+}
+function proRecords(h, persona) {
+  return proState(h, persona).turnRecords || [];
+}
+function proOpenRecord(h, persona) {
+  return proRecords(h, persona).find((r) => r.status === "open") ?? null;
+}
+function proRecordById(h, id, persona) {
+  return proRecords(h, persona).find((r) => r.id === id) ?? null;
+}
+function proDecisionsOf(h, action, persona) {
+  return proState(h, persona).decisions.filter((d) => d.action === action);
+}
+// The one plan entry route one adds, read by kind rather than by id, since the
+// id is minted at the boundary. proTree holds none, so a found entry is this
+// boundary's own.
+function proAddedEntry(h, persona) {
+  return proState(h, persona).goals.find((g) => g.kind === "plan" && g.parentId !== null) ?? null;
+}
+// Every record in any coordinator-persona inbox, which is the surface the
+// propose level's absence is read on: the same drive at either live level
+// writes one here, as those legs show.
+function proCoordinatorRecords(h) {
+  return [...h.storeMap.entries()].filter(([k]) => k.startsWith("inbox:coordinator:")).map(([k, v]) => ({ key: k, ...v }));
+}
+
+// One message held as a record, one of the persona's own turns over it that
+// touches `path` with `tool`, and the turn's end. `path` null drives a turn that
+// touched no file at all. Returns the id of the record the message opened, read
+// before the turn so a promotion cannot hide it.
+async function proDrive(h, turnId, options = {}) {
+  const { tool = "Write", path = PRO_ABS, answer = "Drafted the plan.", message = PRO_MESSAGE, persona = PRO_PERSONA } = options;
+  await submitMessage(h, message);
+  const id = proOpenRecord(h, persona)?.id ?? null;
+  await recordTurnStart(h, turnId, message);
+  if (path !== null) await callTool(h, { tool, file_path: path });
+  await recordTurnComplete(h, turnId, answer);
+  await settleJournalWrites(h);
+  return id;
+}
+
+// Route one at each of the three autonomy levels, on one drive that differs
+// only on the level. At propose the path is noted and nothing else happens,
+// which is the level the architect seat's own charter rests on: an entry there
+// would queue somebody else's spec, and a record there would propose it to the
+// steward. At plan-and-ask the entry waits paused for the operator's yes with
+// one [PROPOSAL], and at plan-and-start it starts with one [STARTED]. The two
+// live levels are the control the propose leg's absence is read against: the
+// same harness, the same drive, the same coordinator inbox, and a record lands
+// in it there.
+async function casePromote_routeOneAtEachAutonomyLevel(clock) {
+  console.log("\n=== Promotion route one: a turn that edited a plan document, at propose, plan-and-ask and plan-and-start ===");
+
+  clock.set(T0);
+  const p = await proHarness("pro_level_propose", { autonomy: "propose" });
+  const pId = await proDrive(p, "t-propose");
+  const pRecord = proRecordById(p, pId);
+  check("pro propose: the record holds the plan path, project-relative, and is still open",
+    !!pRecord && pRecord.planPath === PRO_PLAN && pRecord.status === "open" && pRecord.goalId === undefined, proRecords(p));
+  check("pro propose: no entry was added and the tree still holds the root alone",
+    proAddedEntry(p) === null && proState(p).goals.length === 1, proState(p).goals.map((g) => g.id));
+  check("pro propose: no record reached the coordinator persona, so the seat is not flooded with its own specs",
+    proCoordinatorRecords(p).length === 0, proCoordinatorRecords(p));
+  const pNoted = proDecisionsOf(p, "turn_record_plan_noted");
+  check("pro propose: one turn_record_plan_noted decision naming the record, the path and the propose level as the rule",
+    pNoted.length === 1 && pNoted[0].detail.includes(pId) && pNoted[0].detail.includes(PRO_PLAN) && pNoted[0].detail.includes("propose"), pNoted);
+  check("pro propose: no promotion and no refusal was logged",
+    proDecisionsOf(p, "turn_record_promoted").length === 0 && proDecisionsOf(p, "turn_record_promotion_refused").length === 0,
+    proState(p).decisions.map((d) => d.action));
+
+  clock.set(T0);
+  const a = await proHarness("pro_level_ask", { autonomy: "plan-and-ask" });
+  const aId = await proDrive(a, "t-ask");
+  const aEntry = proAddedEntry(a);
+  check("pro plan-and-ask: one plan entry exists, paused with the awaiting reason and the flag, carrying the plan path",
+    !!aEntry && aEntry.status === "paused" && aEntry.blockedReason === PRO_AWAITING_REASON && aEntry.awaitingYes === true
+      && aEntry.planPath === PRO_PLAN && aEntry.parentId === "root-1", aEntry);
+  check("pro plan-and-ask: the entry's title is the record's own text",
+    aEntry?.title === proRecordById(a, aId)?.text, { title: aEntry?.title, record: proRecordById(a, aId) });
+  const aRecord = proRecordById(a, aId);
+  check("pro plan-and-ask: the record reads promoted, names the entry, keeps the path and holds a closedAt",
+    aRecord?.status === "promoted" && aRecord?.goalId === aEntry?.id && aRecord?.planPath === PRO_PLAN && aRecord?.closedAt === T0,
+    aRecord);
+  check("pro plan-and-ask: nothing is open any more", proOpenRecord(a) === null, proRecords(a));
+  const aRecords = proCoordinatorRecords(a);
+  check("pro plan-and-ask: one [PROPOSAL] record in the coordinator's inbox names the entry and the plan document",
+    aRecords.length === 1 && aRecords[0].text.startsWith("[PROPOSAL]") && aRecords[0].text.includes(aEntry?.id)
+      && aRecords[0].text.includes(PRO_PLAN), aRecords);
+  check("pro plan-and-ask: one plan_awaiting_yes decision and one turn_record_promoted naming the entry",
+    proDecisionsOf(a, "plan_awaiting_yes").length === 1
+      && proDecisionsOf(a, "turn_record_promoted").length === 1
+      && proDecisionsOf(a, "turn_record_promoted")[0].detail.includes(aEntry?.id),
+    { awaiting: proDecisionsOf(a, "plan_awaiting_yes"), promoted: proDecisionsOf(a, "turn_record_promoted") });
+  check("pro plan-and-ask: no plan_noted and no refusal was logged",
+    proDecisionsOf(a, "turn_record_plan_noted").length === 0 && proDecisionsOf(a, "turn_record_promotion_refused").length === 0,
+    proState(a).decisions.map((d) => d.action));
+
+  clock.set(T0);
+  const s = await proHarness("pro_level_start", { autonomy: "plan-and-start" });
+  const sId = await proDrive(s, "t-start");
+  const sEntry = proAddedEntry(s);
+  check("pro plan-and-start: one plan entry exists, active on a tree that had no active leaf, with no awaiting flag",
+    !!sEntry && sEntry.status === "active" && sEntry.awaitingYes === undefined && sEntry.blockedReason === undefined
+      && sEntry.planPath === PRO_PLAN && proState(s).activeGoalId === sEntry.id, sEntry);
+  check("pro plan-and-start: the record reads promoted and names the entry",
+    proRecordById(s, sId)?.status === "promoted" && proRecordById(s, sId)?.goalId === sEntry?.id, proRecordById(s, sId));
+  const sRecords = proCoordinatorRecords(s);
+  check("pro plan-and-start: one [STARTED] record in the coordinator's inbox names the entry and the plan document",
+    sRecords.length === 1 && sRecords[0].text.startsWith("[STARTED]") && sRecords[0].text.includes(sEntry?.id)
+      && sRecords[0].text.includes(PRO_PLAN), sRecords);
+  check("pro plan-and-start: one plan_started_unprompted decision and no awaiting-yes decision",
+    proDecisionsOf(s, "plan_started_unprompted").length === 1 && proDecisionsOf(s, "plan_awaiting_yes").length === 0,
+    proState(s).decisions.map((d) => d.action));
+}
+
+// What route one reads as a plan document of this working directory and what it
+// does not. Every leg is the same drive at plan-and-start differing only on the
+// path or the tool, and the first leg is the control the rest are read against:
+// a Write of the document under the working directory promotes, so a leg that
+// notes nothing is the path rule refusing rather than the drive failing.
+async function casePromote_routeOnesOwnMatchAgainstTheWorkingDirectory(clock) {
+  console.log("\n=== Promotion route one: which path a turn's own edit reads as this directory's plan document ===");
+  const drive = async (label, { tool = "Write", path } = {}) => {
+    clock.set(T0);
+    const h = await proHarness(`pro_match_${label}`, { autonomy: "plan-and-start" });
+    const id = await proDrive(h, `t-${label}`, { tool, path });
+    return { h, record: proRecordById(h, id), entry: proAddedEntry(h) };
+  };
+
+  const control = await drive("write_absolute", { path: PRO_ABS });
+  check("pro match control: a Write of the document under the working directory promotes, the path stored project-relative",
+    control.record?.status === "promoted" && control.record?.planPath === PRO_PLAN && control.entry?.planPath === PRO_PLAN,
+    { record: control.record, entry: control.entry });
+
+  const relative = await drive("write_relative", { path: PRO_PLAN });
+  check("pro match relative: a path the model wrote relative is relative to the working directory and promotes",
+    relative.record?.status === "promoted" && relative.record?.planPath === PRO_PLAN, relative.record);
+
+  const backslashes = await drive("write_backslashes", { path: `${HARNESS_CWD.replace(/\//g, "\\")}\\docs\\plans\\found-at-the-boundary_v1.md` });
+  check("pro match backslashes: this host's own separators read the same file, and the stored path carries forward slashes",
+    backslashes.record?.status === "promoted" && backslashes.record?.planPath === PRO_PLAN, backslashes.record);
+
+  const lowerDrive = await drive("write_drive_case", { path: PRO_ABS.charAt(0).toLowerCase() + PRO_ABS.slice(1) });
+  check("pro match drive case: a drive letter in the other case names the same directory and promotes",
+    lowerDrive.record?.status === "promoted" && lowerDrive.record?.planPath === PRO_PLAN, lowerDrive.record);
+
+  const edit = await drive("edit_absolute", { tool: "Edit", path: PRO_ABS });
+  check("pro match edit: an Edit counts as a write and promotes",
+    edit.record?.status === "promoted" && edit.record?.planPath === PRO_PLAN, edit.record);
+
+  const read = await drive("read_absolute", { tool: "Read", path: PRO_ABS });
+  check("pro match read: a Read of the document sets no plan path, adds no entry and leaves the record open",
+    read.record?.planPath === undefined && read.record?.status === "open" && read.entry === null, read.record);
+
+  const elsewhere = await drive("write_other_checkout", { path: "D:/other-root/docs/plans/found-at-the-boundary_v1.md" });
+  check("pro match other checkout: a plan document under another directory sets no plan path and adds no entry",
+    elsewhere.record?.planPath === undefined && elsewhere.record?.status === "open" && elsewhere.entry === null, elsewhere.record);
+
+  // A path that ends in a plan document but does not sit directly under this
+  // directory's docs/plans. The turn-activity flag beside route one reads a
+  // docs/plans suffix at any depth, so this leg is refused by route one's own
+  // match against the working directory rather than by that flag.
+  const nested = await drive("write_nested_root", { path: `${HARNESS_CWD}/vendor/docs/plans/found-at-the-boundary_v1.md` });
+  check("pro match nested: a docs/plans under a subdirectory of this one sets no plan path and adds no entry",
+    nested.record?.planPath === undefined && nested.record?.status === "open" && nested.entry === null, nested.record);
+
+  const escaped = await drive("write_escaping", { path: `${HARNESS_CWD}/../other-root/docs/plans/found-at-the-boundary_v1.md` });
+  check("pro match escaping: a path climbing out of this directory sets no plan path and adds no entry",
+    escaped.record?.planPath === undefined && escaped.record?.status === "open" && escaped.entry === null, escaped.record);
+
+  const noTouch = await drive("no_edit", { path: null });
+  check("pro match no edit: a turn that wrote nothing sets no plan path and adds no entry",
+    noTouch.record?.planPath === undefined && noTouch.record?.status === "open" && noTouch.entry === null, noTouch.record);
+}
+
+// The architect seat never takes route one, and an unset seat excludes nobody.
+// Both legs run on the architect persona itself, so the axis is the settings
+// value and nothing else.
+async function casePromote_theArchitectPersonaTakesNoPromotion(clock) {
+  console.log("\n=== Promotion route one: the architect persona the settings name never promotes its own plan documents ===");
+
+  clock.set(T0);
+  const arch = await proHarness("pro_architect_named", { autonomy: "plan-and-start", persona: "architect", architectPersona: "architect" });
+  const archId = await proDrive(arch, "t-architect", { persona: "architect" });
+  const archRecord = proRecordById(arch, archId, "architect");
+  check("pro architect: the record holds no plan path, stays open and gained no entry",
+    archRecord?.planPath === undefined && archRecord?.status === "open" && proAddedEntry(arch, "architect") === null, archRecord);
+  check("pro architect: nothing was logged and no record reached the coordinator persona",
+    proDecisionsOf(arch, "turn_record_plan_noted", "architect").length === 0
+      && proDecisionsOf(arch, "turn_record_promoted", "architect").length === 0
+      && proCoordinatorRecords(arch).length === 0,
+    { decisions: proState(arch, "architect").decisions.map((d) => d.action), records: proCoordinatorRecords(arch) });
+
+  clock.set(T0);
+  const other = await proHarness("pro_architect_other", { autonomy: "plan-and-start", persona: "architect", architectPersona: "someone-else" });
+  const otherId = await proDrive(other, "t-architect-other", { persona: "architect" });
+  check("pro architect (the control): the same session under another architect name promotes, so the exclusion is the name and not the drive",
+    proRecordById(other, otherId, "architect")?.status === "promoted" && proAddedEntry(other, "architect")?.planPath === PRO_PLAN,
+    { record: proRecordById(other, otherId, "architect"), entry: proAddedEntry(other, "architect") });
+
+  clock.set(T0);
+  const unset = await proHarness("pro_architect_unset", { autonomy: "plan-and-start", persona: "architect" });
+  const unsetId = await proDrive(unset, "t-architect-unset", { persona: "architect" });
+  check("pro architect unset: with no architect named the plugin excludes nobody, and this session promotes",
+    proRecordById(unset, unsetId, "architect")?.status === "promoted" && proAddedEntry(unset, "architect")?.planPath === PRO_PLAN,
+    { record: proRecordById(unset, unsetId, "architect"), entry: proAddedEntry(unset, "architect") });
+}
+
+// With no goal tree the record keeps its plan path and no entry is added, since
+// only the operator opens a tree. The control is the same drive over a tree
+// holding a root.
+async function casePromote_withNoGoalTreeTheRecordKeepsThePath(clock) {
+  console.log("\n=== Promotion route one: with no goal tree the record keeps the plan path and no entry is added ===");
+
+  clock.set(T0);
+  const none = await proHarness("pro_no_tree", { autonomy: "plan-and-start", goals: [] });
+  const noneId = await proDrive(none, "t-no-tree");
+  const noneRecord = proRecordById(none, noneId);
+  check("pro no tree: the record holds the plan path and is still open",
+    noneRecord?.planPath === PRO_PLAN && noneRecord?.status === "open", noneRecord);
+  check("pro no tree: the tree is still empty and no record reached the coordinator persona",
+    proState(none).goals.length === 0 && proCoordinatorRecords(none).length === 0,
+    { goals: proState(none).goals, records: proCoordinatorRecords(none) });
+  const noted = proDecisionsOf(none, "turn_record_plan_noted");
+  check("pro no tree: one turn_record_plan_noted decision naming the missing tree as the rule",
+    noted.length === 1 && noted[0].detail.includes("no goal tree") && noted[0].detail.includes(PRO_PLAN), noted);
+
+  clock.set(T0);
+  const rooted = await proHarness("pro_no_tree_control", { autonomy: "plan-and-start" });
+  const rootedId = await proDrive(rooted, "t-rooted");
+  check("pro no tree (the control): the same drive over a tree with a root promotes, so the absence is the missing tree",
+    proRecordById(rooted, rootedId)?.status === "promoted" && proAddedEntry(rooted) !== null,
+    { record: proRecordById(rooted, rootedId), entry: proAddedEntry(rooted) });
+}
+
+// The no-double-promotion guard: a second turn touching a document some record
+// was already promoted for adds no second entry. The two turns run at
+// plan-and-ask, where the entry the first turn queued waits paused and so leaves
+// nothing active, which is what lets the second message open a bare record and
+// reach this guard at all. At plan-and-start the entry is active instead, and the
+// second message attaches its record to it, so route one declines one rule
+// earlier, on the record's own goal id; that leg is driven below under its own
+// name rather than left to read as this guard.
+async function casePromote_theSamePlanIsNotPromotedTwice(clock) {
+  console.log("\n=== Promotion route one: a plan document already promoted is not promoted a second time ===");
+  const SECOND = "docs/plans/a-second-plan_v1.md";
+
+  clock.set(T0);
+  const h = await proHarness("pro_twice", { autonomy: "plan-and-ask" });
+  const firstId = await proDrive(h, "t-twice-1");
+  const entry = proAddedEntry(h);
+  check("pro twice setup: the first turn promoted the record, added one paused entry and left nothing active",
+    proRecordById(h, firstId)?.status === "promoted" && entry?.status === "paused"
+      && proState(h).goals.length === 2 && proState(h).activeGoalId === null,
+    { record: proRecordById(h, firstId), goals: proState(h).goals.map((g) => `${g.id}:${g.status}`) });
+
+  const secondId = await proDrive(h, "t-twice-2", { message: "Carry on with the retention plan." });
+  const secondRecord = proRecordById(h, secondId);
+  check("pro twice: the second turn's record is bare, holds the same plan path and stays open",
+    secondId !== firstId && secondRecord?.goalId === undefined && secondRecord?.planPath === PRO_PLAN
+      && secondRecord?.status === "open", secondRecord);
+  check("pro twice: no second entry was added and the coordinator persona got one record in all",
+    proState(h).goals.length === 2 && proCoordinatorRecords(h).length === 1,
+    { goals: proState(h).goals.map((g) => g.id), records: proCoordinatorRecords(h).length });
+  const noted = proDecisionsOf(h, "turn_record_plan_noted");
+  check("pro twice: one turn_record_plan_noted decision naming the earlier promotion as the rule",
+    noted.length === 1 && noted[0].detail.includes("already promoted"), noted);
+
+  clock.set(T0);
+  const c = await proHarness("pro_twice_control", { autonomy: "plan-and-ask" });
+  await proDrive(c, "t-twice-c1");
+  await proDrive(c, "t-twice-c2", { path: `${HARNESS_CWD}/${SECOND}`, message: "Now draft the archive plan." });
+  const paths = proState(c).goals.filter((g) => g.planPath).map((g) => g.planPath).sort();
+  check("pro twice (the control): a second turn touching another document does add a second entry, so the guard is the path and not the turn",
+    proState(c).goals.length === 3 && paths.join(",") === [PRO_PLAN, SECOND].sort().join(","), paths);
+
+  // The record a message attached to an entry is that entry's step, so route one
+  // leaves it alone: there is nothing to promote it into. This is the rule that
+  // refuses a second plan-and-start turn on the same document, rather than the
+  // guard above.
+  clock.set(T0);
+  const attached = await proHarness("pro_attached", { autonomy: "plan-and-start" });
+  await proDrive(attached, "t-attached-1");
+  const stepId = await proDrive(attached, "t-attached-2", { message: "Carry on with the retention plan." });
+  const stepRecord = proRecordById(attached, stepId);
+  check("pro attached: a record stepping the entry the first turn added holds no plan path of its own and no second entry was added",
+    stepRecord?.goalId === proAddedEntry(attached)?.id && stepRecord?.planPath === undefined
+      && proState(attached).goals.length === 2 && proDecisionsOf(attached, "turn_record_plan_noted").length === 0,
+    { record: stepRecord, goals: proState(attached).goals.map((g) => g.id) });
+}
+
+// A plan path the store handed back is re-tested before anything is built on it,
+// which is the re-test the store's own comment puts at the reader. A refused
+// promotion keeps the path on the open record, so the next boundary tries again.
+async function casePromote_aStoredPlanPathIsRetestedAndARefusalRetries(clock) {
+  console.log("\n=== Promotion route one: a stored plan path is re-tested, and a refused promotion keeps the path for the next boundary ===");
+
+  // The seeded record is the one under test, so these legs drive the turn alone
+  // and send no message: a message would supersede the seeded record with one of
+  // its own.
+  const seeded = (planPath) => [{
+    id: "tr-seeded", text: "Take the plan forward.", openedAt: T0 - 1000, status: "open", planPath,
+  }];
+
+  clock.set(T0);
+  const bad = await proHarness("pro_retest_bad", { autonomy: "plan-and-start", turnRecords: seeded("docs/plans/../../etc/passwd.md") });
+  await recordTurnStart(bad, "t-retest-bad", "");
+  await recordTurnComplete(bad, "t-retest-bad", "Carried on.");
+  const badRefused = proDecisionsOf(bad, "turn_record_promotion_refused");
+  check("pro retest bad: one turn_record_promotion_refused decision naming the shape rule, and no entry was added",
+    badRefused.length === 1 && badRefused[0].detail.includes("fails the shape") && proAddedEntry(bad) === null, badRefused);
+  check("pro retest bad: the record is still open and keeps the path it carried",
+    proOpenRecord(bad)?.id === "tr-seeded" && proOpenRecord(bad)?.planPath === "docs/plans/../../etc/passwd.md", proRecords(bad));
+  check("pro retest bad: no record reached the coordinator persona", proCoordinatorRecords(bad).length === 0, proCoordinatorRecords(bad));
+
+  clock.set(T0);
+  const good = await proHarness("pro_retest_good", { autonomy: "plan-and-start", turnRecords: seeded(PRO_PLAN) });
+  await recordTurnStart(good, "t-retest-good", "");
+  await recordTurnComplete(good, "t-retest-good", "Carried on.");
+  check("pro retest (the control): the same drive over a stored path of the shape the pattern admits promotes from the store alone",
+    proRecordById(good, "tr-seeded")?.status === "promoted" && proAddedEntry(good)?.planPath === PRO_PLAN,
+    { record: proRecordById(good, "tr-seeded"), entry: proAddedEntry(good) });
+
+  // The refusal that retries: on the default persona the dial has no road to a
+  // coordinator persona, so the add is refused by the dial's own rule and the
+  // path stays on the record for the next boundary to read.
+  clock.set(T0);
+  const noRoad = await proHarness("pro_retest_no_road", { autonomy: "plan-and-start", persona: "default" });
+  const noRoadId = await proDrive(noRoad, "t-no-road-1", { persona: "default" });
+  const firstRefusal = proDecisionsOf(noRoad, "turn_record_promotion_refused", "default");
+  check("pro no road: the add is refused naming the default persona's missing road, and the record keeps the path open",
+    firstRefusal.length === 1 && firstRefusal[0].detail.includes("default persona")
+      && proRecordById(noRoad, noRoadId, "default")?.status === "open"
+      && proRecordById(noRoad, noRoadId, "default")?.planPath === PRO_PLAN,
+    { refusals: firstRefusal, record: proRecordById(noRoad, noRoadId, "default") });
+  check("pro no road: no entry was added and no record reached the coordinator persona",
+    proAddedEntry(noRoad, "default") === null && proCoordinatorRecords(noRoad).length === 0,
+    { goals: proState(noRoad, "default").goals.map((g) => g.id), records: proCoordinatorRecords(noRoad) });
+  // The next boundary of the same record, with no edit of its own, reads the
+  // path off the record and tries again.
+  await recordTurnStart(noRoad, "t-no-road-2", "");
+  await recordTurnComplete(noRoad, "t-no-road-2", "Still going.");
+  check("pro no road: the next turn end tried again from the stored path, refused again, and left the record open",
+    proDecisionsOf(noRoad, "turn_record_promotion_refused", "default").length === 2
+      && proRecordById(noRoad, noRoadId, "default")?.status === "open",
+    proDecisionsOf(noRoad, "turn_record_promotion_refused", "default"));
+}
+
+// Route one runs above the close, so a plan-touching record under a live
+// delivered verdict reads promoted rather than delivered. The control is the
+// same live drive with no plan edit, which reads delivered.
+async function casePromote_routeOneRunsAboveTheCloseUnderALiveVerdict(clock) {
+  console.log("\n=== Promotion route one: a plan-touching record under a live delivered verdict reads promoted, never delivered ===");
+  const LIVE = [Catalog.TURN_DISPOSITION];
+
+  clock.set(T0);
+  const h = await proHarness("pro_above_close", { autonomy: "plan-and-start", jevLive: LIVE });
+  h.setHttpResponse(jevAnsweringDisposition(1));
+  const id = await proDrive(h, "t-above-close");
+  const record = proRecordById(h, id);
+  check("pro above close: the record reads promoted with the entry's id, and no delivered decision was logged",
+    record?.status === "promoted" && record?.goalId === proAddedEntry(h)?.id
+      && proDecisionsOf(h, "turn_record_delivered").length === 0, { record: record, entry: proAddedEntry(h) });
+  check("pro above close: the entry exists with the plan path", proAddedEntry(h)?.planPath === PRO_PLAN, proAddedEntry(h));
+  check("pro above close: the close asked nothing, the record it reads having left the open slot",
+    turnDispositionCallLines(h).length === 0, turnDispositionCallLines(h));
+
+  clock.set(T0);
+  const c = await proHarness("pro_above_close_control", { autonomy: "plan-and-start", jevLive: LIVE });
+  c.setHttpResponse(jevAnsweringDisposition(1));
+  const cId = await proDrive(c, "t-above-close-c", { path: null });
+  check("pro above close (the control): the same live drive with no plan edit closes the record delivered, so the verdict was there to be read",
+    proRecordById(c, cId)?.status === "delivered" && proDecisionsOf(c, "turn_record_delivered").length === 1
+      && turnDispositionCallLines(c).length === 1,
+    { record: proRecordById(c, cId), calls: turnDispositionCallLines(c) });
+}
+
+// Route two: the operator's word through the model's own tool call. goal_create
+// and goal_add mark whatever record is open; task_add marks a record that is a
+// step of the active entry and leaves a bare one alone.
+async function casePromote_routeTwoMarksTheRecordTheToolCallBecame(clock) {
+  console.log("\n=== Promotion route two: goal_create, goal_add and task_add mark the open record promoted ===");
+  const ADD = "mcp__agentic-plugin__goal_add";
+  const CREATE = "mcp__agentic-plugin__goal_create";
+  const TASK_ADD = "mcp__agentic-plugin__task_add";
+  // A tree whose active entry is a plan with no plan document, which is what
+  // task_add needs: an entry a plan document tracks refuses a second list.
+  const activeTree = () => gtc4Tree("pending", [
+    { id: "plan-a", parentId: "root-1", kind: "plan", status: "active", title: "Plan a" },
+  ]);
+
+  clock.set(T0);
+  const created = await proHarness("pro_route2_create", { autonomy: "propose", goals: [] });
+  await submitMessage(created, "Start tracking the migration.");
+  const createdId = proOpenRecord(created)?.id;
+  await recordTurnStart(created, "t-create", "Start tracking the migration.");
+  const createRes = await callTool(created, { tool: CREATE, objective: "Migrate the fleet to the new store." });
+  check("pro route2 create setup: the call was accepted", createRes?.deny === undefined, createRes);
+  const createdRecord = proRecordById(created, createdId);
+  const newRoot = proState(created).goals.find((g) => g.parentId === null);
+  check("pro route2 create: the record reads promoted, names the new root and holds a closedAt",
+    createdRecord?.status === "promoted" && createdRecord?.goalId === newRoot?.id && createdRecord?.closedAt === T0,
+    { record: createdRecord, root: newRoot });
+  check("pro route2 create: one turn_record_promoted decision naming the record and the root",
+    proDecisionsOf(created, "turn_record_promoted").length === 1
+      && proDecisionsOf(created, "turn_record_promoted")[0].detail.includes(createdId)
+      && proDecisionsOf(created, "turn_record_promoted")[0].detail.includes(newRoot?.id),
+    proDecisionsOf(created, "turn_record_promoted"));
+
+  clock.set(T0);
+  const added = await proHarness("pro_route2_add", { autonomy: "propose", goals: activeTree(), activeGoalId: "plan-a" });
+  await submitMessage(added, "Add a step for the index rebuild.");
+  const addedRecordId = proOpenRecord(added)?.id;
+  check("pro route2 add setup: the message attached its record to the active entry",
+    proOpenRecord(added)?.goalId === "plan-a", proOpenRecord(added));
+  await recordTurnStart(added, "t-add", "Add a step for the index rebuild.");
+  const addRes = await callTool(added, { tool: ADD, title: "Rebuild the index", objective: "The index is rebuilt." });
+  check("pro route2 add setup: the call was accepted", addRes?.deny === undefined, addRes);
+  const addedNode = proState(added).goals.find((g) => g.title === "Rebuild the index");
+  check("pro route2 add: the record reads promoted and names the new node rather than the entry it was a step of",
+    proRecordById(added, addedRecordId)?.status === "promoted" && proRecordById(added, addedRecordId)?.goalId === addedNode?.id,
+    { record: proRecordById(added, addedRecordId), node: addedNode });
+
+  // task_add's own clause reads one field of the record, its goal id, so the
+  // two legs are one seeded record differing on that field alone and nothing
+  // else: the same tree, the same active entry, the same call. The record is
+  // seeded rather than opened by a message, because which record a message
+  // opens is the opening rules' subject and is pinned there.
+  const seededRecord = (goalId) => [{
+    id: "tr-seeded", text: "Note the smoke test as a working item.", openedAt: T0 - 1000, status: "open",
+    ...(goalId === undefined ? {} : { goalId }),
+  }];
+  const taskAddOver = async (caseName, goalId) => {
+    clock.set(T0);
+    const h = await proHarness(caseName, {
+      autonomy: "propose", goals: activeTree(), activeGoalId: "plan-a", turnRecords: seededRecord(goalId),
+    });
+    await recordTurnStart(h, `t-${caseName}`, "");
+    const res = await callTool(h, { tool: TASK_ADD, text: "Run the smoke test" });
+    check(`${caseName} setup: the call was accepted and one task was added`,
+      res?.deny === undefined && proState(h).tasks.length === 1, { res, tasks: proState(h).tasks });
+    return { h, record: proRecordById(h, "tr-seeded"), task: proState(h).tasks[0] };
+  };
+
+  const step = await taskAddOver("pro_route2_task_step", "plan-a");
+  check("pro route2 task step: a record that is a step of the active entry reads promoted and names the task",
+    step.record?.status === "promoted" && step.record?.taskId === step.task?.id && step.record?.goalId === "plan-a",
+    { record: step.record, task: step.task });
+  check("pro route2 task step: one turn_record_promoted decision naming the task",
+    proDecisionsOf(step.h, "turn_record_promoted").length === 1
+      && proDecisionsOf(step.h, "turn_record_promoted")[0].detail.includes(step.task?.id),
+    proDecisionsOf(step.h, "turn_record_promoted"));
+
+  const bare = await taskAddOver("pro_route2_task_bare", undefined);
+  check("pro route2 task bare (the control): a bare record is left open and unmarked, so the mark is the record's own goal id",
+    bare.record?.status === "open" && bare.record?.taskId === undefined
+      && proDecisionsOf(bare.h, "turn_record_promoted").length === 0,
+    { record: bare.record, decisions: proState(bare.h).decisions.map((d) => d.action) });
+
+  const other = await taskAddOver("pro_route2_task_other", "plan-q");
+  check("pro route2 task other (the second control): a record stepping another entry is left open and unmarked",
+    other.record?.status === "open" && other.record?.taskId === undefined, other.record);
+}
+
+// Route three: goal_add from a task of the working list copies the text as the
+// title where none is given and drops the task, and an unknown id is refused
+// before anything is written.
+async function casePromote_routeThreeTakesATaskIntoTheTree(clock) {
+  console.log("\n=== Promotion route three: goal_add with a taskId copies the text, drops the task, and refuses an unknown id ===");
+  const ADD = "mcp__agentic-plugin__goal_add";
+  const TASK_TEXT = "Rebuild the index before the cutover";
+  const tree = () => gtc4Tree("pending", [
+    { id: "plan-a", parentId: "root-1", kind: "plan", status: "active", title: "Plan a" },
+  ]);
+  const tasks = () => [{ id: "tk-one", goalId: "plan-a", text: TASK_TEXT, done: false, addedAt: T0 - 5000 }];
+
+  clock.set(T0);
+  const h = await proHarness("pro_route3_add", { autonomy: "propose", goals: tree(), activeGoalId: "plan-a", tasks: tasks() });
+  await openPromptTurn(h);
+  const res = await callTool(h, { tool: ADD, objective: "The index is rebuilt and the cutover is clear.", taskId: "tk-one" });
+  check("pro route3: accepted, and the result names the task that left the list",
+    res?.deny === undefined && String(res?.result).includes("tk-one"), res);
+  const node = proState(h).goals.find((g) => g.title === TASK_TEXT);
+  check("pro route3: one node carries the task's text as its title", !!node, proState(h).goals.map((g) => g.title));
+  check("pro route3: the task is gone from the list", proState(h).tasks.length === 0, proState(h).tasks);
+
+  clock.set(T0);
+  const titled = await proHarness("pro_route3_titled", { autonomy: "propose", goals: tree(), activeGoalId: "plan-a", tasks: tasks() });
+  await openPromptTurn(titled);
+  const titledRes = await callTool(titled, { tool: ADD, title: "A title of its own", objective: "Done means done.", taskId: "tk-one" });
+  check("pro route3 titled: a title the call gives wins over the task's text, and the task still leaves the list",
+    titledRes?.deny === undefined && proState(titled).goals.some((g) => g.title === "A title of its own")
+      && !proState(titled).goals.some((g) => g.title === TASK_TEXT) && proState(titled).tasks.length === 0,
+    { goals: proState(titled).goals.map((g) => g.title), tasks: proState(titled).tasks });
+
+  clock.set(T0);
+  const unknown = await proHarness("pro_route3_unknown", { autonomy: "propose", goals: tree(), activeGoalId: "plan-a", tasks: tasks() });
+  await openPromptTurn(unknown);
+  const bytesBefore = unknown.fsMap.get(PERSONA_STORE_FILE);
+  const refused = await callTool(unknown, { tool: ADD, title: "Rebuild it", objective: "It is rebuilt.", taskId: "tk-missing" });
+  check("pro route3 unknown: refused, naming the id that no task carries",
+    typeof refused?.deny === "string" && refused.deny.includes("tk-missing") && refused.deny.includes("not found in the task list")
+      && refused?.result === undefined, refused);
+  check("pro route3 unknown: the store is byte-identical, so the refusal came before any write",
+    unknown.fsMap.get(PERSONA_STORE_FILE) === bytesBefore);
+  check("pro route3 unknown: the task is still on the list and no node was added",
+    proState(unknown).tasks.length === 1 && proState(unknown).goals.length === 2,
+    { tasks: proState(unknown).tasks, goals: proState(unknown).goals.map((g) => g.id) });
 }
 
 // The Acceptance's first bullet: an add with a title and an objective returns
