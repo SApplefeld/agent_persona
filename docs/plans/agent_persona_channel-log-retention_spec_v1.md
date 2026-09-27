@@ -1,6 +1,6 @@
 # The supervisor removes channel log segments older than a retention window, so a persona's work directory holds a rolling amount of history on disk
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-25
 
@@ -92,3 +92,17 @@ None.
 - `docs/backlog.md`, "The decision journal rewrites its whole day file for every line": the journal's day files, whose retention this plan leaves alone.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-27
+
+Not a Chapter. The plan has started and no section is in flight, so this entry carries no `Completed:` line.
+
+**Plan start.** Status moved from `Ready` to `In Progress` on starting, the one edit inside the approval fingerprint. The worktree is `D:/agent_persona-log-retention` on branch `plan/channel-log-retention`, cut from origin/main at ccfeb16.
+
+**Approach confirmed against ccfeb16.** The plan's line numbers are as of 931163a and have shifted, and every anchor still exists: `GATE PASSED` at `bin/supervise.sh:4112` with the child index allocation at 4118; the poll loop's sleep at 4315; the settings block from 205; the `positive_number` startup checks at 297 to 351; the `controllerTickMs` read and check at 399 to 408, the sibling to mirror; `log()` at 512; the keeper's `$map` at `bin/keeper-functions.ps1:257`, with `controllerTickMs` at 260. New since the write: `jevLive` has its own branch below the map (line 271), which the retention field does not need, since it is a scalar like `controllerTickMs`.
+
+**Live dispatches.** None.
+
+**Next action.** The intake gap check, then section 1 at opus.
+
+**Rulings adopted since the last boundary.** None.
