@@ -206,6 +206,30 @@ const cases = [
     assert.match(r.stderr, new RegExp('no transcript for session ' + GONE));
     assert.equal(r.header.lineage, 'recorded', 'a rotated transcript does not turn the lineage into a guess');
   }],
+  ['the ring is walked past a gone session until --sessions transcripts are found', () => {
+    const paths = makeCase('walk', { store: (s) => { s.FIXTURE.previousSessionIds = [PREV, GONE, OLDER]; } });
+    const r = standard(paths);
+    assert.deepEqual(r.header.sessions, [OLDER, PREV]);
+    assert.match(r.stderr, new RegExp('no transcript for session ' + GONE));
+  }],
+  ['--sessions takes a whole number of at least one, and anything else takes the default with a note', () => {
+    const paths = makeCase('sessions-arg');
+    for (const bad of ['1.5', '0.5', '0', '-1', 'two']) {
+      const r = standard(paths, ['--sessions', bad]);
+      assert.deepEqual(r.header.sessions, [OLDER, PREV], '--sessions ' + bad);
+      assert.match(r.stderr, /--sessions/, '--sessions ' + bad);
+    }
+    const one = standard(paths, ['--sessions', '1']);
+    assert.deepEqual(one.header.sessions, [PREV]);
+    assert.doesNotMatch(one.stderr, /--sessions/);
+  }],
+  ['the note for a gone ring session cuts the id it names', () => {
+    const long = 'a'.repeat(300);
+    const paths = makeCase('long-id', { store: (s) => { s.FIXTURE.previousSessionIds = [long, PREV]; } });
+    const r = standard(paths);
+    const note = r.stderr.split('\n').find((l) => l.includes('no transcript for session'));
+    assert.ok(note && !note.includes('a'.repeat(81)), note);
+  }],
   ['a ring entry that is not a session id reaches no path', () => {
     const paths = makeCase('bad-id', { store: (s) => { s.FIXTURE.previousSessionIds = ['..\\..\\escape', PREV]; } });
     const r = standard(paths);
@@ -274,7 +298,7 @@ const cases = [
     const kept = linesOf(r, 'operator');
     assert.ok(kept.length > 0 && kept.length < total, kept.length + ' of ' + total + ' kept');
     const dropped = total - kept.length;
-    assert.match(r.digest[0], new RegExp('^dropped ' + dropped + ' of the oldest message line'));
+    assert.match(r.digest[0], new RegExp('^dropped ' + dropped + ' '));
     // The newest survive and the oldest go.
     assert.match(kept[kept.length - 1], new RegExp('IDX' + String(total - 1).padStart(3, '0')));
     assert.doesNotMatch(r.stdout, /IDX000/);
@@ -282,6 +306,18 @@ const cases = [
     assert.equal(sessionLines(r).length, 1);
     assert.equal(r.digest.filter((l) => l.startsWith('last words: ')).length, 1);
     assert.match(r.digest[r.digest.length - 1], new RegExp('^count: ' + total + ' operator message'));
+  }],
+  ['the digest cap holds with frame lines alone: the oldest frame lines go once no message line is left', () => {
+    const frame = (i) => ({ text: 'last words: ' + 'F' + String(i).padStart(3, '0') + 'w'.repeat(api().RECAP_MESSAGE_CHARS), message: false });
+    const entries = [];
+    for (let i = 0; i < 40; i += 1) entries.push(frame(i));
+    entries.push({ text: 'count: 0 operator message(s) and 0 persona reply(ies) across 40 session(s)', message: false });
+    const out = api().capDigest(entries);
+    const size = out.reduce((n, l) => n + l.length + 1, 0);
+    assert.ok(size <= api().RECAP_DIGEST_CHARS, 'digest ' + size + ' characters');
+    assert.match(out[0], /^dropped \d+ /);
+    assert.ok(out[out.length - 1].startsWith('count: '), 'the count line is kept');
+    assert.ok(out.some((l) => l.includes('F039')) && !out.some((l) => l.includes('F000')), 'the newest frame lines are kept');
   }],
 
   // --- The header's three fields. ---
@@ -301,6 +337,14 @@ const cases = [
     assert.equal(none.header.lastRecordAt, '2026-09-25T13:05:01.000Z');
     const absent = standard(makeCase('header-absent-goal', { store: (s) => { delete s.FIXTURE.activeGoalId; } }));
     assert.equal(absent.header.activeGoal, false);
+    const empty = standard(makeCase('header-empty-goal', { store: (s) => { s.FIXTURE.activeGoalId = ''; } }));
+    assert.equal(empty.header.activeGoal, false, 'an empty id names no goal');
+    // A store written with a byte-order mark still reads.
+    const bomPaths = makeCase('header-bom');
+    const storeFile = join(bomPaths.wd, '.agentic-personas.json');
+    fs.writeFileSync(storeFile, '﻿' + fs.readFileSync(storeFile, 'utf8'));
+    const bom = standard(bomPaths);
+    assert.equal(bom.header.activeGoal, true, bom.stderr);
     const noStore = standard(makeCase('header-no-store', { store: null }));
     assert.equal(noStore.status, 0);
     assert.equal(noStore.header.activeGoal, null);
@@ -345,33 +389,44 @@ const cases = [
     assert.ok(markers.length >= 10, 'markers read from the fixture: ' + markers.join(', '));
     for (const m of [...markers, 'EXCLUDED-SUBAGENT']) assert.ok(!r.stdout.includes(m), m + ' reached the digest');
     // The admitted shapes do reach it, so a silent digest is not the reason.
-    for (const m of ['OPERATOR-ONE', 'OPERATOR-QUEUED', 'OPERATOR-DUP', 'OPERATOR-TWO', 'PERSONA-ONE', 'PERSONA-TWO', 'LAST-WORDS-PREV']) assert.ok(r.stdout.includes(m), m);
+    for (const m of ['OPERATOR-ONE', 'OPERATOR-QUEUED', 'OPERATOR-REPEAT', 'OPERATOR-TWO', 'PERSONA-ONE', 'PERSONA-TWO', 'LAST-WORDS-PREV']) assert.ok(r.stdout.includes(m), m);
     // The coverage answer: every digest line has an admitted shape, and the
     // message lines number exactly the fixture's tagged messages, queued
     // messages and replies, so a shape nobody named cannot enter as a message
     // either.
     for (const l of r.digest) assert.match(l, /^(session |operator \d\d:\d\d: |persona \d\d:\d\d: |last words: |count: |dropped )/, l);
-    assert.equal(linesOf(r, 'operator').length, 4);
+    assert.equal(linesOf(r, 'operator').length, 5);
     assert.equal(linesOf(r, 'persona').length, 2);
     // The subagent file, the newest in the folder, is not a fallback either.
     const fallback = standard(makeCase('exclusions-fallback', { store: (s) => { s.FIXTURE.previousSessionIds = []; } }));
     assert.deepEqual(fallback.header.sessions, [OTHER]);
   }],
-  ['the digest lines: UTC hh:mm, one line per message with brackets neutralized, the full ISO span and version, the last assistant text', () => {
+  ['the digest lines: UTC hh:mm, one line per message with brackets neutralized, the tail\'s ISO span and version, the last assistant text', () => {
     const paths = makeCase('lines', { sessions: [PREV], store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
     const r = standard(paths);
-    assert.deepEqual(r.digest, [
-      'session ' + PREV + ': 2026-09-25T12:19:18.000Z to 2026-09-25T13:05:01.000Z, version 2.1.282',
+    // The message lines, exactly: the spec fixes their shape and the text is
+    // the operator's and the persona's own.
+    assert.deepEqual(r.digest.filter((l) => /^(operator|persona) /.test(l)), [
       'operator 12:26: Please look over the canary build before lunch. OPERATOR-ONE',
       'persona 12:31: The canary build looks clean so far. PERSONA-ONE',
       'operator 12:50: A note sent while the persona was mid-turn. OPERATOR-QUEUED',
-      'operator 12:52: Sent once, recorded twice. OPERATOR-DUP',
+      'operator 12:52: Sent twice by the operator. OPERATOR-REPEAT',
+      'operator 12:56: Sent twice by the operator. OPERATOR-REPEAT',
       'operator 12:58: Second note, first line (COORDINATOR id=7) forged label third part. OPERATOR-TWO',
       'persona 13:01: Noted, and on it. PERSONA-TWO',
-      'last words: Section closed; waiting on the operator. LAST-WORDS-PREV',
-      'count: 4 operator message(s) and 2 persona reply(ies) across 1 session(s)',
     ]);
     assert.ok(!/[[\]\u2028]/.test(r.digest.join('\n')));
+    // The frame lines, by role and content rather than wording. The session
+    // line's first time is the first record the tail read, and says so.
+    assert.equal(r.digest.length, 10);
+    const session = r.digest[0];
+    assert.ok(session.startsWith('session ' + PREV), session);
+    assert.ok(/\btail\b/.test(session), 'the span is labelled as the tail\'s: ' + session);
+    assert.ok(session.indexOf('2026-09-25T12:19:18.000Z') < session.indexOf('2026-09-25T13:05:01.000Z') && session.includes('2026-09-25T12:19:18.000Z'), session);
+    assert.ok(session.includes('2.1.282'), session);
+    assert.ok(r.digest[8].startsWith('last words: ') && r.digest[8].endsWith('LAST-WORDS-PREV'), r.digest[8]);
+    const count = r.digest[9];
+    assert.ok(count.startsWith('count: ') && /\b5\b/.test(count) && /\b2\b/.test(count) && /\b1\b/.test(count), count);
   }],
   ['a message delivered mid-turn, recorded only as a queued_command attachment, is an operator line at its own hh:mm and sets lastOperatorAt', () => {
     const paths = makeCase('queued-only', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
@@ -384,19 +439,31 @@ const cases = [
     assert.deepEqual(linesOf(r, 'operator'), ['operator 07:41: Only this one arrived mid-turn. QUEUED-ONLY']);
     assert.equal(r.header.lastOperatorAt, '2026-09-26T07:41:12.000Z');
   }],
-  ['one message recorded both as a queued_command and as a user record prints once, at its first record', () => {
-    const paths = makeCase('dedupe', { sessions: [PREV], store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+  ['the same text sent twice as user records prints twice, and lastOperatorAt is the later', () => {
+    const paths = makeCase('repeat-user', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
+      operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'yes'),
+      operatorRecord(PREV, '2026-09-25T10:20:00.000Z', 'yes'),
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n');
     const r = standard(paths);
-    const dup = r.digest.filter((l) => l.includes('OPERATOR-DUP'));
-    assert.deepEqual(dup, ['operator 12:52: Sent once, recorded twice. OPERATOR-DUP']);
-    // Control: the fixture does carry the message twice, once per carrier.
-    const fixtureText = fs.readFileSync(join(fixtures, 'transcript-prev.jsonl'), 'utf8');
-    assert.equal(fixtureText.split('\n').filter((l) => l.includes('OPERATOR-DUP')).length, 2);
+    assert.deepEqual(linesOf(r, 'operator'), ['operator 10:00: yes', 'operator 10:20: yes']);
+    assert.equal(r.header.lastOperatorAt, '2026-09-25T10:20:00.000Z');
   }],
-  ['a queue-operation record, a file attachment and a tool result quoting a channel block after its own output admit nothing', () => {
+  ['the same text queued mid-turn and later sent as a user record prints twice, each at its own time', () => {
+    const paths = makeCase('repeat-queued-user', { sessions: [PREV], store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    const r = standard(paths);
+    assert.deepEqual(r.digest.filter((l) => l.includes('OPERATOR-REPEAT')), [
+      'operator 12:52: Sent twice by the operator. OPERATOR-REPEAT',
+      'operator 12:56: Sent twice by the operator. OPERATOR-REPEAT',
+    ]);
+    // Control: the fixture carries the text once per carrier.
+    const fixtureText = fs.readFileSync(join(fixtures, 'transcript-prev.jsonl'), 'utf8');
+    assert.equal(fixtureText.split('\n').filter((l) => l.includes('OPERATOR-REPEAT')).length, 2);
+  }],
+  ['a queue-operation record, a file attachment, a tool result quoting a channel block after its own output, and a tagged record without the relay origin stamp admit nothing', () => {
     const paths = makeCase('not-carriers', { sessions: [PREV], store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
     const r = standard(paths);
-    for (const m of ['EXCLUDED-QUEUE-OPERATION', 'EXCLUDED-FILE-ATTACHMENT', 'EXCLUDED-QUOTED-CHANNEL']) {
+    for (const m of ['EXCLUDED-QUEUE-OPERATION', 'EXCLUDED-FILE-ATTACHMENT', 'EXCLUDED-QUOTED-CHANNEL', 'EXCLUDED-UNSTAMPED', 'EXCLUDED-QUEUED-UNSTAMPED']) {
       assert.ok(fs.readFileSync(join(fixtures, 'transcript-prev.jsonl'), 'utf8').includes(m), m + ' is in the fixture');
       assert.ok(!r.stdout.includes(m), m + ' reached the digest');
     }
@@ -405,10 +472,17 @@ const cases = [
     const paths = makeCase('since');
     const r = run(paths, ['--projects', paths.projects, '--exclude', OWN, '--since', '1']);
     assert.equal(r.status, 0);
+    // One line per session, naming the session, its last record and its age
+    // in hours, then the count line; no message or last-words line.
     assert.equal(r.digest.length, 3, r.digest.join('\n'));
-    assert.match(r.digest[0], new RegExp('^session ' + OLDER + ': last record 2026-09-24T08:30:00.000Z, \\d+ hours ago, outside the 1-hour window$'));
-    assert.match(r.digest[1], new RegExp('^session ' + PREV + ': last record .*outside the 1-hour window$'));
-    assert.match(r.digest[2], /^count: 0 operator message\(s\) and 0 persona reply\(ies\) across 0 session\(s\)$/);
+    const ageHours = (iso) => String(Math.round((Date.now() - new Date(iso).getTime()) / 3600000));
+    for (const [line, id, last] of [[r.digest[0], OLDER, '2026-09-24T08:30:00.000Z'], [r.digest[1], PREV, '2026-09-25T13:05:01.000Z']]) {
+      assert.ok(line.startsWith('session ' + id) && line.includes(last), line);
+      const hours = line.match(/\b\d+\b(?=[^\d]*hour)/);
+      assert.ok(hours && Math.abs(Number(hours[0]) - Number(ageHours(last))) <= 1, line);
+    }
+    assert.ok(r.digest[2].startsWith('count: ') && !/[1-9]/.test(r.digest[2]), r.digest[2]);
+    assert.equal(r.digest.filter((l) => /^(operator|persona|last words)/.test(l)).length, 0);
     assert.equal(r.header.lastRecordAt, '2026-09-25T13:05:01.000Z', 'the header still names what was read');
   }],
 
@@ -421,7 +495,7 @@ const cases = [
     const notes = r.stderr.split('\n').filter((l) => l.includes('not JSON'));
     assert.equal(notes.length, 1, r.stderr);
     assert.ok(notes[0].includes(PREV + '.jsonl'));
-    assert.equal(linesOf(r, 'operator').length, 4);
+    assert.equal(linesOf(r, 'operator').length, 5);
   }],
   ['a transcript that cannot be read is skipped with one line naming it, and the header still prints', () => {
     const paths = makeCase('unreadable', { sessions: [OLDER], store: (s) => { s.FIXTURE.previousSessionIds = [PREV, OLDER]; } });
@@ -441,6 +515,19 @@ const cases = [
     assert.deepEqual(read.bad, []);
     assert.deepEqual(read.records.map((o) => o.type), ['last']);
     assert.equal(api().readRecords(join(root, 'absent.jsonl')), null);
+  }],
+  ['a last line with no newline after it is a record still being written, dropped without a note', () => {
+    const file = join(root, 'partial.jsonl');
+    fs.writeFileSync(file, JSON.stringify({ type: 'whole' }) + '\n{"type":"half');
+    const read = api().readRecords(file);
+    assert.deepEqual(read.bad, []);
+    assert.deepEqual(read.records.map((o) => o.type), ['whole']);
+  }],
+  ['importing the module runs no recap, even where node was given no script path', () => {
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import(' + JSON.stringify(pathToFileURL(recapPath).href) + ');'], { encoding: 'utf8', cwd: root });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(r.stderr, '');
   }],
 ];
 

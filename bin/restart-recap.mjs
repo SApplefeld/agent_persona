@@ -41,7 +41,8 @@
 // across every session read.
 // activeGoal is true where the persona's entry names an active goal, false
 // where it names none, and null where the store or the entry cannot be read.
-// The lines after it are the digest, oldest session first: a session line, then
+// The lines after it are the digest, oldest session first: a session line
+// naming the first and last record of the tail read and the version, then
 // "operator <hh:mm>: <text>" and "persona <hh:mm>: <text>" in file order, which
 // is time order, then "last words: <text>", then one count line for the whole
 // digest. hh:mm is UTC. A session whose last record is older than --since
@@ -49,8 +50,9 @@
 //
 // What the digest admits. An operator message is a user record whose content
 // is a string opening the relay's channel tag, or, for a message that arrived
-// while a turn was running, a queued_command attachment whose prompt opens it;
-// a message recorded both ways prints once. A persona session is headless,
+// while a turn was running, a queued_command attachment whose prompt opens it,
+// each bearing the harness's relay origin stamp. Every such record prints, so
+// the same text sent twice prints twice. A persona session is headless,
 // so every user record without that tag is text a program submitted: the
 // supervisor's priming turn, a prompt the plugin injected, a coordinator or
 // worker record delivered as a turn, a tool result. A reply is the relay
@@ -68,9 +70,11 @@
 // bracketSafeText, which a .mjs script cannot import from TypeScript.
 //
 // Bounds. Each transcript is read from its last RECAP_TAIL_BYTES only, and a
-// first line the cut landed inside is dropped. Each message is cut to
-// RECAP_MESSAGE_CHARS and the digest to RECAP_DIGEST_CHARS, the oldest message
-// lines dropped first, with a line saying how many were dropped.
+// first line the cut landed inside is dropped, as is a last line with no
+// newline after it, which is a record still being written. Each message is
+// cut to RECAP_MESSAGE_CHARS and the whole digest to RECAP_DIGEST_CHARS, the
+// oldest message lines dropped first and then the oldest frame lines, with a
+// line saying how many were dropped.
 //
 // Failure. A store, a folder or a transcript that cannot be read, and a
 // record that is not JSON, is skipped with one line on stderr naming it. The
@@ -94,6 +98,8 @@ export const PREVIOUS_SESSIONS_MAX = 3;
 export const STORE_FILENAME = '.agentic-personas.json';
 // The opening of an operator message: the relay's channel tag.
 export const OPERATOR_TAG = '<channel source="plugin:relay:channel-relay"';
+// The server the harness names in an operator message's origin stamp.
+export const RELAY_SERVER = 'plugin:relay:channel-relay';
 // The tool a persona replies to the operator through.
 export const REPLY_TOOL = 'mcp__plugin_relay_channel-relay__reply';
 const VERSION_CHARS = 40;
@@ -176,8 +182,10 @@ export function transcriptFolders(projectsDir, workdir) {
 // The transcript file name for a session id, or '' where the id is not one a
 // file name can safely carry. transcriptPathsFor owns that check, so the id
 // passes the same guard the liveness verdict's does before it reaches a path.
-function transcriptFileName(projectsDir, workdir, sessionId) {
-  const { transcriptPath } = transcriptPathsFor(projectsDir, workdir, sessionId);
+// Only the name is taken from its answer: the root handed in is a placeholder,
+// and the folder the name is joined to comes from the case-insensitive lookup.
+function transcriptFileName(workdir, sessionId) {
+  const { transcriptPath } = transcriptPathsFor('placeholder-root', workdir, sessionId);
   return transcriptPath ? path.basename(transcriptPath) : '';
 }
 
@@ -223,7 +231,11 @@ export function readRecords(file, tailBytes = RECAP_TAIL_BYTES) {
   }
   const records = [];
   const bad = [];
-  text.split('\n').forEach((line, i) => {
+  // The piece after the last newline is a record still being written, or
+  // nothing, and is passed over without a note either way.
+  const lines = text.split('\n');
+  lines.pop();
+  lines.forEach((line, i) => {
     if (!line.trim()) return;
     let o;
     try { o = JSON.parse(line); } catch (e) { bad.push(i + 1); return; }
@@ -253,23 +265,30 @@ function operatorWords(content) {
  * one. The harness records a relay message in one of two carriers: a user
  * record whose content is the tagged string, where the message opened a turn,
  * and a queued_command attachment whose prompt is the tagged string, where it
- * arrived while a turn was running. A queue-operation record carries the same
- * text and is the queue's own bookkeeping, not a message. A tool result that
- * holds the tag is tool output quoting a message, often another session's or
- * another persona's, and is never read as one.
+ * arrived while a turn was running. Each carrier also bears the harness's
+ * origin stamp, kind "channel" from the relay's server, which text a program
+ * submitted cannot acquire by opening with the tag. A queue-operation record
+ * carries the same text and is the queue's own bookkeeping, not a message. A
+ * tool result that holds the tag is tool output quoting a message, often
+ * another session's or another persona's, and is never read as one.
  * @param {object} r
  * @returns {string|null}
  */
 export function operatorCarrier(r) {
   if (r.type === 'user') {
     const content = r.message && typeof r.message === 'object' ? r.message.content : undefined;
-    return typeof content === 'string' && content.startsWith(OPERATOR_TAG) ? content : null;
+    return typeof content === 'string' && content.startsWith(OPERATOR_TAG) && relayStamped(r.origin) ? content : null;
   }
   if (r.type === 'attachment') {
     const a = r.attachment && typeof r.attachment === 'object' ? r.attachment : null;
-    return a && a.type === 'queued_command' && typeof a.prompt === 'string' && a.prompt.startsWith(OPERATOR_TAG) ? a.prompt : null;
+    return a && a.type === 'queued_command' && typeof a.prompt === 'string' && a.prompt.startsWith(OPERATOR_TAG) && relayStamped(a.origin) ? a.prompt : null;
   }
   return null;
+}
+
+// Whether an origin stamp names the relay's channel.
+function relayStamped(origin) {
+  return !!origin && typeof origin === 'object' && origin.kind === 'channel' && origin.server === RELAY_SERVER;
 }
 
 /**
@@ -287,7 +306,6 @@ export function sessionDigest(records) {
   let lastAt = null;
   let lastOperatorAt = null;
   let version = '';
-  const seen = new Set();
   for (const r of records) {
     const at = isoOf(r);
     if (at) {
@@ -296,12 +314,11 @@ export function sessionDigest(records) {
     }
     if (typeof r.version === 'string' && r.version) version = r.version;
     if (r.isSidechain === true) continue;
+    // Every carrier is its own message. The tag names only the source and the
+    // chat, so the same text twice in a session is the operator writing it
+    // twice, and both print and both move lastOperatorAt.
     const tagged = operatorCarrier(r);
     if (tagged !== null) {
-      // One message can be recorded twice, queued while a turn ran and then
-      // as the next turn's prompt, so a text already printed is not again.
-      if (seen.has(tagged)) continue;
-      seen.add(tagged);
       lines.push({ kind: 'operator', at, text: operatorWords(tagged) });
       if (at && (lastOperatorAt === null || at > lastOperatorAt)) lastOperatorAt = at;
       continue;
@@ -322,12 +339,45 @@ export function sessionDigest(records) {
   return { lines, lastWords, firstAt, lastAt, lastOperatorAt, version };
 }
 
+/**
+ * The digest lines cut to RECAP_DIGEST_CHARS, each line counted with its
+ * newline. The oldest message lines go first; where the frame lines alone
+ * still pass the cap, the oldest of those go next. The last entry, the count
+ * line, is kept, and a first line says how many lines were dropped.
+ * @param {{text: string, message: boolean}[]} entries
+ * @returns {string[]}
+ */
+export function capDigest(entries) {
+  const size = (list) => list.reduce((n, e) => n + e.text.length + 1, 0);
+  let dropped = 0;
+  const dropNote = () => ({ text: 'dropped ' + dropped + ' of the oldest line(s) to keep the digest within ' + RECAP_DIGEST_CHARS + ' characters' });
+  let kept = entries.slice();
+  while (size(dropped > 0 ? [dropNote(), ...kept] : kept) > RECAP_DIGEST_CHARS) {
+    let i = kept.findIndex((e) => e.message);
+    if (i < 0) i = kept.length > 1 ? 0 : -1;
+    if (i < 0) break;
+    kept.splice(i, 1);
+    dropped += 1;
+  }
+  return (dropped > 0 ? [dropNote(), ...kept] : kept).map((e) => e.text);
+}
+
 function hhmm(iso) {
   return iso ? iso.slice(11, 16) : '--:--';
 }
 
-// A whole-number option, or the default where the value is absent or is not
-// a positive number, with a note naming what was refused.
+// A whole number of at least one, or the default where the value is absent or
+// is anything else, with a note naming what was refused.
+function wholeCount(flags, name, fallback, notes) {
+  if (flags[name] === undefined) return fallback;
+  const n = Number(flags[name]);
+  if (Number.isInteger(n) && n >= 1) return n;
+  notes.push('--' + name + ' "' + digestText(flags[name], 40) + '" is not a whole number of at least 1; using ' + fallback);
+  return fallback;
+}
+
+// A positive number, or the default where the value is absent or is not one,
+// with a note naming what was refused.
 function positive(flags, name, fallback, notes) {
   if (flags[name] === undefined) return fallback;
   const n = Number(flags[name]);
@@ -353,7 +403,7 @@ export function recap(flags, opts = {}) {
   const home = String(env.USERPROFILE || env.HOME || os.homedir());
   const projectsDir = path.resolve(flags.projects || path.join(home, '.claude', 'projects'));
   const exclude = flags.exclude !== undefined ? String(flags.exclude) : String(env.CLAUDE_CODE_SESSION_ID || '');
-  const sessionsWanted = Math.floor(positive(flags, 'sessions', DEFAULT_SESSIONS, notes));
+  const sessionsWanted = wholeCount(flags, 'sessions', DEFAULT_SESSIONS, notes);
   const sinceHours = positive(flags, 'since', DEFAULT_SINCE_HOURS, notes);
   if (!exclude) notes.push('no session to exclude: neither --exclude nor CLAUDE_CODE_SESSION_ID names one');
   const excluded = (id) => exclude !== '' && id.toLowerCase() === exclude.toLowerCase();
@@ -362,7 +412,7 @@ export function recap(flags, opts = {}) {
   let entry = null;
   let store = null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8').replace(/^﻿/, ''));
+    const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8').replace(/^\uFEFF/, ''));
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) store = parsed;
     else notes.push('the store ' + storePath + ' is not an object of persona entries');
   } catch (e) {
@@ -381,7 +431,7 @@ export function recap(flags, opts = {}) {
       else notes.push('the store ' + storePath + ' holds no entry for ' + digestText(persona, 80));
     }
   }
-  const activeGoal = entry ? entry.activeGoalId !== null && entry.activeGoalId !== undefined : null;
+  const activeGoal = entry ? entry.activeGoalId !== null && entry.activeGoalId !== undefined && entry.activeGoalId !== '' : null;
   const ring = entry && Array.isArray(entry.previousSessionIds)
     ? entry.previousSessionIds.filter((id) => typeof id === 'string' && id !== '').slice(0, PREVIOUS_SESSIONS_MAX)
     : [];
@@ -398,15 +448,18 @@ export function recap(flags, opts = {}) {
   const chosen = [];
   if (lineageIds.length > 0) {
     lineage = 'recorded';
-    for (const id of lineageIds.slice(0, sessionsWanted)) {
-      const fileName = transcriptFileName(projectsDir, workdir, id);
+    // The ring is walked until enough transcripts are found, so a gone
+    // session does not hide a readable older one.
+    for (const id of lineageIds) {
+      if (chosen.length >= sessionsWanted) break;
+      const fileName = transcriptFileName(workdir, id);
       if (!fileName) {
         notes.push('the ring names ' + digestText(id, 80) + ', which is not a session id a transcript file can carry');
         continue;
       }
       const hit = folderList.map((f) => path.join(f.path, fileName)).find((p) => fs.existsSync(p));
       if (hit) chosen.push({ id, file: hit });
-      else notes.push('no transcript for session ' + id + ' in the transcript folder');
+      else notes.push('no transcript for session ' + digestText(id, 80) + ' in the transcript folder');
     }
   } else {
     lineage = 'unrecorded';
@@ -420,7 +473,7 @@ export function recap(flags, opts = {}) {
       for (const name of names) {
         if (!name.endsWith('.jsonl')) continue;
         const id = name.slice(0, -'.jsonl'.length);
-        if (excluded(id) || !transcriptFileName(projectsDir, workdir, id)) continue;
+        if (excluded(id) || !transcriptFileName(workdir, id)) continue;
         const p = path.join(f.path, name);
         let stat;
         try { stat = fs.statSync(p); } catch (e) { continue; }
@@ -451,8 +504,6 @@ export function recap(flags, opts = {}) {
   }
 
   // --- The digest, cut to its cap. ---
-  // Each entry is one line; a message line may be dropped to fit the cap, and
-  // the session, last-words and count lines are kept.
   const entries = [];
   let operators = 0;
   let replies = 0;
@@ -469,7 +520,7 @@ export function recap(flags, opts = {}) {
       continue;
     }
     counted += 1;
-    entries.push({ text: 'session ' + s.id + ': ' + s.firstAt + ' to ' + s.lastAt + ', version ' + (digestText(s.version, VERSION_CHARS) || 'unknown'), message: false });
+    entries.push({ text: 'session ' + s.id + ': tail from ' + s.firstAt + ' to ' + s.lastAt + ', version ' + (digestText(s.version, VERSION_CHARS) || 'unknown'), message: false });
     for (const l of s.lines) {
       if (l.kind === 'operator') operators += 1;
       else replies += 1;
@@ -477,21 +528,10 @@ export function recap(flags, opts = {}) {
     }
     entries.push({ text: 'last words: ' + (s.lastWords === null ? '(none)' : digestText(s.lastWords)), message: false });
   }
-  const digest = [];
+  let digest = [];
   if (entries.length > 0) {
     entries.push({ text: 'count: ' + operators + ' operator message(s) and ' + replies + ' persona reply(ies) across ' + counted + ' session(s)', message: false });
-    const size = (list) => list.reduce((n, e) => n + e.text.length + 1, 0);
-    let dropped = 0;
-    const dropNote = () => ({ text: 'dropped ' + dropped + ' of the oldest message line(s) to keep the digest within ' + RECAP_DIGEST_CHARS + ' characters', message: false });
-    let kept = entries;
-    while (size(dropped > 0 ? [dropNote(), ...kept] : kept) > RECAP_DIGEST_CHARS) {
-      const i = kept.findIndex((e) => e.message);
-      if (i < 0) break;
-      kept = kept.slice(0, i).concat(kept.slice(i + 1));
-      dropped += 1;
-    }
-    if (dropped > 0) digest.push(dropNote().text);
-    for (const e of kept) digest.push(e.text);
+    digest = capDigest(entries);
   }
 
   const header = {
@@ -505,11 +545,12 @@ export function recap(flags, opts = {}) {
 }
 
 // Whether node was asked to run this file, rather than one that imported it.
-// It stands down only where the entry point is another readable file, which
-// is what an import looks like, so a launch this cannot place still prints.
+// It stands down where node was given no script path, as under -e, and where
+// the entry point is another readable file, which is what an import looks
+// like. A launch through a path this cannot resolve still prints.
 function launchedDirectly() {
   const entry = process.argv[1] ? path.resolve(process.argv[1]) : '';
-  if (!entry) return true;
+  if (!entry) return false;
   const self = fileURLToPath(import.meta.url);
   const real = (p) => { try { return fs.realpathSync(p).toLowerCase(); } catch (e) { return p.toLowerCase(); } };
   if (real(entry) === real(self)) return true;
@@ -527,7 +568,7 @@ if (launchedDirectly()) {
     out = {
       header: { lineage: 'unrecorded', sessions: [], lastRecordAt: null, lastOperatorAt: null, activeGoal: null },
       digest: [],
-      notes: ['unexpected error: ' +digestText(e && e.stack ? e.stack : e, 1000)],
+      notes: ['unexpected error: ' + digestText(e && e.stack ? e.stack : e, 1000)],
     };
   }
   process.stdout.write([JSON.stringify(out.header), ...out.digest].join('\n') + '\n');
