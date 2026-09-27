@@ -348,3 +348,19 @@ Delta: 2026-09-27 on SCOTT-CLAUDE, worktree D:/agent_persona-upgrade-check at d6
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 4 - 2026-09-27
+
+Not a Chapter. Section 5 has its first-green commit and its review round is still returning, so it carries no `Completed:` line.
+
+**Why this boundary exists.** The compaction gate reported it is holding offers, so the round's state is written here before a compaction can land.
+
+**Section 5's stage.** First green is 1c2868d, pushed: the `[RESTART RECAP]` block at the priming turn, the `restartRecap` setting, the settings writer, the ledger rule, seven gate cases, `skills/restart-recap/SKILL.md`, and the README and architecture text. Gates re-read by the main session on that tree: `node .kit/controller-tick-test.mjs` exit 0, "PASS: 0 failure(s)"; `node .kit/injection-duplicate-test.mjs` exit 0; `tsc --noEmit` exit 0; `claude plugin validate .claude-plugin/plugin.json --json` exit 0 with no skill entry. Round 1 at fable, Agent tool, on one capacity reading per dispatch: security CLEAR; performance CLEAR (62 to 76 ms per launch against 5,000 ms); blind APPROVED_WITH_CONCERNS, its one Major discarded because `.claude/types/claude-code.d.ts:4506-4512` stops the hook's clock during `$` calls; adversarial APPROVED_WITH_CONCERNS, one Major accepted (no test pins the `RESTART_RECAP` refusal) and two downgraded to Minor (the block-position pin, the frame-wording pins); both blind readers returned comprehension findings on the skill.
+
+**Live dispatch.** The prose reviewer, asked to review `skills/restart-recap/SKILL.md` and the section's README and architecture hunks against the prose register.
+
+**Next action.** When the prose reviewer returns: apply the fix round (the settings-test leg drafted at `D:/agent_persona/.kit/scratch/upgrade-check/s5-fix-settings-leg.mjs`), the close-pass Minors and the skill's prose fixes, all listed in `D:/agent_persona/.kit/scratch/upgrade-check/minors-section-5.md`; then the close gate, Chapter 5, the commit and push, and section 6.
+
+**Gate baseline.** 2026-09-27 on SCOTT-CLAUDE, worktree D:/agent_persona-upgrade-check at 020bd7b, no other suite running: controller-tick, injection-duplicate, tool-description-length, check-loader-rule, settings-plugin-key and supervisor-model all exit 0, tsc exit 0.
+
+**Rulings adopted since the last boundary.** None.
