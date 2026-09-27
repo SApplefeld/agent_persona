@@ -2043,8 +2043,8 @@ check "relaunch signal control: after the same sweep and relaunch, a TERM after 
 # path, counted as nothing removed, and the sweep still returns 0. The seventh
 # holds segments 0005 and 00005, which share the highest value, beside a lower
 # 0004, all 20 days old, so every name at the highest value stays whichever
-# one find lists first. A second run
-# over the first directory finds nothing old left to remove.
+# one find lists first. A second run over the first directory finds nothing
+# old left to remove.
 : > "$TMP/sweep.fn"; supervisor_extract_fn "$SCRIPT" sweep_channel_log_segments "$TMP/sweep.fn" || true
 SWEEP_SNIPPET=$(tr -d '\r' < "$TMP/sweep.fn")
 [ -n "$SWEEP_SNIPPET" ]; check "sweep_channel_log_segments is found in bin/supervise.sh" "$?"
