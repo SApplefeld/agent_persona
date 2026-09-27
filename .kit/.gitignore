@@ -45,3 +45,9 @@
 !/fixtures/upgrade-check/claude-code.d.ts
 !/fixtures/upgrade-check/transcript.jsonl
 !/fixtures/upgrade-check/tsc
+!/restart-recap-unit-test.mjs
+!/fixtures/restart-recap/
+!/fixtures/restart-recap/store.json
+!/fixtures/restart-recap/transcript-older.jsonl
+!/fixtures/restart-recap/transcript-other.jsonl
+!/fixtures/restart-recap/transcript-prev.jsonl

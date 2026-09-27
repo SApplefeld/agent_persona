@@ -1,0 +1,26 @@
+{
+  "FIXTURE": {
+    "version": 6,
+    "persona": "FIXTURE",
+    "activeSessionId": "d4d4d4d4-0000-4000-8000-000000000004",
+    "epoch": 4,
+    "previousSessionIds": [
+      "a1a1a1a1-0000-4000-8000-000000000001",
+      "b2b2b2b2-0000-4000-8000-000000000002",
+      "e5e5e5e5-0000-4000-8000-000000000005"
+    ],
+    "memory": [],
+    "goals": [
+      {
+        "id": "goal-fixture-1",
+        "title": "Fixture goal",
+        "objective": "Hold an active goal for the header.",
+        "status": "active"
+      }
+    ],
+    "activeGoalId": "goal-fixture-1",
+    "decisions": [],
+    "createdAt": 1758700000000,
+    "updatedAt": 1758805500000
+  }
+}
