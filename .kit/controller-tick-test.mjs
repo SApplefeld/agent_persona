@@ -7570,11 +7570,23 @@ async function caseJevLive_invalidIdsAreDroppedAndLoggedAtRegister(clock) {
   check("jevLive absent: a missing key reads as empty, with no jev_live_invalid decision",
     !absentDecisions.some((d) => d.action === "jev_live_invalid"), absentDecisions.map((d) => d.action));
 
-  const hNonArray = await createTickHarness({ ...OPTS, caseName: "jevlive_nonarray", jevLive: "turn-disposition" });
+  // The manifest declares jevLive as a comma-separated string, so the value
+  // the engine hands register() is a string, and an id in it outside the
+  // promotable set is dropped and logged exactly as an array member is.
+  const hString = await createTickHarness({ ...OPTS, caseName: "jevlive_string", jevLive: "turn-disposition, bogus" });
+  const stringDecisions = getStateForPersona(hString, "default")?.decisions || [];
+  check("jevLive string: persona start actually ran (a persona_claim decision is present)",
+    stringDecisions.some((d) => d.action === "persona_claim"), stringDecisions.map((d) => d.action));
+  const stringDrop = stringDecisions.filter((d) => d.action === "jev_live_invalid");
+  check("jevLive string: one jev_live_invalid decision names the id outside the set and not the kept one",
+    stringDrop.length === 1 && stringDrop[0].detail.includes("bogus") && !stringDrop[0].detail.includes("turn-disposition"),
+    stringDrop);
+
+  const hNonArray = await createTickHarness({ ...OPTS, caseName: "jevlive_nonarray", jevLive: 7 });
   const nonArrayDecisions = getStateForPersona(hNonArray, "default")?.decisions || [];
-  check("jevLive non-array: persona start actually ran (a persona_claim decision is present)",
+  check("jevLive neither string nor array: persona start actually ran (a persona_claim decision is present)",
     nonArrayDecisions.some((d) => d.action === "persona_claim"), nonArrayDecisions.map((d) => d.action));
-  check("jevLive non-array: a non-array value reads as empty, with no jev_live_invalid decision",
+  check("jevLive neither string nor array: the value reads as empty, with no jev_live_invalid decision",
     !nonArrayDecisions.some((d) => d.action === "jev_live_invalid"), nonArrayDecisions.map((d) => d.action));
 
   const hClean = await createTickHarness({ ...OPTS, caseName: "jevlive_clean", jevLive: ["turn-open", "turn-disposition"] });
@@ -7603,6 +7615,17 @@ async function caseJevLive_invalidIdsAreDroppedAndLoggedAtRegister(clock) {
   const absentFiltered = mixedMod.filterJevLive(undefined);
   check("jevLive absent: filterJevLive over a missing value keeps and drops nothing",
     absentFiltered.kept.length === 0 && absentFiltered.dropped.length === 0, absentFiltered);
+  const csvFiltered = mixedMod.filterJevLive(" turn-open ,	turn-disposition,, ");
+  check("jevLive string: filterJevLive splits on commas, trims each member and skips the blank ones",
+    JSON.stringify(csvFiltered.kept) === JSON.stringify(["turn-open", "turn-disposition"]) && csvFiltered.dropped.length === 0,
+    csvFiltered);
+  const csvMixed = mixedMod.filterJevLive("turn-disposition,bogus");
+  check("jevLive string: filterJevLive keeps the promotable id and drops the other",
+    JSON.stringify(csvMixed.kept) === JSON.stringify(["turn-disposition"]) && JSON.stringify(csvMixed.dropped) === JSON.stringify(["bogus"]),
+    csvMixed);
+  const emptyFiltered = mixedMod.filterJevLive("");
+  check("jevLive string: filterJevLive over the empty default keeps and drops nothing",
+    emptyFiltered.kept.length === 0 && emptyFiltered.dropped.length === 0, emptyFiltered);
   clock.set(T0);
 }
 
