@@ -115,3 +115,19 @@ Not a Chapter. The plan has started and no section is in flight, so this entry c
 **Next action.** The intake gap check and memory recall; section 1's task-notification precondition count over the journal; then section 1 at opus.
 
 **Rulings adopted since the last boundary.** None.
+
+### Interim board 2 - 2026-09-27
+
+Not a Chapter. Section 1 is in review, so this entry carries no `Completed:` line.
+
+**Section 1 stage.** Implemented by implementer-opus and committed at first green as 0ec505a, pushed. Review round 1 is in flight at fable over base 05d17a8: the adversarial, blind and performance lenses. The security lens is queued behind them under the operator's cap of three fable agents at once. It is owed because the delta reads a configuration value.
+
+**Precondition, run 2026-09-27 over `~/.claude/agentic-decisions/*/`.** Of 4,378 `memory-kind` call lines, 3,035 carry a state whose `User asked:` text opens with `<task-notification>`. Haiku's value on those was `discard` 2,991 times, `fact` 28, `lesson` 10, and 6 had no answer line. A hand read of 20 of the 38 keeps found every one drawn from the persona's own report in the `Worker answered:` half: reviewer findings, gate counts, WAITING lines, and lessons the persona had already stored. None was a fact or preference the operator stated, so the task-notification rule stands.
+
+**Open Question finding.** `[GOAL]`-opened `memory-kind` calls are still being written, 10 on DEV-PERSONA and 2 on DEV-PLUGIN on 2026-09-27, so a nudge path reaches the site despite `!wasNudged`. Inferred cause, unconfirmed: `currentTurnKind` becomes `nudge` only when an expected-turn entry matched the turn's text (`hooks/index.ts:9017-9026`), and an unmatched nudge falls to `unaccounted`. A test driving an unmatched nudge turn to the memory site would confirm it. It routes out to the backlog at finishing.
+
+**Gate baseline.** Measured 2026-09-27 on this worktree at a clean 05d17a8, no foreign runner: controller-tick-test 5584 OK / 0 FAIL, exit 0; decision-journal-unit-test 140 / 0, exit 0; question-catalog-unit-test 163 / 0, exit 0; tsc exit 0. At 0ec505a: 5753 / 0, 141 / 0, 163 / 0, tsc 0, each exit 0.
+
+**Rulings adopted since the last boundary.** None. The brief's resolved gaps are in `.kit/scratch/jev-gate/s1/brief.md` and go to the section 1 Chapter's Assumptions line.
+
+**Next action.** Adjudicate round 1, dispatch the security lens when a fable slot frees, then close section 1 and dispatch section 2 at sonnet.
