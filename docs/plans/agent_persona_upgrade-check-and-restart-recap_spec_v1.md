@@ -270,3 +270,17 @@ Delta: 2026-09-27 on SCOTT-CLAUDE, worktree D:/agent_persona-upgrade-check at 91
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 2 - 2026-09-27
+
+Not a Chapter. Section 3 is mid-implementation and unclosed, so it carries no `Completed:` line.
+
+**Why this boundary exists.** The operator asked on the relay thread for a plugin update, a validate and a restart of this persona, ahead of a fleet-wide restart. This session is DEV-PERSONA under its supervisor, and a restart ends every agent it runs. So the section 3 implementer was stopped on purpose, not for a stall, and its work is on disk.
+
+**Section 3's stage.** `implementer-opus` ran on the brief at `D:/agent_persona/.kit/scratch/upgrade-check/brief-section3.md`, which is gitignored scratch. It was stopped mid-work, its last words being "Now the three agentic_identity results.", so agentic_identity's result may not carry the ring yet. Uncommitted and unstaged in this worktree at cd884d2 plus the Chapter 2 commits: `hooks/agent-state.ts` (+46), `hooks/index.ts` (12 lines changed), `.kit/controller-tick-test.mjs` (+189), `README.md` (+1). No gate has run on these edits. The brief file sits under the main checkout's `.kit/scratch/`, so it survives the restart, but it is not in git; the section text above is the durable brief.
+
+**Next action for the resuming session.** Read the four unstaged diffs. Re-dispatch `implementer-opus` on the same brief, extended with "resume: the edits on disk are yours; finish agentic_identity's result, then run every gate the brief names", rather than starting over. Then step 2 verification, the first-green commit, and the round.
+
+**Rulings adopted since the last boundary.** None. Two plan-text corrections landed in Chapter 2: sections 2 and 5 accept validate by manifest plus a control.
+
+**Other state.** PR #118 (jevLive as a comma-separated string) merged as ccfeb16 on the operator's approval, after its offline gate read 25 of 26 suites at exit 0. The 26th, `supervisor-natural-exit-test.sh`, fails five checks on main as well, confirmed by three solo runs of the `pkdu` case and by the root_complete pin's own extraction reading 0 on main, and `docs/backlog.md` gains that entry in this commit. The installed plugin was updated to ccfeb16, `claude plugin validate` on it exits 0 with no errors, and a passive headless load from an empty folder admitted it and settled `session.start` with no error line.
