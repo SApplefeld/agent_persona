@@ -52,10 +52,14 @@
 // Exits. 0 clear, 1 triage, 2 could not run. A missing --repo or --results, a
 // --repo with no hooks/ directory, and a results directory that cannot be
 // written all exit 2 before any step runs, with the reason printed: a run
-// that cannot record its rows is not a run. Every child process carries
-// STEP_TIMEOUT_MS, and a step whose process outlives it reads fail with the
-// evidence "timed out" rather than throwing, so the remaining steps still run
-// and the verdict still prints.
+// that cannot record its rows is not a run. A scratch folder that exists,
+// holds files and carries no .upgrade-check-scratch marker also exits 2 and
+// is left as it stands, since the scratch folder is emptied at the start of a
+// run and only a folder this script made is its to empty. Every child process
+// carries STEP_TIMEOUT_MS, and a step whose process outlives it reads fail
+// with the evidence "timed out" rather than throwing, so the remaining steps
+// still run and the verdict still prints. A child whose output passes the
+// 16 MB buffer reads as that, in the same way.
 //
 // The engine binary is resolved against PATH by this script rather than by
 // the platform. A bare command name on Windows resolves against the working
@@ -67,14 +71,20 @@
 // before parsing them, and an argument carrying an odd number of quotes ends
 // the quoted region and starts a second command.
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { transcriptPathsFor } from './supervise-liveness.mjs';
+import { TRANSCRIPT_SCAN_BYTES, transcriptPathsFor } from './supervise-liveness.mjs';
 
 export const STEP_TIMEOUT_MS = 180000;
+// The most output one child may print before it is stopped.
+export const OUTPUT_CAP_BYTES = 16 * 1024 * 1024;
+// The file a run writes into a scratch folder it made. A later run empties a
+// non-empty scratch folder only where this file is in it.
+export const SCRATCH_MARKER = '.upgrade-check-scratch';
 export const RESULTS = Object.freeze(['pass', 'warn', 'gap', 'fail', 'skipped']);
 // The heartbeat interval post waits out where <rundir>/settings.json names
 // none, the same default the plugin takes.
@@ -87,11 +97,20 @@ export const SMOKE_PATTERNS = Object.freeze(['skipped', 'WARN', 'not attached', 
 // step reads as a fail rather than a warn. The engine logs a refused manifest
 // as an ERROR line naming the plugin.
 export const SMOKE_FAIL_PATTERNS = Object.freeze(['ERROR', 'Failed to load', 'invalid manifest']);
+// The debug log line naming where the engine read the plugin's hooks from.
+// The smoke row names that path, so the reader sees which copy of the plugin
+// the run exercised: the installed one or a development checkout.
+export const HOOKS_READ_PREFIX = 'Read hooks.json for plugin ' + PLUGIN_NAME + ' (enabled=true): ';
 // The lines post reads as a supervisor error since the newest launch, and the
 // two a relaunch writes while the old child's heartbeat ages out, which are
 // the pre-launch gate working rather than failing.
 export const SUPERVISOR_ERROR_PATTERNS = Object.freeze(['ERROR', 'HEARTBEAT_ABSENT', 'RESTART']);
 export const SUPERVISOR_GATE_PATTERNS = Object.freeze(['GATE', 'FAIL']);
+// The note bin/supervise.sh writes on a healthy launch whose child has not
+// yet stamped its heartbeat past the startup grace: the heartbeat then reads
+// as not silent, which is the supervisor working. Only this shape is
+// expected; a HEARTBEAT_ABSENT line in any other shape stays an error.
+export const SUPERVISOR_HEARTBEAT_NOTE = /\bHEARTBEAT_ABSENT child-\d+: .* has not been written past the startup grace, so the heartbeat reads as not silent for this child$/;
 
 // Where one line of text ends, as hooks/operator.ts reads it: CRLF, or any
 // one of LF, CR, VT, FF, NEL, LINE SEPARATOR or PARAGRAPH SEPARATOR. Command
@@ -115,13 +134,16 @@ export function evidenceLine(text) {
 
 // One value in a markdown table cell. The cell's own separator is escaped
 // and every line terminator folded, so no stored evidence can close its cell
-// early and forge the columns after it. The backslash goes first, so an
-// escape this adds cannot be cancelled by one already in the text.
+// early and forge the columns after it. A backtick is escaped too, so stored
+// text cannot open a code span that swallows the markup after it. The
+// backslash goes first, so an escape this adds cannot be cancelled by one
+// already in the text.
 export function cell(text) {
   return String(text === undefined || text === null ? '' : text)
     .split(LINE_TERMINATOR).join(' ')
     .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|');
+    .replace(/\|/g, '\\|')
+    .replace(/`/g, '\\`');
 }
 
 // A synchronous wait, which is what a script with no event loop of its own
@@ -161,9 +183,11 @@ export function parseArgs(argv) {
  * Each directory is read whole before the next one, so a name with an
  * extension and one without in the same directory resolve to that directory's
  * answer rather than to the first extension found anywhere. A file whose
- * first two bytes are a shebang runs through this node, so the launch never
- * depends on the platform's own association for its extension. A .BAT or
- * .CMD shim is passed over for the reason the module header gives.
+ * shebang names node runs through this node, so the launch never depends on
+ * the platform's own association for its extension. A file whose shebang
+ * names any other interpreter is passed over and the search goes on, since
+ * this node would run it as the script it is not. A .BAT or .CMD shim is
+ * passed over for the reason the module header gives.
  * @param {string} name
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {{file: string, args: string[]}|null}
@@ -183,26 +207,41 @@ export function resolveCommand(name, env = process.env) {
       let stat;
       try { stat = fs.statSync(candidate); } catch (e) { continue; }
       if (!stat.isFile()) continue;
-      if (readsAsScript(candidate)) return { file: process.execPath, args: [candidate] };
-      return { file: candidate, args: [] };
+      const interpreter = shebangOf(candidate);
+      if (interpreter === null) return { file: candidate, args: [] };
+      if (namesNode(interpreter)) return { file: process.execPath, args: [candidate] };
     }
   }
   return null;
 }
 
-// Whether a file opens with a shebang. A file that cannot be read is not a
-// script: the launch then fails on its own terms rather than on a guess here.
-function readsAsScript(file) {
+const SHEBANG_READ_BYTES = 256;
+
+// What a file's shebang line names, or null where the file opens without one.
+// A file that cannot be read is not a script: the launch then fails on its
+// own terms rather than on a guess here.
+function shebangOf(file) {
+  let text;
   try {
     const fd = fs.openSync(file, 'r');
     try {
-      const buf = Buffer.alloc(2);
-      const n = fs.readSync(fd, buf, 0, 2, 0);
-      return n === 2 && buf[0] === 0x23 && buf[1] === 0x21;
+      const buf = Buffer.alloc(SHEBANG_READ_BYTES);
+      const n = fs.readSync(fd, buf, 0, SHEBANG_READ_BYTES, 0);
+      text = buf.toString('utf8', 0, n);
     } finally { fs.closeSync(fd); }
   } catch (e) {
-    return false;
+    return null;
   }
+  if (!text.startsWith('#!')) return null;
+  return text.slice(2).split(/\r?\n/)[0].trim();
+}
+
+// Whether a shebang's interpreter is node: /usr/bin/env node, or a path
+// ending in /node or node.exe.
+function namesNode(interpreter) {
+  const parts = interpreter.split(/\s+/);
+  if (parts[0] === '/usr/bin/env') return parts[1] === 'node';
+  return /(?:\/node|node\.exe)$/i.test(parts[0]);
 }
 
 /**
@@ -225,21 +264,27 @@ export function runChild(file, args, opts = {}) {
       timeout: timeoutMs,
       killSignal: 'SIGKILL',
       windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: OUTPUT_CAP_BYTES,
     });
   } catch (e) {
     return { status: null, stdout: '', stderr: '', timedOut: false, error: String(e && e.message) };
   }
+  // A child that printed past the buffer is killed with the same signal a
+  // timeout sends, so the overflow is read first and named as itself.
+  const overflowed = !!(r.error && r.error.code === 'ENOBUFS');
   // spawnSync reports a timeout two ways depending on how the kill landed:
   // an ETIMEDOUT error, or a null status with the kill signal named.
-  const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT')
-    || (r.status === null && (r.signal === 'SIGKILL' || r.signal === 'SIGTERM'));
+  const timedOut = !overflowed && (!!(r.error && r.error.code === 'ETIMEDOUT')
+    || (r.status === null && (r.signal === 'SIGKILL' || r.signal === 'SIGTERM')));
+  let error = '';
+  if (overflowed) error = 'output exceeded ' + (OUTPUT_CAP_BYTES / (1024 * 1024)) + ' MB';
+  else if (r.error && !timedOut) error = String(r.error.message);
   return {
     status: typeof r.status === 'number' ? r.status : null,
     stdout: String(r.stdout || ''),
     stderr: String(r.stderr || ''),
     timedOut,
-    error: r.error && !timedOut ? String(r.error.message) : '',
+    error,
   };
 }
 
@@ -372,17 +417,19 @@ export function regenerate(resultsDir) {
 
 // One id per invocation, printed on the verdict line so the goal the canary
 // sets before it restarts can carry it into post. The clock orders the runs
-// and the suffix keeps two runs inside one second apart.
-function newRunId(now = new Date()) {
+// and the suffix, always four hex characters, keeps two runs inside one
+// second apart.
+export function newRunId(now = new Date()) {
   const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-  return stamp + '-' + Math.random().toString(16).slice(2, 6);
+  return stamp + '-' + crypto.randomBytes(2).toString('hex');
 }
 
-// A reason the run cannot start at all. Printed and exited 2 before any step
-// runs, since a run that cannot record its rows is not a run.
+// A reason the run cannot start at all. Thrown to the entry point, which
+// prints it and exits 2 before any row is written, since a run that cannot
+// record its rows is not a run.
+class CannotRun extends Error {}
 function cannotRun(message) {
-  process.stdout.write('upgrade-check: cannot run: ' + message + '\n');
-  process.exit(2);
+  throw new CannotRun(message);
 }
 
 // The steps whose result decides the verdict, and what each may read. Step 1
@@ -394,7 +441,7 @@ const PRE_VERDICT = Object.freeze({
   '3. diff': ['pass', 'warn'],
   '4. compile': ['pass', 'warn'],
   '5. validate': ['pass', 'warn'],
-  '6. engine tests': ['pass', 'warn', 'gap', 'skipped'],
+  '6. engine tests': ['pass', 'gap'],
   '7. smoke': ['pass', 'warn'],
 });
 
@@ -415,10 +462,46 @@ export function triageList(rows, allowed) {
   return rows.filter((r) => !(allowed[r.step] || ['pass']).includes(r.result)).map((r) => r.step);
 }
 
-// The running session's own version, off the newest record of the transcript
-// CLAUDE_CODE_SESSION_ID names. 'unknown' where the shell carries no id, the
-// profile cannot be named, or no record carries a version: the check records
-// what it could read and never guesses.
+// The last scanBytes of a file as text, dropping a first line the cut landed
+// inside, or null where the file cannot be read. bin/supervise-liveness.mjs
+// reads its transcripts' tails the same way and does not export its reader.
+function readTailText(file, scanBytes) {
+  let text = '';
+  let scanStart = 0;
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      if (size > scanBytes) scanStart = size - scanBytes;
+      const len = size - scanStart;
+      const buf = Buffer.alloc(len);
+      let bytesRead = 0;
+      while (bytesRead < len) {
+        const n = fs.readSync(fd, buf, bytesRead, len - bytesRead, scanStart + bytesRead);
+        if (n === 0) break;
+        bytesRead += n;
+      }
+      text = buf.toString('utf8', 0, bytesRead);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    return null;
+  }
+  if (scanStart > 0) {
+    const cut = text.indexOf('\n');
+    text = cut >= 0 ? text.slice(cut + 1) : '';
+  }
+  return text;
+}
+
+// The running session's own version, off the newest record in the tail of
+// the transcript CLAUDE_CODE_SESSION_ID names. Only the tail is read, the same
+// TRANSCRIPT_SCAN_BYTES the liveness verdict reads, since a transcript grows
+// for the life of a session and every record carries the version. 'unknown'
+// where the shell carries no id, the profile cannot be named, or no record in
+// the tail carries a version: the check records what it could read and never
+// guesses.
 export function runningSessionVersion(env = process.env) {
   const sessionId = String(env.CLAUDE_CODE_SESSION_ID || '');
   const profileRoot = String(env.USERPROFILE || env.HOME || '');
@@ -426,8 +509,8 @@ export function runningSessionVersion(env = process.env) {
   if (!sessionId || !profileRoot) return 'unknown';
   const { transcriptPath } = transcriptPathsFor(profileRoot, workdir, sessionId);
   if (!transcriptPath) return 'unknown';
-  let text;
-  try { text = fs.readFileSync(transcriptPath, 'utf8'); } catch (e) { return 'unknown'; }
+  const text = readTailText(transcriptPath, TRANSCRIPT_SCAN_BYTES);
+  if (text === null) return 'unknown';
   let version = '';
   for (const line of text.split(LINE_TERMINATOR)) {
     if (!line.trim()) continue;
@@ -494,14 +577,17 @@ function hooksText(repo) {
 // Whether the repository holds a test file the engine's own runner would
 // pick up. node_modules is left out: a dependency's tests are not the
 // plugin's, and finding one there would read as coverage the plugin has not
-// got.
+// got. .claude/worktrees and .kit are left out on the same ground: a sibling
+// worktree's copy of the plugin and the kit's scratch are not this checkout's
+// tests.
 export function findTestFiles(dir, depth = 0) {
   const out = [];
   if (depth > 6) return out;
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return out; }
   for (const e of entries) {
-    if (e.name === 'node_modules' || e.name === '.git') continue;
+    if (e.name === 'node_modules' || e.name === '.git' || e.name === '.kit') continue;
+    if (e.name === 'worktrees' && path.basename(dir) === '.claude') continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) out.push(...findTestFiles(p, depth + 1));
     else if (/\.test\.tsx?$/.test(e.name)) out.push(p);
@@ -510,10 +596,10 @@ export function findTestFiles(dir, depth = 0) {
 }
 
 // Whether a build's CLI does not carry the subcommand at all, read off its
-// own error rather than off its exit code, which it shares with a test that
-// failed.
-function subcommandAbsent(output) {
-  return /unknown command|unknown argument|unrecognized|not a known|invalid command/i.test(output);
+// own error, since a nonzero exit alone is shared with a test that failed.
+// A run that exited 0 carries the subcommand, whatever its output says.
+function subcommandAbsent(status, output) {
+  return status !== 0 && /unknown command|unknown argument|unrecognized|not a known|invalid command/i.test(output);
 }
 
 // The heartbeat interval post waits out, read from <rundir>/settings.json as
@@ -524,7 +610,7 @@ function subcommandAbsent(output) {
 export function readHeartbeatMs(rundir) {
   let settings;
   try {
-    settings = JSON.parse(fs.readFileSync(path.join(rundir, 'settings.json'), 'utf8').replace(/^﻿/, ''));
+    settings = JSON.parse(fs.readFileSync(path.join(rundir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
   } catch (e) {
     return DEFAULT_HEARTBEAT_MS;
   }
@@ -540,9 +626,13 @@ export function readHeartbeatMs(rundir) {
 
 // The version a build reports: the first token of `claude --version`, which
 // prints "<version> (Claude Code)". The whole line stays in the evidence.
+// The token names the scratch folder, so one carrying anything outside
+// letters, digits, '_', '.', '+' and '-' reads as unknown rather than
+// reaching a path.
 export function versionToken(line) {
   const first = String(line || '').split(LINE_TERMINATOR)[0] || '';
-  return first.trim().split(/\s+/)[0] || 'unknown';
+  const token = first.trim().split(/\s+/)[0] || '';
+  return /^[\w.+-]+$/.test(token) ? token : 'unknown';
 }
 
 // The lines a validate run reports under its own headers: a header naming a
@@ -687,9 +777,10 @@ export function pre(flags) {
   // The scratch folder, created empty so the plugin finds no persona there and
   // stays passive. It is emptied where it already exists, since a folder
   // carrying an earlier run's types file would let step 2 read that file as
-  // this build's. The three refusals below bound that delete: a scratch inside
-  // the checkout or the results directory, or one holding either, would take
-  // files the check is there to read.
+  // this build's. The refusals below bound that delete: a scratch inside the
+  // checkout or the results directory, or one holding either, would take
+  // files the check is there to read, and a folder that holds files but no
+  // marker was not made by this script, so it is not this script's to empty.
   const scratch = flags.scratch ? path.resolve(flags.scratch) : path.join(os.tmpdir(), 'cc-validate-' + state.version);
   const holds = (parent, child) => {
     const a = path.resolve(parent).toLowerCase();
@@ -703,9 +794,17 @@ export function pre(flags) {
     cannotRun('the scratch folder ' + scratch + ' and the results directory ' + resultsDir + ' hold one another, and the scratch folder is emptied at the start of a run');
   }
   if (path.dirname(scratch) === scratch) cannotRun('the scratch folder cannot be a filesystem root');
+  let existing = null;
+  try { existing = fs.readdirSync(scratch); } catch (e) {
+    if (e && e.code !== 'ENOENT') cannotRun('the scratch folder ' + scratch + ' cannot be read: ' + e.message);
+  }
+  if (existing && existing.length > 0 && !existing.includes(SCRATCH_MARKER)) {
+    cannotRun('the scratch folder ' + scratch + ' holds files and no ' + SCRATCH_MARKER + ' marker, so no run of this check made it, and the scratch folder is emptied at the start of a run; name an empty or absent folder');
+  }
   try {
-    fs.rmSync(scratch, { recursive: true, force: true });
+    if (existing && existing.length > 0) fs.rmSync(scratch, { recursive: true, force: true });
     fs.mkdirSync(scratch, { recursive: true });
+    fs.writeFileSync(path.join(scratch, SCRATCH_MARKER), '');
   } catch (e) {
     cannotRun('the scratch folder ' + scratch + ' cannot be created: ' + (e && e.message));
   }
@@ -810,18 +909,17 @@ export function pre(flags) {
   if (tests.length === 0) {
     record('6. engine tests', 'gap', 'no *.test.ts or *.test.tsx file outside node_modules in ' + repo + ', so nothing ran');
   } else {
-    const test = runClaude(['plugin', 'test', repo]);
+    const test = runClaude(['plugin', 'test', repo], { cwd: scratch });
     const testProblem = childProblem(test);
     const output = test.stdout + '\n' + test.stderr;
     if (testProblem) record('6. engine tests', 'fail', 'claude plugin test ' + testProblem);
-    else if (subcommandAbsent(output)) record('6. engine tests', 'skipped', 'this build carries no plugin test subcommand: ' + evidenceLine(output));
+    else if (subcommandAbsent(test.status, output)) record('6. engine tests', 'skipped', 'this build carries no plugin test subcommand: ' + evidenceLine(output));
     else record('6. engine tests', test.status === 0 ? 'pass' : 'fail', tests.length + ' test file(s), exit ' + test.status + '; ' + evidenceLine(output));
   }
 
   // --- Step 7. The headless smoke run. ---
-  const smokeName = 'smoke.log';
-  const smokePath = path.join(scratch, smokeName);
-  const smoke = runClaude(['-p', 'Reply with the word ok.', '--model', 'haiku', '--debug-file', smokeName],
+  const smokePath = path.join(scratch, 'smoke.log');
+  const smoke = runClaude(['-p', 'Reply with the word ok.', '--model', 'haiku', '--debug-file', smokePath],
     { cwd: scratch, env: childEnv(true) });
   const smokeProblem = childProblem(smoke);
   let smokeLog = '';
@@ -836,13 +934,21 @@ export function pre(flags) {
   const named = logLines.filter((line) => line.includes(PLUGIN_NAME));
   const hits = named.filter((line) => SMOKE_PATTERNS.some((p) => line.includes(p)));
   const refusals = named.filter((line) => SMOKE_FAIL_PATTERNS.some((p) => line.includes(p)));
-  if (smokeProblem) record('7. smoke', 'fail', 'the smoke run ' + smokeProblem);
-  else if (smoke.status !== 0) record('7. smoke', 'fail', 'exit ' + smoke.status + '; ' + evidenceLine(smoke.stderr || smoke.stdout));
-  else if (!smokeLog) record('7. smoke', 'fail', 'exit 0 but no debug log at ' + smokePath);
-  else if (named.length === 0) record('7. smoke', 'fail', 'exit 0 but no line in ' + smokePath + ' names ' + PLUGIN_NAME + ', so the engine never reported on it');
-  else if (refusals.length > 0) record('7. smoke', 'fail', refusals.length + ' log line(s) naming ' + PLUGIN_NAME + ' and one of ' + SMOKE_FAIL_PATTERNS.join(', ') + ': ' + refusals.join(' '));
-  else if (hits.length > 0) record('7. smoke', 'warn', hits.length + ' log line(s) naming ' + PLUGIN_NAME + ' and one of ' + SMOKE_PATTERNS.join(', ') + ': ' + hits.join(' '));
-  else record('7. smoke', 'pass', 'exit 0; ' + named.length + ' of ' + logLines.length + ' line(s) in ' + smokePath + ' name ' + PLUGIN_NAME + ', and none of them carries any of ' + SMOKE_PATTERNS.join(', '));
+  // Which copy of the plugin the engine loaded: the path on the last line
+  // naming where it read the hooks from. Evidence only; the result stands on
+  // the readings above.
+  const hooksLine = logLines.filter((line) => line.includes(HOOKS_READ_PREFIX)).pop();
+  const hooksNote = hooksLine
+    ? 'hooks read from ' + hooksLine.slice(hooksLine.indexOf(HOOKS_READ_PREFIX) + HOOKS_READ_PREFIX.length).trim()
+    : 'no "Read hooks.json for plugin ' + PLUGIN_NAME + '" line in the log, so the hooks path is not named';
+  const smokeRecord = (result, evidence) => record('7. smoke', result, evidence + '; ' + hooksNote);
+  if (smokeProblem) smokeRecord('fail', 'the smoke run ' + smokeProblem);
+  else if (smoke.status !== 0) smokeRecord('fail', 'exit ' + smoke.status + '; ' + evidenceLine(smoke.stderr || smoke.stdout));
+  else if (!smokeLog) smokeRecord('fail', 'exit 0 but no debug log at ' + smokePath);
+  else if (named.length === 0) smokeRecord('fail', 'exit 0 but no line in ' + smokePath + ' names ' + PLUGIN_NAME + ', so the engine never reported on it');
+  else if (refusals.length > 0) smokeRecord('fail', refusals.length + ' log line(s) naming ' + PLUGIN_NAME + ' and one of ' + SMOKE_FAIL_PATTERNS.join(', ') + ': ' + refusals.join(' '));
+  else if (hits.length > 0) smokeRecord('warn', hits.length + ' log line(s) naming ' + PLUGIN_NAME + ' and one of ' + SMOKE_PATTERNS.join(', ') + ': ' + hits.join(' '));
+  else smokeRecord('pass', 'exit 0; ' + named.length + ' of ' + logLines.length + ' line(s) in ' + smokePath + ' name ' + PLUGIN_NAME + ', and none of them carries any of ' + SMOKE_PATTERNS.join(', '));
 
   const failing = triageList(rows, PRE_VERDICT);
   const line = failing.length > 0
@@ -923,11 +1029,14 @@ export function post(flags) {
   } else {
     const window = logSinceNewestLaunch(logText);
     // The pre-launch gate polls while the old child's heartbeat ages out, so
-    // its own lines are the gate working. They are counted and reported,
-    // never read as errors.
+    // its own lines are the gate working, and the heartbeat-absent note is the
+    // supervisor reading a slow first stamp as not silent. Both are counted
+    // and reported, never read as errors.
     const gate = window.filter((line) => SUPERVISOR_GATE_PATTERNS.every((p) => line.includes(p)));
-    const errors = window.filter((line) => SUPERVISOR_ERROR_PATTERNS.some((p) => line.includes(p)) && !gate.includes(line));
-    const gateNote = gate.length + ' expected pre-launch gate line(s)';
+    const notes = window.filter((line) => SUPERVISOR_HEARTBEAT_NOTE.test(line));
+    const errors = window.filter((line) => SUPERVISOR_ERROR_PATTERNS.some((p) => line.includes(p))
+      && !gate.includes(line) && !notes.includes(line));
+    const gateNote = gate.length + ' expected pre-launch gate line(s), ' + notes.length + ' expected heartbeat-absent note(s)';
     if (errors.length === 0) {
       record('8c. supervisor log', 'pass', window.length + ' line(s) since the newest LAUNCH child- line carry none of ' + SUPERVISOR_ERROR_PATTERNS.join(', ') + '; ' + gateNote);
     } else {
@@ -965,7 +1074,9 @@ function launchedDirectly() {
 
 // The verbs are a closed pair, and anything else exits 2 with the usage rather
 // than running a half-named check.
-if (launchedDirectly()) {
+// The exit code is set rather than exited on, so output still queued for a
+// pipe is written before the process ends.
+function main() {
   const parsed = parseArgs(process.argv.slice(2));
   if (parsed.verb !== 'pre' && parsed.verb !== 'post') {
     cannotRun('the verb is "pre" or "post"; usage: upgrade-check.mjs pre --repo <checkout> --results <dir> [--scratch <dir>] [--canary <persona>] | upgrade-check.mjs post --run <id> --results <dir> --rundir <dir> --tools <ok | fail: reason>');
@@ -977,5 +1088,15 @@ if (launchedDirectly()) {
   regenerate(outcome.resultsDir);
   for (const r of outcome.rows) process.stdout.write(r.step + ': ' + r.result + ' - ' + r.evidence + '\n');
   process.stdout.write(outcome.line + '\n');
-  process.exit(outcome.code);
+  return outcome.code;
+}
+
+if (launchedDirectly()) {
+  try {
+    process.exitCode = main();
+  } catch (e) {
+    if (!(e instanceof CannotRun)) throw e;
+    process.stdout.write('upgrade-check: cannot run: ' + e.message + '\n');
+    process.exitCode = 2;
+  }
 }

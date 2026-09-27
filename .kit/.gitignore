@@ -41,4 +41,7 @@
 !/injection-duplicate-test.mjs
 !/tool-description-length-test.mjs
 !/upgrade-check-unit-test.mjs
-!/fixtures/upgrade-check/*
+!/fixtures/upgrade-check/claude
+!/fixtures/upgrade-check/claude-code.d.ts
+!/fixtures/upgrade-check/transcript.jsonl
+!/fixtures/upgrade-check/tsc

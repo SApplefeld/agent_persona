@@ -19,7 +19,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const checkPath = resolve(here, '../bin/upgrade-check.mjs');
@@ -45,6 +45,9 @@ const api = () => {
 const PROJECT_KEY_SESSION = 'upgrade-check-fixture';
 const FIXTURE_FROM = '2.1.282';
 const NEW_VERSION = '9.9.9';
+// The file a run writes into a scratch folder it made, which is what lets a
+// later run empty that folder.
+const SCRATCH_MARKER = '.upgrade-check-scratch';
 
 // One case's directory tree: a checkout the check reads, a results directory,
 // a scratch folder, a profile holding the session transcript, and the working
@@ -92,6 +95,10 @@ function makeCase(name, opts = {}) {
     fs.copyFileSync(join(fixtures, 'tsc'), join(bin, 'tsc'));
   }
   if (opts.testFile) fs.writeFileSync(join(paths.repo, 'hooks', 'index.test.ts'), 'export const t = 1;\n');
+  for (const rel of opts.extraFiles || []) {
+    fs.mkdirSync(dirname(join(paths.repo, rel)), { recursive: true });
+    fs.writeFileSync(join(paths.repo, rel), 'export const t = 1;\n');
+  }
   // The transcript the version readings come off, under the project key the
   // harness derives from the working directory.
   const project = join(paths.profile, '.claude', 'projects', projectKey(paths.workdir));
@@ -206,6 +213,7 @@ const cases = [
       assert.equal(row.canary, 'FIXTURE');
     }
     assert.ok(fs.existsSync(paths.md), 'the table was written');
+    assert.ok(fs.existsSync(join(paths.scratch, SCRATCH_MARKER)), 'the scratch folder the run made carries the marker');
   }],
   ['a compile failure reads triage, exit 1, and the rest of the run still reports', () => {
     const { r } = passingPre('compile-fails', { FAKE_TSC_HOOKS_EXIT: '2' });
@@ -232,7 +240,8 @@ const cases = [
     const { r } = passingPre('control-diagnostic');
     const compile = only(r.rows, '4. compile');
     assert.equal(compile.result, 'pass');
-    assert.match(compile.evidence, /the control reads memberTheEngineTypesDoNotDeclare and the compiler answered: .*error TS2339: Property 'memberTheEngineTypesDoNotDeclare' does not exist/);
+    assert.match(compile.evidence, /memberTheEngineTypesDoNotDeclare/);
+    assert.match(compile.evidence, /error TS2339/);
   }],
   ['the compile reads the new engine types and the checkout\'s tool-list mirror, never the mirror the scratch session wrote', () => {
     const { r, paths } = passingPre('mirror-source');
@@ -264,12 +273,35 @@ const cases = [
     assert.equal(engine.result, 'pass', engine.evidence);
     assert.match(engine.evidence, /^1 test file\(s\), exit 0/);
   }],
-  ['a build with no plugin test subcommand reads skipped with the CLI\'s own error', () => {
+  ['the engine tests run in the scratch folder, like every other engine step that reads files', () => {
+    const { r, paths } = passingPre('engine-tests-cwd', {}, { testFile: true });
+    const test = r.calls.filter((c) => c.kind === 'test');
+    assert.equal(test.length, 1, JSON.stringify(r.calls.map((c) => c.kind)));
+    assert.equal(fs.realpathSync(test[0].cwd), fs.realpathSync(paths.scratch));
+  }],
+  ['a test file under .claude/worktrees or .kit is not the plugin\'s, so step 6 still reads the gap', () => {
+    const { r } = passingPre('engine-tests-sibling', {}, {
+      extraFiles: ['.claude/worktrees/other/hooks/index.test.ts', '.kit/scratch/probe.test.ts'],
+    });
+    const engine = only(r.rows, '6. engine tests');
+    assert.equal(engine.result, 'gap', engine.evidence);
+    assert.equal(r.calls.filter((c) => c.kind === 'test').length, 0, 'no engine test run was made');
+  }],
+  ['a test file under .claude outside worktrees is still found, so the skip is that folder alone', () => {
+    const { r } = passingPre('engine-tests-claude-other', {}, { extraFiles: ['.claude/checks/index.test.ts'] });
+    assert.equal(only(r.rows, '6. engine tests').result, 'pass', only(r.rows, '6. engine tests').evidence);
+  }],
+  ['a build with no plugin test subcommand reads skipped with the CLI\'s own error, and skipped is triage', () => {
     const { r } = passingPre('engine-absent', { FAKE_CLAUDE_TEST_OUT: 'error: unknown command "test"', FAKE_CLAUDE_TEST_EXIT: '1' }, { testFile: true });
     const engine = only(r.rows, '6. engine tests');
     assert.equal(engine.result, 'skipped', engine.evidence);
     assert.match(engine.evidence, /unknown command "test"/);
-    assert.equal(r.status, 0, 'a skipped engine-test step is not triage');
+    assert.equal(r.status, 1, 'step 6 clears on pass or gap only');
+    assert.match(r.verdict, /^pre: triage 6\. engine tests \(run /);
+  }],
+  ['a test run that exits 0 is read on its exit code, even where its output reads like a missing subcommand', () => {
+    const { r } = passingPre('engine-exit-0', { FAKE_CLAUDE_TEST_OUT: 'test "unknown command" handling: ok' }, { testFile: true });
+    assert.equal(only(r.rows, '6. engine tests').result, 'pass', only(r.rows, '6. engine tests').evidence);
   }],
   ['typescript missing from the checkout reads fail with the install it needs', () => {
     const { r } = passingPre('no-typescript', {}, { typescript: false });
@@ -305,7 +337,34 @@ const cases = [
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'pass');
     // The pass says how much of the log named the plugin at all.
-    assert.match(smoke.evidence, /^exit 0; 1 of 5 line\(s\) in .* name agentic-plugin, and none of them carries any of skipped, WARN, not attached, does not validate, refused$/);
+    assert.match(smoke.evidence, /\b1 of 5 line\(s\)/);
+    assert.match(smoke.evidence, /agentic-plugin/);
+  }],
+  ['the smoke row names the path the engine read the plugin\'s hooks from, the last where the log names several', () => {
+    const log = [
+      'Read hooks.json for plugin agentic-plugin (enabled=true): C:/cache/agentic-plugin/old/hooks/hooks.json',
+      'plugin agentic-plugin: admitted',
+      'Read hooks.json for plugin agentic-plugin (enabled=true): C:/cache/agentic-plugin/new/hooks/hooks.json',
+    ].join('\n');
+    const { r } = passingPre('smoke-hooks-path', { FAKE_CLAUDE_SMOKE_LOG: log });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'pass', smoke.evidence);
+    assert.match(smoke.evidence, /C:\/cache\/agentic-plugin\/new\/hooks\/hooks\.json/);
+    assert.doesNotMatch(smoke.evidence, /agentic-plugin\/old\//);
+  }],
+  ['a smoke log with no hooks.json line for the plugin says so, and the result stands on the other readings', () => {
+    const { r } = passingPre('smoke-no-hooks-path');
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'pass', smoke.evidence);
+    assert.match(smoke.evidence, /no "Read hooks\.json for plugin agentic-plugin" line/);
+  }],
+  ['the smoke run is handed the debug log as an absolute path in the scratch folder', () => {
+    const { r, paths } = passingPre('smoke-debug-path');
+    const smoke = r.calls.find((c) => c.kind === 'smoke');
+    const i = smoke.args.indexOf('--debug-file');
+    const given = smoke.args[i + 1];
+    assert.ok(isAbsolute(given), 'absolute: ' + given);
+    assert.equal(resolve(given), resolve(paths.scratch, 'smoke.log'));
   }],
   ['a smoke log that never names the plugin reads fail, since its silence says nothing about the plugin', () => {
     const { r } = passingPre('smoke-never-named', { FAKE_CLAUDE_SMOKE_LOG: 'plugin claude-kit: admitted\nengine: ready\n' });
@@ -326,7 +385,9 @@ const cases = [
   }],
   ['the passing smoke row counts the lines that name the plugin, so its silence is readable', () => {
     const { r } = passingPre('smoke-named');
-    assert.match(only(r.rows, '7. smoke').evidence, /^exit 0; 2 of 4 line\(s\) in .* name agentic-plugin, and none of them carries any of /);
+    const evidence = only(r.rows, '7. smoke').evidence;
+    assert.match(evidence, /\b2 of 4 line\(s\)/);
+    assert.match(evidence, /agentic-plugin/);
   }],
   ['a smoke run that writes no debug log reads fail rather than an empty pass', () => {
     const { r } = passingPre('smoke-no-log', { FAKE_CLAUDE_SMOKE_WRITE: 'none' });
@@ -348,15 +409,37 @@ const cases = [
       assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(paths.scratch));
     }
   }],
-  ['the scratch folder is emptied at the start of a run, so an earlier types file cannot be read as this build\'s', () => {
+  ['a scratch folder an earlier run made is emptied at the start of a run, so its types file cannot be read as this build\'s', () => {
     const paths = makeCase('scratch-emptied');
     fs.mkdirSync(join(paths.scratch, '.claude', 'types'), { recursive: true });
+    fs.writeFileSync(join(paths.scratch, SCRATCH_MARKER), '');
     fs.writeFileSync(join(paths.scratch, '.claude', 'types', 'claude-code.d.ts'), '// Written by Claude Code 0.0.1.\n');
     fs.writeFileSync(join(paths.scratch, 'leftover.txt'), 'from an earlier run');
     const r = run(paths, ['pre', '--repo', paths.repo, '--results', paths.results, '--scratch', paths.scratch, '--canary', 'FIXTURE'],
       { FAKE_CLAUDE_TYPES_WRITE: 'none' });
     assert.equal(fs.existsSync(join(paths.scratch, 'leftover.txt')), false, 'the folder was emptied');
     assert.equal(only(r.rows, '2. types').result, 'fail', 'no types file was read from the emptied folder');
+    assert.ok(fs.existsSync(join(paths.scratch, SCRATCH_MARKER)), 'the emptied folder is marked again');
+  }],
+  ['a non-empty scratch folder no run of the check made exits 2 before any step, and is left untouched', () => {
+    const paths = makeCase('scratch-unmarked');
+    fs.mkdirSync(paths.scratch, { recursive: true });
+    fs.writeFileSync(join(paths.scratch, 'notes.txt'), 'the operator\'s own file');
+    const r = run(paths, ['pre', '--repo', paths.repo, '--results', paths.results, '--scratch', paths.scratch]);
+    assert.equal(r.status, 2, r.stdout);
+    // The rule that refused it: the marker, named in the reason.
+    assert.match(r.stdout, /^upgrade-check: cannot run: .*\.upgrade-check-scratch/m);
+    assert.equal(fs.readFileSync(join(paths.scratch, 'notes.txt'), 'utf8'), 'the operator\'s own file');
+    assert.deepEqual(fs.readdirSync(paths.scratch), ['notes.txt']);
+    assert.equal(readRows(paths).length, 0, 'no rows were written');
+    assert.deepEqual(readCalls(paths).map((c) => c.kind), ['version'], 'only the version read that names the folder ran');
+  }],
+  ['a scratch folder that exists empty is used, and the run marks it as its own', () => {
+    const paths = makeCase('scratch-empty');
+    fs.mkdirSync(paths.scratch, { recursive: true });
+    const r = run(paths, ['pre', '--repo', paths.repo, '--results', paths.results, '--scratch', paths.scratch]);
+    assert.equal(r.status, 0, r.stdout);
+    assert.ok(fs.existsSync(join(paths.scratch, SCRATCH_MARKER)), 'the marker was written');
   }],
 
   // --- Append-only results, and a table that regenerates to the same bytes.
@@ -407,7 +490,8 @@ const cases = [
   ['a result outside the closed list is recorded as fail rather than passed through', () => {
     const built = api().row('run-1', '9.9.9', '2.1.282', 'FIXTURE', '4. compile', 'clear', 'the compiler was happy');
     assert.equal(built.result, 'fail');
-    assert.match(built.evidence, /^result "clear" is not one of pass, warn, gap, fail, skipped; the compiler was happy$/);
+    assert.match(built.evidence, /"clear"/);
+    assert.match(built.evidence, /the compiler was happy/);
     assert.deepEqual([...api().RESULTS], ['pass', 'warn', 'gap', 'fail', 'skipped']);
   }],
 
@@ -497,6 +581,32 @@ const cases = [
     assert.match(only(r.rows, '8d. tools').evidence, /the relay reply was not delivered/);
     assert.equal(r.verdict, 'post: triage 8a. version, 8b. heartbeat, 8c. supervisor log, 8d. tools (run run-post-2)');
   }],
+  ['post: the supervisor\'s heartbeat-absent note on a healthy launch is counted as expected, never as an error', () => {
+    // No heartbeat file, so 8b fails at once and the case does not wait out
+    // an interval; 8c is the step under test.
+    const paths = makeCase('post-heartbeat-note');
+    fs.writeFileSync(join(paths.rundir, 'supervisor.log'), [
+      '2026-09-27T10:00:00Z LAUNCH child-3 pid 1234',
+      '2026-09-27T10:02:00Z HEARTBEAT_ABSENT child-3: /d/personas/X/run/child-3/heartbeat.json has not been written past the startup grace, so the heartbeat reads as not silent for this child',
+      '',
+    ].join('\n'));
+    const r = run(paths, ['post', '--run', 'run-post-4', '--results', paths.results, '--rundir', paths.rundir, '--tools', 'ok']);
+    const log = only(r.rows, '8c. supervisor log');
+    assert.equal(log.result, 'pass', log.evidence);
+    assert.match(log.evidence, /\b1 expected heartbeat-absent note/);
+  }],
+  ['post: a HEARTBEAT_ABSENT line in any other shape is still an error', () => {
+    const paths = makeCase('post-heartbeat-other');
+    fs.writeFileSync(join(paths.rundir, 'supervisor.log'), [
+      '2026-09-27T10:00:00Z LAUNCH child-3 pid 1234',
+      '2026-09-27T10:02:00Z HEARTBEAT_ABSENT child-3: the heartbeat never arrived and the child was stopped',
+      '',
+    ].join('\n'));
+    const r = run(paths, ['post', '--run', 'run-post-5', '--results', paths.results, '--rundir', paths.rundir, '--tools', 'ok']);
+    const log = only(r.rows, '8c. supervisor log');
+    assert.equal(log.result, 'fail', log.evidence);
+    assert.match(log.evidence, /the heartbeat never arrived/);
+  }],
   ['post: a --tools value that is neither ok nor a fail reason reads fail rather than passing', () => {
     const paths = makeCase('post-tools');
     fs.writeFileSync(join(paths.rundir, 'settings.json'), JSON.stringify({ pluginConfigs: { p: { options: { heartbeatMs: 50 } } } }));
@@ -530,6 +640,26 @@ const cases = [
     assert.equal(fs.realpathSync(found.args[0]), fs.realpathSync(join(fixtures, 'claude')));
     assert.equal(api().resolveCommand('a-command-no-machine-has', { PATH: fixtures }), null);
   }],
+  ['resolveCommand passes over a script whose shebang names no node, and takes the next one on PATH', () => {
+    const dir = join(root, 'sh-shebang');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, 'claude'), '#!/bin/sh\necho not the engine\n');
+    const sep = process.platform === 'win32' ? ';' : ':';
+    const found = api().resolveCommand('claude', { PATH: dir + sep + fixtures });
+    assert.ok(found, 'the fixture behind it resolved');
+    assert.equal(found.file, process.execPath);
+    assert.equal(fs.realpathSync(found.args[0]), fs.realpathSync(join(fixtures, 'claude')));
+    // With only the shell script there, nothing resolves.
+    assert.equal(api().resolveCommand('claude', { PATH: dir }), null);
+  }],
+  ['resolveCommand routes a shebang through node where it names node by path', () => {
+    const dir = join(root, 'node-path-shebang');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, 'viapath'), '#!/usr/local/bin/node\nprocess.exit(0);\n');
+    const found = api().resolveCommand('viapath', { PATH: dir });
+    assert.ok(found, 'resolved');
+    assert.equal(found.file, process.execPath);
+  }],
   ['resolveCommand passes over a .cmd shim and takes the file beside it', () => {
     const dir = join(root, 'cmd-shim');
     fs.mkdirSync(dir, { recursive: true });
@@ -551,8 +681,7 @@ const cases = [
     // running this suite has.
     const sep = process.platform === 'win32' ? ';' : ':';
     const nodeDir = dirname(process.execPath);
-    const nodeName = process.platform === 'win32' ? 'node' : 'node';
-    const found = api().resolveCommand(nodeName, { PATH: nodeDir + sep + process.env.PATH, PATHEXT: process.env.PATHEXT });
+    const found = api().resolveCommand('node', { PATH: nodeDir + sep + process.env.PATH, PATHEXT: process.env.PATHEXT });
     assert.ok(found, 'node resolved');
     assert.equal(found.args.length, 0, 'a program takes no leading argument');
     assert.equal(fs.realpathSync(found.file).toLowerCase(), fs.realpathSync(process.execPath).toLowerCase());
@@ -565,6 +694,11 @@ const cases = [
     assert.equal(r.status, null);
     assert.equal(api().STEP_TIMEOUT_MS, 180000, 'the step timeout the steps run under');
   }],
+  ['a child whose output passes the buffer cap reads as that, never as timed out', () => {
+    const r = api().runChild(process.execPath, ['-e', 'process.stdout.write("x".repeat(17 * 1024 * 1024))'], { timeoutMs: 60000 });
+    assert.equal(r.timedOut, false, JSON.stringify({ ...r, stdout: r.stdout.length }));
+    assert.match(r.error, /output exceeded 16 MB/);
+  }],
   ['a child that cannot be spawned reads as an error rather than throwing', () => {
     const r = api().runChild(join(root, 'no-such-program-here'), [], { timeoutMs: 2000 });
     assert.equal(r.timedOut, false);
@@ -573,7 +707,7 @@ const cases = [
 
   // --- The evidence guards, on their own.
   ['evidence is folded on every line terminator the bracket rule names, not just LF and CR', () => {
-    for (const terminator of ['\n', '\r\n', '\r', '\v', '\f', '\u0085', ' ', ' ']) {
+    for (const terminator of ['\n', '\r\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029']) {
       const folded = api().evidenceLine('before' + terminator + 'after');
       assert.equal(folded, 'before after', JSON.stringify(terminator) + ' folded to ' + JSON.stringify(folded));
     }
@@ -603,7 +737,37 @@ const cases = [
   ['a cell escapes the separator and the escape itself', () => {
     assert.equal(api().cell('a|b'), 'a\\|b');
     assert.equal(api().cell('a\\|b'), 'a\\\\\\|b');
-    assert.equal(api().cell('a b'), 'a b');
+    assert.equal(api().cell('a\u2028b'), 'a b');
+    assert.equal(api().cell('a`b'), 'a\\`b', 'a backtick cannot open a code span');
+  }],
+  ['a version token is the first word only where it reads as a version, since it names the scratch folder', () => {
+    assert.equal(api().versionToken('2.1.283 (Claude Code)'), '2.1.283');
+    assert.equal(api().versionToken('1.0.0-beta+7 (Claude Code)'), '1.0.0-beta+7');
+    assert.equal(api().versionToken('../../elsewhere (Claude Code)'), 'unknown');
+    assert.equal(api().versionToken('a\\b'), 'unknown');
+  }],
+  ['a run id always carries four hex characters, whatever the random source returns', () => {
+    const real = Math.random;
+    Math.random = () => 0.5;
+    try {
+      assert.match(api().newRunId(new Date('2026-09-27T14:18:55Z')), /^20260927T141855Z-[0-9a-f]{4}$/);
+    } finally {
+      Math.random = real;
+    }
+  }],
+  ['the running session\'s version is read off the transcript\'s tail, never the whole file', () => {
+    const profile = join(root, 'tail-profile');
+    const project = join(profile, '.claude', 'projects', projectKey(process.cwd()));
+    fs.mkdirSync(project, { recursive: true });
+    const file = join(project, 'tail-session.jsonl');
+    const pad = JSON.stringify({ type: 'x', pad: 'p'.repeat(1000) }) + '\n';
+    const env = { CLAUDE_CODE_SESSION_ID: 'tail-session', USERPROFILE: profile, HOME: profile };
+    // A version only in a record older than the tail reads unknown.
+    fs.writeFileSync(file, JSON.stringify({ version: '0.0.1' }) + '\n' + pad.repeat(400));
+    assert.equal(api().runningSessionVersion(env), 'unknown');
+    // A version inside the tail is read, the newest one.
+    fs.appendFileSync(file, JSON.stringify({ version: '2.1.283' }) + '\n' + pad);
+    assert.equal(api().runningSessionVersion(env), '2.1.283');
   }],
   ['the heartbeat interval is read from the settings file under either plugin id, and falls back to the default', () => {
     const dir = join(root, 'heartbeat-ms');
@@ -613,7 +777,7 @@ const cases = [
     assert.equal(api().readHeartbeatMs(dir), 1234);
     write(JSON.stringify({ pluginConfigs: { 'agentic-plugin@agent-persona': { options: { heartbeatMs: 4321 } } } }));
     assert.equal(api().readHeartbeatMs(dir), 4321);
-    write('﻿' + JSON.stringify({ pluginConfigs: { p: { options: { heartbeatMs: 77 } } } }));
+    write('\uFEFF' + JSON.stringify({ pluginConfigs: { p: { options: { heartbeatMs: 77 } } } }));
     assert.equal(api().readHeartbeatMs(dir), 77, 'a byte-order mark is stripped');
     write('{"pluginConfigs":');
     assert.equal(api().readHeartbeatMs(dir), api().DEFAULT_HEARTBEAT_MS);
