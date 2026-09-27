@@ -4049,6 +4049,12 @@ async function main() {
     await caseTurnRecord_aTimedOutRecordIsNotCarriedOver(clock);
     await caseTurnRecord_twoMessagesInFlightLeaveOneOpenRecord(clock);
     await caseTurnRecord_theMessageCannotForgeAStateField(clock);
+    await caseTurnClose_theThresholdInBothDirectionsAndTheFallback(clock);
+    await caseTurnClose_everyFixedRuleLeavesTheRecordOpenAndAsksNothing(clock);
+    await caseTurnClose_aSubagentCompletionClosesNothing(clock);
+    await caseTurnClose_theCompactionRuleInBothDirections(clock);
+    await caseTurnClose_theJournaledStateCarriesTheFourFields(clock);
+    await caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock);
 
     // The supervisor mailbox, the two heartbeat options, the sidecar's
     // lost-update recovery, the commons check at the session-start claim, the
@@ -24118,22 +24124,26 @@ function decisionsWithMintedRecordIdsMasked(decisions) {
 }
 
 // A run's turn records, ready for the comparison against the off run: the
-// minted record id masked the way the decisions are, and each record's pending
-// journal stamps dropped.
+// minted record id masked the way the decisions are, and each record's two
+// pending journal stamp lists dropped.
 //
-// The pending stamps are the one field of a record that legitimately differs
+// The pending stamps are the fields of a record that legitimately differ
 // between the two runs, and the reason is the kill switch working rather than a
 // leak: a shadow call mints a stamp id and journals a line, so the record it
-// opened holds that id, while an off call sends nothing and mints none, so the
-// record holds no stamp list at all. Every other field is invariant and is
-// compared here, the text, the status, the goal id, the plan path, the turn id
-// and both clocks, by comparing the whole record with that one field removed
-// rather than a list of field names, so a field added to a record later is
-// compared without an edit here.
+// was asked over holds that id, while an off call sends nothing and mints none,
+// so the record holds no stamp list at all. `pendingStamps` holds the turn-open
+// calls' stamps and `dispositionStamps` the turn-disposition calls', one per
+// own turn end the record was open across, and both are excluded on that one
+// ground. Every other field is invariant and is compared here, the text, the
+// status, the goal id, the plan path, the turn id and both clocks, by
+// comparing the whole record with those two fields removed rather than a list
+// of field names, so a field added to a record later is compared without an
+// edit here.
 function recordsForInvariance(state) {
   return JSON.stringify((state.turnRecords || []).map((record) => {
     const masked = { ...record, id: String(record.id).replace(/tr-[0-9a-z]+-[0-9a-z]{6}/g, "tr-<minted>") };
     delete masked.pendingStamps;
+    delete masked.dispositionStamps;
     return masked;
   }));
 }
@@ -24148,8 +24158,8 @@ function turnOpenRequests(h) {
 }
 
 // The comparison every invariance run makes against the off run: the
-// decisions, every GoalNode field, and every turn-record field but the pending
-// stamps.
+// decisions, every GoalNode field, and every turn-record field but the two
+// pending-stamp lists.
 function checkPlanHealthInvariant(label, shadow, off) {
   const shadowState = getState(shadow);
   const offState = getState(off);
@@ -24159,7 +24169,7 @@ function checkPlanHealthInvariant(label, shadow, off) {
   check(`${label}: every GoalNode field is identical to the off run's`,
     JSON.stringify(shadowState.goals) === JSON.stringify(offState.goals),
     { off: offState.goals, shadow: shadowState.goals });
-  check(`${label}: every turn record field but the pending stamps is identical to the off run's`,
+  check(`${label}: every turn record field but the two pending-stamp lists is identical to the off run's`,
     recordsForInvariance(shadowState) === recordsForInvariance(offState),
     { off: offState.turnRecords, shadow: shadowState.turnRecords });
   check(`${label}: no journal_write_failed decision was pushed`,
@@ -24972,6 +24982,581 @@ async function caseTurnRecord_theMessageCannotForgeAStateField(clock) {
   await submitMessage(plain, "Summarize the notes.");
   check("record state control: a message with no line break sends the same three lines, so the reading above is of the guard",
     sentState(plain).split("\n").length === 3, sentState(plain));
+}
+
+// ============================================================
+// Section 5 (goal-every-turn): closing a record at the turn's end, and the
+// compaction rule. The record is closed in turn.complete under the true-
+// boundary guard: fixed rules first, each leaving the record open and asking
+// nothing, then the turn-disposition question through liveAsk, whose live
+// answer closes the record at TURN_DELIVERED_THRESHOLD and above. Plan A's
+// durable-boundary predicate gains the live-agent rule. Every case here drives
+// the real turn.start, tool.call and turn.complete handlers.
+// ============================================================
+
+// A Jev answer to the turn-disposition question carrying the probability a
+// case names on `delivered`, the rest on mid_work. The seam validates each
+// value against the unit interval and the offered options and sums nothing,
+// so the two halves are a well-formed answer at every threshold a case wants
+// to stand on. The choice names whichever side holds the larger mass.
+function jevDispositionResponse(delivered) {
+  const probabilities = { delivered, mid_work: 1 - delivered, blocked_or_waiting: 0 };
+  return {
+    status: 200,
+    ok: true,
+    headers: {},
+    text: JSON.stringify({
+      model: "jev-fake",
+      answers: { [Catalog.TURN_DISPOSITION]: { type: "choice", choice: delivered >= 0.5 ? "delivered" : "mid_work", probabilities, confidence: 0.9 } },
+      usage: { input_tokens: 11, output_tokens: 2 },
+    }),
+  };
+}
+// A Jev answering the disposition question with the probability given and
+// every other request from its own body, since the turn-open question is
+// still sent in shadow on every message a case submits.
+function jevAnsweringDisposition(delivered) {
+  return (url, init) => {
+    let body;
+    try { body = JSON.parse(String(init && init.body)); } catch { body = null; }
+    if (body && body.questions && Object.hasOwn(body.questions, Catalog.TURN_DISPOSITION)) return jevDispositionResponse(delivered);
+    return jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0] });
+  };
+}
+// Every turn-disposition call line the journal holds, which is how a case
+// reads whether the question was asked at all, and the request bodies that
+// carried it, read off the fake's own record of every fetch.
+function turnDispositionCallLines(h) {
+  return journalLinesOfKind(h, "call").filter((line) => line.questionSet === Catalog.TURN_DISPOSITION);
+}
+function turnDispositionRequests(h) {
+  return h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.TURN_DISPOSITION));
+}
+// The decisions the close step logs: one per close, and one per in-flight rule
+// that held, naming the rule in its detail.
+function deliveredDecisions(h) {
+  return getDecisions(h).filter((d) => d.action === "turn_record_delivered");
+}
+function inFlightDetails(h) {
+  return getDecisions(h).filter((d) => d.action === "turn_record_in_flight").map((d) => d.detail);
+}
+function dispositionStampsOf(record) {
+  return record?.dispositionStamps || [];
+}
+// A record the case opened, read back by id after the turn, whatever its
+// status now is.
+function recordById(h, id) {
+  return recordsOf(h).find((r) => r.id === id) ?? null;
+}
+// One message held as a record and one of the persona's own turns over it,
+// which is the drive every case here starts from. Returns the id of the record
+// the message opened, read before the turn so a close cannot hide it.
+async function closeDrive(h, turnId, text, answer) {
+  await submitMessage(h, text);
+  const id = openRecordOf(h)?.id ?? null;
+  await recordTurn(h, turnId, text, answer);
+  await settleJournalWrites(h);
+  return id;
+}
+// A harness on the shape every close case shares: no active entry, so the
+// message opens a bare record, the persona claim held, and the seam's key
+// present. `live` names the question sets promoted.
+async function closeHarness(caseName, live = [], extra = {}) {
+  return recordHarness(caseName, { jevLive: live, stateOpts: { hasActiveLeaf: false }, ...extra });
+}
+const LIVE_DISPOSITION = [Catalog.TURN_DISPOSITION];
+
+// The threshold in both directions, the fallback, and a hung live Jev. The
+// direction of the comparison is pinned here, on the code that closes a
+// record: a delivered probability of exactly TURN_DELIVERED_THRESHOLD closes,
+// and one a hundredth below leaves the record open. The fallback is the same
+// drive with the question not named live: the record stays open however the
+// shadow answer reads. Meeting the plan's first Standing Brief Amendment, this
+// case also holds the section 3 bullet that a hung Jev leaves the record open
+// and delays the turn's end by no more than the live timeout.
+async function caseTurnClose_theThresholdInBothDirectionsAndTheFallback(clock) {
+  console.log("\n=== Turn close: p 0.5 closes the record, p 0.49 leaves it open, the fallback leaves it open, and a hung Jev delays the turn end by no more than the live timeout ===");
+  clock.set(T0);
+  const MESSAGE = "Summarize the survey notes.";
+
+  const at = await closeHarness("close_threshold_at", LIVE_DISPOSITION);
+  at.setHttpResponse(jevAnsweringDisposition(Catalog.TURN_DELIVERED_THRESHOLD));
+  const atId = await closeDrive(at, "t-at-1", MESSAGE, "Here is the summary.");
+  const atRecord = recordById(at, atId);
+  check("close threshold at: a delivered probability equal to the threshold closes the record, delivered with closedAt at the clock, and nothing is open",
+    !!atRecord && atRecord.status === "delivered" && atRecord.closedAt === T0 && openRecordOf(at) === null, recordsOf(at));
+  check("close threshold at: one turn_record_delivered decision naming the record, and no in-flight decision",
+    deliveredDecisions(at).length === 1 && deliveredDecisions(at)[0].detail.includes(atId) && inFlightDetails(at).length === 0,
+    { delivered: deliveredDecisions(at), inFlight: inFlightDetails(at) });
+  const atCalls = turnDispositionCallLines(at);
+  const atAnswers = journalLinesOfKind(at, "answer").filter((a) => atCalls.some((c) => c.stampId === a.callStampId));
+  check("close threshold at: one live call line and one answer line joined to it, the answer reading delivered",
+    atCalls.length === 1 && atCalls[0].mode === "live" && atCalls[0].result === "ok" && atAnswers.length === 1 && atAnswers[0].value === "delivered",
+    { calls: atCalls, answers: atAnswers });
+  check("close threshold at: the record holds the call's stamp on its disposition list, not on the turn-open list",
+    dispositionStampsOf(atRecord).join(",") === atCalls[0]?.stampId && !pendingStampIds(atRecord).includes(atCalls[0]?.stampId),
+    { record: atRecord, calls: atCalls });
+  // The close ran ahead of section 4's outcome loop in the same completion:
+  // the loop read `delivered` and wrote true against the turn-open call. A
+  // close placed below that loop would leave this line unwritten here.
+  const atWithin = outcomeLinesOfKind(at, "record_delivered_within");
+  check("close threshold at: record_delivered_within landed true at the same completion, so the close sits above the outcome loop",
+    atWithin.length === 1 && atWithin[0].value === "true", atWithin);
+
+  const below = await closeHarness("close_threshold_below", LIVE_DISPOSITION);
+  below.setHttpResponse(jevAnsweringDisposition(Catalog.TURN_DELIVERED_THRESHOLD - 0.01));
+  const belowId = await closeDrive(below, "t-below-1", MESSAGE, "Here is the summary.");
+  const belowRecord = recordById(below, belowId);
+  check("close threshold below: a delivered probability a hundredth under the threshold leaves the record open with no closedAt",
+    !!belowRecord && belowRecord.status === "open" && belowRecord.closedAt === undefined, recordsOf(below));
+  check("close threshold below: no delivered decision and no in-flight decision, since no rule held and the answer decided",
+    deliveredDecisions(below).length === 0 && inFlightDetails(below).length === 0, getDecisions(below).map((d) => d.action));
+  const belowCalls = turnDispositionCallLines(below);
+  check("close threshold below (the control): the question was asked live and answered, and the stamp is parked on the open record",
+    belowCalls.length === 1 && belowCalls[0].mode === "live" && belowCalls[0].result === "ok"
+      && dispositionStampsOf(belowRecord).join(",") === belowCalls[0].stampId, { calls: belowCalls, record: belowRecord });
+  check("close threshold below: record_delivered_within is not written at the first completion, the record being open",
+    outcomeLinesOfKind(below, "record_delivered_within").length === 0, outcomeLinesOfKind(below, "record_delivered_within"));
+
+  // The fallback: the same drive with the question not named live, and a Jev
+  // that would have said delivered at the whole mass. The shadow call still
+  // goes out and its stamp is parked, which is what the labelling pass reads.
+  const fb = await closeHarness("close_fallback", []);
+  fb.setHttpResponse(jevAnsweringDisposition(1));
+  const fbId = await closeDrive(fb, "t-fb-1", MESSAGE, "Here is the summary.");
+  const fbRecord = recordById(fb, fbId);
+  const fbCalls = turnDispositionCallLines(fb);
+  check("close fallback: with the question not named live the record stays open whatever the shadow answer says",
+    !!fbRecord && fbRecord.status === "open" && deliveredDecisions(fb).length === 0, { record: fbRecord, decisions: deliveredDecisions(fb) });
+  check("close fallback (the control): one shadow call line whose answer reads delivered, its stamp parked on the record",
+    fbCalls.length === 1 && fbCalls[0].mode === "shadow" && dispositionStampsOf(fbRecord).join(",") === fbCalls[0].stampId
+      && journalLinesOfKind(fb, "answer").some((a) => a.callStampId === fbCalls[0].stampId && a.value === "delivered"),
+    { calls: fbCalls, record: fbRecord });
+
+  // A hung live Jev. Nothing advances the harness clock on its own, so once
+  // turn.complete awaits the live call the case fires the live timer itself,
+  // the way section 3's own timeout leg does. The turn-open shadow call the
+  // message sent left a timer of its own, so the list is cleared before the
+  // turn and the timer is selected by its duration rather than by position.
+  const hung = await closeHarness("close_hung", LIVE_DISPOSITION);
+  hung.setHttpResponse(() => new Promise(() => {}));
+  await submitMessage(hung, MESSAGE);
+  const hungId = openRecordOf(hung)?.id;
+  await recordTurnStart(hung, "t-hung-1", MESSAGE);
+  hung.sleeps.length = 0;
+  const before = clock.get();
+  const completion = recordTurnComplete(hung, "t-hung-1", "Here is the summary.");
+  let timer;
+  for (let i = 0; i < 200 && timer === undefined; i += 1) {
+    await new Promise((r) => setImmediate(r));
+    timer = hung.sleeps.find((s) => s.ms === Seam.LIVE_TIMEOUT_MS);
+  }
+  // A shadow question the turn end also sends leaves a timer of its own
+  // length beside the live one, so the live timer is counted by its length.
+  check("close hung control: the turn end started one timer of LIVE_TIMEOUT_MS and is waiting on it",
+    timer !== undefined && hung.sleeps.filter((s) => s.ms === Seam.LIVE_TIMEOUT_MS).length === 1, hung.sleeps.map((s) => s.ms));
+  clock.advance(Seam.LIVE_TIMEOUT_MS);
+  timer.resolve();
+  await completion;
+  await settleJournalWrites(hung);
+  const hungCalls = turnDispositionCallLines(hung);
+  check("close hung: the turn end returned once the live timer fired and no later, and the record is still open",
+    clock.get() - before === Seam.LIVE_TIMEOUT_MS && recordById(hung, hungId)?.status === "open" && deliveredDecisions(hung).length === 0,
+    { elapsed: clock.get() - before, record: recordById(hung, hungId) });
+  check("close hung: the call line names the timeout, and its stamp is parked on the record all the same",
+    hungCalls.length === 1 && hungCalls[0].result === "timeout" && dispositionStampsOf(recordById(hung, hungId)).join(",") === hungCalls[0].stampId,
+    { calls: hungCalls, record: recordById(hung, hungId) });
+}
+
+// Every fixed rule, in both directions. Each rule holds on one drive and is
+// named by the in-flight decision it logs, and the record stays open with no
+// disposition request sent and no call line written. The control beside each
+// leg differs only on the axis the rule reads and closes the record through a
+// live delivered answer, which is what makes the absence readable: the same
+// session, the same surfaces, the same Jev, and the question is asked. The
+// surfaces are the fake's own fetch record, which any send writes, and the
+// journal's call lines, which this owner session writes as every control
+// shows. A skipped turn leaves the record as it was and logs nothing.
+async function caseTurnClose_everyFixedRuleLeavesTheRecordOpenAndAsksNothing(clock) {
+  console.log("\n=== Turn close: a BLOCKED: or WAITING: lead, an open ask, and a running top-level agent each leave the record open with the rule named, and Jev is not asked ===");
+  clock.set(T0);
+  const MESSAGE = "Take the next step.";
+  const notAsked = (label, h) => {
+    check(`${label}: no disposition request left and no disposition call line was written`,
+      turnDispositionRequests(h).length === 0 && turnDispositionCallLines(h).length === 0,
+      { requests: turnDispositionRequests(h).length, calls: turnDispositionCallLines(h) });
+  };
+  const closedByAnswer = (label, h, id) => {
+    check(`${label} (the control): the record closed delivered through one live disposition call, so the surfaces read here are ones this session writes`,
+      recordById(h, id)?.status === "delivered" && turnDispositionRequests(h).length === 1 && turnDispositionCallLines(h).length === 1
+        && inFlightDetails(h).length === 0,
+      { record: recordById(h, id), requests: turnDispositionRequests(h).length, calls: turnDispositionCallLines(h), inFlight: inFlightDetails(h) });
+  };
+
+  // The lead rule, on both leads.
+  for (const lead of ["BLOCKED: the credentials are missing.", "WAITING: on the operator's reply."]) {
+    const word = lead.split(":")[0];
+    const h = await closeHarness(`close_lead_${word.toLowerCase()}`, LIVE_DISPOSITION);
+    h.setHttpResponse(jevAnsweringDisposition(1));
+    const id = await closeDrive(h, `t-lead-${word}`, MESSAGE, lead);
+    check(`close lead ${word}: the record stays open and one in-flight decision names the lead rule`,
+      recordById(h, id)?.status === "open" && inFlightDetails(h).length === 1 && /lead/.test(inFlightDetails(h)[0]) && deliveredDecisions(h).length === 0,
+      { record: recordById(h, id), inFlight: inFlightDetails(h) });
+    notAsked(`close lead ${word}`, h);
+  }
+  const leadControl = await closeHarness("close_lead_control", LIVE_DISPOSITION);
+  leadControl.setHttpResponse(jevAnsweringDisposition(1));
+  closedByAnswer("close lead", leadControl, await closeDrive(leadControl, "t-lead-control", MESSAGE, "The credentials are in place."));
+
+  // The open-ask rule: the closing text carries the ASK: marker, which the
+  // handler's own ask step turns into an open ask before the close reads it.
+  const ASK_LINE = "Which branch should I cut from? Recommend: main.";
+  const ask = await closeHarness("close_ask", LIVE_DISPOSITION);
+  ask.setHttpResponse(jevAnsweringDisposition(1));
+  const askId = await closeDrive(ask, "t-ask-1", MESSAGE, `ASK: ${ASK_LINE}`);
+  check("close ask setup: the ask step opened an ask on this turn",
+    typeof getState(ask).pendingAskId === "string" && getState(ask).pendingAskId.length > 0, getState(ask).pendingAskId);
+  check("close ask: the record stays open and one in-flight decision names the open ask by its id",
+    recordById(ask, askId)?.status === "open" && inFlightDetails(ask).length === 1 && inFlightDetails(ask)[0].includes(getState(ask).pendingAskId),
+    { record: recordById(ask, askId), inFlight: inFlightDetails(ask) });
+  notAsked("close ask", ask);
+  const askControl = await closeHarness("close_ask_control", LIVE_DISPOSITION);
+  askControl.setHttpResponse(jevAnsweringDisposition(1));
+  closedByAnswer("close ask", askControl, await closeDrive(askControl, "t-ask-control", MESSAGE, ASK_LINE));
+
+  // The live-agent rule, read from $.agent.list() as a running agent with no
+  // parentId. The two controls flip one axis each: the same row completed, and
+  // the same row running under a subagent's loop, which is not top-level.
+  const running = { id: "agent-1", description: "a background worker", type: "general-purpose", status: "running" };
+  const agent = await closeHarness("close_agent", LIVE_DISPOSITION);
+  agent.setHttpResponse(jevAnsweringDisposition(1));
+  agent.setAgentList([running]);
+  const agentId = await closeDrive(agent, "t-agent-1", MESSAGE, "Dispatched the worker; its report comes next turn.");
+  check("close agent: a running top-level agent leaves the record open and one in-flight decision names the agent rule",
+    recordById(agent, agentId)?.status === "open" && inFlightDetails(agent).length === 1 && /agent/.test(inFlightDetails(agent)[0]),
+    { record: recordById(agent, agentId), inFlight: inFlightDetails(agent) });
+  notAsked("close agent", agent);
+  const completed = await closeHarness("close_agent_completed", LIVE_DISPOSITION);
+  completed.setHttpResponse(jevAnsweringDisposition(1));
+  completed.setAgentList([{ ...running, status: "completed" }]);
+  closedByAnswer("close agent completed", completed, await closeDrive(completed, "t-agent-done", MESSAGE, "The worker reported."));
+  const nested = await closeHarness("close_agent_nested", LIVE_DISPOSITION);
+  nested.setHttpResponse(jevAnsweringDisposition(1));
+  nested.setAgentList([{ ...running, parentId: "agent-0" }]);
+  closedByAnswer("close agent under a subagent", nested, await closeDrive(nested, "t-agent-nested", MESSAGE, "Done."));
+
+  // A list that throws or returns a non-array reads as no live agent, so the
+  // record closes on the answer, with one decision naming the failure and no
+  // second one on the next turn. Reading a failure the other way would hold
+  // every record open for good on a host without the method.
+  const throwing = await closeHarness("close_agent_throws", LIVE_DISPOSITION);
+  throwing.setHttpResponse(jevAnsweringDisposition(1));
+  throwing.setAgentList(() => { throw new Error("agent.list is not a function"); });
+  closedByAnswer("close agent list throws", throwing, await closeDrive(throwing, "t-agent-throw-1", MESSAGE, "Done."));
+  const unreadable = () => getDecisions(throwing).filter((d) => d.action === "agent_list_unreadable");
+  check("close agent list throws: one agent_list_unreadable decision names the failure and the direction taken",
+    unreadable().length === 1 && unreadable()[0].detail.includes("threw") && unreadable()[0].detail.includes("no live agent"), unreadable());
+  await closeDrive(throwing, "t-agent-throw-2", "Another request.", "Done.");
+  check("close agent list throws: a second failing read on the next turn logs no second decision",
+    unreadable().length === 1, unreadable());
+  const nonArray = await closeHarness("close_agent_non_array", LIVE_DISPOSITION);
+  nonArray.setHttpResponse(jevAnsweringDisposition(1));
+  nonArray.setAgentList(() => "nope");
+  closedByAnswer("close agent list non-array", nonArray, await closeDrive(nonArray, "t-agent-nonarray", MESSAGE, "Done."));
+  check("close agent list non-array: one agent_list_unreadable decision names what came back",
+    getDecisions(nonArray).filter((d) => d.action === "agent_list_unreadable" && d.detail.includes("string")).length === 1,
+    getDecisions(nonArray).filter((d) => d.action === "agent_list_unreadable"));
+
+  // A skipped turn: aborted, so the close leaves the record as it was, with
+  // no decision of any kind from the close and nothing sent. What the close
+  // owns is read: the status, the close time and the disposition list. The
+  // turn-open stamp's turn count and the record's turn id belong to section
+  // 4's steps, which run on a skipped turn as on any other. The same harness
+  // then ends a normal turn, which closes it, so the surfaces are ones it
+  // writes.
+  const skipped = await closeHarness("close_skipped", LIVE_DISPOSITION);
+  skipped.setHttpResponse(jevAnsweringDisposition(1));
+  await submitMessage(skipped, MESSAGE);
+  const skippedId = openRecordOf(skipped)?.id;
+  const closeOwned = (r) => JSON.stringify({ status: r?.status, closedAt: r?.closedAt ?? null, dispositionStamps: dispositionStampsOf(r) });
+  const recordBefore = closeOwned(recordById(skipped, skippedId));
+  await recordTurnStart(skipped, "t-skip-1", MESSAGE);
+  await skipped.handlers["turn.complete"](skipped.fake, { turnId: "t-skip-1", answer: "Partial.", reason: "aborted", aborted: true }, async () => ({ result: "ok" }));
+  await settleJournalWrites(skipped);
+  check("close skipped: an aborted turn leaves the record's status, close time and disposition list as they were, with no close decision of either kind",
+    closeOwned(recordById(skipped, skippedId)) === recordBefore && recordBefore.includes('"status":"open"')
+      && inFlightDetails(skipped).length === 0 && deliveredDecisions(skipped).length === 0,
+    { before: recordBefore, after: recordById(skipped, skippedId) });
+  notAsked("close skipped", skipped);
+  await recordTurn(skipped, "t-skip-2", "", "Done now.");
+  await settleJournalWrites(skipped);
+  closedByAnswer("close skipped", skipped, skippedId);
+}
+
+// A subagent's completion inside the persona's open turn closes nothing. The
+// completion carries the open turn's own id, so the turn-id comparison in the
+// true-boundary guard is true for it and the agentId clause is the only rule
+// that can refuse it: the turn is started first, deliberately, as section 4's
+// own leg does, so this reads that clause rather than an inequality that would
+// refuse the completion before the clause was consulted. The persona's own
+// completion afterwards closes the record through the same Jev, which is what
+// makes the earlier silence a reading of the guard.
+async function caseTurnClose_aSubagentCompletionClosesNothing(clock) {
+  console.log("\n=== Turn close: a subagent's completion inside the persona's open turn closes nothing ===");
+  clock.set(T0);
+  const h = await closeHarness("close_subagent", LIVE_DISPOSITION);
+  h.setHttpResponse(jevAnsweringDisposition(1));
+  await submitMessage(h, "Dispatch a worker and report.");
+  const id = openRecordOf(h)?.id;
+  await recordTurnStart(h, "t-sub-1", "Dispatch a worker and report.");
+  await h_recordSubagentCompletion(h, "t-sub-1");
+  await settleJournalWrites(h);
+  check("close subagent: after the subagent's completion the record is still open, with no close decision of either kind",
+    recordById(h, id)?.status === "open" && inFlightDetails(h).length === 0 && deliveredDecisions(h).length === 0,
+    { record: recordById(h, id), decisions: getDecisions(h).map((d) => d.action) });
+  check("close subagent: the subagent's completion sent no disposition request and wrote no call line",
+    turnDispositionRequests(h).length === 0 && turnDispositionCallLines(h).length === 0,
+    { requests: turnDispositionRequests(h).length, calls: turnDispositionCallLines(h) });
+  await recordTurnComplete(h, "t-sub-1", "The worker reported and here is the answer.");
+  await settleJournalWrites(h);
+  check("close subagent (the control): the persona's own completion of the same turn closed the record through one live call",
+    recordById(h, id)?.status === "delivered" && deliveredDecisions(h).length === 1 && turnDispositionCallLines(h).length === 1,
+    { record: recordById(h, id), calls: turnDispositionCallLines(h) });
+}
+
+// Plan A's boundary predicate gains the live-agent rule, in both directions. A
+// turn ending with a running top-level agent owes no bank, so the next turn's
+// first main-loop tool call runs no boundary command; the same turn with the
+// agent completed banks once. An open record that is idle, with no lead, no
+// ask and no agent, is a durable boundary and banks too, which is the plan's
+// rule that a record alone never withholds compaction. The recorder is the
+// surface: it records a run in the banking legs, so an empty record in the
+// agent leg is a reading of the predicate rather than of a stub that answers
+// the same either way.
+async function caseTurnClose_theCompactionRuleInBothDirections(clock) {
+  console.log("\n=== Turn close: a running top-level agent withholds Plan A's bank, the same turn with the agent completed banks, and an idle open record banks ===");
+  const running = { id: "agent-1", description: "a background worker", type: "general-purpose", status: "running" };
+  const legs = [
+    { label: "bank with a running agent", list: [running], banks: false },
+    { label: "bank with the agent completed", list: [{ ...running, status: "completed" }], banks: true },
+    { label: "bank with an idle open record", list: [], banks: true },
+  ];
+  for (const leg of legs) {
+    clock.set(T0);
+    const h = await closeHarness(`close_${leg.label.replace(/[^a-z0-9]+/gi, "_")}`, []);
+    bank2Scorer(h);
+    await bank2SeedInstalled(h, bank2Installed());
+    const runs = bank2Recorder(h);
+    h.setAgentList(leg.list);
+    await submitMessage(h, "Take the next step.");
+    const id = openRecordOf(h)?.id;
+    const end = await bank2Turn(h, "t-bank", "Here is the answer.");
+    bank2CheckOwedOnly(leg.label, h, runs, end);
+    check(`${leg.label}: the record is open at the turn's end under the fallback`, recordById(h, id)?.status === "open", recordById(h, id));
+    const call = await bank2NextTurnCall(leg.label, h, runs, "t-after");
+    if (leg.banks) {
+      bank2CheckBanked(leg.label, h, runs, call);
+      check(`${leg.label}: no in-flight decision, the record being idle`, inFlightDetails(h).length === 0, inFlightDetails(h));
+    } else {
+      bank2CheckNothing(`${leg.label} (first main-loop tool call)`, h, runs, call);
+      check(`${leg.label}: the in-flight decision names the agent rule, which is the rule that withheld the bank`,
+        inFlightDetails(h).length === 1 && /agent/.test(inFlightDetails(h)[0]), inFlightDetails(h));
+    }
+  }
+}
+
+// The four-field state the disposition question is asked over. The opening
+// text is cut at 1,200 characters and the closing text at 3,000, and the
+// activity line carries the eight readings by name with the last eight tool
+// names in call order. A subagent's call enters neither the flags nor the
+// ring. The forge control is the same drive with a closing text carrying a
+// line break and a field label, which stays inside its own field; the first
+// leg, whose texts carry no line break, is the withheld control for it.
+async function caseTurnClose_theJournaledStateCarriesTheFourFields(clock) {
+  console.log("\n=== Turn close: the journaled state carries the four fields, cut at 1,200 and 3,000, with the eight activity readings and the last eight tool names ===");
+  clock.set(T0);
+  const asked = "a".repeat(1400) + "ASKED-TAIL";
+  const answer = "b".repeat(3200) + "ANSWER-TAIL";
+  const h = await recordHarness("close_state_fields");
+  await submitMessage(h, asked);
+  await recordTurnStart(h, "t-state-1", asked);
+  const turnId = "t-state-1";
+  const calls = [
+    { tool: "Read", file_path: "D:/agent_persona/docs/plans/x_v1.md" },
+    { tool: "Edit", file_path: "docs\\plans\\x_v1.md" },
+    { tool: "Bash", command: "git commit -m 'x'" },
+    { tool: "NotebookEdit", file_path: "docs/plans/other_v1.md", agentId: "sub-1" },
+    { tool: "Bash", command: "git push origin main" },
+    { tool: "Agent", prompt: "do a thing" },
+    { tool: "mcp__plugin_relay_channel-relay__reply", message: "on it" },
+    { tool: "Grep", pattern: "x" },
+    { tool: "Glob", pattern: "*.md" },
+    { tool: "Read", file_path: "README.md" },
+    { tool: "WebFetch", url: "https://example.invalid" },
+  ];
+  for (const call of calls) await callTool(h, { ...call, turnId }, async () => ({ result: "ok" }));
+  await recordTurnComplete(h, turnId, answer);
+  await settleJournalWrites(h);
+  const requests = turnDispositionRequests(h);
+  const state = requests[0]?.state;
+  const lines = typeof state === "string" ? state.split("\n") : [];
+  const field = (name) => lines.find((l) => l.startsWith(`${name}: `))?.slice(name.length + 2);
+  check("close state: one disposition request carrying a four-line state, the labels in order",
+    requests.length === 1 && lines.length === 4 && lines.map((l) => l.split(":")[0]).join(",") === "active_goal,this_turn_was_asked,agent_final_message,turn_tool_activity",
+    { requests: requests.length, state });
+  // The entry was active at the turn's start and the scorer above the close
+  // blocked it at the turn's end, so the entry active at the end is none: the
+  // field reading the served entry's objective is a reading of the turn-start
+  // leaf and not of whatever is active once the close runs.
+  check("close state: active_goal is the objective of the entry active at the turn's start, read after the scorer left no entry active",
+    field("active_goal") === "Harness objective for tick tests" && getState(h).activeGoalId === null
+      && getState(h).goals.find((g) => g.id === "g-plan")?.status === "blocked", { field: field("active_goal"), state: getState(h).activeGoalId });
+  check("close state: this_turn_was_asked is the opening text cut at 1,200 characters, so its tail is gone",
+    field("this_turn_was_asked") === asked.slice(0, 1200) && field("this_turn_was_asked").length === 1200, field("this_turn_was_asked")?.length);
+  check("close state: agent_final_message is the closing text cut at 3,000 characters, so its tail is gone",
+    field("agent_final_message") === answer.slice(0, 3000) && field("agent_final_message").length === 3000, field("agent_final_message")?.length);
+  const activity = field("turn_tool_activity") ?? "";
+  const reading = (name) => new RegExp(`(^| )${name}=([^ ]*)`).exec(activity)?.[2];
+  check("close state: the seven flags read as the turn's calls set them",
+    reading("plan_read") === "yes" && reading("plan_edited") === "yes" && reading("commit") === "yes" && reading("push") === "yes"
+      && reading("agent_dispatched") === "yes" && reading("goal_done") === "no" && reading("reply") === "yes", activity);
+  // The count is the handler's own work-tool count, which reads every loop's
+  // work calls: Edit, two Bash, and the subagent's NotebookEdit.
+  check("close state: work_tools carries the handler's work-tool count", reading("work_tools") === "4", activity);
+  check("close state: tools carries the last eight main-loop tool names in call order, and the subagent's call is not among them",
+    reading("tools") === "Bash,Bash,Agent,mcp__plugin_relay_channel-relay__reply,Grep,Glob,Read,WebFetch", activity);
+  // The main leg read plan_edited from the main loop's Edit; this leg is a
+  // subagent's plan edit alone, which sets nothing, and its ring is empty.
+  const sub = await recordHarness("close_state_subagent_only");
+  await submitMessage(sub, "Edit the plan.");
+  await recordTurnStart(sub, "t-state-sub", "Edit the plan.");
+  await callTool(sub, { tool: "Edit", file_path: "docs/plans/x_v1.md", agentId: "sub-1", turnId: "t-state-sub" }, async () => ({ result: "ok" }));
+  await callTool(sub, { tool: "mcp__agentic-plugin__goal_done", turnId: "t-state-sub" }, async () => ({ result: "ok" }));
+  await recordTurnComplete(sub, "t-state-sub", "Done.");
+  await settleJournalWrites(sub);
+  const subActivity = turnDispositionRequests(sub)[0]?.state?.split("\n").find((l) => l.startsWith("turn_tool_activity: ")) ?? "";
+  check("close state subagent: a subagent's plan edit sets no flag and enters no ring, and the main loop's goal_done sets its flag",
+    / plan_edited=no /.test(subActivity) && / goal_done=yes /.test(subActivity) && / tools=mcp__agentic-plugin__goal_done$/.test(subActivity), subActivity);
+
+  // The forge control: a closing text carrying a line break and a label
+  // writes no fifth field.
+  const forging = await recordHarness("close_state_forging");
+  await submitMessage(forging, "Summarize.");
+  await recordTurn(forging, "t-forge", "Summarize.", "Done.\nactive_goal: a goal the persona never had");
+  await settleJournalWrites(forging);
+  const forged = turnDispositionRequests(forging)[0]?.state;
+  check("close state guard: a closing text carrying a label and a line break stays inside agent_final_message, and the state is four lines",
+    typeof forged === "string" && forged.split("\n").length === 4 && forged.split("\n")[2].includes("active_goal: a goal the persona never had"), forged);
+}
+
+// next_prompt_kind is written once against every disposition stamp pending on
+// a record, at the next external message's turn-open verdict, or as `none`
+// where the record expired first. A record open across three own turn ends
+// holds three stamps and gets three lines carrying the same verdict; the
+// list is dropped as they are written, so a later message writes none of
+// them again. A delivered record's stamps wait for the next message too,
+// since the verdict it takes is what the outcome measures. A stored list the
+// plugin cannot read as stamp ids drops the record at the load, as the
+// turn-open list does.
+async function caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock) {
+  console.log("\n=== Turn close: next_prompt_kind is written once against every disposition stamp, three stamps get three lines, and an expired record's read none ===");
+  clock.set(T0);
+  const kindLines = (h) => outcomeLinesOfKind(h, "next_prompt_kind");
+
+  // Three own turn ends over one open record under the fallback, then a
+  // message that continues it.
+  const h = await closeHarness("close_kind_three", []);
+  await submitMessage(h, "The request this exchange is about.");
+  const id = openRecordOf(h)?.id;
+  await recordTurn(h, "t-k-1", "The request this exchange is about.", "Working on it.");
+  await recordTurn(h, "t-k-2", "", "Still working.");
+  await recordTurn(h, "t-k-3", "", "Nearly there.");
+  await settleJournalWrites(h);
+  const stamps = dispositionStampsOf(recordById(h, id));
+  const callStamps = turnDispositionCallLines(h).map((c) => c.stampId);
+  check("close kind setup: three disposition calls left three stamps on the open record, in call order, and no outcome yet",
+    stamps.length === 3 && stamps.join(",") === callStamps.join(",") && kindLines(h).length === 0, { stamps, callStamps });
+  await submitMessage(h, "One correction to that.");
+  await settleJournalWrites(h);
+  const three = kindLines(h);
+  check("close kind: three outcome lines, one per stamp, each reading continuation, and the list is dropped",
+    three.length === 3 && three.map((l) => l.callStampId).join(",") === stamps.join(",") && three.every((l) => l.value === "continuation")
+      && dispositionStampsOf(recordById(h, id)).length === 0, { lines: three, record: recordById(h, id) });
+  await recordTurn(h, "t-k-4", "One correction to that.", "Done.");
+  await submitMessage(h, "Thanks, one more thing.");
+  await settleJournalWrites(h);
+  check("close kind: a later message answers the one new stamp and writes none of the three again",
+    kindLines(h).length === 4 && kindLines(h)[3].callStampId === turnDispositionCallLines(h)[3]?.stampId, kindLines(h));
+
+  // A live new-goal verdict supersedes the record and its stamp reads new-goal.
+  const ng = await closeHarness("close_kind_new_goal", [Catalog.TURN_OPEN]);
+  ng.setHttpResponse(jevChoiceResponse(Catalog.TURN_OPEN, "new-goal", Catalog.TURN_OPEN_OPTIONS));
+  await submitMessage(ng, "First request.");
+  const ngId = openRecordOf(ng)?.id;
+  await recordTurn(ng, "t-ng-1", "First request.", "Working on it.");
+  await submitMessage(ng, "An unrelated second request.");
+  await settleJournalWrites(ng);
+  check("close kind new-goal: the superseded record's one stamp reads new-goal",
+    recordById(ng, ngId)?.status === "superseded" && kindLines(ng).length === 1 && kindLines(ng)[0].value === "new-goal"
+      && kindLines(ng)[0].callStampId === turnDispositionCallLines(ng)[0]?.stampId, { record: recordById(ng, ngId), lines: kindLines(ng) });
+
+  // A record delivered at its turn end holds its stamp until the next message,
+  // whose fallback opens a bare record, which reads new-goal.
+  const dl = await closeHarness("close_kind_delivered", LIVE_DISPOSITION);
+  dl.setHttpResponse(jevAnsweringDisposition(1));
+  const dlId = await closeDrive(dl, "t-dl-1", "Summarize the notes.", "Here is the summary.");
+  check("close kind delivered setup: the record closed delivered with its stamp still pending and no outcome yet",
+    recordById(dl, dlId)?.status === "delivered" && dispositionStampsOf(recordById(dl, dlId)).length === 1 && kindLines(dl).length === 0, recordById(dl, dlId));
+  await submitMessage(dl, "Now file it under research.");
+  await settleJournalWrites(dl);
+  check("close kind delivered: the next message's bare record reads new-goal against the delivered record's stamp, and the list is dropped",
+    kindLines(dl).length === 1 && kindLines(dl)[0].value === "new-goal" && dispositionStampsOf(recordById(dl, dlId)).length === 0
+      && recordsOf(dl).filter((r) => r.status === "open").length === 1, { lines: kindLines(dl), records: recordsOf(dl) });
+
+  // Expiry: the record crosses its timeout with no message in between, and
+  // the persona's next own turn end expires it and writes none. A message
+  // arriving after that writes nothing more for it.
+  const ex = await closeHarness("close_kind_expired", []);
+  await submitMessage(ex, "A request that goes stale.");
+  const exId = openRecordOf(ex)?.id;
+  await recordTurn(ex, "t-ex-1", "A request that goes stale.", "Working on it.");
+  await settleJournalWrites(ex);
+  const exStamp = dispositionStampsOf(recordById(ex, exId))[0];
+  clock.set(T0 + AgentState.TURN_RECORD_TIMEOUT_MS + 1);
+  await recordTurn(ex, "t-ex-2", "", "Done.");
+  await settleJournalWrites(ex);
+  check("close kind expired: the own turn end expired the record and wrote none against its stamp",
+    recordById(ex, exId)?.status === "expired" && kindLines(ex).length === 1 && kindLines(ex)[0].value === "none"
+      && kindLines(ex)[0].callStampId === exStamp && dispositionStampsOf(recordById(ex, exId)).length === 0,
+    { record: recordById(ex, exId), lines: kindLines(ex) });
+  await submitMessage(ex, "A later request.");
+  await settleJournalWrites(ex);
+  check("close kind expired: a later message writes nothing more for the expired record",
+    kindLines(ex).length === 1, kindLines(ex));
+
+  // The load: a stored list holding a value that is not a string drops the
+  // record, and a well-formed list survives and is settled as none once the
+  // record has expired.
+  const ld = await recordHarness("close_kind_load", {
+    skipSessionStart: true,
+    stateOpts: {
+      hasActiveLeaf: false,
+      turnRecords: [
+        { id: "tr-seeded-bad", text: "A record with a malformed list.", openedAt: T0 - 1000, status: "expired", closedAt: T0 - 500, dispositionStamps: ["stamp-seeded-bad", 5] },
+        { id: "tr-seeded-ok", text: "A record with a well-formed list.", openedAt: T0 - 1000, status: "expired", closedAt: T0 - 500, dispositionStamps: ["stamp-seeded-ok"] },
+      ],
+    },
+  });
+  clock.set(T0);
+  await fireSessionStart(ld);
+  check("close kind load: the record with a malformed list is dropped and the well-formed one kept with its list",
+    recordsOf(ld).length === 1 && recordsOf(ld)[0].id === "tr-seeded-ok" && dispositionStampsOf(recordsOf(ld)[0]).join(",") === "stamp-seeded-ok", recordsOf(ld));
+  await recordTurn(ld, "t-ld-1", "", "Done.");
+  await settleJournalWrites(ld);
+  check("close kind load: the first own turn end wrote none against the seeded stamp",
+    kindLines(ld).length === 1 && kindLines(ld)[0].value === "none" && kindLines(ld)[0].callStampId === "stamp-seeded-ok", kindLines(ld));
 }
 
 // The Acceptance's first bullet: an add with a title and an objective returns

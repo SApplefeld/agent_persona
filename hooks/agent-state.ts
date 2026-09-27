@@ -300,6 +300,19 @@ export interface TurnRecordStamp {
   turns: number;
 }
 
+// dispositionStamps is the second list of unsettled journal outcomes, for the
+// turn-disposition question, and it is a list of its own rather than more
+// entries in pendingStamps. The two outcomes settle on different events and
+// carry different values: a turn-open call's record_delivered_within settles at
+// a delivery or after a counted number of the persona's own turns, while a
+// turn-disposition call's next_prompt_kind settles at the next external
+// message's turn-open verdict, or as `none` once the record has expired, and
+// so needs no turn count. The record_delivered_within writer settles and drops
+// every entry of pendingStamps by name, so a disposition stamp parked there
+// would be answered with the wrong outcome kind and dropped before its own
+// writer ran. One entry per turn-disposition call asked over this record, each
+// present exactly while its outcome is unwritten; a record open across several
+// turn ends holds several.
 export interface TurnRecord {
   id: string;
   text: string;
@@ -311,6 +324,7 @@ export interface TurnRecord {
   taskId?: string;
   closedAt?: number;
   pendingStamps?: TurnRecordStamp[];
+  dispositionStamps?: string[];
 }
 
 // Whether a stored or supplied value is one pending stamp. A stamp id that is
@@ -1006,7 +1020,11 @@ function fillTurnRecords(state: AgentState): void {
       && (record.taskId === undefined || typeof record.taskId === "string")
       && (record.closedAt === undefined || Number.isFinite(record.closedAt))
       && (record.pendingStamps === undefined
-        || (Array.isArray(record.pendingStamps) && record.pendingStamps.every(isTurnRecordStamp)));
+        || (Array.isArray(record.pendingStamps) && record.pendingStamps.every(isTurnRecordStamp)))
+      // Read as strictly as pendingStamps, for the same reason: a stamp id that
+      // is not a string names no call line for the outcome to join.
+      && (record.dispositionStamps === undefined
+        || (Array.isArray(record.dispositionStamps) && record.dispositionStamps.every((s) => typeof s === "string")));
   }).map((record) => {
     const cut = clampTurnRecordText(record.text);
     return cut === record.text ? record : { ...record, text: cut };
