@@ -405,3 +405,21 @@ Not a Chapter. The finishing pass is in flight, so this entry carries no `Comple
 **Next action.** Dispatch the wave; adjudicate; the goal read (step 4); the docs curator (step 5); the finishing Chapter, archive and index refresh (step 6); the whole gate again after updating from origin; the pull request, ready and auto-merge (step 7); banking (step 8).
 
 **Rulings adopted since the last boundary.** None.
+
+### Interim board 6 - 2026-09-27
+
+Not a Chapter. The finishing pass is in flight, so this entry carries no `Completed:` line.
+
+**Correction to interim board 5.** Board 5 said the live suites defer to the deferred gate run "per the plan's assumption of 2026-09-25". That assumption says the opposite: the live suites run at section 6, and only a dated ruling adding this plan to the deferred gate run's scope line reverses it. So the deferral had no basis. `live-all.sh` still refuses beside a live persona claim (exit 10), and the fleet on this machine is always live, so the suites can run only in a fleet-down window. The operator was asked on the relay, 2026-09-27, to rule this plan into the deferred gate run's scope, with that option recommended. Until the ruling lands, the pull request is opened but not marked ready and auto-merge is not armed.
+
+**Steps 2 and 3, the review wave.** Workflow run wf_a493597d-f1b, three agents at fable, effort high, on the capacity reading quoted on board 5; the tree matched `finishing/wave-before.txt` (empty) on return. Adversarial: APPROVED_WITH_CONCERNS, four Minors. Security: CLEAR, threat model present, four Minors, `npm audit` 0 vulnerabilities. Performance: CLEAR, five Minors, recap wall time 58 to 60 ms against a 5,000 ms bound. No Critical or Major, so nothing blocks.
+
+Fixed at 2e03120: the README quick-start now says six hours for an operator message (adversarial); the security model names the `restartRecap` `auto` condition (security); both skills pick the install record with the newest `lastUpdated`, matching `kitInstallPathOf` (security); the upgrade-check skill tells the persona to run `pre` and `post` from its working directory (adversarial and security both). Gate: check-loader-rule exit 0, plugin validate exit 0; the new one-liner ran against this machine's `installed_plugins.json`.
+
+Left, with reasons: the `docs/README.md` index line is step 6's archive move. The redundant `.kit/.gitignore` fixture line is harmless and `git check-ignore` shows neither form changes what is tracked. The goal-text `post` command is inside the threat model's takeover class and adds no attacker. The `post` wait of heartbeat plus five seconds is 35 s on every fleet settings file, and only a hand-edited `heartbeatMs` above about 110 s would outrun the Bash tool's limit. The orphaned MCP children on a timed-out step are already in `docs/backlog.md`. Three performance shapes (per-name regex scan, quadratic digest cap, full parse of an out-of-window ring session) fail no stated bound.
+
+**Live dispatches.** The step 4 goal read: `scope-adjudicator` through the Agent tool at fable, on the reading "fable capacity: scoped 47%, 7d 43%, 5h 20% (account 7, fetched 188s ago) -> dispatch". Its brief's acceptance bullet 6 was composed from section 6's Files in scope, not quoted, so a ruling resting on it is a lead to check against the plan.
+
+**Next action.** Adjudicate the goal read; the docs curator (step 5); the finishing Chapter, archive and index refresh (step 6); update from origin and the whole gate; open the pull request, holding ready and auto-merge for the live-suite ruling (step 7); banking (step 8).
+
+**Rulings adopted since the last boundary.** None. One is asked.
