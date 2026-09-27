@@ -212,6 +212,13 @@ const cases = [
     assert.deepEqual(r.header.sessions, [OLDER, PREV]);
     assert.match(r.stderr, new RegExp('no transcript for session ' + GONE));
   }],
+  ['the ring walk counts only transcripts it could read, so an unreadable one does not hide a readable older one', () => {
+    const paths = makeCase('walk-unreadable', { store: (s) => { s.FIXTURE.previousSessionIds = [GONE, PREV, OLDER]; } });
+    fs.mkdirSync(join(paths.folder, GONE + '.jsonl'));
+    const r = standard(paths);
+    assert.deepEqual(r.header.sessions, [OLDER, PREV]);
+    assert.match(r.stderr, new RegExp('the transcript .*' + GONE + '\\.jsonl cannot be read'));
+  }],
   ['--sessions takes a whole number of at least one, and anything else takes the default with a note', () => {
     const paths = makeCase('sessions-arg');
     for (const bad of ['1.5', '0.5', '0', '-1', 'two']) {

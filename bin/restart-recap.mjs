@@ -444,12 +444,18 @@ export function recap(flags, opts = {}) {
   const folderList = folders || [];
 
   // --- Which sessions, and where each transcript is. ---
+  // A transcript counts as chosen only once its tail has been read.
+  const readChosen = (file) => {
+    const read = readRecords(file);
+    if (read === null) notes.push('the transcript ' + file + ' cannot be read');
+    return read;
+  };
   let lineage;
   const chosen = [];
   if (lineageIds.length > 0) {
     lineage = 'recorded';
-    // The ring is walked until enough transcripts are found, so a gone
-    // session does not hide a readable older one.
+    // The ring is walked until enough transcripts are read, so a gone or
+    // unreadable session does not hide a readable older one.
     for (const id of lineageIds) {
       if (chosen.length >= sessionsWanted) break;
       const fileName = transcriptFileName(workdir, id);
@@ -458,8 +464,12 @@ export function recap(flags, opts = {}) {
         continue;
       }
       const hit = folderList.map((f) => path.join(f.path, fileName)).find((p) => fs.existsSync(p));
-      if (hit) chosen.push({ id, file: hit });
-      else notes.push('no transcript for session ' + digestText(id, 80) + ' in the transcript folder');
+      if (!hit) {
+        notes.push('no transcript for session ' + digestText(id, 80) + ' in the transcript folder');
+        continue;
+      }
+      const read = readChosen(hit);
+      if (read) chosen.push({ id, file: hit, read });
     }
   } else {
     lineage = 'unrecorded';
@@ -481,19 +491,17 @@ export function recap(flags, opts = {}) {
         if (newest === null || stat.mtimeMs > newest.mtimeMs) newest = { id, file: p, mtimeMs: stat.mtimeMs };
       }
     }
-    if (newest) chosen.push({ id: newest.id, file: newest.file });
+    if (newest) {
+      const read = readChosen(newest.file);
+      if (read) chosen.push({ id: newest.id, file: newest.file, read });
+    }
   }
 
-  // --- Read each session, oldest first. ---
+  // --- Digest each session, oldest first. ---
   const sessions = [];
   for (const c of chosen.slice().reverse()) {
-    const read = readRecords(c.file);
-    if (read === null) {
-      notes.push('the transcript ' + c.file + ' cannot be read');
-      continue;
-    }
-    for (const n of read.bad) notes.push('skipped a record that is not JSON at line ' + n + ' of the tail of ' + c.file);
-    sessions.push({ id: c.id, ...sessionDigest(read.records) });
+    for (const n of c.read.bad) notes.push('skipped a record that is not JSON at line ' + n + ' of the tail of ' + c.file);
+    sessions.push({ id: c.id, ...sessionDigest(c.read.records) });
   }
 
   let lastRecordAt = null;
@@ -553,8 +561,8 @@ function launchedDirectly() {
   if (!entry) return false;
   const self = fileURLToPath(import.meta.url);
   const real = (p) => { try { return fs.realpathSync(p).toLowerCase(); } catch (e) { return p.toLowerCase(); } };
-  if (real(entry) === real(self)) return true;
-  try { return !fs.statSync(entry).isFile(); } catch (e) { return true; }
+  // Any entry point other than this file is an importer.
+  return real(entry) === real(self);
 }
 
 // The header is line one whatever happens, and the exit is 0, so a caller
