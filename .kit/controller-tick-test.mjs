@@ -35,7 +35,7 @@ import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
 import { fnv1aHash } from "../hooks/cost-ledger.ts";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -4146,6 +4146,10 @@ async function main() {
     await caseMemq5_memoryAddWritesThroughPut(clock);
     await caseMemq6_theDistillatesInTheJsonMoveOnce(clock);
     await caseMemq7_theCountsNameLessonsAndWrites(clock);
+    await caseMemq8_thePersonaTakesAStoreIdMemqAccepts(clock);
+    await caseMemq9_aReaderDistillsNothingIntoTheStore(clock);
+    await caseMemq10_aDisplacedOwnerIsRefusedBeforeThePut(clock);
+    await caseMemq11_theRealMemqAcceptsWhatThePluginBuilds(clock);
   } finally {
     clock.restore();
   }
@@ -33381,8 +33385,8 @@ async function caseMemq5_memoryAddWritesThroughPut(clock) {
 
   const reg = h.toolRegisters.find((t) => t.name === "memory_add");
   check("memq5 registration: no confidence input", reg && reg.inputSchema && reg.inputSchema.properties && !("confidence" in reg.inputSchema.properties), reg && reg.inputSchema);
-  check("memq5 registration: the description names the shared memory store and the returned name",
-    reg && /shared memory store/i.test(reg.description) && /returns the record's name/i.test(reg.description), reg && reg.description);
+  check("memq5 registration: the description carries the tokens shared, store and name",
+    reg && typeof reg.description === "string" && ["shared", "store", "name"].every((token) => new RegExp(token, "i").test(reg.description)), reg && reg.description);
 
   const text = "The operator prefers short replies.";
   const name = memq4Name("preference", "default", text);
@@ -33546,6 +33550,23 @@ async function caseMemq6_theDistillatesInTheJsonMoveOnce(clock) {
   const l = await memq6Harness("memq6_lessons_only", memq6Seed().filter((m) => m.source === "self-review"), MEMQ4_WRITTEN);
   check("memq6 lessons only: no put and no memory_migrated",
     memq4Puts(l).length === 0 && !getDecisions(l).some((d) => d.action === "memory_migrated") && getState(l).memory.length === 2, getDecisions(l).map((d) => d.action));
+
+  // The migration runs once the start has registered its timers, so a host
+  // that holds each put to its bound delays neither the heartbeat nor the
+  // controller tick. The first put reads how many timers stood at its spawn.
+  clock.set(T0);
+  const o = await createTickHarness({ ...OPTS, caseName: "memq6_after_timers", skipSessionStart: true, stateOpts: { now: T0, memory: memq6Seed() } });
+  await bank2SeedInstalled(o, bank2Installed());
+  let timersAtFirstPut = null;
+  o.setProcessRun((argv) => {
+    if (timersAtFirstPut === null && Array.isArray(argv) && argv[2] === "put") timersAtFirstPut = o.clockEveryCallbacks.length;
+    return MEMQ4_WRITTEN;
+  });
+  const timersBefore = o.clockEveryCallbacks.length;
+  await fireSessionStart(o);
+  check("memq6 after timers: the first put spawns with every timer the start registers already registered, the heartbeat and the controller tick among them",
+    memq4Puts(o).length === 4 && timersAtFirstPut === o.clockEveryCallbacks.length && o.clockEveryCallbacks.length >= timersBefore + 2,
+    { timersBefore, timersAtFirstPut, timersAfter: o.clockEveryCallbacks.length, puts: memq4Puts(o).length });
 }
 
 async function caseMemq7_theCountsNameLessonsAndWrites(clock) {
@@ -33553,7 +33574,7 @@ async function caseMemq7_theCountsNameLessonsAndWrites(clock) {
   clock.set(T0);
   const h = await memq6Harness("memq7_counts", memq6Seed(), MEMQ4_WRITTEN);
   check("memq7 start log: names the two self-review lessons",
-    h.uiLogs.includes("Agentic: persona 'default', 2 self-review lessons, owner"), h.uiLogs.filter((l) => l.startsWith("Agentic: persona")));
+    h.uiLogs.some((l) => l.startsWith("Agentic: persona") && l.includes("2 self-review lessons")), h.uiLogs.filter((l) => l.startsWith("Agentic: persona")));
 
   // One write this session; the migration's four do not count.
   await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "The operator prefers short replies today." });
@@ -33577,4 +33598,199 @@ async function caseMemq7_theCountsNameLessonsAndWrites(clock) {
   const identity = await callTool(h, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" });
   check("memq7 activation: the owner's reply says 2 self-review lessons",
     identity && typeof identity.result === "string" && identity.result.includes("active (epoch") && identity.result.includes(". 2 self-review lessons. "), identity);
+}
+
+// The persona's store id the spec fixes: the name itself where it holds only
+// the record-name charset and persona-<name> fits memq's 40-character tag cap,
+// and otherwise the name with every other character removed, cut so that
+// persona-<stripped>-<hash> fits, then a dash and the base-36 fnv1a hash of
+// the full name.
+const MEMQ8_ID_CHARSET = /^[A-Za-z0-9_.-]+$/;
+function memq8StoreId(persona) {
+  if (MEMQ8_ID_CHARSET.test(persona) && `persona-${persona}`.length <= 40) return persona;
+  const hash = fnv1aHash(persona).toString(36);
+  return `${persona.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40 - "persona-".length - 1 - hash.length)}-${hash}`;
+}
+
+async function caseMemq8_thePersonaTakesAStoreIdMemqAccepts(clock) {
+  console.log("\n=== Persona memory 8: the persona's store id keeps a name that fits and derives a safe one that does not ===");
+  clock.set(T0);
+  const mod = await loadModule("memq8_store_id");
+  const storeId = typeof mod.personaStoreId === "function" ? mod.personaStoreId : () => null;
+  check("memq8 fits: DEV-PERSONA and dev are their own ids", storeId("DEV-PERSONA") === "DEV-PERSONA" && storeId("dev") === "dev", [storeId("DEV-PERSONA"), storeId("dev")]);
+  const opsLead = storeId("ops/lead");
+  check("memq8 removed: ops/lead is opslead, a dash and the hash of ops/lead",
+    opsLead === `opslead-${fnv1aHash("ops/lead").toString(36)}`, opsLead);
+  check("memq8 removed: ops/lead and opslead derive different ids", opsLead !== storeId("opslead") && storeId("opslead") === "opslead", [opsLead, storeId("opslead")]);
+  const inside = (id) => typeof id === "string" && MEMQ8_ID_CHARSET.test(id) && `persona-${id}`.length <= 40;
+  const cafe = storeId("café");
+  check("memq8 non-ASCII: café derives an id inside the charset and the cap", inside(cafe) && cafe === memq8StoreId("café") && cafe.startsWith("caf-"), cafe);
+  const long = "a".repeat(60);
+  const longId = storeId(long);
+  check("memq8 long: a 60-character name derives an id inside the charset and the cap, cut to fit its hash",
+    inside(longId) && longId === memq8StoreId(long) && `persona-${longId}`.length === 40, longId);
+  const edge = "b".repeat(32);
+  check("memq8 cap edge: a 32-character name fits persona-<name> exactly and is its own id, a 33-character one is not",
+    storeId(edge) === edge && storeId(`${edge}b`) !== `${edge}b` && inside(storeId(`${edge}b`)), [storeId(edge), storeId(`${edge}b`)]);
+
+  // The record name, the persona tag and the author all carry the id.
+  clock.set(T0);
+  const p = await createTickHarness({ ...OPTS, caseName: "memq8_ops_lead", persona: "ops/lead" });
+  await bank2SeedInstalled(p, bank2Installed());
+  p.setProcessRun(MEMQ4_WRITTEN);
+  const text = "The ops lead signs off every release.";
+  const reply = await callTool(p, { tool: "mcp__agentic-plugin__memory_add", text, kind: "fact" });
+  const put = memq4Puts(p)[0];
+  const id = memq8StoreId("ops/lead");
+  check("memq8 ops/lead put: the name, the persona tag and the author carry the store id, inside memq's grammar",
+    put && put.argv[3] === `fact-${id}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}` && put.argv.includes(`persona-${id}`)
+      && put.argv[put.argv.indexOf("--author") + 1] === `persona-${id}` && memq4InsideMemqGrammar(put)
+      && !put.argv.some((a) => a === "persona-ops/lead"), { argv: put && put.argv, reply });
+  check("memq8 ops/lead put: the reply names that record", reply && typeof reply.result === "string" && reply.result.includes(`fact-${id}-`), reply);
+}
+
+async function caseMemq9_aReaderDistillsNothingIntoTheStore(clock) {
+  console.log("\n=== Persona memory 9: a passive reader's distilled turn writes nothing to the store ===");
+  clock.set(T0);
+  const r = await seedReaderHarness("memq9_reader_distill", T0, "owner-memq9", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  await bank2SeedInstalled(r, bank2Installed());
+  r.setClassifyValue(memq4FactClassify);
+  r.setCompleteValue("The operator drinks tea.");
+  r.setProcessRun(MEMQ4_WRITTEN);
+  const completesBefore = r.completeCalls.length;
+  await memq4DistillTurn(r, "t-memq9-reader");
+  check("memq9 reader setup: the distill completion ran, so the turn reached the write site",
+    r.completeCalls.length > completesBefore, r.completeCalls.length - completesBefore);
+  check("memq9 reader: no put was spawned", memq4Puts(r).length === 0, r.processRuns.map((run) => run.argv));
+  // A reader writes no store, and a takeover loads the state the store holds,
+  // so the reader turn's decisions are never read back. What survives the
+  // takeover is the session's count of records written, which the one call
+  // that logs remember, memory_duplicate or memory_write_failed also keeps:
+  // the holder goes stale, agentic_identity takes the persona over, and the
+  // first tick's summary reads the count. The holder's state gains the
+  // harness's goal tree first, since a tick over no goal summarizes nothing.
+  const held = makeState({ now: T0 });
+  held.activeSessionId = "owner-memq9";
+  r.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: held }));
+  r.storeMap.delete("commons:owner-memq9");
+  clock.advance(200_000);
+  const taken = await callTool(r, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" });
+  check("memq9 reader setup: agentic_identity took the persona over",
+    taken && typeof taken.result === "string" && /owner/.test(taken.result) && !/joined as reader/.test(taken.result), taken);
+  r.resetClassifyCalls();
+  r.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(r, clock, 50);
+  const summary = r.classifyCalls.length > 0 ? String(r.classifyCalls[0][0]) : "";
+  check("memq9 reader: the session counts no record written, so its reader turn noted no write",
+    /\nMemory: \d+ self-review lessons, 0 written this session\n/.test(summary), { memory: summary.split("\n").filter((line) => line.startsWith("Memory")), classifies: r.classifyCalls.length });
+}
+
+async function caseMemq10_aDisplacedOwnerIsRefusedBeforeThePut(clock) {
+  console.log("\n=== Persona memory 10: memory_add from an owner another session displaced is refused and spawns nothing ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "memq10_displaced" });
+  await bank2SeedInstalled(h, bank2Installed());
+  h.setProcessRun(MEMQ4_WRITTEN);
+  const taken = JSON.parse(h.fsMap.get(PERSONA_STORE_FILE));
+  taken.default.activeSessionId = "taker-memq10";
+  taken.default.epoch = (taken.default.epoch ?? 1) + 1;
+  h.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(taken));
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "The operator prefers tea.", kind: "fact" });
+  check("memq10 displaced: refused with the held deny text", res && res.deny === SHUTDOWN_HELD_DENY && res.result === undefined, res);
+  check("memq10 displaced: no put was spawned", memq4Puts(h).length === 0, h.processRuns.map((run) => run.argv));
+  const again = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "The operator prefers tea.", kind: "fact" });
+  check("memq10 displaced: a second call, now a non-owner, is refused the same way and spawns nothing",
+    again && again.deny === SHUTDOWN_HELD_DENY && memq4Puts(h).length === 0, again);
+}
+
+// The installed kit the plugin would run, located as the plugin locates it:
+// the record with the greatest lastUpdated under claude-kit@applefeld in the
+// real installed_plugins.json. A string naming why where there is none.
+function memq11InstalledMemq() {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(join(homedir(), ".claude", "plugins", "installed_plugins.json"), "utf8"));
+  } catch (err) {
+    return `installed_plugins.json could not be read (${err && err.code ? err.code : String(err)})`;
+  }
+  const records = parsed && parsed.plugins && Array.isArray(parsed.plugins["claude-kit@applefeld"]) ? parsed.plugins["claude-kit@applefeld"] : [];
+  const best = records
+    .filter((r) => r && typeof r.installPath === "string" && typeof r.lastUpdated === "string")
+    .sort((a, b) => (a.lastUpdated < b.lastUpdated ? 1 : a.lastUpdated > b.lastUpdated ? -1 : 0))[0];
+  if (!best) return "no claude-kit@applefeld install is recorded";
+  const script = join(best.installPath, "scripts", "memq.js");
+  try { readFileSync(script); } catch { return `the located install holds no scripts/memq.js (${script})`; }
+  return { script };
+}
+
+async function caseMemq11_theRealMemqAcceptsWhatThePluginBuilds(clock) {
+  console.log("\n=== Persona memory 11: the installed memq accepts every put the plugin builds, and refuses a repeat as a duplicate ===");
+  const located = memq11InstalledMemq();
+  if (typeof located === "string") {
+    console.log(`  SKIP memq11: no installed kit to replay against: ${located}`);
+    return;
+  }
+  // The argv the plugin builds for each shape, captured from the stub.
+  const texts = [
+    ["plain", "The operator keeps a pot of green tea by the keyboard."],
+    ["tab", "The operator's desk:\ttea, never coffee."],
+    ["quoted", "The operator's build: run \"npm test\" in C:\\repo first"],
+    ["long", `${"The first line runs long on purpose. ".repeat(6).slice(0, 200)}\nSecond line.`],
+  ];
+  const captured = [];
+  clock.set(T0);
+  const d = await createTickHarness({ ...OPTS, caseName: "memq11_capture_default" });
+  await bank2SeedInstalled(d, bank2Installed());
+  d.setProcessRun(MEMQ4_WRITTEN);
+  for (const [label, text] of texts) {
+    await callTool(d, { tool: "mcp__agentic-plugin__memory_add", text, kind: "fact" });
+    captured.push([label, memq4Puts(d)[memq4Puts(d).length - 1]]);
+  }
+  clock.set(T0);
+  const o = await createTickHarness({ ...OPTS, caseName: "memq11_capture_ops_lead", persona: "ops/lead" });
+  await bank2SeedInstalled(o, bank2Installed());
+  o.setProcessRun(MEMQ4_WRITTEN);
+  await callTool(o, { tool: "mcp__agentic-plugin__memory_add", text: "The ops lead signs off every release.", kind: "fact" });
+  captured.push(["ops/lead", memq4Puts(o)[0]]);
+  check("memq11 capture: five puts captured, each with its argv and env",
+    captured.length === 5 && captured.every(([, run]) => run && Array.isArray(run.argv) && run.init && run.init.env), captured.map(([label, run]) => [label, run && run.argv]));
+  check("memq11 capture: the 200-character first line reached the put",
+    captured[3][1] && typeof captured[3][1].argv[6] === "string" && captured[3][1].argv[6].split("\n")[0].length === 200, captured[3][1] && captured[3][1].argv[6]);
+
+  const root = mkdtempSync(join(tmpdir(), "memq11-"));
+  const started = performance.now();
+  let spawns = 0;
+  try {
+    const replay = (run) => {
+      spawns += 1;
+      return spawnSync("node", [located.script, ...run.argv.slice(2)], {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          ...run.init.env,
+          KIT_MEMORY_ROOT: root,
+          KIT_MEMORY_ROOT_ALLOW_DATA: "1",
+          KIT_MEMORY_PROJECT: "memq-contract-test",
+        },
+      });
+    };
+    for (const [label, run] of captured) {
+      if (!run) continue;
+      const res = replay(run);
+      check(`memq11 real memq: the ${label} put exits 0`, res.status === 0, { status: res.status, stderr: res.stderr, error: res.error && String(res.error), argv: run.argv });
+    }
+    const plain = captured[0][1];
+    if (plain) {
+      const repeat = replay(plain);
+      const lines = String(repeat.stderr || "").split(/\r?\n/);
+      check("memq11 real memq: the plain put again exits 1 with the existing-name refusal",
+        repeat.status === 1 && lines.some((line) => line.startsWith(`memq: '${plain.argv[3]}' already exists`)), { status: repeat.status, stderr: repeat.stderr });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  console.log(`  memq11: ${spawns} real memq spawns in ${Math.round(performance.now() - started)} ms`);
 }

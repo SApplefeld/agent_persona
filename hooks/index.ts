@@ -2782,13 +2782,34 @@ type MemoryWriteOutcome =
   | { outcome: "duplicate"; name: string }
   | { outcome: "failed"; name: string; reason: string; ran: boolean };
 
+// The characters memq takes in a record name, a tag and an author, and the
+// longest tag it takes.
+const MEMQ_NAME_CHARSET = /^[A-Za-z0-9_.-]+$/;
+const MEMQ_TAG_CAP = 40;
+
+// The id a persona carries in the kit's memory store, in its record names,
+// its persona-<id> tag and its persona-<id> author. It is the name itself
+// where the name holds only memq's name charset and persona-<name> fits the
+// tag cap. Otherwise it is the name with every other character removed, cut
+// so that persona-<id> still fits, then a dash and the base-36 fnv1a hash of
+// the full name, so two names that differ only in removed characters keep
+// apart. Reading and stamping a persona's records go by the same id.
+export function personaStoreId(persona: string): string {
+  const prefix = "persona-";
+  if (MEMQ_NAME_CHARSET.test(persona) && prefix.length + persona.length <= MEMQ_TAG_CAP) return persona;
+  const hash = fnv1aHash(persona).toString(36);
+  const kept = persona.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, MEMQ_TAG_CAP - prefix.length - 1 - hash.length);
+  return `${kept}-${hash}`;
+}
+
 // Writes `text` as one record in the kit's memory store through memq put,
-// tagged with its source, its kind and this persona, with the author
-// persona-<name>, since memq's author grammar is the record-name charset and
-// refuses a colon. The name is the kind, the persona and the base-36 fnv1a
-// hash of the text lowercased and trimmed, the persona in it because memq
-// refuses a name its project tier already holds whatever the tags, so two
-// personas in one launch directory writing the same text write two records.
+// tagged with its source, its kind and this persona's store id, with the
+// author persona-<id>, since memq's author grammar is the record-name charset
+// and refuses a colon. The name is the kind, the persona's store id and the
+// base-36 fnv1a hash of the text lowercased and trimmed, the persona in it
+// because memq refuses a name its project tier already holds whatever the
+// tags, so two personas in one launch directory writing the same text write
+// two records.
 // The description is the text's first line with each control character a
 // space, since memq refuses one there, then each double quote a single quote
 // and each backslash a slash, since memq has no quoted form for a
@@ -2803,7 +2824,8 @@ async function writeMemoryRecord(
   { kind, source, createdAt }: { kind: unknown; source: "distilled" | "worker" | "user"; createdAt: number },
 ): Promise<MemoryWriteOutcome> {
   const heldKind = memqKindOf(kind);
-  const name = `${heldKind}-${sess.persona}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
+  const storeId = personaStoreId(sess.persona);
+  const name = `${heldKind}-${storeId}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
   const description = text.split(LINE_TERMINATOR)[0]
     .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ")
     .replace(/"/g, "'")
@@ -2816,8 +2838,8 @@ async function writeMemoryRecord(
     "--body", body,
     "--tag", source,
     "--tag", heldKind,
-    "--tag", "persona-" + sess.persona,
-    "--author", "persona-" + sess.persona,
+    "--tag", "persona-" + storeId,
+    "--author", "persona-" + storeId,
   ], { timeoutMs: MEMQ_WRITE_TIMEOUT_MS });
   if (res === null) return { outcome: "failed", name, reason: "memq did not run to an exit", ran: false };
   if (res.exitCode === 0) return { outcome: "written", name };
@@ -6085,12 +6107,6 @@ export const register: Register = async (on, options) => {
           await persist($);
         }
       } catch { /* non-fatal */ }
-      // The distillates an earlier version kept in the persona's JSON move to
-      // the kit's memory store; an entry whose write fails waits for the next
-      // start.
-      try {
-        await migrateLegacyMemories($);
-      } catch { /* non-fatal */ }
     }
 
     $.ui.log(`Agentic: persona '${sess.persona}', ${selfReviewLessonCount()} self-review lessons, ${sess.isOwner ? "owner" : "passive reader"}`);
@@ -9193,6 +9209,16 @@ export const register: Register = async (on, options) => {
     });
     }
 
+    // The distillates an earlier version kept in the persona's JSON move to
+    // the kit's memory store, owner only; an entry whose write fails waits for
+    // the next start. It runs once the heartbeat and the controller tick are
+    // registered, so a host that holds each put to its bound delays neither.
+    if (sess.isOwner) {
+      try {
+        await migrateLegacyMemories($);
+      } catch { /* non-fatal */ }
+    }
+
     return next(e);
   });
 
@@ -10347,10 +10373,12 @@ export const register: Register = async (on, options) => {
             const distilledText = completionText(rawDistilled);
             if (distilledText === null) noteCompletionShape("memory-distill", rawDistilled);
             const distilled = (distilledText ?? "").trim();
-            if (distilled.length > 0 && distilled.toUpperCase() !== "NONE") {
+            if (sess.isOwner && distilled.length > 0 && distilled.toUpperCase() !== "NONE") {
               // One record in the kit's memory store, never an entry in the
               // persona's JSON. The same fact distilled again derives the
-              // same name, and memq's refusal of it is the dedupe.
+              // same name, and memq's refusal of it is the dedupe. Only the
+              // session that owns the persona writes its records, so a
+              // passive reader's distilled fact is dropped.
               const written = await writeMemoryRecord($, distilled, { kind, source: "distilled", createdAt: Date.now() });
               noteMemoryWrite(written, distilled);
             }
@@ -12049,6 +12077,13 @@ export const register: Register = async (on, options) => {
       if (!text) {
         toolErrorsThisTurn++;
         return { deny: "memory_add requires a non-empty 'text'." };
+      }
+      // The seat is confirmed through a guarded write before the put, so an
+      // owner another session has displaced since its last write is refused
+      // as a non-owner is, and writes no record.
+      if (!(await persist($))) {
+        toolErrorsThisTurn++;
+        return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
       }
       // One record in the kit's memory store. A confidence argument is
       // ignored, since the record carries none. The reply names the record,
