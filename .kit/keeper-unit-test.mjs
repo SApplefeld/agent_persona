@@ -46,7 +46,7 @@ let scenarioCount = 0;
 // so a value that reaches the stub came from the env file or the roster and nowhere else.
 function childEnv(extra = {}) {
   const env = { ...process.env };
-  for (const k of ['KEEPER_BASH_EXE', 'KEEPER_SECRET', 'MODEL', 'EFFORT', 'controllerTickMs', 'COORDINATOR_PERSONA', 'APPDATA_PROBE']) delete env[k];
+  for (const k of ['KEEPER_BASH_EXE', 'KEEPER_SECRET', 'MODEL', 'EFFORT', 'controllerTickMs', 'channelLogRetentionDays', 'COORDINATOR_PERSONA', 'APPDATA_PROBE']) delete env[k];
   return { ...env, ...extra };
 }
 
@@ -253,7 +253,7 @@ const decisionCases = [
 // ---------------------------------------------------------------------------------------------
 const rosterFile = path.join(tmp, 'roster.json');
 fs.writeFileSync(rosterFile, JSON.stringify([
-  { name: 'full', workdir: 'D:/scratch/full work', permissionMode: 'bypassPermissions', rundir: 'D:/scratch/full/run', channelName: 'chan-full', model: 'opus', effort: 'high', controllerTickMs: 60000, memoryGateDiscardPercent: 85, coordinatorPersona: 'coordinator', architectPersona: 'architect', fleetRoster: 'D:/scratch/fleet.json', jevMode: 'shadow', jevLive: ['turn-open', 'turn-disposition'], args: ['--no-channel', '--dev'], enabled: true },
+  { name: 'full', workdir: 'D:/scratch/full work', permissionMode: 'bypassPermissions', rundir: 'D:/scratch/full/run', channelName: 'chan-full', model: 'opus', effort: 'high', controllerTickMs: 60000, memoryGateDiscardPercent: 85, channelLogRetentionDays: 21, coordinatorPersona: 'coordinator', architectPersona: 'architect', fleetRoster: 'D:/scratch/fleet.json', jevMode: 'shadow', jevLive: ['turn-open', 'turn-disposition'], args: ['--no-channel', '--dev'], enabled: true },
   { name: 'minimal', workdir: 'D:/scratch/minimal', permissionMode: 'acceptEdits', enabled: true },
   { name: 'partial', workdir: 'D:/scratch/partial', permissionMode: 'acceptEdits', coordinatorPersona: 'steward', jevLive: [], enabled: true },
   { name: 'badjevlive', workdir: 'D:/scratch/bad', permissionMode: 'acceptEdits', jevLive: 'turn-disposition', enabled: true },
@@ -324,7 +324,7 @@ test('build: a full entry maps every roster field in the supervisor argument ord
   // does not catch a row added to $map alone: the fixture would then not carry
   // that field, the builder skips a field the entry lacks, and this expectation
   // stays green. A new row means a new fixture field and a new key here too.
-  assert.deepEqual(r.Environment, { MODEL: 'opus', EFFORT: 'high', controllerTickMs: '60000', memoryGateDiscardPercent: '85', COORDINATOR_PERSONA: 'coordinator', ARCHITECT_PERSONA: 'architect', FLEET_ROSTER: 'D:/scratch/fleet.json', JEV_MODE: 'shadow', JEV_LIVE: 'turn-open,turn-disposition' });
+  assert.deepEqual(r.Environment, { MODEL: 'opus', EFFORT: 'high', controllerTickMs: '60000', memoryGateDiscardPercent: '85', channelLogRetentionDays: '21', COORDINATOR_PERSONA: 'coordinator', ARCHITECT_PERSONA: 'architect', FLEET_ROSTER: 'D:/scratch/fleet.json', JEV_MODE: 'shadow', JEV_LIVE: 'turn-open,turn-disposition' });
 });
 test('build: a minimal entry yields the three positional arguments and an empty environment', () => {
   const r = build('minimal');
@@ -332,7 +332,7 @@ test('build: a minimal entry yields the three positional arguments and an empty 
   assert.deepEqual(r.Environment, {}, 'an entry carrying none of the mapped fields yields no environment key at all');
 });
 test('build: an entry carrying some mapped fields yields those keys and no others', () => {
-  // The two legs above pin the extremes, all seven fields and none. The docstring's
+  // The two legs above pin the extremes, all eight fields and none. The docstring's
   // and the README's claim is about the middle, "each set only where the entry
   // carries the field", which is the shape the shipped roster's worker entries have.
   const r = build('partial');
