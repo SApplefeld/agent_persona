@@ -2171,8 +2171,9 @@ const sess: {
   memqFailedDay: { start: string; timeout: string };
   // The launch directory kitMemq runs memq from: the first non-empty
   // directory a session.start captured, "" until one has. A later
-  // session.start, a plugin reload among them, leaves it, because its cwd is
-  // wherever the session stands then. Session memory, which a reload keeps.
+  // session.start leaves it, because its cwd is wherever the session stands
+  // then. It lives in this module, so a reload that rebuilds the module starts
+  // it empty and the next session.start captures afresh.
   memqLaunchDir: string;
 } = {
   persona: "default",
@@ -2698,8 +2699,9 @@ export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: s
 // A null has one of two causes. `timeout` is a run that rejected once
 // `timeoutMs`, less MEMQ_TIMEOUT_SLACK_MS, had passed since the spawn, since
 // $.process.run's contract gives no cause for a rejection, so a start that
-// itself takes that long also reads as a timeout. `start` is every other rejection, and also no session id, no
-// launch directory or no located kit install, which spawn nothing. Each cause
+// itself takes that long also reads as a timeout. `start` is every other
+// rejection, and also no session id, no launch directory or no located kit
+// install, which spawn nothing. Each cause
 // logs one memq_spawn_failed decision per UTC day, carrying the first line of
 // the reason. The verb decides read or write, so no caller can mislabel one: a
 // `judged` call is a read, and a read that times out stands later reads down
