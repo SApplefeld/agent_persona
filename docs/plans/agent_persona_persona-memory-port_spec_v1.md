@@ -46,6 +46,7 @@ Provenance: the operator's channel messages on 2026-09-25, the design council re
 ## Standing Brief Amendments
 
 - The launch directory memq runs from is captured once, in session memory, at the first `session.start` that yields one. A later `session.start`, a plugin reload among them, leaves it. It is neither persisted nor kept under a store key.
+- A record the plugin writes is named `<kind>-<persona>-<hash>`, the hash being fnv1a over the text lowercased and trimmed, in base 36, so two personas in one launch directory writing the same text write two records. Its author is `persona-<persona>`, since memq's author grammar is the record-name charset and refuses a colon.
 
 ## Sections of Work
 

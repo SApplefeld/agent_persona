@@ -2785,10 +2785,15 @@ type MemoryWriteOutcome =
 // Writes `text` as one record in the kit's memory store through memq put,
 // tagged with its source, its kind and this persona, with the author
 // persona-<name>, since memq's author grammar is the record-name charset and
-// refuses a colon. The name is the kind and the base-36 fnv1a hash of the text
-// lowercased and trimmed. The description is the text's first line with each
-// control character a space, since memq refuses one there, cut to 120
-// characters. The body is the text, a blank line, and one provenance line
+// refuses a colon. The name is the kind, the persona and the base-36 fnv1a
+// hash of the text lowercased and trimmed, the persona in it because memq
+// refuses a name its project tier already holds whatever the tags, so two
+// personas in one launch directory writing the same text write two records.
+// The description is the text's first line with each control character a
+// space, since memq refuses one there, then each double quote a single quote
+// and each backslash a slash, since memq has no quoted form for a
+// description holding a single quote beside either, cut to 120 characters.
+// The body is the text, a blank line, and one provenance line
 // naming the persona, the source, this session and the UTC date of
 // `createdAt`. Logs nothing itself: kitMemq logs a spawn that failed, and
 // each caller logs the outcome its own way.
@@ -2798,8 +2803,12 @@ async function writeMemoryRecord(
   { kind, source, createdAt }: { kind: unknown; source: "distilled" | "worker" | "user"; createdAt: number },
 ): Promise<MemoryWriteOutcome> {
   const heldKind = memqKindOf(kind);
-  const name = `${heldKind}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
-  const description = text.split(LINE_TERMINATOR)[0].replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ").slice(0, 120);
+  const name = `${heldKind}-${sess.persona}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
+  const description = text.split(LINE_TERMINATOR)[0]
+    .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ")
+    .replace(/"/g, "'")
+    .replace(/\\/g, "/")
+    .slice(0, 120);
   const date = new Date(Number.isFinite(createdAt) ? createdAt : Date.now()).toISOString().slice(0, 10);
   const body = `${text}\n\nWritten by persona ${sess.persona} from source ${source} in session ${sess.mySessionId} on ${date}.`;
   const res = await kitMemq(dp, [

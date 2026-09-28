@@ -33228,11 +33228,14 @@ const MEMQ4_T0_DATE = new Date(T0).toISOString().slice(0, 10);
 function memq4Exists(name) {
   return { exitCode: 1, stdout: "", stderr: `memq: '${name}' already exists in the project tier\n` };
 }
+// memq put's refusal while another writer holds the project store's lock,
+// which exits 1 as the existing-name refusal does.
+const MEMQ4_LOCKED = Object.freeze({ exitCode: 1, stdout: "", stderr: "memq: project store locked, nothing written: lock held: ~/.claude/projects/D--work/memory/store.lock\n" });
 
-// The record name the spec fixes: the kind, then fnv1a over the text
-// lowercased and trimmed, in base 36.
-function memq4Name(kind, text) {
-  return `${kind}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
+// The record name the spec fixes: the kind, the persona, then fnv1a over the
+// text lowercased and trimmed, in base 36.
+function memq4Name(kind, persona, text) {
+  return `${kind}-${persona}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
 }
 
 // Every memq put the session spawned, in order.
@@ -33240,19 +33243,19 @@ function memq4Puts(h) {
   return h.processRuns.filter((r) => Array.isArray(r.argv) && r.argv[0] === "node" && r.argv[1] === MEMQ1_SCRIPT && r.argv[2] === "put");
 }
 
-// Whether one put's argv sits inside the grammar the installed memq's put
-// checks before it writes anything: the author and every tag take the
-// record-name charset, a tag at most 40 characters and the author at most 80
-// (memq.js isAuthorValue, isRecordTag, TAG_CAP and NAME_CAP), and the
-// description holds no control character (memq.js cmdPut). A value outside it
-// is a usage exit, so a put the stub answers 0 would fail against memq itself.
+// Whether one put's tags, author and description pass four of the checks the
+// installed memq's put makes: every tag and the author take the record-name
+// charset, a tag at most 40 characters and the author at most 80 (memq.js
+// isAuthorValue, isRecordTag, TAG_CAP and NAME_CAP), the description holds no
+// control character (memq.js cmdPut), and it holds no double quote and no
+// backslash, the two characters memq.js descriptionScalar can refuse.
 const MEMQ4_NAME_CHARSET = /^[\w.-]+$/;
 function memq4InsideMemqGrammar(run) {
   const argv = run && Array.isArray(run.argv) ? run.argv : [];
   const valuesOf = (flag) => argv.flatMap((a, i) => (a === flag && i + 1 < argv.length ? [argv[i + 1]] : []));
   const tags = valuesOf("--tag");
   const authors = valuesOf("--author");
-  return typeof argv[4] === "string" && !/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/.test(argv[4])
+  return typeof argv[4] === "string" && !/[\u0000-\u001F\u007F-\u009F\u2028\u2029"\\]/.test(argv[4])
     && tags.length > 0 && tags.every((t) => t.length <= 40 && MEMQ4_NAME_CHARSET.test(t))
     && authors.length === 1 && authors[0].length <= 80 && MEMQ4_NAME_CHARSET.test(authors[0]);
 }
@@ -33265,7 +33268,8 @@ function memq4PutShape(run, text, source, kind, date) {
   const body = typeof argv[6] === "string" ? argv[6] : "";
   const provenance = body.startsWith(`${text}\n\n`) ? body.slice(text.length + 2) : null;
   return JSON.stringify([...argv.slice(0, 6), ...argv.slice(7)]) === JSON.stringify([
-    "node", MEMQ1_SCRIPT, "put", memq4Name(kind, text), text.split("\n")[0].replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ").slice(0, 120), "--body",
+    "node", MEMQ1_SCRIPT, "put", memq4Name(kind, "default", text),
+    text.split("\n")[0].replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ").replace(/"/g, "'").replace(/\\/g, "/").slice(0, 120), "--body",
     "--tag", source, "--tag", kind, "--tag", "persona-default", "--author", "persona-default",
   ])
     && memq4InsideMemqGrammar(run)
@@ -33294,7 +33298,7 @@ async function caseMemq4_theDistillerWritesThroughPut(clock) {
   // A first line past 120 characters, so the description's cut is read, and
   // a second line the description leaves out.
   const text = `The operator keeps a pot of green tea by the keyboard and prefers it to coffee on every working day of the week, always ${"x".repeat(10)}\nSecond line.`;
-  const name = memq4Name("fact", text);
+  const name = memq4Name("fact", "default", text);
   const h = await memq4DistillHarness(clock, "memq4_distill", text, MEMQ4_WRITTEN);
   await memq4DistillTurn(h, "t-memq4-1");
   let puts = memq4Puts(h);
@@ -33331,14 +33335,31 @@ async function caseMemq4_theDistillerWritesThroughPut(clock) {
     tabPut && tabPut.argv[4] === "The operator's desk: tea, never coffee." && memq4InsideMemqGrammar(tabPut) && memq4PutShape(tabPut, tabbed, "distilled", "fact", MEMQ4_T0_DATE), tabPut && tabPut.argv);
   check("memq4 tab: the body keeps the text as written, tab included", tabPut && tabPut.argv[6].startsWith(`${tabbed}\n\n`), tabPut && tabPut.argv[6]);
 
-  // A text opening with `--` that memq refuses as usage: the fact is dropped.
+  // A first line memq would quote that holds a single quote, a double quote
+  // and a backslash, which memq.js descriptionScalar has no form for. The
+  // description carries a single quote for each double quote and a slash for
+  // the backslash, so the fact is written rather than refused.
+  const quoted = "The operator's build: run \"npm test\" in C:\\repo first";
+  const q = await memq4DistillHarness(clock, "memq4_quoted", quoted, MEMQ4_WRITTEN);
+  await memq4DistillTurn(q, "t-memq4-quoted");
+  const quotedPut = memq4Puts(q)[0];
+  check("memq4 quoted: the description holds no double quote and no backslash, inside memq's grammar",
+    quotedPut && quotedPut.argv[4] === "The operator's build: run 'npm test' in C:/repo first" && memq4InsideMemqGrammar(quotedPut)
+      && memq4PutShape(quotedPut, quoted, "distilled", "fact", MEMQ4_T0_DATE), quotedPut && quotedPut.argv);
+  check("memq4 quoted: the body keeps the text as written, quotes and backslash included",
+    quotedPut && quotedPut.argv[6].startsWith(`${quoted}\n\n`), quotedPut && quotedPut.argv[6]);
+
+  // A text opening with `--`, which memq's put reads as an unknown option and
+  // refuses with exit 1: the fact is dropped.
   const dashed = "--the operator prefers tea";
-  const u = await memq4DistillHarness(clock, "memq4_usage", dashed, { exitCode: 2, stdout: "", stderr: "\nmemq: usage: put <name> \"<description>\" [--body v]\nsecond usage line\n" });
+  const u = await memq4DistillHarness(clock, "memq4_usage", dashed, {
+    exitCode: 1, stdout: "", stderr: "\nmemq: unknown option --the operator prefers tea\nusage: memq log <key> pass|fail \"<summary>\" [--tag t]... [--detail \"...\"]\n",
+  });
   await memq4DistillTurn(u, "t-memq4-usage");
   const failed = getDecisions(u).filter((d) => d.action === "memory_write_failed");
   check("memq4 usage: the put was spawned once", memq4Puts(u).length === 1, u.processRuns.map((r) => r.argv));
   check("memq4 usage: one memory_write_failed carrying the first non-empty stderr line and not the second",
-    failed.length === 1 && failed[0].loop === "memory" && failed[0].detail.includes("memq: usage: put <name>") && !failed[0].detail.includes("second usage line"), failed);
+    failed.length === 1 && failed[0].loop === "memory" && failed[0].detail.includes("memq: unknown option --the operator prefers tea") && !failed[0].detail.includes("usage: memq log"), failed);
   check("memq4 usage: no remember and nothing written to the JSON",
     !getDecisions(u).some((d) => d.action === "remember") && getState(u).memory.length === 0, { memory: getState(u).memory });
 
@@ -33347,7 +33368,7 @@ async function caseMemq4_theDistillerWritesThroughPut(clock) {
   await memq4DistillTurn(r, "t-memq4-rejected");
   const rejectedFailed = getDecisions(r).filter((d) => d.action === "memory_write_failed");
   check("memq4 rejected: one memory_write_failed with a cause and nothing written to the JSON",
-    rejectedFailed.length === 1 && rejectedFailed[0].detail.length > `${memq4Name("fact", "The operator prefers tea.")}: `.length
+    rejectedFailed.length === 1 && rejectedFailed[0].detail.length > `${memq4Name("fact", "default", "The operator prefers tea.")}: `.length
       && !getDecisions(r).some((d) => d.action === "remember") && getState(r).memory.length === 0, rejectedFailed);
 }
 
@@ -33364,7 +33385,7 @@ async function caseMemq5_memoryAddWritesThroughPut(clock) {
     reg && /shared memory store/i.test(reg.description) && /returns the record's name/i.test(reg.description), reg && reg.description);
 
   const text = "The operator prefers short replies.";
-  const name = memq4Name("preference", text);
+  const name = memq4Name("preference", "default", text);
   const res = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text, kind: "preference", confidence: 0.9 });
   const puts = memq4Puts(h);
   check("memq5 written: a call passing confidence is answered, not refused", res && res.deny === undefined && typeof res.result === "string", res);
@@ -33380,7 +33401,7 @@ async function caseMemq5_memoryAddWritesThroughPut(clock) {
   const odd = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "The build runs on Tuesdays.", kind: "goal" });
   const oddPut = memq4Puts(h)[1];
   check("memq5 kind: a kind outside fact, preference and lesson is written as fact",
-    oddPut && memq4PutShape(oddPut, "The build runs on Tuesdays.", "worker", "fact", MEMQ4_T0_DATE) && odd.result.includes(memq4Name("fact", "The build runs on Tuesdays.")), { oddPut, odd });
+    oddPut && memq4PutShape(oddPut, "The build runs on Tuesdays.", "worker", "fact", MEMQ4_T0_DATE) && odd.result.includes(memq4Name("fact", "default", "The build runs on Tuesdays.")), { oddPut, odd });
 
   // The existing-name refusal answers with the existing record, not a deny.
   h.setProcessRun(memq4Exists(name));
@@ -33390,12 +33411,12 @@ async function caseMemq5_memoryAddWritesThroughPut(clock) {
     dup && dup.deny === undefined && typeof dup.result === "string" && dup.result.includes(name), dup);
   check("memq5 duplicate: one memory_duplicate decision", duplicates.length === 1 && duplicates[0].detail.startsWith(`${name}: `), duplicates);
 
-  // Any other failure is a deny carrying the reason.
-  h.setProcessRun({ exitCode: 3, stdout: "", stderr: "memq: the project tier is locked\n" });
+  // Any other exit 1, here the lock, is a deny carrying the reason.
+  h.setProcessRun(MEMQ4_LOCKED);
   const fail = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "Another fact.", kind: "fact" });
   const failed = getDecisions(h).filter((d) => d.action === "memory_write_failed");
-  check("memq5 failure: denied with the first stderr line", fail && typeof fail.deny === "string" && fail.deny.includes("memq: the project tier is locked"), fail);
-  check("memq5 failure: one memory_write_failed decision", failed.length === 1 && failed[0].detail.includes("memq: the project tier is locked"), failed);
+  check("memq5 failure: denied with the first stderr line", fail && typeof fail.deny === "string" && fail.deny.includes("memq: project store locked, nothing written"), fail);
+  check("memq5 failure: one memory_write_failed decision", failed.length === 1 && failed[0].detail.includes("memq: project store locked, nothing written"), failed);
   check("memq5: nothing entered the persona's JSON across all four calls", getState(h).memory.length === 0, getState(h).memory);
 
   // A non-owner is refused as before, and spawns nothing.
@@ -33406,6 +33427,27 @@ async function caseMemq5_memoryAddWritesThroughPut(clock) {
   const refused = await callTool(reader, { tool: "mcp__agentic-plugin__memory_add", text });
   check("memq5 non-owner: refused with the held deny text", refused && refused.deny === SHUTDOWN_HELD_DENY, refused);
   check("memq5 non-owner: no put was spawned", memq4Puts(reader).length === 0, reader.processRuns.map((r) => r.argv));
+
+  // Two personas in one launch directory writing the same text write two
+  // records, since memq refuses a name its project tier already holds
+  // whatever the tags, so a name without the persona would lose one.
+  const shared = "The operator reviews every pull request before it merges.";
+  const personaPuts = {};
+  for (const persona of ["alpha", "beta"]) {
+    clock.set(T0);
+    const p = await createTickHarness({ ...OPTS, caseName: `memq5_persona_${persona}`, persona });
+    await bank2SeedInstalled(p, bank2Installed());
+    p.setProcessRun(MEMQ4_WRITTEN);
+    const reply = await callTool(p, { tool: "mcp__agentic-plugin__memory_add", text: shared, kind: "fact" });
+    personaPuts[persona] = { reply, puts: memq4Puts(p).map((r) => r.argv) };
+  }
+  const alphaArgv = personaPuts.alpha.puts[0] || [];
+  const betaArgv = personaPuts.beta.puts[0] || [];
+  check("memq5 personas: the same text under alpha and beta derives two names, each carrying its persona",
+    alphaArgv[3] === memq4Name("fact", "alpha", shared) && betaArgv[3] === memq4Name("fact", "beta", shared) && alphaArgv[3] !== betaArgv[3]
+      && alphaArgv[3].startsWith("fact-alpha-") && betaArgv[3].startsWith("fact-beta-"), personaPuts);
+  check("memq5 personas: each put is tagged and signed by its own persona",
+    alphaArgv.includes("persona-alpha") && !alphaArgv.includes("persona-beta") && betaArgv.includes("persona-beta") && !betaArgv.includes("persona-alpha"), personaPuts);
 }
 
 // Legacy entries of each source, dated a day apart before T0.
@@ -33440,7 +33482,7 @@ async function caseMemq6_theDistillatesInTheJsonMoveOnce(clock) {
   const puts = memq4Puts(h);
   const seed = memq6Seed().filter((m) => m.source !== "self-review");
   check("memq6 moves: four puts, in store order", puts.length === 4
-    && puts.every((p, i) => p.argv[3] === memq4Name(seed[i].kind === "goal" ? "fact" : seed[i].kind, seed[i].text)), puts.map((p) => p.argv[3]));
+    && puts.every((p, i) => p.argv[3] === memq4Name(seed[i].kind === "goal" ? "fact" : seed[i].kind, "default", seed[i].text)), puts.map((p) => p.argv[3]));
   check("memq6 moves: each put carries its own source and held kind, dated by its createdAt",
     puts.length === 4 && seed.every((m, i) => memq4PutShape(puts[i], m.text, m.source, m.kind === "goal" ? "fact" : m.kind, new Date(m.createdAt).toISOString().slice(0, 10))), puts);
   const kept = getState(h).memory;
@@ -33459,19 +33501,21 @@ async function caseMemq6_theDistillatesInTheJsonMoveOnce(clock) {
 
   // A record the store already holds counts as present and leaves the JSON.
   clock.set(T0);
-  const presentName = memq4Name("preference", "The operator prefers short replies.");
+  const presentName = memq4Name("preference", "default", "The operator prefers short replies.");
   const p = await memq6Harness("memq6_present", memq6Seed(), processRunByPrefix([[["node", MEMQ1_SCRIPT, "put", presentName], memq4Exists(presentName)]], MEMQ4_WRITTEN));
   const presentDecision = getDecisions(p).filter((d) => d.action === "memory_migrated");
   check("memq6 present: one memory_migrated naming 3 moved, 1 present, 0 left",
     presentDecision.length === 1 && presentDecision[0].detail === "moved 3, present 1, left 0", presentDecision);
   check("memq6 present: the JSON keeps the two lessons only", getState(p).memory.length === 2 && getState(p).memory.every((m) => m.source === "self-review"), getState(p).memory.map((m) => m.id));
 
-  // A failure leaves its entry for the next start, which retries it.
+  // An exit 1 that is not the existing-name refusal, here the lock, leaves its
+  // entry for the next start, which retries it.
   clock.set(T0);
-  const failName = memq4Name("fact", "The build runs on Tuesdays.");
-  const f = await memq6Harness("memq6_left", memq6Seed(), processRunByPrefix([[["node", MEMQ1_SCRIPT, "put", failName], { exitCode: 3, stdout: "", stderr: "memq: the project tier is locked\n" }]], MEMQ4_WRITTEN));
+  const failName = memq4Name("fact", "default", "The build runs on Tuesdays.");
+  const f = await memq6Harness("memq6_left", memq6Seed(), processRunByPrefix([[["node", MEMQ1_SCRIPT, "put", failName], MEMQ4_LOCKED]], MEMQ4_WRITTEN));
   const leftDecision = getDecisions(f).filter((d) => d.action === "memory_migrated");
-  check("memq6 left: one memory_migrated naming 3 moved, 0 present, 1 left",
+  check("memq6 left: the locked put was spawned under its name", memq4Puts(f).some((r) => r.argv[3] === failName), memq4Puts(f).map((r) => r.argv[3]));
+  check("memq6 left: one memory_migrated naming 3 moved, 0 present, 1 left, the lock counting as left and never present",
     leftDecision.length === 1 && leftDecision[0].detail === "moved 3, present 0, left 1", leftDecision);
   check("memq6 left: the failed entry stays in the JSON beside the two lessons",
     getState(f).memory.map((m) => m.id).sort().join(",") === "m-s1,m-s2,m-w1", getState(f).memory.map((m) => m.id));
