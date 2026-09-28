@@ -97,7 +97,7 @@ Acceptance:
 - The ledger caps at fifty by dropping the oldest.
 - `.kit/injection-duplicate-test.mjs` and the ledger baseline pass over the new block.
 
-Files in scope: `hooks/index.ts`, `hooks/agent-state.ts`, `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs`, `.kit/injection-ledger.mjs`, `.kit/injection-ledger.json`, `.kit/injection-duplicate-test.mjs`, `.kit/fixtures/`.
+Files in scope: `hooks/index.ts`, `hooks/agent-state.ts`, `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs`, `.kit/injection-ledger.mjs`, `.kit/injection-ledger.json`, `.kit/injection-duplicate-test.mjs`, `.kit/fixtures/`, `.kit/task-store-unit-test.mjs`.
 Tests: lock that nothing is injected on any failure, since an unjudged or stale list injected under the judged block's sentence is the silent wrong answer the design refuses.
 
 ### 4. The applied ask at goal close, and the compaction fold

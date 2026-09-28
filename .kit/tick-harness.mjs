@@ -743,7 +743,7 @@ function makeGoalNode(overrides = {}) {
 function makeState(opts = {}) {
   const now = opts.now || 1_700_000_000_000;
   const hasActiveLeaf = opts.hasActiveLeaf !== false;
-  const version = opts.version || 6;
+  const version = opts.version || 7;
   let goals = [];
   let activeGoalId = null;
   // BM2: allow custom goals array (for testing planner with root-only state)
@@ -773,6 +773,8 @@ function makeState(opts = {}) {
     ...(version >= 5 || opts.tasks ? { tasks: opts.tasks || [] } : {}),
     // The same rule for the turn records, which arrived with version 6.
     ...(version >= 6 || opts.turnRecords ? { turnRecords: opts.turnRecords || [] } : {}),
+    // And for the shown records, which arrived with version 7.
+    ...(version >= 7 || opts.shownMemories ? { shownMemories: opts.shownMemories || [] } : {}),
     monitor: {
       sessionStart: now,
       turnCount: 0,

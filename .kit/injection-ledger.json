@@ -298,8 +298,8 @@
     {
       "name": "MEMORY_BLOCK",
       "file": "hooks/index.ts",
-      "chars": 114,
-      "words": 15
+      "chars": 111,
+      "words": 18
     },
     {
       "name": "TASK_LIST_BLOCK",
@@ -394,8 +394,8 @@
     {
       "name": "memory_add_description",
       "file": "hooks/index.ts",
-      "chars": 243,
-      "words": 37
+      "chars": 220,
+      "words": 33
     },
     {
       "name": "agentic_say_description",
