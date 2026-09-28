@@ -4028,6 +4028,7 @@ async function main() {
     await caseMemoryGate_everyFailureFallsBackToHaikuWithNoShadowCall(clock);
     await caseMemoryGate_theQuestionNotLiveLeavesTheSiteAsToday(clock);
     await caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock);
+    await caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(clock);
     await caseSeamEachSiteWritesItsCallAndAnswerLines(clock);
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
@@ -23754,6 +23755,43 @@ async function caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock) {
     check(`memory gate task notification in the body (${name}): the entry was stored`,
       getState(h).memory.some((m) => m.text === MEMORY_GATE_DISTILLED), getState(h).memory.map((m) => m.text));
   }
+}
+
+// The task-notification skip reads the turn's own opening, not the last
+// prompt the hook saw. A delivery turn the plugin submits fires no prompt
+// hook, so the prompt it would read is the notification turn's before it.
+async function caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(clock) {
+  console.log("\n=== Memory gate: a delivery turn after a task notification turn is classified, not skipped ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("memgate_tasknote_then_delivery", now, "writer-mgtn",
+    { jevLive: [Catalog.MEMORY_KIND], stateOpts: { hasActiveLeaf: false } });
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setClassifyValue(memoryGateClassify);
+  h.setCompleteValue(MEMORY_GATE_DISTILLED);
+  h.setHttpResponse(jevMemoryAnswer(0.5));
+  const NOTIFICATION = "<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>\n</task-notification>\nThe build passed.";
+  await openPromptTurn(h, { originKind: null, text: NOTIFICATION, turnId: "t-mgtn-note" });
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-mgtn-note", answer: "The build passed; I noted it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  check("memory gate delivery after notification: the notification turn itself was skipped (setup sanity)",
+    memoryGateDecisions(h).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(h));
+
+  const tick = fireTick(h);
+  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith(readerLabel(id))));
+  check("memory gate delivery after notification: the delivery was submitted (setup sanity)", queued, h.promptSubmits);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-mgtn-delivery" }, async () => ({ result: "ok" }));
+  check("memory gate delivery after notification: the delivery's own turn took the stamp (setup sanity)",
+    readStoreRecord(h, key)?.turnId === "t-mgtn-delivery", readStoreRecord(h, key));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-mgtn-delivery", answer: "Noted, you prefer tea.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  await tick;
+  check("memory gate delivery after notification: no second memory_skipped_task_notification decision",
+    memoryGateDecisions(h).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(h));
+  const site = memorySiteCalls(h);
+  check("memory gate delivery after notification: the delivery turn was classified by Haiku and Jev was asked once",
+    site.classify.length === 1 && site.requests.length === 1,
+    { classify: site.classify.length, requests: site.requests.length });
 }
 
 async function caseSeamEachSiteWritesItsCallAndAnswerLines(clock) {

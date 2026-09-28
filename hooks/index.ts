@@ -9983,13 +9983,17 @@ export const register: Register = async (on, options) => {
     // is not a user preference and must not be distilled into a memory.
     if (!skipped && !wasNudged) {
       try {
-        if (currentPrompt.trimStart().startsWith("<task-notification>")) {
+        if (wasUnaccounted && currentPrompt.trimStart().startsWith("<task-notification>")) {
           // A turn opened by the harness's notification block for a finished
           // background task or subagent makes no memory call at all: no seam
           // call, no classify and no distill. What such an exchange holds is
           // the persona's own report rather than anything the operator stated.
           // A prompt carrying the block anywhere but its opening is an
-          // operator's message and is classified as any other.
+          // operator's message and is classified as any other. currentPrompt
+          // is set only by the prompt hook, which the plugin's own submits
+          // never fire, so it is this turn's opening only on an unaccounted
+          // turn; a delivery, proposal or plugin turn after a notification
+          // turn would otherwise read the notification and be skipped.
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "memory",

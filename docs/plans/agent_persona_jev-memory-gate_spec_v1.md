@@ -217,3 +217,27 @@ Delta: 2026-09-27, this box, the worktree at 5ca953b plus the close-pass edit.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 3 - 2026-09-27
+
+Not a Chapter. The finishing pass is in its fix path, so this entry carries no `Completed:` line.
+
+**Base ref.** `d37cbd3`, the merge-base with `origin/main` after the trunk merge `f0750ff` brought in the channel log retention work. The changeset against it is exactly the union of the three sections' `Files in scope:` lines plus this plan doc.
+
+**Step 1, QA.** PASS, from the qa-verifier and re-read from the run's own marker and logs. Whole gate `.kit/scratch/jev-gate/finishing/whole-gate.sh` at `f0750ff`: 29 of 30 suites exit 0; `supervisor-natural-exit-parallel` exit 1, 221 OK / 3 FAIL, the three `root_complete` pins, identical to the retention plan's trunk reading. Contention lane `bash .kit/live-all.sh` exit 10, refusing beside STEWARD's live claim. The live suites are deferred under the gate policy of 2026-09-18 to `docs/plans/agent_persona_deferred-gate-run_v1.md`.
+
+**Steps 2 and 3, one wave at fable, Workflow, effort high.** Performance CLEAR, security CLEAR with the threat model present, adversarial CHANGES_REQUIRED with two Majors.
+
+Add-decision lines for the owed Majors:
+- Fix round 1 (adversarial Major, spec-traceable to the 2026-09-26 Intent ruling, "a turn opened by a task-notification prompt"): the skip also requires `wasUnaccounted`, since `currentPrompt` is set only by the prompt hook and a plugin-submitted delivery, proposal or plugin turn after a notification turn read the notification and was skipped with a decision saying it opened with one; serves the ruling's "a turn opened by"; adds no mechanism, one condition and a comment; about 5 code lines and 38 test lines; not doing it skips the memory step on every plugin-delivered turn that follows a subagent report, and logs a false decision for each. Red first: the new tick case failed its two claims with its three setup checks green, then passed.
+- Fix round 1 (adversarial Major, fix-introduced by section 2's round 1 helper): the settings suite's `inspect` prints the floor through `JSON.stringify`, so a string `"85"` no longer passes a leg written for the number the plugin requires; serves the Goal's "tunes it per persona in fleet.json"; adds no mechanism; 4 test lines; not doing it leaves a helper or emitter that wrote the floor as a string green on every suite while the plugin silently read 90. Proven both ways: both writers mutated to write a string turned the three floor legs red, and the restored file matched its copy by `cmp`.
+
+Advisory dispositions:
+- Performance Minor, the four memory decisions enter the self-review window: deferred to `docs/backlog.md`, since `hooks/self-review.ts` is outside this plan's files and which decisions the lesson pass reads is its own tradeoff.
+- Performance Minor, the pre-race awaits before the live timeout: no fix owed here, already `docs/backlog.md`'s item on the seam's key read.
+- Performance Minor, a fifth node spawn on the provided-settings launch path: refused, launch-time only and under one process per setting.
+- Security Minor, the notification skip keys on text the sender controls: refused, the text is the harness's own block and a forged one only costs its sender a memory.
+
+**Gate after the fix.** controller-tick-test 5758 OK / 0 FAIL, exit 0; settings-plugin-key-test 226 OK / 0 FAIL, exit 0; tsc exit 0; check-loader-rule exit 0.
+
+**Next action.** Round 2, the adversarial lens over the fix delta at the writer's tier, beside step 4's goal read; then the Minor pass, the documentation curator, the final Chapter and the pull request.

@@ -61,8 +61,10 @@ console.log("ROSTER_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.fleetRoster !==
 console.log("ROSTER_DEV=" + (dev && dev.fleetRoster !== undefined ? dev.fleetRoster : "") + ";");
 console.log("ROSTER_INSTALLED=" + (inst && inst.fleetRoster !== undefined ? inst.fleetRoster : "") + ";");
 console.log("TICK_DEV=" + (dev ? dev.controllerTickMs : "") + ";");
-console.log("MGDP_DEV=" + (dev ? dev.memoryGateDiscardPercent : "") + ";");
-console.log("MGDP_INSTALLED=" + (inst ? inst.memoryGateDiscardPercent : "") + ";");
+// The floor prints through JSON.stringify so its type shows: the plugin reads
+// only a number, and a string "85" would print quoted and match no leg.
+console.log("MGDP_DEV=" + (dev ? JSON.stringify(dev.memoryGateDiscardPercent) : "") + ";");
+console.log("MGDP_INSTALLED=" + (inst ? JSON.stringify(inst.memoryGateDiscardPercent) : "") + ";");
 // jevMode has no emitter default either, so it takes the same three-state
 // reading: an absent key and a key written empty are different states, and
 // an empty one is a present non-shadow value that would disable the seam on
