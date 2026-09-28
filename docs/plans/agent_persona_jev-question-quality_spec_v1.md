@@ -152,3 +152,32 @@ Acceptance: the README states each surviving question's version, state, options 
 - `docs/archive/agent_persona_decision-seam_v1.md`: the seam whose questions this plan re-poses.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-28
+
+Section 1 is in review round 2; no other section has started. The status header changed from Ready to In Progress at c4d0cca. The worktree is D:/agent_persona-question-quality on branch plan/jev-question-quality.
+
+Live dispatches: one adversarial reviewer at Opus, high effort, through Workflow (run wf_d968187e-5c4). It was asked to review section 1 as of a930dac, with the round-1 fix delta c4d0cca..a930dac in focus. The round is owed because the fix changed how the labeller child is spawned.
+
+Round 1 (reviewers at Fable: adversarial, blind, security, performance) returned 0 Critical and 5 correctness Majors. The two lenses reported the wrong-turn join twice, and the blind lens alone reported positional ids and a tool-activity divergence. There was 1 advisory Major, a security header sentence claiming more isolation than the child has. All were fixed at a930dac. The cwd half of the tool-activity finding was refuted: the hook's plan flags use namesPlanDocument (hooks/index.ts 2478-2479), and planPathUnderCwd serves plan promotion alone at 1454. One Minor was upgraded: labellers no longer see outcome lines. Six Minors were fixed, and four were left with reasons (early labels-a write, split retry, concurrent labellers, persona case fold). The add-decision lines, Minor list and advisory list are under .kit/scratch/jev-question-quality/.
+
+Gate baseline at a930dac, clean worktree: node .kit/jev-gold-unit-test.mjs, 108 OK / 0 FAIL, exit 0.
+
+Real outputs under .kit/jev-gold/out/ (gitignored). The journal held 6,685 call lines when sampled on 2026-09-28.
+- turn-score: 175 admitted and 13 dropped as no_transcript_turn; 150 sampled. Kappa 0.847 over 150, with 146 agreeing. Gold is 150 records: 146 agreed, 4 adjudicated, 0 three-way splits, 2 unclear. Both labellers used on-goal on about 90 percent of records and never used complete.
+- block-owner: 1,001 admitted and 99 dropped as no_transcript_turn; 150 sampled, 60 of them the v1-operator oversample. Kappa 0.8005 over 150, with 140 agreeing. Not yet adjudicated.
+- controller-decision: 281 admitted, 150 sampled, not labelled.
+
+Rulings and facts since the plan started:
+- The wider text cut to TypeSafe (Assumptions, route c) is answered by the operator-tier record typesafe-trusted-for-conversation-data-and-code, decided 2026-09-27: conversation text may go to TypeSafe with no further ask.
+- The plugin scores a subagent's completion as a turn. Nothing on the scorer or plan-health path checks agentId (hooks/index.ts 9311-9313, 9582, 9970). This is section 4's to weigh.
+
+Open with the operator, each asked on the relay thread on 2026-09-28:
+- Item 0's four-answer correction, which holds the controller labelling.
+- Block-owner operator yield. Only v1-operator answers earn an operator label, 22 of 68, and dev holds 113 such records, about 36 expected gold against section 5's floor of 40. The ask recommends oversampling all 113 and lowering the floor to 30.
+
+Next actions:
+- On the review's return: adjudicate it, then close the Minor list.
+- On the item 0 answer: label and adjudicate controller-decision.
+- On the block-owner answer: re-sample, re-label and adjudicate block-owner, or adjudicate as is.
+- Then write the section 1 Chapter and start section 2.
