@@ -51,3 +51,12 @@
 !/fixtures/restart-recap/transcript-older.jsonl
 !/fixtures/restart-recap/transcript-other.jsonl
 !/fixtures/restart-recap/transcript-prev.jsonl
+!/jev-gold-unit-test.mjs
+!/jev-gold/
+!/jev-gold/sample.mjs
+!/jev-gold/label.mjs
+!/jev-gold/adjudicate.mjs
+!/jev-gold/rubrics/
+!/jev-gold/rubrics/*.md
+!/fixtures/jev-gold/
+!/fixtures/jev-gold/**

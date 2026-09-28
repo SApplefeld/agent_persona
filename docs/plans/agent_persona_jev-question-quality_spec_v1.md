@@ -1,6 +1,6 @@
 # Every weak Jev question gets a gold sample, a stated bar, and a re-posed question or a retirement
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-26
 

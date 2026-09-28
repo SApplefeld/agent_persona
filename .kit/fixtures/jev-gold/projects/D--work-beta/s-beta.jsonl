@@ -1,0 +1,4 @@
+{"sessionId":"s-beta","isSidechain":false,"type":"user","timestamp":"2026-01-01T11:00:00.000Z","message":{"role":"user","content":"<channel source=\"plugin:relay:channel-relay\">Please fix the footer</channel>"},"isMeta":true,"origin":{"kind":"channel"}}
+{"sessionId":"s-beta","isSidechain":false,"type":"assistant","timestamp":"2026-01-01T11:00:30.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Write","input":{"file_path":"footer.md"}}]}}
+{"sessionId":"s-beta","isSidechain":false,"type":"user","timestamp":"2026-01-01T11:00:31.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"ok"}]}}
+{"sessionId":"s-beta","isSidechain":false,"type":"assistant","timestamp":"2026-01-01T11:01:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Fixed the footer."}]}}
