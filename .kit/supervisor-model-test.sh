@@ -175,7 +175,7 @@ refused_by "controllerTickMs 'abc' is refused at its own call site" "ERROR: cont
 # rules (non-digit, below the 50 minimum) and by the upper bound this call
 # site adds on top, since positive_number has no maximum of its own.
 refused_by "memoryGateDiscardPercent 'abc' is refused at its own call site" "ERROR: memoryGateDiscardPercent 'abc'" memoryGateDiscardPercent=abc
-refused_by "memoryGateDiscardPercent '0' is refused by positive_number's leading-zero rule" "ERROR: memoryGateDiscardPercent '0'" memoryGateDiscardPercent=0
+refused_by "memoryGateDiscardPercent '0' is refused at its own call site" "ERROR: memoryGateDiscardPercent '0'" memoryGateDiscardPercent=0
 refused_by "memoryGateDiscardPercent '49' is refused by the 50 minimum" "ERROR: memoryGateDiscardPercent '49'" memoryGateDiscardPercent=49
 refused_by "memoryGateDiscardPercent '101' is refused by the upper bound" "ERROR: memoryGateDiscardPercent '101'" memoryGateDiscardPercent=101
 accepted "memoryGateDiscardPercent '50' passes the startup checks (the lower edge)" "memoryGateDiscardPercent=50"

@@ -46,7 +46,7 @@ let scenarioCount = 0;
 // so a value that reaches the stub came from the env file or the roster and nowhere else.
 function childEnv(extra = {}) {
   const env = { ...process.env };
-  for (const k of ['KEEPER_BASH_EXE', 'KEEPER_SECRET', 'MODEL', 'EFFORT', 'controllerTickMs', 'channelLogRetentionDays', 'COORDINATOR_PERSONA', 'APPDATA_PROBE']) delete env[k];
+  for (const k of ['KEEPER_BASH_EXE', 'KEEPER_SECRET', 'MODEL', 'EFFORT', 'controllerTickMs', 'memoryGateDiscardPercent', 'channelLogRetentionDays', 'COORDINATOR_PERSONA', 'APPDATA_PROBE']) delete env[k];
   return { ...env, ...extra };
 }
 

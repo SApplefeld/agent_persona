@@ -240,4 +240,15 @@ Advisory dispositions:
 
 **Gate after the fix.** controller-tick-test 5758 OK / 0 FAIL, exit 0; settings-plugin-key-test 226 OK / 0 FAIL, exit 0; tsc exit 0; check-loader-rule exit 0.
 
-**Next action.** Round 2, the adversarial lens over the fix delta at the writer's tier, beside step 4's goal read; then the Minor pass, the documentation curator, the final Chapter and the pull request.
+**Round 2, adversarial at opus, Workflow, effort high, over `f0750ff..973b80b`.** CHANGES_REQUIRED. Two Majors, both confirmed red before the fix:
+- Fix round 2 (adversarial Major, fix-introduced by round 1): `wasUnaccounted` reads `currentTurnKind`, which every completion resets, a subagent's included, so a delivery turn that ran a subagent after a notification turn was still skipped and the subagent's report was classified instead. The skip now reads `askedTextAtDelete`, the text the turn opened with, recorded at `turn.start` and already the turn-disposition question's source; serves the 2026-09-26 ruling's "a turn opened by"; adds no mechanism, one predicate and a comment; about 5 code lines and 20 test lines; not doing it leaves round 1's defect standing on any delivery turn that dispatches a subagent.
+- Fix round 2 (adversarial Major, spec-traceable): a continuation after a notification turn opens with empty text and was skipped with a decision saying it opened with a notification. The same predicate classifies it.
+- Minors: the new case's header comment, rewritten to the mechanism; the memory state's "User asked:" line quoting the last external prompt on a plugin turn, deferred to `docs/backlog.md` as older than this plan and outside its Goal.
+
+**Step 4, goal read, scope-adjudicator at fable, Agent tool.** RULED. ASKED-BUT-UNBUILT empty. BUILT-BUT-UNASKED, five, each accept-and-declare: the 50-to-100 range enforced in the supervisor and the plugin with a `setting_clamped` decision; the provided-settings-file helper; `liveAsk`'s widened return; the wrapper's own `rejected` reason; the one-in-twenty threshold in the architecture failure table, whose figure comes from the plan's Operator Verification rather than the Goal.
+
+**Minor pass, applied beside round 2's fix.** `docs/security-model.md` names the floor helper as a settings writer and the floor as a key the plugin reads; README's catalog and tick coverage lines name `memory-kind` and the live path's returned reason and list the memory gate cases; the architecture keeper walkthrough names `memoryGateDiscardPercent`; the keeper test scrubs it from the inherited environment; the supervisor test's zero leg is retitled. Four `docs/backlog.md` entries: this plan's operator checks, the unmatched goal nudge reaching the memory step, the memory decisions in the self-review window, and the stale "User asked:" line.
+
+**Gate after round 2's fix.** controller-tick-test 5760 OK / 0 FAIL, exit 0; tsc exit 0; check-loader-rule exit 0.
+
+**Next action.** Round 3, the adversarial lens over round 2's fix and the Minor pass; then the documentation curator, the final Chapter and the pull request.
