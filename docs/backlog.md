@@ -1,5 +1,16 @@
 # Backlog
 
+## Plugins-only public distribution: this repo's marketplace entry ships docs/ and .kit/ (2026-09-28, operator-decided, routed by the coordinator)
+
+The full initiative (one public marketplace repo for all three of Scott's plugins, each source repo
+going private, a tag-triggered publish job per repo with an allowlist and a leak gate) is recorded in
+`claude-kit`'s `docs/backlog.md` under the same heading text, dated 2026-09-28. This repo's own
+prerequisite: the marketplace entry here uses source `.` (the repo root is the plugin), so `docs/`
+and `.kit/` would ship inside a public snapshot. Move the plugin into a subfolder, or have the
+allowlist export only its runtime paths — either way, keep the operator's own live supervisor install
+working throughout, since this is their runtime. Needs a cross-repo spec before implementation; not
+this repo's alone to design.
+
 ## Operator checks owed by the persona memory port plan (parked 2026-09-28)
 
 Two items only the operator can settle, once the persona memory port pull request merges and the plugin cache updates. The plan is at `docs/archive/agent_persona_persona-memory-port_spec_v1.md`, under its Operator Verification section and its final Chapter. First, relaunch one persona and ask it on its channel a question its store should answer, then read the injected memory block in the transcript. A block naming another persona's record reopens the kit plan's section 1, and no block with the store up and a judge configured reopens this plan's section 3. Second, close a goal on that persona and confirm the `[MEMORY CHECK]` turn appears and its reply stamps: `memq unstamped` run in that persona's launch directory no longer lists the named records.
@@ -27,7 +38,6 @@ The state the memory step sends to Haiku and Jev quotes `currentPrompt` as "User
 ## Operator checks owed by the channel-log-retention plan (parked 2026-09-27)
 
 Two items only the operator can settle, once the channel-log-retention pull request merges. The plan is at `docs/archive/agent_persona_channel-log-retention_spec_v1.md`, under its final Chapter's Operator Verification. First, restart the fleet and open `supervisor.log` in the run directory of a persona whose work directory holds the frozen 4 MB `.agentic-channel.jsonl` (`D:\discord-channels`, `D:\agent_persona`, `D:\personas\ASSISTANT`). Once that file is older than 14 days, one `CHANNEL-LOG SWEEP: removed <n> file(s)` line appears and the file is gone, and a persona whose roster entry sets `channelLogRetentionDays` launches with no `ERROR:` line naming it. What reopens the work: a missing line, a surviving old file, or a removed live segment. Second, decide whether the sweep's log line should name each removed file or only count them, as it does now. The recommendation is the count; naming the files is a one-line change in `sweep_channel_log_segments` in `bin/supervise.sh`.
-
 ## Operator checks owed by the upgrade check and restart recap plan (parked 2026-09-27)
 
 Five steps only the operator can take, in this order. The plan is at `docs/archive/agent_persona_upgrade-check-and-restart-recap_spec_v1.md`, under its Operator Verification and its last Chapter.
