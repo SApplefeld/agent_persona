@@ -2679,20 +2679,26 @@ async function bankCompactionBoundary(dp: any, turnKind: string): Promise<void> 
 // a store host that is down.
 const MEMQ_STAND_DOWN_MS = 5 * 60_000;
 
+// How far short of its bound a rejection may land and still read as a
+// timeout. A host timer can fire a little early against Date.now(), and a
+// command that cannot start fails within milliseconds, far below any bound.
+const MEMQ_TIMEOUT_SLACK_MS = 100;
+
 export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: string };
 
 // Runs the kit's memq command with `argv` for this session, as
 // node <installPath>/scripts/memq.js ...argv, in the launch directory the
 // first session.start captured rather than wherever $.session.cwd() stands
 // now, so memq resolves the launch directory's store even after a bare cd in
-// a tool call and a plugin reload after it. The child takes the session id in its environment. Resolves the
-// child's result, a non-zero exit included, for the caller to read, or null
-// where the command did not run to an exit. Nothing throws.
+// a tool call and a plugin reload after it. The child takes the session id in
+// its environment. Resolves the child's result, a non-zero exit included, for
+// the caller to read, or null where the command did not run to an exit.
+// Nothing throws.
 //
-// A null has one of two causes. `timeout` is a run that rejected at or after
-// `timeoutMs` had passed since the spawn, since $.process.run rejects without
-// saying why, so a start that itself takes longer than the bound also reads as
-// a timeout. `start` is every other rejection, and also no session id, no
+// A null has one of two causes. `timeout` is a run that rejected once
+// `timeoutMs`, less MEMQ_TIMEOUT_SLACK_MS, had passed since the spawn, since
+// $.process.run's contract gives no cause for a rejection, so a start that
+// itself takes that long also reads as a timeout. `start` is every other rejection, and also no session id, no
 // launch directory or no located kit install, which spawn nothing. Each cause
 // logs one memq_spawn_failed decision per UTC day, carrying the first line of
 // the reason. The verb decides read or write, so no caller can mislabel one: a
@@ -2739,7 +2745,7 @@ export async function kitMemq(
     });
   } catch (err) {
     const reason = (String(err).split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim();
-    return failed(Date.now() - startedAt >= timeoutMs ? "timeout" : "start", reason);
+    return failed(Date.now() - startedAt >= timeoutMs - MEMQ_TIMEOUT_SLACK_MS ? "timeout" : "start", reason);
   }
   return {
     exitCode: res && typeof res.exitCode === "number" ? res.exitCode : null,

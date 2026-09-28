@@ -686,10 +686,12 @@ function processRunRejects(message = "spawn node ENOENT") {
 
 // A run that rejects once its timeoutMs has passed on the stubbed clock, the
 // shape of a command still running at its bound. `clock` is stubDateNow's.
-function processRunTimesOut(clock) {
+// `earlyMs` lands the rejection that many milliseconds before the bound, the
+// way a host timer can fire a little early against Date.now().
+function processRunTimesOut(clock, { earlyMs = 0 } = {}) {
   return (argv, init) => {
     const bound = init && typeof init.timeoutMs === "number" ? init.timeoutMs : 0;
-    clock.advance(bound);
+    clock.advance(bound - earlyMs);
     throw new Error(`process timed out after ${bound} ms`);
   };
 }

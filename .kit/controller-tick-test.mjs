@@ -33133,11 +33133,11 @@ async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
   check("memq3: a write inside the window spawns and resolves its result",
     h.processRuns.length === runs + 1 && JSON.stringify(write) === JSON.stringify(MEMQ1_OK) && (h.processRuns[runs] || {}).argv?.[2] === "put", { write, runs: h.processRuns.length - runs });
 
-  // The verb, not a caller's label, decides read or write: a touch labelled a
-  // read by its caller still spawns inside the window.
+  // The verb alone decides read or write: a touch is a write, so it spawns
+  // inside the window, and an extra field a caller passes changes nothing.
   runs = h.processRuns.length;
   await h.mod.kitMemq(h.fake, ["touch", "fact-abc", "--applied"], { timeoutMs: 5000, purpose: "read" });
-  check("memq3: a touch inside the window spawns whatever label its caller passes",
+  check("memq3: a touch inside the window is a write and spawns, whatever extra field a caller passes",
     h.processRuns.length === runs + 1 && (h.processRuns[runs] || {}).argv?.[2] === "touch", h.processRuns.length - runs);
 
   runs = h.processRuns.length;
@@ -33148,6 +33148,21 @@ async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
   const after = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
   check("memq3: the first read after the window spawns again and resolves its result",
     h.processRuns.length === runs + 1 && JSON.stringify(after) === JSON.stringify(MEMQ1_OK) && (h.processRuns[runs] || {}).argv?.[2] === "judged", { after, runs: h.processRuns.length - runs });
+
+  // A host timer can fire a little before the bound on the plugin's clock,
+  // and that rejection is still a timeout that stands reads down.
+  clock.set(T0);
+  const e = await memq1Harness("memq3_early_timeout");
+  e.setProcessRun(processRunTimesOut(clock, { earlyMs: 1 }));
+  await e.mod.kitMemq(e.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const earlyFailures = await memq1Failures(e);
+  e.setProcessRun(MEMQ1_OK);
+  const eRuns = e.processRuns.length;
+  const earlyAfter = await e.mod.kitMemq(e.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  check("memq3: a read rejected a millisecond short of its bound is cause timeout",
+    earlyFailures.length === 1 && /^cause timeout; /.test(earlyFailures[0].detail), earlyFailures);
+  check("memq3: that early timeout stands the next read down",
+    earlyAfter === null && e.processRuns.length === eRuns, { earlyAfter, runs: e.processRuns.length - eRuns });
 
   // A write's timeout arms nothing, so a read straight after it spawns.
   clock.set(T0);
