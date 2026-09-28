@@ -2783,10 +2783,12 @@ type MemoryWriteOutcome =
   | { outcome: "failed"; name: string; reason: string; ran: boolean };
 
 // Writes `text` as one record in the kit's memory store through memq put,
-// tagged with its source, its kind and this persona, and authored by the
-// persona. The name is the kind and the base-36 fnv1a hash of the text
-// lowercased and trimmed. The description is the text's first line cut to
-// 120 characters. The body is the text, a blank line, and one provenance line
+// tagged with its source, its kind and this persona, with the author
+// persona-<name>, since memq's author grammar is the record-name charset and
+// refuses a colon. The name is the kind and the base-36 fnv1a hash of the text
+// lowercased and trimmed. The description is the text's first line with each
+// control character a space, since memq refuses one there, cut to 120
+// characters. The body is the text, a blank line, and one provenance line
 // naming the persona, the source, this session and the UTC date of
 // `createdAt`. Logs nothing itself: kitMemq logs a spawn that failed, and
 // each caller logs the outcome its own way.
@@ -2797,7 +2799,7 @@ async function writeMemoryRecord(
 ): Promise<MemoryWriteOutcome> {
   const heldKind = memqKindOf(kind);
   const name = `${heldKind}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
-  const description = text.split(LINE_TERMINATOR)[0].slice(0, 120);
+  const description = text.split(LINE_TERMINATOR)[0].replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ").slice(0, 120);
   const date = new Date(Number.isFinite(createdAt) ? createdAt : Date.now()).toISOString().slice(0, 10);
   const body = `${text}\n\nWritten by persona ${sess.persona} from source ${source} in session ${sess.mySessionId} on ${date}.`;
   const res = await kitMemq(dp, [
@@ -2806,7 +2808,7 @@ async function writeMemoryRecord(
     "--tag", source,
     "--tag", heldKind,
     "--tag", "persona-" + sess.persona,
-    "--author", "persona:" + sess.persona,
+    "--author", "persona-" + sess.persona,
   ], { timeoutMs: MEMQ_WRITE_TIMEOUT_MS });
   if (res === null) return { outcome: "failed", name, reason: "memq did not run to an exit", ran: false };
   if (res.exitCode === 0) return { outcome: "written", name };

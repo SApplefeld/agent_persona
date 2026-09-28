@@ -33240,6 +33240,23 @@ function memq4Puts(h) {
   return h.processRuns.filter((r) => Array.isArray(r.argv) && r.argv[0] === "node" && r.argv[1] === MEMQ1_SCRIPT && r.argv[2] === "put");
 }
 
+// Whether one put's argv sits inside the grammar the installed memq's put
+// checks before it writes anything: the author and every tag take the
+// record-name charset, a tag at most 40 characters and the author at most 80
+// (memq.js isAuthorValue, isRecordTag, TAG_CAP and NAME_CAP), and the
+// description holds no control character (memq.js cmdPut). A value outside it
+// is a usage exit, so a put the stub answers 0 would fail against memq itself.
+const MEMQ4_NAME_CHARSET = /^[\w.-]+$/;
+function memq4InsideMemqGrammar(run) {
+  const argv = run && Array.isArray(run.argv) ? run.argv : [];
+  const valuesOf = (flag) => argv.flatMap((a, i) => (a === flag && i + 1 < argv.length ? [argv[i + 1]] : []));
+  const tags = valuesOf("--tag");
+  const authors = valuesOf("--author");
+  return typeof argv[4] === "string" && !/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/.test(argv[4])
+    && tags.length > 0 && tags.every((t) => t.length <= 40 && MEMQ4_NAME_CHARSET.test(t))
+    && authors.length === 1 && authors[0].length <= 80 && MEMQ4_NAME_CHARSET.test(authors[0]);
+}
+
 // Whether one put's argv is exactly the Approach's, for `text` under
 // `source` and `kind`, with the body read as the text, a blank line and one
 // provenance line naming the persona, the source, the session id and `date`.
@@ -33248,9 +33265,10 @@ function memq4PutShape(run, text, source, kind, date) {
   const body = typeof argv[6] === "string" ? argv[6] : "";
   const provenance = body.startsWith(`${text}\n\n`) ? body.slice(text.length + 2) : null;
   return JSON.stringify([...argv.slice(0, 6), ...argv.slice(7)]) === JSON.stringify([
-    "node", MEMQ1_SCRIPT, "put", memq4Name(kind, text), text.split("\n")[0].slice(0, 120), "--body",
-    "--tag", source, "--tag", kind, "--tag", "persona-default", "--author", "persona:default",
+    "node", MEMQ1_SCRIPT, "put", memq4Name(kind, text), text.split("\n")[0].replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ").slice(0, 120), "--body",
+    "--tag", source, "--tag", kind, "--tag", "persona-default", "--author", "persona-default",
   ])
+    && memq4InsideMemqGrammar(run)
     && provenance !== null && provenance.length > 0 && !/[\r\n]/.test(provenance)
     && provenance.includes("default") && provenance.includes(source) && provenance.includes(SESSION_ID) && provenance.includes(date)
     && run.init && run.init.timeoutMs === 5000;
@@ -33302,6 +33320,16 @@ async function caseMemq4_theDistillerWritesThroughPut(clock) {
     remembered.length === 1 && duplicates.length === 1 && duplicates[0].loop === "memory" && duplicates[0].detail.startsWith(`${name}: `), { remembered, duplicates });
   check("memq4 distill twice: the JSON still holds no memory entry", getState(h).memory.length === 0, getState(h).memory);
   check("memq4 distill twice: no memory_write_failed", !getDecisions(h).some((d) => d.action === "memory_write_failed"), getDecisions(h).map((d) => d.action));
+
+  // A tab in the first line, which memq refuses inside a description, is a
+  // space there, so the fact is written rather than refused.
+  const tabbed = "The operator's desk:\ttea, never coffee.";
+  const t = await memq4DistillHarness(clock, "memq4_tab", tabbed, MEMQ4_WRITTEN);
+  await memq4DistillTurn(t, "t-memq4-tab");
+  const tabPut = memq4Puts(t)[0];
+  check("memq4 tab: the description holds a space where the first line held a tab, inside memq's grammar",
+    tabPut && tabPut.argv[4] === "The operator's desk: tea, never coffee." && memq4InsideMemqGrammar(tabPut) && memq4PutShape(tabPut, tabbed, "distilled", "fact", MEMQ4_T0_DATE), tabPut && tabPut.argv);
+  check("memq4 tab: the body keeps the text as written, tab included", tabPut && tabPut.argv[6].startsWith(`${tabbed}\n\n`), tabPut && tabPut.argv[6]);
 
   // A text opening with `--` that memq refuses as usage: the fact is dropped.
   const dashed = "--the operator prefers tea";
