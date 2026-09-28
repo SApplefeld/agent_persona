@@ -122,6 +122,19 @@ function createFake$(opts = {}) {
   const fsMapSet = fsMap.set.bind(fsMap);
   fsMap.set = (p, text) => { recordStoredGoalTrees(p, text); return fsMapSet(p, text); };
   const storeMap = new Map();
+  // $.state's values, keyed `${plugin}/${key}` as { value, version }. A case
+  // models a reload of the plugin's code by handing this map to a second
+  // harness as opts.stateMap, since the host keeps $.state across one.
+  const stateMap = opts.stateMap instanceof Map ? opts.stateMap : new Map();
+  // Every $.state.get and $.state.set call, in order, as the ref and for a
+  // set the value, and the error every later call rejects with, null while
+  // they resolve. A call that rejects is still recorded, so a case can tell a
+  // write never attempted from one attempted and refused.
+  const stateGets = [];
+  const stateSets = [];
+  let stateFailure = null;
+  // The error $.state.set alone rejects with, null while it resolves.
+  let stateSetFailure = null;
   let classifyValue = opts.classifyValue || "nudge";
   const classifyCalls = [];
   const completeCalls = [];
@@ -424,6 +437,27 @@ function createFake$(opts = {}) {
       delete(key) { storeMap.delete(key); return Promise.resolve(); },
       keys() { return Promise.resolve([...storeMap.keys()]); },
     },
+    // A value never written reads undefined at version 0, and each set bumps
+    // the version, as the host's does.
+    state: {
+      get(ref) {
+        stateGets.push(ref);
+        if (stateFailure !== null) return Promise.reject(stateFailure);
+        const held = stateMap.get(`${ref.plugin}/${ref.key}`);
+        return Promise.resolve(held
+          ? { value: structuredClone(held.value), version: held.version }
+          : { value: undefined, version: 0 });
+      },
+      set(ref, value) {
+        stateSets.push({ ref, value });
+        if (stateFailure !== null) return Promise.reject(stateFailure);
+        if (stateSetFailure !== null) return Promise.reject(stateSetFailure);
+        const name = `${ref.plugin}/${ref.key}`;
+        const version = (stateMap.get(name)?.version ?? 0) + 1;
+        stateMap.set(name, { value: structuredClone(value), version });
+        return Promise.resolve({ isSet: true, version });
+      },
+    },
     process: {
       run(argv, init) {
         processRuns.push({
@@ -448,6 +482,7 @@ function createFake$(opts = {}) {
   // Attach maps to fake for convenient access (h.fake.fsMap === h.fsMap).
   fake.fsMap = fsMap;
   fake.storeMap = storeMap;
+  fake.stateMap = stateMap;
   fake.classifyCalls = classifyCalls;
   fake.completeCalls = completeCalls;
   fake.promptSubmits = promptSubmits;
@@ -467,6 +502,13 @@ function createFake$(opts = {}) {
     fsMap,
     fsWrites,
     storeMap,
+    stateMap,
+    stateGets,
+    stateSets,
+    // Make every subsequent $.state.get and $.state.set reject with `err`.
+    failState(err) { stateFailure = err; },
+    // Make every subsequent $.state.set reject with `err`, reads resolving.
+    failStateSet(err) { stateSetFailure = err; },
     classifyCalls,
     completeCalls,
     uiLogs,
@@ -664,6 +706,38 @@ function jevResponseFor(init, pick) {
   };
 }
 
+// --- Scripted $.process.run answers, for setProcessRun ---
+
+// Answers each run by the first entry whose prefix opens its argv, element
+// for element, and by `fallback` where none does. An entry's answer is a
+// result object or a function of (argv, init), as setProcessRun takes, so an
+// entry can itself reject.
+function processRunByPrefix(entries, fallback = { exitCode: 128 }) {
+  return (argv, init) => {
+    const entry = entries.find(([prefix]) => Array.isArray(argv) && prefix.every((token, i) => argv[i] === token));
+    const answer = entry ? entry[1] : fallback;
+    return typeof answer === "function" ? answer(argv, init) : answer;
+  };
+}
+
+// A run that rejects straight away, the shape of a command that could not
+// start.
+function processRunRejects(message = "spawn node ENOENT") {
+  return () => { throw new Error(message); };
+}
+
+// A run that rejects once its timeoutMs has passed on the stubbed clock, the
+// shape of a command still running at its bound. `clock` is stubDateNow's.
+// `earlyMs` lands the rejection that many milliseconds before the bound, the
+// way a host timer can fire a little early against Date.now().
+function processRunTimesOut(clock, { earlyMs = 0 } = {}) {
+  return (argv, init) => {
+    const bound = init && typeof init.timeoutMs === "number" ? init.timeoutMs : 0;
+    clock.advance(bound - earlyMs);
+    throw new Error(`process timed out after ${bound} ms`);
+  };
+}
+
 // --- Date.now stub ---
 
 function stubDateNow() {
@@ -711,7 +785,7 @@ function makeGoalNode(overrides = {}) {
 function makeState(opts = {}) {
   const now = opts.now || 1_700_000_000_000;
   const hasActiveLeaf = opts.hasActiveLeaf !== false;
-  const version = opts.version || 6;
+  const version = opts.version || 7;
   let goals = [];
   let activeGoalId = null;
   // BM2: allow custom goals array (for testing planner with root-only state)
@@ -729,7 +803,9 @@ function makeState(opts = {}) {
     persona: "default",
     activeSessionId: SESSION_ID,
     epoch: 1,
-    memory: [],
+    // Empty unless a case seeds entries, such as legacy distillates for the
+    // one-time migration to read.
+    memory: opts.memory || [],
     goals,
     activeGoalId,
     // A pre-5 store never carried a tasks field. A case built below version 5
@@ -739,6 +815,8 @@ function makeState(opts = {}) {
     ...(version >= 5 || opts.tasks ? { tasks: opts.tasks || [] } : {}),
     // The same rule for the turn records, which arrived with version 6.
     ...(version >= 6 || opts.turnRecords ? { turnRecords: opts.turnRecords || [] } : {}),
+    // And for the shown records, which arrived with version 7.
+    ...(version >= 7 || opts.shownMemories ? { shownMemories: opts.shownMemories || [] } : {}),
     monitor: {
       sessionStart: now,
       turnCount: 0,
@@ -854,6 +932,26 @@ async function fireSessionStart(harness) {
   await startH(harness.fake, {}, () => {});
 }
 
+// --- Compaction driver: fires session.compact once, as the engine does ---
+
+// Fires session.compact with `e` and returns what the plugin handed its
+// `next`, as { received, result }: `received` is the event the plugin passed
+// down, or undefined where it never called next, and `result` is what the
+// hook resolved. The default event is the main conversation compacting at
+// the engine's threshold over no messages; a case passes its own fields
+// (instructions, trigger, agentId) over it.
+async function fireSessionCompact(harness, e = {}) {
+  const compactH = harness.handlers["session.compact"];
+  if (!compactH) throw new Error("session.compact handler not registered");
+  const event = { trigger: "auto", messages: [], ...e };
+  let received;
+  const result = await compactH(harness.fake, event, async (down) => {
+    received = down;
+    return { messages: [] };
+  });
+  return { event, received, result };
+}
+
 // --- Seed the fake fs with persona store + stale heartbeat ---
 
 function seedPersonaStore(harness, state) {
@@ -938,12 +1036,16 @@ export {
   fireTick,
   fireHeartbeat,
   fireSessionStart,
+  fireSessionCompact,
   seedPersonaStore,
   loadModule,
   journalLines,
   journalLinesOfKind,
   jevChoiceResponse,
   jevResponseFor,
+  processRunByPrefix,
+  processRunRejects,
+  processRunTimesOut,
   SESSION_ID,
   HARNESS_CWD,
   HARNESS_PLUGIN_ROOT,

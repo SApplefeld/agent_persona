@@ -539,7 +539,7 @@ function fail(name) {
   // operands are quoted strings and its real second operand is a call no
   // chain reader can size, so there is no correct reading of a split here.
   expectRefusal("a memory block split into two pieces", "[chain-shape]", ["MEMORY_BLOCK"], () =>
-    buildLedgerFrom(shSrc, holderSrc, mutated(tsSrc, '"Relevant user memories (persisted', '"Relevant user memories" + " (persisted', "memory split")));
+    buildLedgerFrom(shSrc, holderSrc, mutated(tsSrc, `"Memories from this persona's store, judged`, `"Memories from this persona's store," + " judged`, "memory split")));
 
   // The delivery-site exclusion, driven on the two shapes a quote-character
   // test cannot see. A hoisted constant spliced into a positional argument
