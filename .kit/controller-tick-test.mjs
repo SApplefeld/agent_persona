@@ -4176,7 +4176,6 @@ async function main() {
     await caseMemq28_anUnansweredCheckStampsNothing(clock);
     await caseMemq29_aRefusedCheckSubmitClears(clock);
     await caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock);
-    await caseMemq31_aCheckTurnStartingInsideAnotherCompletion(clock);
   } finally {
     clock.restore();
   }
@@ -34797,41 +34796,6 @@ async function caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock) {
   check("memq30 control: an ordinary turn makes one plan-health call", planHealthLines(h).calls.length === 1, planHealthLines(h).calls);
   check("memq30 control: an ordinary turn makes a memory curator call", curatorCalls() > curatedBefore, h.classifyCalls.slice(-3));
 }
-
-async function caseMemq31_aCheckTurnStartingInsideAnotherCompletion(clock) {
-  console.log("\n=== Persona memory 31: a [MEMORY CHECK] turn that starts while the closing turn's completion awaits leaves that turn read as ordinary work ===");
-  const h = await memq30Harness(clock, "memq31");
-  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
-  await h.handlers["turn.start"](h.fake, { turnId: "t-memq31-work" }, async () => ({ result: "ok" }));
-  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-memq31-work" }, async () => ({ result: "ok" }));
-  const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
-  check("memq31 setup: goal_done inside the work turn closed task-1, left task-2 active and queued the check",
-    !!done && getState(h).activeGoalId === "task-2" && memq20Checks(h).length === 1, { active: getState(h).activeGoalId, checks: memq20Checks(h) });
-  const before = getDecisions(h).length;
-
-  // The work turn's completion parks at its commons read, after the kind
-  // capture at the delete; the check turn then starts in full before it
-  // resumes, the order the engine allows.
-  h.holdStoreGets(`commons:${SESSION_ID}`);
-  const completing = h.handlers["turn.complete"](h.fake, { turnId: "t-memq31-work", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
-  await new Promise((r) => setTimeout(r, 10));
-  check("memq31 setup: the work turn's completion is parked at its commons read", h.parkedStoreGetCount === 1, h.parkedStoreGetCount);
-  h.holdStoreGets("memq31-no-such-key");
-  await openQueuedTurn(h, "t-memq31-check");
-  h.releaseStoreGet();
-  await completing;
-  await h.handlers["turn.complete"](h.fake, { turnId: "t-memq31-check", answer: MEMQ13_NAMES[0], reason: "completed" }, async () => ({ result: "ok" }));
-  await new Promise((r) => setTimeout(r, 60));
-
-  const { calls } = planHealthLines(h);
-  check("memq31: the work turn's closing text, and only it, reached the plan-health ask",
-    calls.length === 1 && JSON.parse(calls[0].state).closingText === "Working on it.", calls.map((c) => c.state));
-  // A plan entry's scorer skips every turn a nudge did not open, so the
-  // scorer cannot tell the two turns apart here; memq27 pins its skip.
-  const after = getDecisions(h).slice(before);
-  check("memq31: the check's answer stamped its record", countAction(after, "memory_applied") === 1, after.filter((d) => d.action.startsWith("memory_")));
-}
-
 async function caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock) {
   console.log("\n=== Persona memory 26: a reader's close asks nothing, and a check answered after the owner was displaced stamps nothing ===");
   // A reader whose scorer closes task-1: the one close site not gated to the

@@ -9721,9 +9721,8 @@ export const register: Register = async (on, options) => {
     const wasProposal = currentTurnKind === "proposal";
     // A closed goal's [MEMORY CHECK] turn asks about records shown under that
     // goal, not about the entry active now, so it too is scored against none
-    // and spends no round. Read from the kind captured at the delete, before
-    // the awaits above could let the check turn's own start rewrite it.
-    const wasMemoryCheck = turnKindAtStart === "memoryCheck";
+    // and spends no round.
+    const wasMemoryCheck = currentTurnKind === "memoryCheck";
     // Whether this completion is the nudged turn's own, read by id rather
     // than from currentTurnKind, which the first completion to arrive resets
     // whatever turn it belongs to. The id is spent here, so the nudged turn
@@ -9731,9 +9730,9 @@ export const register: Register = async (on, options) => {
     const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
     // The goals a [MEMORY CHECK] turn asked about, where this completion is
-    // that turn's own: read by the id its turn.start carried and spent here,
-    // so a later turn's start cannot stand in for it. A subagent's completion inside the turn is not the
-    // worker's answer, whatever id it carries.
+    // that turn's own: read by the id its turn.start carried and spent here.
+    // A subagent's completion inside the turn is not the worker's answer,
+    // whatever id it carries.
     const memoryCheck = typeof e.turnId === "string" && !(typeof e.agentId === "string" && e.agentId.length > 0)
       ? memoryCheckTurns.get(e.turnId)
       : undefined;
