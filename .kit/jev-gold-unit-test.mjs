@@ -43,7 +43,7 @@ import * as scoreModule from "./jev-gold/score.mjs";
 // Read off the namespace, so a missing export reads as a failed check.
 const onSharedRecords = typeof scoreModule.onSharedRecords === "function"
   ? scoreModule.onSharedRecords
-  : () => ({ shared: -1, groups: new Map([["v1", []], ["v2 (replay)", []]]) });
+  : () => ({ shared: -1, groups: new Map([["v1", []], ["v2", []], ["v2.replay", []]]), baselineCounts: new Map() });
 import * as replayModule from "./jev-gold/replay.mjs";
 import {
   offeredOptionIds, REPLAYABLE_VERSIONS, replayRecord, replayAll, buildHost, main as replayMain,
@@ -810,30 +810,58 @@ try {
     const replayCli = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl"), "--replay", path.join(scoreDir, "replay.jsonl")]);
     check("score.mjs prints a v1 replay beside the v1 baseline, under its own header, rather than replacing it",
       replayCli.status === 0 &&
-      replayCli.stdout.includes("== controller-decision v1 (replay) (n=1) ==") &&
+      replayCli.stdout.includes("== controller-decision v1.replay (n=1) ==") &&
       replayCli.stdout.includes("note: 1 replay record(s) failed and are excluded from every figure"),
       replayCli.stdout);
     // The same turns: the failed replay record leaves cd-2 out of the replay's
     // group, so the baseline is read on cd-1 alone, the restriction and its
     // count are printed, and the baseline over both of its records stays
-    // beside it, labelled.
-    check("with a replay, every version is read on the records every version scored, and the count is printed",
+    // beside it under its one-word token.
+    check("with a replay, the baseline is read on the records the replay scored, and the counts are printed",
       replayCli.stdout.includes("== controller-decision v1 (n=1) ==")
-        && replayCli.stdout.includes("note: every version is read on the 1 gold record(s) every present version scored"),
+        && replayCli.stdout.includes("note: the replay scored 1 gold record(s); each journal version is read on those it holds (v1 on 1)"),
       replayCli.stdout);
-    check("with a replay, the unrestricted baseline is printed beside it under its label",
-      replayCli.stdout.includes("== controller-decision v1 (all records) (n=2) =="), replayCli.stdout);
-    const shared = onSharedRecords(new Map([
-      ["v1", [{ id: "a" }, { id: "b" }, { id: "c" }]],
-      ["v2 (replay)", [{ id: "b" }, { id: "c" }, { id: "d" }]],
-    ]));
-    check("onSharedRecords keeps in every group only the ids every group carries",
-      shared.shared === 2 && same(shared.groups.get("v1").map((r) => r.id), ["b", "c"]) && same(shared.groups.get("v2 (replay)").map((r) => r.id), ["b", "c"]),
-      { shared: shared.shared, v1: shared.groups.get("v1").map((r) => r.id) });
+    check("with a replay, the unrestricted baseline is printed beside it as v1.all",
+      replayCli.stdout.includes("== controller-decision v1.all (n=2) =="), replayCli.stdout);
+    check("every bar line's version is one token, so the line keeps its bar: <question> <version> shape",
+      replayCli.stdout.split("\n").filter((l) => l.startsWith("bar: ")).every((l) => /^bar: \S+ (v1|v1\.all|v1\.replay) (met|not met|n\/a)/.test(l))
+        && replayCli.stdout.includes(" v1.all ") && replayCli.stdout.includes(" v1.replay "),
+      replayCli.stdout.split("\n").filter((l) => l.startsWith("bar: ")));
+    const shared = onSharedRecords(
+      new Map([["v1", [{ id: "a" }, { id: "b" }, { id: "c" }]], ["v2", [{ id: "d" }, { id: "e" }]]]),
+      new Map([["v2.replay", [{ id: "b" }, { id: "c" }, { id: "d" }]]]),
+    );
+    check("onSharedRecords restricts each baseline against the replay alone, never against another baseline",
+      shared.shared === 3 && same(shared.groups.get("v1").map((r) => r.id), ["b", "c"]) && same(shared.groups.get("v2").map((r) => r.id), ["d"])
+        && same(shared.groups.get("v2.replay").map((r) => r.id), ["b", "c", "d"]) && shared.baselineCounts.get("v1") === 2 && shared.baselineCounts.get("v2") === 1,
+      { shared: shared.shared, v1: shared.groups.get("v1")?.map((r) => r.id), v2: shared.groups.get("v2")?.map((r) => r.id) });
+    // The mixed-version fixture: a sample holding a v1-journaled and a
+    // v2-journaled record, both replayed. The two baselines are disjoint, and
+    // each is still read on its own record the replay scored rather than on
+    // none.
+    const mixedDir = path.join(TMP, "score-mixed");
+    fs.mkdirSync(mixedDir, { recursive: true });
+    fs.writeFileSync(path.join(mixedDir, "gold.jsonl"), [
+      { id: "ts-1", stampId: "m1", question: "turn-score", persona: "p", split: "dev", label: "on-goal", adjudicated: false, labels: {} },
+      { id: "ts-2", stampId: "m2", question: "turn-score", persona: "p", split: "dev", label: "drift", adjudicated: false, labels: {} },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    fs.writeFileSync(path.join(mixedDir, "sample.jsonl"), [
+      { id: "ts-1", stampId: "m1", jev: { version: "v1", value: "drift", probabilities: { "on-goal": 0.3, "off-goal-by-instruction": 0.1, drift: 0.5, complete: 0.1 } }, haikuValue: null, outcomes: [] },
+      { id: "ts-2", stampId: "m2", jev: { version: "v2", value: "drift", probabilities: { "on-goal": 0.2, "off-goal-by-instruction": 0.1, drift: 0.6, complete: 0.1 } }, haikuValue: null, outcomes: [] },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    fs.writeFileSync(path.join(mixedDir, "replay.jsonl"), [
+      { id: "ts-1", version: "v2", ok: true, value: "on-goal", probabilities: { "on-goal": 0.8, "off-goal-by-instruction": 0.05, drift: 0.1, complete: 0.05 } },
+      { id: "ts-2", version: "v2", ok: true, value: "drift", probabilities: { "on-goal": 0.1, "off-goal-by-instruction": 0.05, drift: 0.8, complete: 0.05 } },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const mixedVersionCli = run(SCORE, ["--question", "turn-score", "--gold", path.join(mixedDir, "gold.jsonl"), "--replay", path.join(mixedDir, "replay.jsonl")]);
+    check("a sample mixing v1- and v2-journaled records reads each baseline on its own replayed record, not on zero",
+      mixedVersionCli.status === 0 && mixedVersionCli.stdout.includes("== turn-score v1 (n=1) ==") && mixedVersionCli.stdout.includes("== turn-score v2 (n=1) ==")
+        && mixedVersionCli.stdout.includes("== turn-score v2.replay (n=2) ==") && mixedVersionCli.stdout.includes("(v1 on 1, v2 on 1)"),
+      mixedVersionCli.stdout + mixedVersionCli.stderr);
     // Without a replay, nothing is restricted and no note is printed.
     const plainCli = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl")]);
     check("without a replay, the baseline is read over all of its records and no restriction note is printed (control)",
-      plainCli.status === 0 && plainCli.stdout.includes("== controller-decision v1 (n=2) ==") && !plainCli.stdout.includes("every present version scored"),
+      plainCli.status === 0 && plainCli.stdout.includes("== controller-decision v1 (n=2) ==") && !plainCli.stdout.includes("the replay scored"),
       plainCli.stdout);
 
     // score.mjs refuses gold whose rows mix splits rather than printing one
@@ -992,15 +1020,25 @@ try {
       const v2Parts = scoreStateParts(catalog.turnScoreStateText("Tidy [it].", "Done.", "Keep it tidy", { flags: noFlags, calls: ["Read"] }));
       check("the state parts read a v2 state's opening text and objective, the objective ending at the Tools part",
         v2Parts !== null && v2Parts.opening === "Tidy (it)." && v2Parts.objective === "Keep it tidy", v2Parts);
-      // An objective that itself carries the label is read whole in both
-      // shapes, since the anchor is the first label after the answer's.
+      // One anchor for both tools: a v1 state's answer ends at the last
+      // "Goal objective:" label, so an answer quoting the label is read whole
+      // by the replay and by the sampler's answer match alike. The cost is an
+      // objective quoting the label, which is cut at the quote. A v2 state
+      // folds every value to one line, so its labels are unambiguous and an
+      // objective quoting the label is read whole.
+      const quotingAnswer = "Done.\n\nGoal objective: as the plan states it";
+      const v1Quoting = scoreStateParts(v1TurnScoreState("p", quotingAnswer, "Keep it tidy"));
+      check("a v1 answer carrying its own Goal objective label is read whole, and the objective after it",
+        v1Quoting !== null && v1Quoting.answer === quotingAnswer && v1Quoting.objective === "Keep it tidy", v1Quoting);
+      check("the sampler's stateAnswerText reads the same v1 answer, through the same anchor",
+        stateAnswerText("turn-score", v1TurnScoreState("p", quotingAnswer, "Keep it tidy")) === quotingAnswer);
       const embedded = "Ship it.\n\nGoal objective: the second half";
       const v1Embedded = scoreStateParts(v1TurnScoreState("p", "a", embedded));
-      check("a v1 objective carrying its own Goal objective label is read whole",
-        v1Embedded !== null && v1Embedded.objective === embedded, v1Embedded);
+      check("a v1 objective carrying its own Goal objective label is cut at the quote, the anchor's stated cost",
+        v1Embedded !== null && v1Embedded.objective === "the second half", v1Embedded);
       const v2Embedded = scoreStateParts(catalog.turnScoreStateText("p", "a", embedded, { flags: noFlags, calls: [] }));
       check("a v2 objective carrying its own Goal objective label is read whole, folded as v2 sends it",
-        v2Embedded !== null && v2Embedded.objective === "Ship it. Goal objective: the second half", v2Embedded);
+        v2Embedded !== null && v2Embedded.objective === "Ship it. Goal objective: the second half" && v2Embedded.answer === "a", v2Embedded);
       for (const [what, state] of [
         ["a v1 state with no closing question", "User asked: p\n\nWorker answered: a\n\nGoal objective: o"],
         ["a v2 state with no Tools part", "Turn opened with: p\n\nWorker answered: a\n\nGoal objective: o"],
@@ -1017,7 +1055,7 @@ try {
         v2StateOf(rec));
       // A record journaled under v2 replays too: the objective and the opening
       // text are read off the v2 shape.
-      const v2Journaled = tsRecord("t-v2j", { state: catalog.turnScoreStateText("Tidy the notes for t-v2j.", "x", "Keep the notes tidy", { flags: noFlags, calls: [] }) });
+      const v2Journaled = tsRecord("t-v2j", { state: catalog.turnScoreStateText("Tidy the notes for t-v2j.", "x", "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }) });
       check("a record whose journaled state is v2 replays over the same state a v1-journaled record gets",
         v2StateOf(v2Journaled) === catalog.turnScoreStateText("Tidy the notes for t-v2j.", "Tidied them for t-v2j.", "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }),
         v2StateOf(v2Journaled));
@@ -1038,7 +1076,7 @@ try {
       const v1Other = tsRecord("t-v1-other", { transcript: { ...rec.transcript, prompt: "<task-notification> a different message" } });
       check("a v1-journaled record whose transcript opens on another text than User asked is built, since the v1 text proves nothing",
         v2StateOf(v1Other).startsWith("Turn opened with: <task-notification> a different message\n\n"), v2StateOf(v1Other));
-      const v2State = (opening) => catalog.turnScoreStateText(opening, "x", "Keep the notes tidy", { flags: noFlags, calls: [] });
+      const v2State = (opening, tools = { flags: tsFlags, calls: ["Read", "Bash"] }) => catalog.turnScoreStateText(opening, "x", "Keep the notes tidy", tools);
       const v2Same = tsRecord("t-v2-same", { state: v2State("The agentic-plugin plugin sent a message:\nTidy the notes for t-v2-same.\n\n" + trailer),
         transcript: { ...rec.transcript, prompt: "Tidy the notes  for t-v2-same." } });
       check("a v2-journaled record whose transcript opening builds the journaled opening part passes the cross-check",
@@ -1053,6 +1091,44 @@ try {
         { mismatchRow, sentOnMismatch });
       check("score.mjs's withReplay excludes a prompt_mismatch row from every figure",
         withReplay([{ id: "t-other", label: "on-goal", value: "on-goal", probabilities: {}, haikuValue: null, outcomes: [] }], [mismatchRow]).records.length === 0);
+
+      // The Tools check, on a v2-journaled record: the Tools part rebuilt from
+      // the transcript's activity line must be the journaled one. The record
+      // above whose journaled Tools part matches built; here the journal read
+      // a push the transcript's activity does not carry, so it is refused.
+      const toolsOther = tsRecord("t-tools", { state: v2State("Tidy the notes for t-tools.", { flags: { ...tsFlags, push: true }, calls: ["Read", "Bash"] }) });
+      check("a v2-journaled record whose rebuilt Tools part matches the journaled one builds (control)",
+        v2StateOf(tsRecord("t-tools-same", { state: v2State("Tidy the notes for t-tools-same.") })).startsWith("Turn opened with: "),
+        v2StateOf(tsRecord("t-tools-same", { state: v2State("Tidy the notes for t-tools-same.") })));
+      check("a v2-journaled record whose rebuilt Tools part is not the journaled one is refused as tools_mismatch",
+        v2StateOf(toolsOther) === "refused: tools_mismatch", v2StateOf(toolsOther));
+
+      // The sampler's raw cut against the plugin's collapse. A final message
+      // that reached FINAL_MAX raw characters and collapses under 3,000 was
+      // cut short by the sampler: the plugin collapsed the whole text before
+      // its cut, so its part ran to 3,000. Built as the replay would have built
+      // it before this check, its answer part is shorter than 3,000; it is
+      // refused as cut_short. The same holds for the prompt at PROMPT_MAX and
+      // 1,200. The controls are a whitespace-heavy text that stopped short of
+      // the raw cut, which the plugin also held short, and a raw-cut text
+      // whose collapse still fills the bound; both build.
+      const heavyAnswer = ("a" + " ".repeat(3)).repeat(FINAL_MAX / 4);
+      const unfixed = catalog.turnScoreStateText("Tidy the notes for t-cut.", heavyAnswer, "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] });
+      check("the whitespace-heavy fixture: the answer reached the raw cut, and a state built from it carries an answer part under 3,000",
+        heavyAnswer.length === FINAL_MAX && scoreStateParts(unfixed).answer.length < 3000, scoreStateParts(unfixed).answer.length);
+      const cutAnswer = tsRecord("t-cut", { transcript: { ...rec.transcript, prompt: "Tidy the notes for t-cut.", finalMessage: heavyAnswer } });
+      check("a final message cut at FINAL_MAX raw and collapsing under 3,000 is refused as cut_short",
+        v2StateOf(cutAnswer) === "refused: cut_short", v2StateOf(cutAnswer).slice(0, 40));
+      const heavyPrompt = ("p" + " ".repeat(9)).repeat(PROMPT_MAX / 10);
+      const cutPrompt = tsRecord("t-cutp", { state: v1TurnScoreState(heavyPrompt.slice(0, 500), "Tidied them for t-cutp.", "Keep the notes tidy"), transcript: { ...rec.transcript, prompt: heavyPrompt, finalMessage: "Tidied them for t-cutp." } });
+      check("a prompt cut at PROMPT_MAX raw and collapsing under 1,200 is refused as cut_short",
+        v2StateOf(cutPrompt) === "refused: cut_short", v2StateOf(cutPrompt).slice(0, 40));
+      const shortHeavy = tsRecord("t-short", { transcript: { ...rec.transcript, prompt: "Tidy the notes for t-short.", finalMessage: heavyAnswer.slice(0, FINAL_MAX - 4) } });
+      check("a whitespace-heavy final message that stopped short of the raw cut builds (control)",
+        v2StateOf(shortHeavy).startsWith("Turn opened with: "), v2StateOf(shortHeavy).slice(0, 40));
+      const fullCut = tsRecord("t-full", { transcript: { ...rec.transcript, prompt: "Tidy the notes for t-full.", finalMessage: "a".repeat(FINAL_MAX) } });
+      check("a final message cut at the raw bound whose collapse still fills 3,000 builds (control)",
+        v2StateOf(fullCut).startsWith("Turn opened with: ") && scoreStateParts(v2StateOf(fullCut)).answer.length === 3000, v2StateOf(fullCut).slice(0, 40));
 
       // The sampler's answer match on a v2 line: the state carries the answer
       // folded, its brackets rewritten and its whitespace collapsed, and the

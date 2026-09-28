@@ -42,11 +42,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 // sample.mjs is loaded first: it registers the resolve hook that lets
 // hooks/question-catalog.ts load its extensionless imports standalone.
-const { QUESTIONS, homeDir } = await import("./sample.mjs");
+const { QUESTIONS, homeDir, scoreStateParts, PROMPT_MAX, FINAL_MAX } = await import("./sample.mjs");
 const { ask, askAll } = await import("../../hooks/decision-seam.ts");
 const {
   CONTROLLER_DECISION, CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH,
-  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText,
+  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText, TURN_SCORE_PROMPT_MAX, TURN_SCORE_ANSWER_MAX,
   BLOCK_OWNER, BLOCK_OWNER_OPTIONS, WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES,
   PLAN_HEALTH_STATE_CLOSING, PLAN_HEALTH_STATE_RECENT,
   resolverOf,
@@ -140,37 +140,9 @@ export function parseToolActivity(line) {
   return { flags, calls: ring === "" ? [] : ring.split(",") };
 }
 
-// The opening text and the goal objective a journaled turn-score state
-// carries, read off either shape the scorer has sent. v1 is "User asked: ",
-// the answer, "Goal objective: " and a closing question sentence; v2 is
-// "Turn opened with: ", the answer, "Goal objective: " and a "Tools: " part.
-// The objective is anchored on the first "Goal objective: " part after the
-// answer's label, so an objective that itself carries that label is read
-// whole. Returns null where the state is in neither shape.
-const ANSWER_LABEL = "\n\nWorker answered: ";
-const OBJECTIVE_LABEL = "\n\nGoal objective: ";
-const V1_OPENING = "User asked: ";
-const V1_QUESTION = "\n\nDid the worker's answer advance the goal objective?";
-const V2_OPENING = "Turn opened with: ";
-const V2_TOOLS_LABEL = "\n\nTools: ";
-export function scoreStateParts(state) {
-  if (typeof state !== "string") return null;
-  const v1 = state.startsWith(V1_OPENING) && state.endsWith(V1_QUESTION);
-  const v2 = state.startsWith(V2_OPENING);
-  if (!v1 && !v2) return null;
-  const answerAt = state.indexOf(ANSWER_LABEL);
-  if (answerAt < 0) return null;
-  const objectiveAt = state.indexOf(OBJECTIVE_LABEL, answerAt + ANSWER_LABEL.length);
-  if (objectiveAt < 0) return null;
-  const objectiveFrom = objectiveAt + OBJECTIVE_LABEL.length;
-  const objectiveTo = v1 ? state.length - V1_QUESTION.length : state.indexOf(V2_TOOLS_LABEL, objectiveFrom);
-  if (objectiveTo < objectiveFrom) return null;
-  return {
-    shape: v1 ? "v1" : "v2",
-    opening: state.slice((v1 ? V1_OPENING : V2_OPENING).length, answerAt),
-    objective: state.slice(objectiveFrom, objectiveTo),
-  };
-}
+// The parts of a journaled turn-score state are read by sample.mjs's
+// scoreStateParts, the one reading the sampler's answer match also takes.
+export { scoreStateParts };
 
 // The v2 state for one sampled record: the opening text and the final message
 // from its transcript turn, the objective from its journaled state, and the
@@ -179,19 +151,27 @@ export function scoreStateParts(state) {
 // message, so the two meet in turnScoreStateText. A record missing any of the
 // four throws, naming the record and the part, since that is a sampler
 // defect; an empty final message throws too, since the plugin scores no turn
-// without an answer.
+// without an answer. Otherwise it returns { ok: true, state }, or
+// { ok: false, reason } for a record whose state could not be the plugin's
+// bytes, which the caller writes as a failure and every figure excludes:
 //
-// The opening text is checked only where the journal holds the plugin's own
-// reading of it, which is a record journaled under v2: there the state is
-// built and refused as { ok: false, reason: "prompt_mismatch" } where its
-// opening part is not the journaled one, since it would not be the plugin's
-// bytes. A v1 state's "User asked:" text is the last prompt the plugin saw
-// submitted, which a message queued mid-turn replaces, so it can differ from
-// the opening message on a turn scored correctly and proves nothing either
-// way; a v1-journaled record is not checked. Otherwise returns { ok: true,
-// state }. A refused record is written as a failure and excluded from every
-// figure.
+// - cut_short: the sampler cut the opening prompt at PROMPT_MAX or the final
+//   message at FINAL_MAX raw characters, and the state's part for it came out
+//   under the plugin's bound once collapsed. The plugin collapses the whole
+//   text before its cut, so its part would have run on to the bound, and the
+//   replay's is shorter than what the plugin sent.
+// - prompt_mismatch and tools_mismatch: checked only where the journal holds
+//   the plugin's own reading, which is a record journaled under v2. There the
+//   rebuilt opening part, or the rebuilt Tools part, is refused where it is
+//   not the journaled one. A v1 state's "User asked:" text is the last prompt
+//   the plugin saw submitted, which a message queued mid-turn replaces, so it
+//   can differ from the opening message on a turn scored correctly and proves
+//   nothing either way; a v1 state carries no Tools part at all. So a
+//   v1-journaled record's opening text and Tools line, rebuilt from the
+//   transcript by sample.mjs's toolActivityText, are not checked.
 export const PROMPT_MISMATCH = "prompt_mismatch";
+export const TOOLS_MISMATCH = "tools_mismatch";
+export const CUT_SHORT = "cut_short";
 export function turnScoreV2State(record) {
   const refuse = (part) => new Error(`record ${record.id}: ${part}, so its turn-score v2 state cannot be built`);
   const t = record.transcript;
@@ -203,8 +183,16 @@ export function turnScoreV2State(record) {
   const parts = scoreStateParts(record.state);
   if (parts === null) throw refuse("its journaled state carries no goal objective");
   const state = turnScoreStateText(t.prompt, t.finalMessage, parts.objective, tools);
-  if (parts.shape === "v2" && scoreStateParts(state)?.opening !== parts.opening) {
+  const built = scoreStateParts(state);
+  if ((t.prompt.length >= PROMPT_MAX && built.opening.length < TURN_SCORE_PROMPT_MAX)
+    || (t.finalMessage.length >= FINAL_MAX && built.answer.length < TURN_SCORE_ANSWER_MAX)) {
+    return { ok: false, reason: CUT_SHORT, detail: "the sampler's raw cut left a part shorter than the plugin's bound" };
+  }
+  if (parts.shape === "v2" && built.opening !== parts.opening) {
     return { ok: false, reason: PROMPT_MISMATCH, detail: "the transcript's opening message is not the text the plugin scored" };
+  }
+  if (parts.shape === "v2" && built.tools !== parts.tools) {
+    return { ok: false, reason: TOOLS_MISMATCH, detail: "the transcript's tool activity is not the activity the plugin read" };
   }
   return { ok: true, state };
 }
@@ -355,8 +343,8 @@ export async function main(argv, env = process.env) {
     log: (i, total) => process.stdout.write(`replayed ${i + 1}/${total}\n`),
   });
   const failed = rows.filter((r) => !r.ok).length;
-  const mismatched = rows.filter((r) => r.reason === PROMPT_MISMATCH).length;
-  process.stdout.write(`${rows.length} record(s) replayed, ${failed} failed (${mismatched} refused as ${PROMPT_MISMATCH}), written to ${out}\n`);
+  const refused = [CUT_SHORT, PROMPT_MISMATCH, TOOLS_MISMATCH].map((reason) => `${rows.filter((r) => r.reason === reason).length} refused as ${reason}`);
+  process.stdout.write(`${rows.length} record(s) replayed, ${failed} failed (${refused.join(", ")}), written to ${out}\n`);
   return 0;
 }
 

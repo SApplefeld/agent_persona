@@ -22,7 +22,7 @@ import path from "node:path";
 import { registerHooks } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fnv1aHash } from "../../hooks/cost-ledger.ts";
-import { PLAN_PATH_PATTERN, bracketSafeText, oneLine } from "../../hooks/agent-state.ts";
+import { PLAN_PATH_PATTERN } from "../../hooks/agent-state.ts";
 
 // hooks/question-catalog.ts imports its siblings with no extension, which
 // only a module a resolve hook covers can load standalone; the same hook
@@ -37,8 +37,9 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
-// The one opening-text reading the plugin's turn-score state also applies.
-const { turnOpeningText } = await import("../../hooks/question-catalog.ts");
+// The one opening-text reading the plugin's turn-score state also applies,
+// and the one line guard its state applies to every value.
+const { turnOpeningText, kaizenLine } = await import("../../hooks/question-catalog.ts");
 
 // Each question this sampler draws: the journal site that asks it, and the
 // oversample section 5's floor needs. The ids are the catalog's own, pinned
@@ -377,22 +378,54 @@ export function toolActivityText(tools, offThreadReply = false) {
 
 // --- Admission and the joins ---
 
+// The parts of a journaled turn-score state, read off either shape the scorer
+// has sent, for this sampler's answer match and for replay.mjs alike. v1 is
+// "User asked: ", "Worker answered: ", "Goal objective: " and a closing
+// question sentence, its texts raw; v2 is "Turn opened with: ", "Worker
+// answered: ", "Goal objective: " and "Tools: ", each value folded to one line
+// by turnScoreStateText in hooks/question-catalog.ts, so a v2 state has
+// exactly one of each label and reads unambiguously. A v1 state's raw texts
+// can carry a label of their own: the opening part ends at the first
+// "Worker answered: " and the answer at the last "Goal objective: ", so an
+// answer quoting that label is read whole, and an objective quoting it would
+// be cut at the quote. The answer is the worker's model text and the objective
+// the plugin's stored text, so the answer is the one guarded. Returns null
+// where the state is in neither shape.
+const ANSWER_LABEL = "\n\nWorker answered: ";
+const OBJECTIVE_LABEL = "\n\nGoal objective: ";
+const V1_OPENING = "User asked: ";
+const V1_QUESTION = "\n\nDid the worker's answer advance the goal objective?";
+const V2_OPENING = "Turn opened with: ";
+const V2_TOOLS_LABEL = "\n\nTools: ";
+export function scoreStateParts(state) {
+  if (typeof state !== "string") return null;
+  const v1 = state.startsWith(V1_OPENING) && state.endsWith(V1_QUESTION);
+  const v2 = state.startsWith(V2_OPENING);
+  if (!v1 && !v2) return null;
+  const answerAt = state.indexOf(ANSWER_LABEL);
+  const end = v1 ? state.length - V1_QUESTION.length : state.lastIndexOf(V2_TOOLS_LABEL);
+  if (answerAt < 0 || end < 0) return null;
+  const objectiveAt = state.slice(0, end).lastIndexOf(OBJECTIVE_LABEL);
+  if (objectiveAt < answerAt + ANSWER_LABEL.length) return null;
+  return {
+    shape: v1 ? "v1" : "v2",
+    opening: state.slice((v1 ? V1_OPENING : V2_OPENING).length, answerAt),
+    answer: state.slice(answerAt + ANSWER_LABEL.length, objectiveAt),
+    objective: state.slice(objectiveAt + OBJECTIVE_LABEL.length, end),
+    tools: v2 ? state.slice(end + V2_TOOLS_LABEL.length) : null,
+  };
+}
+
 // The answer text a call's own state carries, where its site puts one there,
-// or null. The scorer's state carries its answer between "Worker answered: "
-// and "Goal objective: ", each after a blank line, in both of its shapes: v1
-// ("User asked: " first, the answer a plain slice of 1,000 characters) and v2
-// ("Turn opened with: " first, the answer folded to one line with its
-// brackets rewritten and its whitespace collapsed, then cut at 3,000, by
-// turnScoreStateText in hooks/question-catalog.ts). The plan-health state is
-// the JSON of `{ closingText, recentClosingTexts }`, with the closing text a
-// plain slice of 1,000. The controller's state carries no answer.
-const ANSWER_OPEN = "\n\nWorker answered: ";
-const ANSWER_CLOSE = "\n\nGoal objective: ";
+// or null. The scorer's state carries it as scoreStateParts reads it: in v1 a
+// plain slice of 1,000 characters, in v2 folded, collapsed and cut at 3,000.
+// The plan-health state is the JSON of `{ closingText, recentClosingTexts }`,
+// with the closing text a plain slice of 1,000. The controller's state
+// carries no answer.
 export function stateAnswerText(site, state) {
   if (site === "turn-score") {
-    const from = state.indexOf(ANSWER_OPEN);
-    const to = state.lastIndexOf(ANSWER_CLOSE);
-    return from >= 0 && to > from ? state.slice(from + ANSWER_OPEN.length, to) : null;
+    const parts = scoreStateParts(state);
+    return parts === null ? null : parts.answer;
   }
   if (site === "plan-health") {
     try {
@@ -415,7 +448,7 @@ export function stateAnswerText(site, state) {
 // v1 does not, and folding is idempotent. An empty answer never matches,
 // since the hook scores none.
 const NO_SPACE = /\s+/g;
-const comparableAnswer = (text) => bracketSafeText(oneLine(text)).replace(NO_SPACE, "");
+const comparableAnswer = (text) => kaizenLine(text).replace(NO_SPACE, "");
 export function turnProducedAnswer(turn, answerText) {
   const want = comparableAnswer(answerText);
   return want.length > 0 && comparableAnswer(turn.final).startsWith(want);
