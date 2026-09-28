@@ -9721,8 +9721,9 @@ export const register: Register = async (on, options) => {
     const wasProposal = currentTurnKind === "proposal";
     // A closed goal's [MEMORY CHECK] turn asks about records shown under that
     // goal, not about the entry active now, so it too is scored against none
-    // and spends no round.
-    const wasMemoryCheck = currentTurnKind === "memoryCheck";
+    // and spends no round. Read from the kind captured at the delete, before
+    // the awaits above could let the check turn's own start rewrite it.
+    const wasMemoryCheck = turnKindAtStart === "memoryCheck";
     // Whether this completion is the nudged turn's own, read by id rather
     // than from currentTurnKind, which the first completion to arrive resets
     // whatever turn it belongs to. The id is spent here, so the nudged turn
@@ -9731,7 +9732,7 @@ export const register: Register = async (on, options) => {
     if (completesNudgedTurn) nudgedTurnId = null;
     // The goals a [MEMORY CHECK] turn asked about, where this completion is
     // that turn's own: read by the id its turn.start carried and spent here,
-    // before any await. A subagent's completion inside the turn is not the
+    // so a later turn's start cannot stand in for it. A subagent's completion inside the turn is not the
     // worker's answer, whatever id it carries.
     const memoryCheck = typeof e.turnId === "string" && !(typeof e.agentId === "string" && e.agentId.length > 0)
       ? memoryCheckTurns.get(e.turnId)
@@ -10315,10 +10316,14 @@ export const register: Register = async (on, options) => {
                 if (child.parentId === subtree[i] && !subtree.includes(child.id)) subtree.push(child.id);
               }
             }
+            // The goals this close completes, the holder and each live
+            // descendant, which its [MEMORY CHECK] asks about.
+            const closedHere: string[] = [holder.id];
             for (const id of subtree.slice(1)) {
               const descendant = sess.state.goals.find((g) => g.id === id);
               if (!descendant) continue;
               if (descendant.status !== "pending" && descendant.status !== "active" && descendant.status !== "paused") continue;
+              closedHere.push(descendant.id);
               descendant.status = "complete";
               descendant.lead = null;
               descendant.notes.push(`completed with ${cause}`);
@@ -10343,7 +10348,7 @@ export const register: Register = async (on, options) => {
               action: "complete",
               detail: `${completedId}: ${cause}`,
             });
-            queueMemoryCheck($, completedId, holder.title, subtree);
+            queueMemoryCheck($, completedId, holder.title, closedHere);
             const nextId = activateNext(sess.state, completedId);
             activate($, nextId, `${completedId} complete`);
             try { $.ui.log(`Agentic: ${completedId} plan complete (${cause})`); } catch { /* non-fatal */ }

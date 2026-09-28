@@ -4176,6 +4176,7 @@ async function main() {
     await caseMemq28_anUnansweredCheckStampsNothing(clock);
     await caseMemq29_aRefusedCheckSubmitClears(clock);
     await caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock);
+    await caseMemq31_aCheckTurnStartingInsideAnotherCompletion(clock);
   } finally {
     clock.restore();
   }
@@ -34440,11 +34441,15 @@ async function caseMemq20_eachCloseSiteQueuesOneCheck(clock) {
   // the records shown under a task active beneath the plan as well as the
   // plan's own, and the answer stamps and clears across both.
   const [n0, n1] = MEMQ13_NAMES;
+  // task-0, already complete under the plan, still holds an entry its own
+  // pending check will ask about; this close leaves it to that check.
   const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 0 });
   tree.goals.find((g) => g.id === "plan-1").title = MEMQ20_TITLE;
+  tree.goals.push(makeGoalNode({ id: "task-0", parentId: "plan-1", kind: "task", status: "complete", maxRounds: 10, createdAt: T0 - 6000 }));
   const shown = [
     { name: n0, goalId: "plan-1", shownAt: T0 - 3000 },
     { name: MEMQ20_OTHER, goalId: "plan-2", shownAt: T0 - 2000 },
+    { name: "fact-default-done00", goalId: "task-0", shownAt: T0 - 1500 },
     { name: n1, goalId: "task-1", shownAt: T0 - 1000 },
   ];
   const s = await memq20Harness(clock, "memq20_subtree", tree, shown);
@@ -34460,8 +34465,8 @@ async function caseMemq20_eachCloseSiteQueuesOneCheck(clock) {
   await memq20Answer(s, "t-memq20-subtree-answer", n1);
   check("memq20 subtree: the task's record, named in the answer, is stamped",
     JSON.stringify(memq20Touches(s).map((r) => r.argv[3])) === JSON.stringify([n1]), memq20Touches(s).map((r) => r.argv));
-  check("memq20 subtree: the plan's and the task's entries left the list and the other plan's stayed",
-    JSON.stringify(getState(s).shownMemories) === JSON.stringify([shown[1]]), getState(s).shownMemories);
+  check("memq20 subtree: the plan's and the task's entries left the list, and the other plan's and the already complete task's stayed",
+    JSON.stringify(getState(s).shownMemories) === JSON.stringify([shown[1], shown[2]]), getState(s).shownMemories);
 }
 
 async function caseMemq21_theAnswerStampsOnlyShownNames(clock) {
@@ -34747,13 +34752,16 @@ async function caseMemq29_aRefusedCheckSubmitClears(clock) {
   }
 }
 
-async function caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock) {
-  console.log("\n=== Persona memory 30: the [MEMORY CHECK] turn is read by neither the plan-health ask nor the memory curator ===");
+// An owner over plan-1 with task-1 active under it and task-2 pending there,
+// one record shown under task-1, the plan document seeded, the seam in shadow
+// with a Jev answering, and every memq touch written. Closing task-1 leaves
+// task-2, a plan entry, active.
+async function memq30Harness(clock, caseName) {
   clock.set(T0);
   const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 1 });
   tree.goals.push(makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "pending", maxRounds: 10, createdAt: T0 - 4000 }));
   const h = await createTickHarness({
-    ...OPTS, jevMode: "shadow", caseName: "memq30",
+    ...OPTS, jevMode: "shadow", caseName,
     stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId, shownMemories: [{ name: MEMQ13_NAMES[0], goalId: "task-1", shownAt: T0 - 1000 }] },
   });
   h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
@@ -34762,6 +34770,12 @@ async function caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock) {
   h.setHttpResponse(jevPicking());
   await bank2SeedInstalled(h, bank2Installed());
   h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  return h;
+}
+
+async function caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock) {
+  console.log("\n=== Persona memory 30: the [MEMORY CHECK] turn is read by neither the plan-health ask nor the memory curator ===");
+  const h = await memq30Harness(clock, "memq30");
   const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
   check("memq30 setup: task-1 closed, task-2 under the plan is active, and the check is queued",
     !!done && getState(h).activeGoalId === "task-2" && memq20Checks(h).length === 1, { active: getState(h).activeGoalId, checks: memq20Checks(h), done });
@@ -34782,6 +34796,40 @@ async function caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock) {
   await planHealthTurn(h, "t-memq30-ctl", "Working on it.");
   check("memq30 control: an ordinary turn makes one plan-health call", planHealthLines(h).calls.length === 1, planHealthLines(h).calls);
   check("memq30 control: an ordinary turn makes a memory curator call", curatorCalls() > curatedBefore, h.classifyCalls.slice(-3));
+}
+
+async function caseMemq31_aCheckTurnStartingInsideAnotherCompletion(clock) {
+  console.log("\n=== Persona memory 31: a [MEMORY CHECK] turn that starts while the closing turn's completion awaits leaves that turn read as ordinary work ===");
+  const h = await memq30Harness(clock, "memq31");
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  await h.handlers["turn.start"](h.fake, { turnId: "t-memq31-work" }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-memq31-work" }, async () => ({ result: "ok" }));
+  const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  check("memq31 setup: goal_done inside the work turn closed task-1, left task-2 active and queued the check",
+    !!done && getState(h).activeGoalId === "task-2" && memq20Checks(h).length === 1, { active: getState(h).activeGoalId, checks: memq20Checks(h) });
+  const before = getDecisions(h).length;
+
+  // The work turn's completion parks at its commons read, after the kind
+  // capture at the delete; the check turn then starts in full before it
+  // resumes, the order the engine allows.
+  h.holdStoreGets(`commons:${SESSION_ID}`);
+  const completing = h.handlers["turn.complete"](h.fake, { turnId: "t-memq31-work", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 10));
+  check("memq31 setup: the work turn's completion is parked at its commons read", h.parkedStoreGetCount === 1, h.parkedStoreGetCount);
+  h.holdStoreGets("memq31-no-such-key");
+  await openQueuedTurn(h, "t-memq31-check");
+  h.releaseStoreGet();
+  await completing;
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-memq31-check", answer: MEMQ13_NAMES[0], reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+
+  const { calls } = planHealthLines(h);
+  check("memq31: the work turn's closing text, and only it, reached the plan-health ask",
+    calls.length === 1 && JSON.parse(calls[0].state).closingText === "Working on it.", calls.map((c) => c.state));
+  // A plan entry's scorer skips every turn a nudge did not open, so the
+  // scorer cannot tell the two turns apart here; memq27 pins its skip.
+  const after = getDecisions(h).slice(before);
+  check("memq31: the check's answer stamped its record", countAction(after, "memory_applied") === 1, after.filter((d) => d.action.startsWith("memory_")));
 }
 
 async function caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock) {
