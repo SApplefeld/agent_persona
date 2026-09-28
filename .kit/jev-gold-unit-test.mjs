@@ -35,11 +35,12 @@ import {
 import {
   readGold, sampleById, joinGoldSample, withReplay, foldedValue, topProbability, scorable,
   accuracyOf, confusionOf, precisionRecallOf, calibrationOf, agreementOf, aucOf, outcomeKindsPresent,
-  haikuAccuracyOf, haikuConfusionOf, haikuPrecisionRecallOf, rawPauseRate,
-  BARS, TOP_PROBABILITY_FLOOR, COVERAGE_FLOOR, BLOCK_OWNER_OPERATOR_COUNT_FLOOR, coverageOf, evalBar, main as scoreMain,
+  haikuAccuracyOf, haikuConfusionOf, haikuPrecisionRecallOf, unfoldedAccuracyOf,
+  BARS, TOP_PROBABILITY_FLOOR, COVERAGE_FLOOR, BLOCK_OWNER_OPERATOR_COUNT_FLOOR, DEFAULT_RECALL_COUNT_FLOOR,
+  coverageOf, evalBar, report,
 } from "./jev-gold/score.mjs";
 import {
-  controllerOptionIds, TURN_SCORE_OPTION_IDS, replayRecord, replayAll, buildHost,
+  offeredOptionIds, REPLAYABLE_VERSIONS, replayRecord, replayAll, buildHost, main as replayMain,
 } from "./jev-gold/replay.mjs";
 import { fnv1aHash } from "../hooks/cost-ledger.ts";
 
@@ -540,15 +541,19 @@ try {
       haikuAccuracyOf([{ label: "operator", value: "operator", haikuValue: null }], "block-owner") === null &&
       haikuConfusionOf([{ label: "operator", value: "operator", haikuValue: null }], "block-owner") === null &&
       haikuPrecisionRecallOf([{ label: "operator", value: "operator", haikuValue: null }], "block-owner") === null);
-    // The raw, unfolded pause rate the spec asks to print beside the folded
-    // read, for controller-decision alone: r2 is the only pause among Jev's
-    // four scorable values (rate 0.25) and among Haiku's three (rate 1/3).
-    check("the raw pause rate is read separately for Jev's own column and Haiku's, and only for controller-decision",
-      same(rawPauseRate(cdRecords, "controller-decision", (r) => r.value), { pauses: 1, n: 4, rate: 0.25 }) &&
-      same(rawPauseRate(cdRecords, "controller-decision", (r) => r.haikuValue), { pauses: 1, n: 3, rate: 1 / 3 }) &&
-      rawPauseRate(cdRecords, "turn-score", (r) => r.value) === null, {
-        jev: rawPauseRate(cdRecords, "controller-decision", (r) => r.value),
-        haiku: rawPauseRate(cdRecords, "controller-decision", (r) => r.haikuValue),
+    // The raw, unfolded accuracy the spec asks to print beside the folded
+    // one, for controller-decision alone: unfolded, r2's raw "pause" never
+    // equals its "ask-operator" gold label, so it turns from a fold-corrected
+    // hit into a miss; r1 and r3 are unaffected by the fold and stay correct,
+    // r4 is wrong either way, reading 2/4 against the folded read's 3/4.
+    // Unfolded on Haiku's own column, r2's raw "pause" is the same miss, so
+    // only r1 and r4 stay correct, reading 2/3 against Haiku's folded 3/3.
+    check("the unfolded accuracy is read separately for Jev's own column and Haiku's, and only for controller-decision",
+      same(unfoldedAccuracyOf(cdRecords, "controller-decision", (r) => r.value), { correct: 2, n: 4, accuracy: 0.5 }) &&
+      same(unfoldedAccuracyOf(cdRecords, "controller-decision", (r) => r.haikuValue), { correct: 2, n: 3, accuracy: 2 / 3 }) &&
+      unfoldedAccuracyOf(cdRecords, "turn-score", (r) => r.value) === null, {
+        jev: unfoldedAccuracyOf(cdRecords, "controller-decision", (r) => r.value),
+        haiku: unfoldedAccuracyOf(cdRecords, "controller-decision", (r) => r.haikuValue),
       });
     const bins = calibrationOf(cdRecords, "controller-decision");
     // Hand-computed top probabilities: r1 0.9 (bin 4), r2 0.7 and r3 0.75
@@ -560,6 +565,15 @@ try {
       bins[4].n === 2 && bins[4].accuracy === 1 && Math.abs(bins[4].avgConfidence - 0.945) < 1e-9 &&
       bins[0].n === 0 && bins[0].accuracy === null,
       bins);
+    // A record at exactly 0.6, the value that misbinned on plain float
+    // division (0.6 / 0.2 evaluates to 2.9999999999999996, one bin short),
+    // lands in [0.6, 0.8), the same bin barRows's own p >= 0.6 comparison
+    // and coverageOf's own count place it in.
+    const edgeRecords = cdRecords.concat([{ id: "r6", question: "controller-decision", label: "nudge", value: "nudge",
+      probabilities: { nudge: 0.6, "ask-operator": 0.2, complete: 0.1, switch: 0.1 }, haikuValue: null, outcomes: [] }]);
+    const edgeBins = calibrationOf(edgeRecords, "controller-decision");
+    check("a top probability of exactly 0.6 lands in the 0.6-0.8 bin, matching the 0.6 floor",
+      edgeBins[3].n === 3 && edgeBins[2].n === 1, edgeBins.map((b) => b.n));
     // Hand-computed: r1, r2, r4 carry a Haiku value (r3's is null and is
     // left out); r1 and r2 agree once pause is folded, r4 does not.
     check("agreement with Haiku folds pause and skips a null Haiku value",
@@ -577,6 +591,84 @@ try {
       aucOf(cdRecords, "controller-decision", "nudge", "next_score") === null);
     check("AUC reads null for an outcome kind the sample never carries",
       aucOf(cdRecords, "controller-decision", "complete", "next_speaker") === null);
+    // Every option a record's own call offered gets an AUC line, not just the
+    // ones Jev actually picked: no cdRecords row ever chose switch, but every
+    // row's call offered it, so its probability is on the record and the
+    // report still lists it.
+    const cdReport = report("controller-decision", "dev", new Map([["v1", cdRecords]]));
+    const nextScoreBlock = cdReport.split("AUC against next_score:")[1].split("\nbar:")[0];
+    check("the AUC block lists an option no record ever chose, since every record's own call offered it",
+      /\n {2}switch: /.test(nextScoreBlock), nextScoreBlock);
+
+    // ask-operator's own AUC folds pause's probability into it, the way its
+    // accuracy read does: f1 (true) scores 0.1 alone on ask-operator, under
+    // f2's (false) 0.5, so an unfolded AUC would rank the positive last and
+    // read 0; folded, f1's 0.1 + 0.6 pause = 0.7 outranks f2's 0.5 + 0.0, and
+    // the AUC is the hand-computed 1.0.
+    const foldRecords = [
+      { id: "f1", question: "controller-decision", label: "x", value: "pause",
+        probabilities: { nudge: 0.2, "ask-operator": 0.1, pause: 0.6, complete: 0.1 },
+        haikuValue: null, outcomes: [{ kind: "test_outcome", value: "ask-operator" }] },
+      { id: "f2", question: "controller-decision", label: "x", value: "ask-operator",
+        probabilities: { nudge: 0.2, "ask-operator": 0.5, pause: 0, complete: 0.3 },
+        haikuValue: null, outcomes: [{ kind: "test_outcome", value: "nudge" }] },
+    ];
+    const aucFold = aucOf(foldRecords, "controller-decision", "ask-operator", "test_outcome");
+    check("ask-operator's AUC scores on ask-operator's probability plus pause's, under the same fold its accuracy read takes",
+      aucFold && aucFold.auc === 1, aucFold);
+    check("control: the same two records score the reverse without the fold, so the fold is what makes the AUC 1",
+      (foldRecords[0].probabilities["ask-operator"] < foldRecords[1].probabilities["ask-operator"]));
+
+    // A tied pair exercises the rank-averaging branch: two records score
+    // identically on "complete" against next_score, one true (outcome
+    // "complete") and one false (outcome "drift"). Tied at rank 1.5 each
+    // (both share ranks 1 and 2), the positive's rank sum is 1.5 against a
+    // single negative, giving AUC (1.5 - 1) / 1 = 0.5, neither 1 nor 0.
+    const tieRecords = [
+      { id: "g1", question: "controller-decision", label: "x", value: "complete",
+        probabilities: { nudge: 0.1, "ask-operator": 0.1, complete: 0.4, switch: 0.4 },
+        haikuValue: null, outcomes: [{ kind: "next_score", value: "complete" }] },
+      { id: "g2", question: "controller-decision", label: "x", value: "nudge",
+        probabilities: { nudge: 0.4, "ask-operator": 0.1, complete: 0.4, switch: 0.1 },
+        haikuValue: null, outcomes: [{ kind: "next_score", value: "drift" }] },
+    ];
+    const aucTie = aucOf(tieRecords, "controller-decision", "complete", "next_score");
+    check("a tied pair of scores is split evenly between them, reading the hand-computed 0.5",
+      aucTie && Math.abs(aucTie.auc - 0.5) < 1e-9, aucTie);
+
+    // Sections 3 and 4 gate a per-option recall bar on gold actually holding
+    // ten of the option; below that it is not applicable, not failed.
+    // block-owner's own operator bars carry no such gate.
+    check("only the per-option recall bars carry the conditional gate, never accuracy or block-owner's",
+      BARS["controller-decision"][0].conditional === undefined &&
+      BARS["controller-decision"][1].conditional === true &&
+      BARS["turn-score"].every((b) => b.key === "accuracy" ? b.conditional === undefined : b.conditional === true) &&
+      BARS["block-owner"].every((b) => b.conditional === undefined));
+    const completeRecord = (id, correct) => ({
+      id, question: "controller-decision", label: "complete", value: correct ? "complete" : "nudge",
+      probabilities: correct
+        ? { nudge: 0.05, "ask-operator": 0.05, complete: 0.85, switch: 0.05 }
+        : { nudge: 0.85, "ask-operator": 0.05, complete: 0.05, switch: 0.05 },
+      haikuValue: null, outcomes: [],
+    });
+    const recallCompleteBar = BARS["controller-decision"].find((b) => b.key === "recall:complete");
+    check("the conditional recall bars carry the spec's own ten-record gold-count floor",
+      recallCompleteBar.countFloor === DEFAULT_RECALL_COUNT_FLOOR && DEFAULT_RECALL_COUNT_FLOOR === 10);
+    const fewComplete = Array.from({ length: 3 }, (_, i) => completeRecord(`fc${i}`, true));
+    check("a per-option recall bar below its gold-count floor reads n/a rather than not met",
+      evalBar(recallCompleteBar, "controller-decision", "v1", fewComplete, "dev") ===
+        "bar: controller-decision:recall:complete v1 n/a (gold holds 3) over 3 on dev, coverage 1.000 over 3",
+      evalBar(recallCompleteBar, "controller-decision", "v1", fewComplete, "dev"));
+    const tenLowRecall = [...Array.from({ length: 3 }, (_, i) => completeRecord(`lr${i}`, true)), ...Array.from({ length: 7 }, (_, i) => completeRecord(`lw${i}`, false))];
+    check("control: at or above the gold-count floor, a real miss still reads not met",
+      evalBar(recallCompleteBar, "controller-decision", "v1", tenLowRecall, "dev") ===
+        "bar: controller-decision:recall:complete v1 not met 0.300 over 10 on dev, coverage 1.000 over 10",
+      evalBar(recallCompleteBar, "controller-decision", "v1", tenLowRecall, "dev"));
+    const tenHighRecall = [...Array.from({ length: 8 }, (_, i) => completeRecord(`hr${i}`, true)), ...Array.from({ length: 2 }, (_, i) => completeRecord(`hw${i}`, false))];
+    check("control: at or above the gold-count floor, a real pass reads met",
+      evalBar(recallCompleteBar, "controller-decision", "v1", tenHighRecall, "dev") ===
+        "bar: controller-decision:recall:complete v1 met 0.800 over 10 on dev, coverage 1.000 over 10",
+      evalBar(recallCompleteBar, "controller-decision", "v1", tenHighRecall, "dev"));
 
     // block-owner's next_speaker mapping, this document's own scoring rule:
     // operator is true where next_speaker is channel.
@@ -617,6 +709,21 @@ try {
     // thresholds still reads not met on coverage alone.
     check("coverageOf reads the hand-computed share of scorable gold at or above the top-probability floor",
       same(coverageOf(boRecords, "block-owner"), { total: 3, above: 2, coverage: 2 / 3 }), coverageOf(boRecords, "block-owner"));
+    // Isolates the count floor from the coverage floor: five operator
+    // records, all confident, all at or above 0.6, so coverage is a full
+    // 1.000, well past the 0.7 floor, yet the count (5) is still under the
+    // 40-record floor. With coverage held clear, only the count floor can be
+    // the reason this reads not met.
+    const fiveConfidentOperators = Array.from({ length: 5 }, (_, i) => ({
+      id: `c${i}`, question: "block-owner", label: "operator", value: "operator",
+      probabilities: { operator: 0.9, coordinator: 0.025, "another-plan": 0.025, "self-resolving": 0.025, none: 0.025 },
+      haikuValue: null, outcomes: [{ kind: "next_speaker", value: "channel" }],
+    }));
+    check("coverage alone does not pass a bar the count floor still fails",
+      same(coverageOf(fiveConfidentOperators, "block-owner"), { total: 5, above: 5, coverage: 1 }) &&
+      evalBar(BARS["block-owner"][1], "block-owner", "v1", fiveConfidentOperators, "dev") ===
+        "bar: block-owner:recall:operator v1 not met 1.000 over 5 on dev, coverage 1.000 over 5",
+      evalBar(BARS["block-owner"][1], "block-owner", "v1", fiveConfidentOperators, "dev"));
     // Control: the same records padded past the floor with clear negatives
     // read met, so the not-met line above is the floor and not a bug in the
     // metric.
@@ -663,6 +770,8 @@ try {
       cliOut.stdout.includes("Haiku confusion (gold row, predicted columns):") &&
       cliOut.stdout.includes("Haiku precision and recall:"),
       cliOut.stdout);
+    check("calibration bins print half-open except the last, which is closed",
+      cliOut.stdout.includes("[0.6, 0.8):") && cliOut.stdout.includes("[0.8, 1.0]:"), cliOut.stdout);
 
     // withReplay: a v2 answer replaces the record's value under a new
     // version key, and a replay failure is excluded rather than scored.
@@ -672,32 +781,56 @@ try {
       { id: "no-such-id", version: "v2", ok: true, value: "nudge", probabilities: {} },
     ]);
     check("withReplay carries only the ok records, under the replay's own version, and drops a stray id",
-      replayed.records.length === 1 && replayed.records[0].version === "v2" && replayed.records[0].value === "complete" && replayed.failed === 1,
+      replayed.records.length === 1 && replayed.records[0].version === "v2" && replayed.records[0].value === "complete" && replayed.failed === 1 && replayed.missing === 0,
       replayed);
-
-    let scoreExit = null;
-    const origWrite = process.stdout.write.bind(process.stdout);
-    let captured = "";
-    process.stdout.write = (chunk) => { captured += chunk; return true; };
+    const partialReplay = withReplay(joined, [{ id: "cd-1", version: "v2", ok: true, value: "complete", probabilities: {} }]);
+    check("withReplay counts a gold id the replay file never mentions at all as missing, beside failed",
+      partialReplay.missing === 1 && partialReplay.failed === 0, partialReplay);
+    let dupErr = null;
     try {
-      scoreExit = scoreMain(["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl")]);
-    } finally {
-      process.stdout.write = origWrite;
-    }
-    check("score.mjs's exported main returns 0 and prints the same report the CLI does",
-      scoreExit === 0 && captured.includes("== controller-decision v1 (n=2) =="), captured);
+      withReplay(joined, [
+        { id: "cd-1", version: "v2", ok: true, value: "complete", probabilities: {} },
+        { id: "cd-1", version: "v2", ok: true, value: "nudge", probabilities: {} },
+      ]);
+    } catch (e) { dupErr = e.message; }
+    check("withReplay refuses a replay file carrying two rows for one id, naming it", dupErr !== null && dupErr.includes("cd-1"), dupErr);
+
+    // A v1 replay is keyed apart from the journal's own v1 group rather than
+    // overwriting it, and a failed replay record is noted and excluded.
+    fs.writeFileSync(path.join(scoreDir, "replay.jsonl"), [
+      JSON.stringify({ id: "cd-1", version: "v1", ok: true, value: "complete", probabilities: { nudge: 0.02, "ask-operator": 0.02, complete: 0.94, switch: 0.02 } }),
+      JSON.stringify({ id: "cd-2", version: "v1", ok: false, reason: "timeout", detail: null }),
+    ].join("\n") + "\n");
+    const replayCli = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl"), "--replay", path.join(scoreDir, "replay.jsonl")]);
+    check("score.mjs prints a v1 replay beside the v1 baseline, under its own header, rather than replacing it",
+      replayCli.status === 0 &&
+      replayCli.stdout.includes("== controller-decision v1 (n=2) ==") &&
+      replayCli.stdout.includes("== controller-decision v1 (replay) (n=1) ==") &&
+      replayCli.stdout.includes("note: 1 replay record(s) failed and are excluded from every figure"),
+      replayCli.stdout);
+
+    // score.mjs refuses gold whose rows mix splits rather than printing one
+    // split's name over records drawn from more than one.
+    fs.writeFileSync(path.join(scoreDir, "gold-mixed.jsonl"), [
+      JSON.stringify({ id: "cd-1", stampId: "s1", question: "controller-decision", persona: "p", split: "dev", label: "nudge", adjudicated: false, labels: {} }),
+      JSON.stringify({ id: "cd-2", stampId: "s2", question: "controller-decision", persona: "p", split: "holdout", label: "complete", adjudicated: false, labels: {} }),
+    ].join("\n") + "\n");
+    const mixedCli = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold-mixed.jsonl")]);
+    check("score.mjs refuses gold that mixes splits, naming them",
+      mixedCli.status !== 0 && mixedCli.stderr.includes("dev") && mixedCli.stderr.includes("holdout"), mixedCli.stderr);
   }
 
   // --- The replay: request shape and failure handling, against a stub host ---
   console.log("\nreplay.mjs against a stub host");
   {
-    const stubHost = (fetchImpl) => ({
+    const stubHost = (fetchImpl, overrides = {}) => ({
       getApiKey: async () => "stub-key-0000000000000000",
       getHome: async () => undefined,
       readFile: async () => { throw new Error("not used in these cases"); },
       fileExists: async () => false,
       sleep: async () => {},
       fetch: fetchImpl,
+      ...overrides,
     });
     const choiceReply = (idOf, choiceOf) => async (url, init) => {
       const body = JSON.parse(init.body);
@@ -717,12 +850,21 @@ try {
       return { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, model: "jev-latest", usage: {}, __sentBody: body }) };
     };
 
-    check("no pending plan omits switch from the offered options",
-      same(controllerOptionIds("Choose the best decision:\nnudge: x\n"), ["nudge", "pause", "complete", "ask-operator"]));
-    check("a pending plan's line adds switch",
-      same(controllerOptionIds("switch: switch to a different pending plan: Foo\n"), ["nudge", "pause", "complete", "ask-operator", "switch"]));
-    check("turn-score always offers the catalog's full four options, since v1's own state carries no nudge marker",
-      same(TURN_SCORE_OPTION_IDS, ["on-goal", "off-goal-by-instruction", "drift", "complete"]));
+    // offeredOptionIds recovers the v1 set an individual call actually
+    // offered from its own probability keys, since the seam refuses any key
+    // outside the ids it sent.
+    check("offeredOptionIds reads the controller's own set back off its probability keys, without switch",
+      same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.7 } } }), catalog.CONTROLLER_LABELS));
+    check("offeredOptionIds recovers switch the same way, with no state text to read",
+      same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.1, switch: 0.6 } } }), catalog.CONTROLLER_LABELS_WITH_SWITCH));
+    check("offeredOptionIds reads turn-score's narrower nudged set the same way",
+      same(offeredOptionIds("turn-score", { id: "x", jev: { probabilities: { "on-goal": 0.3, drift: 0.3, complete: 0.4 } } }), catalog.SCORER_LABELS_AFTER_NUDGE));
+    check("offeredOptionIds reads turn-score's full set off a turn that was not nudged",
+      same(offeredOptionIds("turn-score", { id: "x", jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } } }), catalog.SCORER_LABELS));
+    let offeredErr = null;
+    try { offeredOptionIds("turn-score", { id: "bad-ids", jev: { probabilities: { foo: 1 } } }); } catch (e) { offeredErr = e.message; }
+    check("offeredOptionIds fails a record whose probability keys match no known v1 set, naming it",
+      offeredErr !== null && offeredErr.includes("bad-ids"), offeredErr);
 
     let sentIds = null;
     const captureIds = (url, init) => {
@@ -730,12 +872,37 @@ try {
       return choiceReply()(url, init);
     };
     const cdResult = await replayRecord(stubHost(captureIds), "controller-decision", "v1", {
-      id: "c1", stampId: "s1", state: "Choose the best decision:\nnudge: x\n", haikuValue: "nudge",
+      id: "c1", stampId: "s1", state: "irrelevant to the option set now", haikuValue: "nudge",
+      jev: { probabilities: { nudge: 0.7, pause: 0.1, complete: 0.1, "ask-operator": 0.1 } },
     });
-    check("controller-decision's replay sends exactly the options offered, and returns the validated answer",
-      same(sentIds, ["nudge", "pause", "complete", "ask-operator"]) &&
+    check("controller-decision's replay sends exactly the options its own call offered, and stamps the seam's own returned version",
+      same(sentIds, catalog.CONTROLLER_LABELS) &&
       cdResult.ok === true && cdResult.id === "c1" && cdResult.version === "v1" && typeof cdResult.probabilities.nudge === "number",
       cdResult);
+
+    let sentIdsSwitch = null;
+    const captureIdsSwitch = (url, init) => {
+      sentIdsSwitch = Object.keys(JSON.parse(init.body).questions["controller-decision"].criteria);
+      return choiceReply()(url, init);
+    };
+    const cdResultSwitch = await replayRecord(stubHost(captureIdsSwitch), "controller-decision", "v1", {
+      id: "c2", stampId: "s2", state: "irrelevant to the option set now", haikuValue: null,
+      jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.1, switch: 0.6 } },
+    });
+    check("a record whose own call offered switch is replayed with switch offered too, recovered from its probability keys alone",
+      same(sentIdsSwitch, catalog.CONTROLLER_LABELS_WITH_SWITCH) && cdResultSwitch.ok === true, { sentIdsSwitch, cdResultSwitch });
+
+    let sentTsIds = null;
+    const captureTsIds = (url, init) => {
+      sentTsIds = Object.keys(JSON.parse(init.body).questions["turn-score"].criteria);
+      return choiceReply()(url, init);
+    };
+    const nudgedResult = await replayRecord(stubHost(captureTsIds), "turn-score", "v1", {
+      id: "t0", stampId: "s0", state: "User asked: x", haikuValue: null,
+      jev: { probabilities: { "on-goal": 0.3, drift: 0.3, complete: 0.4 } },
+    });
+    check("a nudged turn's replay offers only the three options its own call offered, never off-goal-by-instruction",
+      same(sentTsIds, catalog.SCORER_LABELS_AFTER_NUDGE) && nudgedResult.ok === true, { sentTsIds, nudgedResult });
 
     const boState = JSON.stringify({ closingText: "WAITING: a background suite is running", recentClosingTexts: ["a", "b"] });
     let sentQuestionIds = null;
@@ -747,7 +914,7 @@ try {
     const boResult = await replayRecord(stubHost(captureAll), "block-owner", "v1", { id: "b1", stampId: "s2", state: boState, haikuValue: null });
     check("block-owner's replay sends the same four plan-health questions the plugin asks and keeps only its own answer",
       same(sentQuestionIds.sort(), ["block-owner", "rounds-converging", "work-continues", "worker-blocked"]) &&
-      boResult.ok === true && boResult.value === "self-resolving" && !("worker-blocked" in boResult), boResult);
+      boResult.ok === true && boResult.value === "self-resolving" && boResult.version === "v1" && !("worker-blocked" in boResult), boResult);
 
     let boErr = null;
     try { await replayRecord(stubHost(choiceReply()), "block-owner", "v1", { id: "b2", stampId: "s3", state: "not json", haikuValue: null }); } catch (e) { boErr = e.message; }
@@ -756,7 +923,10 @@ try {
     // A failed call is written with its failure reason and is not scored:
     // the seam's own closed reason rides straight through, with no answer.
     const failHost = stubHost(async () => ({ status: 429, ok: false, headers: {}, text: "" }));
-    const failResult = await replayRecord(failHost, "turn-score", "v1", { id: "t1", stampId: "s4", state: "User asked: x", haikuValue: null });
+    const failResult = await replayRecord(failHost, "turn-score", "v1", {
+      id: "t1", stampId: "s4", state: "User asked: x", haikuValue: null,
+      jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } },
+    });
     check("a failed call carries the seam's reason and no answer",
       failResult.ok === false && failResult.reason === "http_429" && !("value" in failResult), failResult);
     check("score.mjs's withReplay excludes a failed replay record from every figure",
@@ -765,15 +935,76 @@ try {
     let order = [];
     const seqHost = stubHost(async (url, init) => { order.push(JSON.parse(init.body).state); return choiceReply()(url, init); });
     const seqResults = await replayAll(seqHost, "turn-score", "v1", [
-      { id: "t1", stampId: "s5", state: "User asked: one", haikuValue: null },
-      { id: "t2", stampId: "s6", state: "User asked: two", haikuValue: null },
+      { id: "t1", stampId: "s5", state: "User asked: one", haikuValue: null, jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } } },
+      { id: "t2", stampId: "s6", state: "User asked: two", haikuValue: null, jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } } },
     ]);
     check("replayAll replays every record in order and carries each id through",
       seqResults.length === 2 && seqResults[0].id === "t1" && seqResults[1].id === "t2" && order[0] === "User asked: one" && order[1] === "User asked: two",
       seqResults.map((r) => r.id));
 
-    check("buildHost reads the key from the environment and touches nothing else in these cases",
-      typeof buildHost({ TYPESAFE_API_KEY: "x" }).getApiKey === "function");
+    // A throw partway through a batch, such as block-owner's non-JSON state
+    // refusal, still leaves onRow fired for every record completed before
+    // it, so an appending caller (main's own) keeps what was already paid
+    // for rather than losing it to the throw.
+    const onRowLog = [];
+    let partialErr = null;
+    try {
+      await replayAll(stubHost(choiceReply()), "block-owner", "v1", [
+        { id: "ok1", stampId: "sok1", state: JSON.stringify({ closingText: "WAITING: x", recentClosingTexts: [] }), haikuValue: null },
+        { id: "bad1", stampId: "sbad1", state: "not json", haikuValue: null },
+      ], { onRow: (row) => onRowLog.push(row.id) });
+    } catch (e) { partialErr = e.message; }
+    check("a throw partway through replayAll still fires onRow for every row completed before it",
+      partialErr !== null && partialErr.includes("bad1") && same(onRowLog, ["ok1"]), { partialErr, onRowLog });
+
+    check("buildHost reads the key from the environment inside getApiKey and nothing else, which is what the header now claims",
+      (await buildHost({ TYPESAFE_API_KEY: "the-real-value" }).getApiKey()) === "the-real-value" &&
+      (await buildHost({}).getApiKey()) === undefined);
+
+    // --- Version validation and stamping ---
+    check("REPLAYABLE_VERSIONS names only v1, since sections 3 to 5 each add their own",
+      same(REPLAYABLE_VERSIONS, ["v1"]));
+
+    const stateFile = path.join(TMP, "replay-state.jsonl");
+    fs.writeFileSync(stateFile, JSON.stringify({ id: "x1", stampId: "s1" }) + "\n");
+    let versionErr = null;
+    try { await replayMain(["--question", "controller-decision", "--version", "v2", "--state-from", stateFile], {}); } catch (e) { versionErr = e.message; }
+    check("replay.mjs refuses a --version it cannot assemble, before touching the network",
+      versionErr !== null && versionErr.includes("v1"), versionErr);
+
+    const existingOut = path.join(TMP, "replay-out-exists.jsonl");
+    fs.writeFileSync(existingOut, "");
+    let overwriteErr = null;
+    try { await replayMain(["--question", "turn-score", "--version", "v1", "--state-from", stateFile, "--out", existingOut], {}); } catch (e) { overwriteErr = e.message; }
+    check("replay.mjs refuses to overwrite an existing --out unless --force is given",
+      overwriteErr !== null && overwriteErr.includes("--force"), overwriteErr);
+
+    // An active override changes the wording a call actually sends without
+    // changing what --version was asked for; replay catches the mismatch
+    // rather than mislabelling the row "v1".
+    const overrideHome = path.join(TMP, "override-home");
+    const overrideDir = path.join(overrideHome, ".claude", "agentic-questions", "controller-decision");
+    fs.mkdirSync(overrideDir, { recursive: true });
+    fs.writeFileSync(path.join(overrideDir, "active.json"), JSON.stringify({ version: "v2" }));
+    fs.writeFileSync(path.join(overrideDir, "v2.json"), JSON.stringify({
+      primitive: "choice",
+      instructions: "An overridden controller question.",
+      options: { nudge: "n", pause: "p", complete: "c", "ask-operator": "a", switch: "s" },
+    }));
+    const overrideHost = stubHost(choiceReply(), {
+      getHome: async () => overrideHome,
+      readFile: async (p) => fs.promises.readFile(p, "utf8"),
+      fileExists: async (p) => { try { await fs.promises.access(p); return true; } catch { return false; } },
+    });
+    let overrideErr = null;
+    try {
+      await replayRecord(overrideHost, "controller-decision", "v1", {
+        id: "ov1", stampId: "sov1", state: "irrelevant to the option set now", haikuValue: null,
+        jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.1, switch: 0.6 } },
+      });
+    } catch (e) { overrideErr = e.message; }
+    check("an active override sends a wording that resolves to another version, and replay refuses rather than mislabelling the row v1",
+      overrideErr !== null && overrideErr.includes('"v2"') && overrideErr.includes('"v1"'), overrideErr);
   }
 } finally {
   fs.rmSync(TMP, { recursive: true, force: true });
