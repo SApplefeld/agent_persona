@@ -10020,8 +10020,10 @@ export const register: Register = async (on, options) => {
           if (gate !== null) {
             const split = splitOf(gate.stampId);
             if ("reason" in gate) {
-              // The live call has journaled its own failure, so Haiku runs as
-              // today with no shadow call beside it.
+              // Haiku runs as today with no shadow call beside it. A seam
+              // reason has its own call line naming it, written by liveAsk. A
+              // `rejected` call has none, since liveAsk's catch returns before
+              // any line is written, so this decision is its only record.
               sess.state.decisions.push({
                 timestamp: Date.now(),
                 loop: "memory",

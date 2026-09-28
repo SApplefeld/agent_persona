@@ -23311,6 +23311,17 @@ async function caseLiveAsk_theAnswerReturnsBeforeItsJournalLinesLand(clock) {
 const memoryGateClassify = (_state, labels) => (Array.isArray(labels) && labels.includes("fact") ? "fact" : "on-goal");
 const MEMORY_GATE_DISTILLED = "The operator drinks tea.";
 
+// Whether a decision detail carries a token, read as a whole: bounded on each
+// side by the detail's start or end, whitespace or punctuation, so `p 0.9`
+// does not match inside `p 0.95` and `stamp a.b.1.1` does not match inside
+// `stamp a.b.1.12`. The gate's details have no fixed wording, so the cases
+// read the tokens a reader acts on rather than the sentence around them.
+function detailHasToken(detail, token) {
+  if (typeof detail !== "string") return false;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[\\s,;:()])${escaped}($|[\\s,;:()])`).test(detail);
+}
+
 // The memory site's own calls, each told apart from every other site's by
 // what it carries: the classify by its label array, the completion by the
 // distill prompt's opening, the seam request by the question it asks, and
@@ -23401,10 +23412,15 @@ function checkMemoryGatePassed(label, h, split, condition, p) {
   check(`${label}: no answer line carries a Haiku value, so no shadow answer was written`,
     !journalLinesOfKind(h, "answer").some((a) => a.haikuValue !== null), journalLinesOfKind(h, "answer"));
   const gate = memoryGateDecisions(h);
-  const pPart = p === null ? "" : `p ${p}, `;
-  check(`${label}: one memory_gate_passed decision carrying the stamp id, the split and ${condition}`,
+  const detail = gate.length === 1 ? gate[0].detail : null;
+  // The other condition is absent, and so is any probability where the
+  // answer carried none.
+  const otherCondition = condition === "holdout" ? "below-floor" : "holdout";
+  check(`${label}: one memory_gate_passed decision carrying the stamp id, the split and ${condition}, and not ${otherCondition}`,
     gate.length === 1 && gate[0].action === "memory_gate_passed" && gate[0].loop === "memory"
-      && gate[0].detail === `${pPart}stamp ${stampId}, split ${split}, ${condition}`,
+      && detailHasToken(detail, `stamp ${stampId}`) && detailHasToken(detail, `split ${split}`) && detailHasToken(detail, condition)
+      && !detailHasToken(detail, otherCondition)
+      && (p === null ? !/(^|[\s,;:()])p \d/.test(detail) : detailHasToken(detail, `p ${p}`)),
     gate);
 }
 
@@ -23424,9 +23440,12 @@ function checkMemoryGateSkipped(label, h, p) {
   check(`${label}: no haiku_kind outcome is written`,
     !journalLinesOfKind(h, "outcome").some((o) => o.kind === "haiku_kind"), journalLinesOfKind(h, "outcome"));
   const gate = memoryGateDecisions(h);
-  check(`${label}: one memory_gate_skipped decision carrying ${p}, the stamp id and dev`,
+  const detail = gate.length === 1 ? gate[0].detail : null;
+  // A skip is never on a holdout stamp, so its detail never names holdout.
+  check(`${label}: one memory_gate_skipped decision carrying ${p}, the stamp id and dev, and not holdout`,
     gate.length === 1 && gate[0].action === "memory_gate_skipped" && gate[0].loop === "memory"
-      && gate[0].detail === `p ${p}, stamp ${stampId}, split dev`,
+      && detailHasToken(detail, `p ${p}`) && detailHasToken(detail, `stamp ${stampId}`) && detailHasToken(detail, "split dev")
+      && !detailHasToken(detail, "holdout") && !detailHasToken(detail, "split holdout"),
     gate);
 }
 
@@ -23539,7 +23558,8 @@ async function caseMemoryGate_theFloorIsARosterFieldClampedToItsRange(clock) {
     const clamped = getDecisions(h).filter((d) => d.action === "setting_clamped");
     check(`memory gate setting ${value}: one setting_clamped decision naming the setting, the value received and 90`,
       clamped.length === 1 && clamped[0].loop === "monitor"
-        && clamped[0].detail === `memoryGateDiscardPercent ${value} is outside 50 to 100; using 90`,
+        && detailHasToken(clamped[0].detail, "memoryGateDiscardPercent") && detailHasToken(clamped[0].detail, String(value))
+        && detailHasToken(clamped[0].detail, "90"),
       clamped);
     h.setHttpResponse(jevMemoryAnswer(p));
     await memoryGateTurn(h, clock, `t-memgate-clamped-${value}`, "dev");
@@ -23637,7 +23657,8 @@ async function caseMemoryGate_everyFailureFallsBackToHaikuWithNoShadowCall(clock
     const gate = memoryGateDecisions(h);
     check(`${label}: one memory_gate_fallback decision naming the reason, the stamp id and the split`,
       gate.length === 1 && gate[0].action === "memory_gate_fallback" && gate[0].loop === "memory"
-        && gate[0].detail === `reason ${reason}, stamp ${stampId}, split ${Journal.splitOf(stampId ?? "")}`,
+        && detailHasToken(gate[0].detail, reason) && detailHasToken(gate[0].detail, `stamp ${stampId}`)
+        && detailHasToken(gate[0].detail, `split ${Journal.splitOf(stampId ?? "")}`),
       gate);
   }
 }
