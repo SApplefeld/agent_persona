@@ -59,8 +59,8 @@ export const SMALL_STRATUM = 5;
 // The longest opening prompt and final message a record carries, cut raw.
 // They usually cover the 1,200 and 3,000 characters the turn-score v2 state
 // holds, which counts them after its whitespace collapse; where a
-// whitespace-heavy text collapses under those bounds, replay.mjs refuses the
-// record as cut_short.
+// whitespace-heavy text reached this raw cut and collapses under those
+// bounds, replay.mjs refuses the record as cut_short.
 export const PROMPT_MAX = 3000;
 export const FINAL_MAX = 4000;
 

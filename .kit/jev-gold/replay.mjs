@@ -18,10 +18,13 @@
 // and turn-score at v2, over the state turnScoreStateText in
 // hooks/question-catalog.ts builds from the record's transcript fields. The
 // plugin's scorer calls that same function, so the two build one state from
-// the same inputs; whether a transcript's fields are the plugin's inputs is
-// checked only where the journal holds the plugin's own v2 state, which a
-// v2 replay must equal byte for byte (turnScoreV2State). controller-decision and turn-score each offer more than
-// one option set (switch only where a pending plan exists; the fourth
+// the same inputs. Whether a transcript's fields are the plugin's inputs is
+// checked twice: sample.mjs admits a record only where its journaled answer
+// opens the transcript turn's final message, whitespace set aside, and where
+// the journal holds the plugin's own v2 state a v2 replay must equal it byte
+// for byte (turnScoreV2State). A v1-journaled record carries no opening text
+// or Tools part the plugin built, so those two parts go unchecked there.
+// controller-decision and turn-score each offer more than one option set (switch only where a pending plan exists; the fourth
 // turn-score option only off a nudge), and the set a record's own call
 // offered is read back off `record.jev.probabilities`'s own keys, which
 // decision-seam.ts's answer validator refuses to carry any id outside the
