@@ -4172,6 +4172,7 @@ async function main() {
     await caseMemq24_aRestartKeepsTheNamesForTheClose(clock);
     await caseMemq25_twoPendingChecksAnswerTheirOwnGoals(clock);
     await caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock);
+    await caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock);
   } finally {
     clock.restore();
   }
@@ -32993,9 +32994,9 @@ const MEMQ1_SCRIPT = `${BANK2_INSTALL}/scripts/memq.js`;
 const MEMQ1_MOVED_CWD = "D:/harness-root/after-a-bare-cd";
 const MEMQ1_READ = ["judged", "--situation", "what did we decide", "--limit", "10"];
 const MEMQ1_WRITE = ["put", "fact-abc", "A fact.", "--body", "A fact."];
-const MEMQ1_READ_OPTS = { timeoutMs: 2500 };
+const MEMQ1_READ_OPTS = { timeoutMs: 5000 };
 const MEMQ1_WRITE_OPTS = { timeoutMs: 5000 };
-const MEMQ1_STAND_DOWN_MS = 5 * 60_000;
+const MEMQ1_STAND_DOWN_MS = 60_000;
 const MEMQ1_OK = Object.freeze({ exitCode: 0, stdout: "  fleet  fact-abc  (project:harness)  sandbox:none  A fact.\n", stderr: "" });
 
 // An owner session with the kit install seeded unless `seedKit` is false,
@@ -33045,7 +33046,7 @@ async function caseMemq1_theSpawnRunsFromTheLaunchDirectory(clock) {
     reloadRun.init && reloadRun.init.cwd === HARNESS_CWD, reloadRun.init);
   check("memq1 spawn: env carries the session id and nothing else",
     run.init && JSON.stringify(run.init.env) === JSON.stringify({ CLAUDE_CODE_SESSION_ID: SESSION_ID }), run.init);
-  check("memq1 spawn: the caller's bound is the run's timeout", run.init && run.init.timeoutMs === 2500, run.init);
+  check("memq1 spawn: the caller's bound is the run's timeout", run.init && run.init.timeoutMs === 5000, run.init);
   check("memq1 spawn: the child's result comes back as it ran", JSON.stringify(res) === JSON.stringify(MEMQ1_OK), res);
 
   // A non-zero exit is the caller's to read, not a failure cause.
@@ -33177,7 +33178,7 @@ async function caseMemq2_aFailureLogsOncePerCausePerDay(clock) {
 }
 
 async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
-  console.log("\n=== Persona memory 3: a read's timeout stands reads down for five minutes, and writes still spawn ===");
+  console.log("\n=== Persona memory 3: a read's timeout stands reads down for one minute, and writes still spawn ===");
   clock.set(T0);
   const h = await memq1Harness("memq3_stand_down");
   h.setProcessRun(processRunTimesOut(clock));
@@ -33189,7 +33190,7 @@ async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
 
   h.setProcessRun(MEMQ1_OK);
   let runs = h.processRuns.length;
-  clock.set(armedAt + 4 * 60_000);
+  clock.set(armedAt + 30_000);
   const inWindow = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
   failures = await memq1Failures(h);
   check("memq3: a read inside the window resolves null with no spawn and no decision",
@@ -34000,7 +34001,7 @@ async function caseMemq13_theReadInjectsWhatMemqJudged(clock) {
   const read = reads[0] || {};
   check("memq13: the argv is judged, the prompt as the situation, the persona's store-id tag and a limit of 10",
     JSON.stringify(read.argv) === JSON.stringify(["node", MEMQ1_SCRIPT, "judged", "--situation", MEMQ13_PROMPT, "--tag", "persona-default", "--limit", "10"]), read.argv);
-  check("memq13: the read is bounded at 2500 ms", read.init && read.init.timeoutMs === 2500, read.init);
+  check("memq13: the read is bounded at 5000 ms", read.init && read.init.timeoutMs === 5000, read.init);
   const block = memq13Block(context);
   check("memq13: one block opens with the fixed first line, then the two judged lines exactly as printed",
     block === [MEMQ13_HEAD, ...MEMQ13_LINES].join("\n"), block);
@@ -34077,11 +34078,11 @@ async function caseMemq15_aStandDownSkipsTheRead(clock) {
   check("memq15 setup: the first prompt's read ran to its bound and injected nothing",
     memq13Reads(h).length === 1 && memq13Block(first) === undefined, memq13Reads(h).length);
   h.setProcessRun(MEMQ13_OK);
-  clock.advance(60_000);
+  clock.advance(30_000);
   const inWindow = await memq13Submit(h, "A second prompt inside the window.");
   check("memq15: a prompt inside the window spawns no judged", memq13Reads(h).length === 1, memq13Reads(h).length);
   check("memq15: and injects no memory block", memq13Block(inWindow) === undefined && memq13Stray(inWindow).length === 0, inWindow);
-  clock.advance(5 * 60_000);
+  clock.advance(60_000);
   const after = await memq13Submit(h, "A prompt after the window.");
   check("memq15 control: the first prompt after the window spawns and injects",
     memq13Reads(h).length === 2 && memq13Block(after) === [MEMQ13_HEAD, ...MEMQ13_LINES].join("\n"), { reads: memq13Reads(h).length, after });
@@ -34608,6 +34609,36 @@ async function caseMemq25_twoPendingChecksAnswerTheirOwnGoals(clock) {
     JSON.stringify(memq20Touches(h).map((r) => r.argv[3])) === JSON.stringify([n0, n1]), memq20Touches(h).map((r) => r.argv));
   check("memq25 second: two memory_applied, and the list is empty",
     countAction(getDecisions(h), "memory_applied") === 2 && getState(h).shownMemories.length === 0, { applied: getDecisions(h).filter((d) => d.action === "memory_applied"), shown: getState(h).shownMemories });
+}
+
+async function caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock) {
+  console.log("\n=== Persona memory 27: the [MEMORY CHECK] turn is scored against no goal, so the goal active after the close spends no round on it ===");
+  const h = await memq20Harness(clock, "memq27", memq20TaskTree(), memq20Shown("task-1", "task-2"));
+  h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  await MEMQ20_SITES[3].close(h, clock);
+  check("memq27 setup: task-2 is active and the check is the next queued turn",
+    getState(h).activeGoalId === "task-2" && h.queuedTurnTexts[0] === memq20CheckText(MEMQ20_TITLE, MEMQ13_NAMES),
+    { active: getState(h).activeGoalId, queued: h.queuedTurnTexts });
+  const before = getDecisions(h).length;
+  // A scorer that would close whatever goal it is asked about.
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("complete")) ? "complete" : "discard");
+  await openQueuedTurn(h, "t-memq27-check");
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-memq27-check", answer: MEMQ13_NAMES[0], reason: "completed" }, async () => ({ result: "ok" }));
+  const after = getDecisions(h).slice(before);
+  const task2 = getState(h).goals.find((g) => g.id === "task-2");
+  check("memq27: no score decision from the check turn", !after.some((d) => d.action === "score"), after.filter((d) => d.action === "score"));
+  check("memq27: one score_skipped on the goal loop naming task-2 and the memory check",
+    after.filter((d) => d.action === "score_skipped" && d.loop === "goal" && d.detail.startsWith("task-2:") && d.detail.includes("memory check")).length === 1,
+    after.filter((d) => d.action === "score_skipped"));
+  check("memq27: task-2 stays active with no round spent and no score",
+    task2.status === "active" && task2.completedRounds === 0 && task2.scores.length === 0, task2);
+  check("memq27: the check's answer still stamped its record", countAction(after, "memory_applied") === 1, after.filter((d) => d.action.startsWith("memory_")));
+  // The control: an ordinary scored turn in the same session is scored
+  // against task-2, so the silence above is the skip and not a scorer that
+  // never runs.
+  await plan2ScoredTurn(h, "t-memq27-ctl", "on-goal");
+  check("memq27 control: an ordinary turn after it is scored against task-2",
+    getDecisions(h).some((d) => d.action === "score" && d.detail.includes("task-2")), getDecisions(h).slice(-6));
 }
 
 async function caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock) {

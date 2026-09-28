@@ -2691,7 +2691,7 @@ async function bankCompactionBoundary(dp: any, turnKind: string): Promise<void> 
 // How long a read that ran past its bound keeps later reads from spawning
 // memq. Every read in the window would otherwise pay its whole bound against
 // a store host that is down.
-const MEMQ_STAND_DOWN_MS = 5 * 60_000;
+const MEMQ_STAND_DOWN_MS = 60_000;
 
 // How far short of its bound a rejection may land and still read as a
 // timeout. A host timer can fire a little early against Date.now(), and a
@@ -2770,11 +2770,11 @@ export async function kitMemq(
 }
 
 // How long one memq put may run. A put takes the tier's lock, and a write
-// costs the prompt nothing, so its bound is twice the 2,500 ms a read gets.
+// costs the prompt nothing, so its bound is never shorter than a read's.
 const MEMQ_WRITE_TIMEOUT_MS = 5_000;
 
 // How long the per-prompt memq judged may run. The prompt waits on it.
-const MEMQ_READ_TIMEOUT_MS = 2_500;
+const MEMQ_READ_TIMEOUT_MS = 5_000;
 
 // The most code points of a prompt the read passes memq as its situation.
 const MEMQ_SITUATION_MAX = 500;
@@ -9689,6 +9689,10 @@ export const register: Register = async (on, options) => {
     // The idle proposal's turn asks for a proposal rather than work on a
     // node, so it is scored against none and spends no round.
     const wasProposal = currentTurnKind === "proposal";
+    // A closed goal's [MEMORY CHECK] turn asks about records shown under that
+    // goal, not about the entry active now, so it too is scored against none
+    // and spends no round.
+    const wasMemoryCheck = currentTurnKind === "memoryCheck";
     // Whether this completion is the nudged turn's own, read by id rather
     // than from currentTurnKind, which the first completion to arrive resets
     // whatever turn it belongs to. The id is spent here, so the nudged turn
@@ -10015,13 +10019,13 @@ export const register: Register = async (on, options) => {
         // checked first: a turn matched as a nudge is scored as a nudge
         // whatever else it also carries, so the channel/delivery skip
         // below reaches only a turn that was not a matched nudge.
-        const skippedForOrigin = !wasNudged && (wasChannelOrigin || wasDelivery || wasProposal);
+        const skippedForOrigin = !wasNudged && (wasChannelOrigin || wasDelivery || wasProposal || wasMemoryCheck);
         if (skippedForOrigin) {
           sess.state.decisions.push({
             timestamp: Date.now(),
             loop: "goal",
             action: "score_skipped",
-            detail: `${g.id}: turn opened from ${wasChannelOrigin ? "a channel message" : wasDelivery ? "a delivered record" : "the idle proposal"}`,
+            detail: `${g.id}: turn opened from ${wasChannelOrigin ? "a channel message" : wasDelivery ? "a delivered record" : wasProposal ? "the idle proposal" : "a memory check"}`,
           });
           turnLeafId = null;
         } else if (planEntry && !wasNudged) {
