@@ -360,3 +360,35 @@ Delta: measured 2026-09-28 on D:/agent_persona-memory-port at 36f4af0, before th
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 5 - 2026-09-28
+Completed: 5. The documents
+Implemented By: the main session inline, as the section's documents are written from facts read across sections 1 to 4
+Metrics: review rounds 3, closed claim-exit; provenance 4 spec-traceable, 3 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: none dispatched, the section being all prose; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 5 open: README's Memory section states the store, the write, the persona id, the migration, the read, the applied ask and the compaction fold, with every decision each path logs; the tick row, the loop list, the persona-file bound, Limitations, Next steps and the journal example take the new shape; `docs/architecture.md`'s distill sentence and a new symptom row; `docs/security-model.md`'s store-text paragraph; `docs/README.md`'s entry. Serves the Goal's "state all of it on the documents"; adds no mechanism; about 30 document lines; not building it leaves the README promising local confidence ranking, no decay and an unconnected MEMQ.
+- Approval drift: section 5's Files in scope gained `docs/security-model.md`, forwarded by section 4's security review (line 57 lists the bounded store-text channels) and by section 1's (the install record now picks `scripts/memq.js`).
+- The spec's line anchors had moved by up to 100 lines since `fd5b2d6`; each site was re-anchored by its text.
+- r1 Major (both lenses): the controller egress paragraph still described the old `Memory:` counts. Serves the tick-row bullet; no mechanism; one sentence rewritten; not building it leaves the egress record describing a line the code no longer sends.
+- r1 Major (prose): "What leaves the machine" omitted the memory read. Each owner prompt's first 500 characters go through `memq judged`, which the list did not name. Serves the Goal's read, whose egress the inventory must state; no mechanism; one paragraph; not building it leaves the egress inventory false.
+- r1 Major (prose): the security model's install-record entry omitted `scripts/memq.js` and its cadences. Serves the same; no mechanism; one sentence.
+- r2 Major and r3 Major (adversarial, confirmed in the kit at `memq.js:7260-7261` and `memory-database.js:922` and `:1120`): the read's text reaches three hosts in order. It goes to the embedding server, then to the shared memory database host with the vector, segment and tag, and last to the Jev endpoint. Rounds 1 and 2 had named fewer. Fix-introduced in the sense that round 1's fix under-described it.
+- r2 Major: the security model called the store one file; it is record files under the kit's store root with the database login in `~/.claude/kit-memory-db.json`.
+- My own correction during fix round 1: the reviewers said a reader session reads nothing. The code (`hooks/index.ts` 12932) skips the read only for a launch with `arming` set to `reader`, so a passive reader that lost the claim still reads. The documents say that.
+- Deferred to section 6: two stale code comments, the `kitMemq` header (`hooks/index.ts` 2704-2708) claiming the capture survives a reload, and `memqStandDownUntil`'s (2169-2170) "five minutes" where `MEMQ_STAND_DOWN_MS` is 60,000. Section 6 rewrites that capture.
+Failed approaches: a heredoc carrying backticks failed Bash quoting and wrote nothing; the Write tool carried the replacement script instead.
+Assumptions:
+- assumed 2026-09-28 (default, section 5): the memory write's egress is stated as "memq put writes a file, the kit's publish leg carries it later", with the publish's payload left to the kit's documents, since this plan does not own the publish; reversal: one sentence.
+Review Findings: review: accuracy (adversarial-reviewer) and prose (prose-reviewer) at fable, Workflow high (round 1); adversarial at fable, Workflow high (rounds 2 and 3). Majors fixed: round 1, four (e0ef021); round 2, two (c37881f); round 3, one (13868be). Majors refused: none. Minors: 19 fixed across the three rounds, 1 resolved by removing an unverified sentence (memq's `.kit/jev-shown.json` record depends on a session-id shape this change did not check), 0 left. Dispositions are in `.kit/scratch/memory-port/minors-section-5.md`. The loop closed on an author re-read after 13868be, since each round-3 fix is a source-confirmed wording change.
+Acceptance:
+- The stale-sentence sweep (`No decay`, `don't decay`, `MEMQ not connected`, `MEMQ MCP`, `$.mcp.call("MEMQ`, `confidence ranking`, `rank by confidence`, `Memory decay`) over `README.md`, `docs/architecture.md`, `docs/README.md` and `docs/security-model.md` at 13868be finds nothing, exit 1. The spec's withheld control, `docs/archive/agent_persona_passive-supervisor_v1.md`, holds none of those sentences and returned 0, so it cannot speak. The control used is the pre-change `README.md` at 48edcdc, which the same search matches 5 times, exit 0. The pattern was written knowing those five sentences, so the control proves the pattern on them and not on other wordings.
+- Every memory decision name `hooks/index.ts` logs appears in `README.md` or `docs/architecture.md`: a set difference over the two, empty.
+Stamps: adjudicated 1, stamped 0 (`a-deployment-fact-is-read-from-the-machine-not-from-the-code-that-configures-it`, which bears on host setup facts and shaped no sentence here); window `--since 6h`; no hand walk owed.
+Gate: targeted lane at section close, measured 2026-09-28 on the worktree D:/agent_persona-memory-port at 13868be. No process poll was taken before the run, so its start is unpolled rather than clear. Results:
+- `node .kit/controller-tick-test.mjs`: 6127 OK / 0 FAIL, exit 0, against section 4's close at 36f4af0 of 6127 / 0, exit 0 (no change, the delta being documents only).
+- `node .kit/injection-duplicate-test.mjs`: exit 0; `node .kit/task-store-unit-test.mjs`: exit 0; typecheck `tsc --noEmit -p .`: exit 0.
+- `node .kit/question-catalog-unit-test.mjs`, run because it reads README text: exit 0, "All tests passed".
+Tests added: none, the section being documents.
+Contention lane: not owed, since the delta touches no machine-shared state.
+Next: 6. The launch directory survives a reload of the plugin's code
+Commit Model: Branch-and-PR
