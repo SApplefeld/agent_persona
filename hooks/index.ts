@@ -2765,7 +2765,7 @@ export async function kitMemq(
 }
 
 // How long one memq put may run. A put takes the tier's lock, and a write
-// costs the prompt nothing, so its bound is twice a read's.
+// costs the prompt nothing, so its bound is twice the 2,500 ms a read gets.
 const MEMQ_WRITE_TIMEOUT_MS = 5_000;
 
 // The memory kind a record is written under: fact, preference or lesson as
@@ -2796,7 +2796,10 @@ const MEMQ_TAG_CAP = 40;
 // tag cap. Otherwise it is the name with every other character removed, cut
 // so that persona-<id> still fits, then a dash and the base-36 fnv1a hash of
 // the full name, so two names that differ only in removed characters keep
-// apart. Reading and stamping a persona's records go by the same id.
+// apart. Two names that differ only in letter case are not kept apart: memq
+// compares record names without case on Windows, so the second one's write
+// is refused as a duplicate. Reading and stamping a persona's records go by
+// the same id.
 export function personaStoreId(persona: string): string {
   const prefix = "persona-";
   if (MEMQ_NAME_CHARSET.test(persona) && prefix.length + persona.length <= MEMQ_TAG_CAP) return persona;
