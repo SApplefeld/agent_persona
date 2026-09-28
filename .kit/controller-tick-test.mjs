@@ -23757,9 +23757,11 @@ async function caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock) {
   }
 }
 
-// The task-notification skip reads the turn's own opening, not the last
-// prompt the hook saw. A delivery turn the plugin submits fires no prompt
-// hook, so the prompt it would read is the notification turn's before it.
+// The task-notification skip reads the text the turn opened with, recorded at
+// turn.start, not the last prompt the hook saw. A delivery turn the plugin
+// submits fires no prompt hook, so the prompt it would read is the
+// notification turn's before it. A subagent completing inside that turn resets
+// the turn's kind, so a kind test cannot stand in for the opening text either.
 async function caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(clock) {
   console.log("\n=== Memory gate: a delivery turn after a task notification turn is classified, not skipped ===");
   clock.set(T0);
@@ -23783,15 +23785,33 @@ async function caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(cl
   await h.handlers["turn.start"](h.fake, { turnId: "t-mgtn-delivery" }, async () => ({ result: "ok" }));
   check("memory gate delivery after notification: the delivery's own turn took the stamp (setup sanity)",
     readStoreRecord(h, key)?.turnId === "t-mgtn-delivery", readStoreRecord(h, key));
+  // A subagent the delivery turn dispatched completes inside it first.
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-mgtn-delivery", agentId: "sub-mgtn", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  const classifyBefore = memorySiteCalls(h).classify.length;
   await h.handlers["turn.complete"](h.fake, { turnId: "t-mgtn-delivery", answer: "Noted, you prefer tea.", reason: "completed" }, async () => ({ result: "ok" }));
   await new Promise((r) => setTimeout(r, 60));
   await tick;
-  check("memory gate delivery after notification: no second memory_skipped_task_notification decision",
+  check("memory gate delivery after notification: no memory_skipped_task_notification beyond the notification turn's, the subagent's completion included",
     memoryGateDecisions(h).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(h));
-  const site = memorySiteCalls(h);
-  check("memory gate delivery after notification: the delivery turn was classified by Haiku and Jev was asked once",
-    site.classify.length === 1 && site.requests.length === 1,
-    { classify: site.classify.length, requests: site.requests.length });
+  check("memory gate delivery after notification: the delivery turn's own completion was classified by Haiku",
+    memorySiteCalls(h).classify.length === classifyBefore + 1,
+    { before: classifyBefore, after: memorySiteCalls(h).classify.length });
+
+  // A continuation after a notification turn opens with empty text, so it
+  // was not opened by a notification and is classified.
+  const c = await memoryGateHarness("memgate_tasknote_then_continuation", clock);
+  c.setHttpResponse(jevMemoryAnswer(0.5));
+  await openPromptTurn(c, { originKind: null, text: NOTIFICATION, turnId: "t-mgtn-c-note" });
+  await c.handlers["turn.complete"](c.fake, { turnId: "t-mgtn-c-note", answer: "The build passed; I noted it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  await c.handlers["turn.start"](c.fake, { turnId: "t-mgtn-c-cont", text: "" }, () => {});
+  await c.handlers["turn.complete"](c.fake, { turnId: "t-mgtn-c-cont", answer: "And the tests passed too.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  check("memory gate continuation after notification: only the notification turn was skipped",
+    memoryGateDecisions(c).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(c));
+  check("memory gate continuation after notification: the continuation was classified by Haiku once",
+    memorySiteCalls(c).classify.length === 1, { classify: memorySiteCalls(c).classify.length });
 }
 
 async function caseSeamEachSiteWritesItsCallAndAnswerLines(clock) {
