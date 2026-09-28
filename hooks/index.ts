@@ -9198,6 +9198,9 @@ export const register: Register = async (on, options) => {
     // the turn's own calls wrote, are both rewritten by the next turn.start.
     const askedTextAtDelete = currentTurnAskedText;
     const turnNudgedAtDelete = currentTurnNudged;
+    // Cleared here, before the handler's first await, so a completion that
+    // lands during those awaits is not read as the nudged turn's.
+    if (completesGateTurn) currentTurnNudged = false;
     const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
     // Section 6 (goal-every-turn): route one's own fact, read here for the same
     // reason. The plan documents this turn edited are rewritten by the next
@@ -9292,7 +9295,6 @@ export const register: Register = async (on, options) => {
       currentTurnIsPriming = false;
       currentTurnEntry = null;
       currentGateTurnId = null;
-      currentTurnNudged = false;
     }
 
     // C3: error streak fold.

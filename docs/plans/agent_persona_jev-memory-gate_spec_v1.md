@@ -46,7 +46,7 @@ Provenance: the operator's channel messages on 2026-09-25, the ARCHITECT's count
 
 - Section 2 acceptance: `JEV_PROMOTABLE_SET_IDS` in `bin/agentic-common.sh` names `memory-kind` beside `turn-open` and `turn-disposition`, so a roster `jevLive` naming `memory-kind` is carried to the plugin rather than refused at launch, and the parity pin in `.kit/settings-plugin-key-test.sh` against `PROMOTABLE_SET_IDS` passes.
 - Section 2 acceptance: a run directory that already holds a settings file gains `memoryGateDiscardPercent` under both plugin ids from the roster field on every launch where the field is set, and is left byte for byte where it is not, so the roster floor reaches a persona that has launched before.
-- Goal, operator ruling 2026-09-27 on the scope adjudicator's ask: a turn the plugin's goal nudge opened makes no memory call at its own completion, a subagent having completed inside it included, with `memory-kind` live or not. This waives the Goal's sentence that nothing changes with `memory-kind` absent, for that one turn shape only.
+- Goal, operator ruling 2026-09-27 on the scope adjudicator's ask: a turn the plugin's goal nudge opened makes no memory call at its own completion, a subagent having completed inside it included, with `memory-kind` live or not. This waives the Goal's sentence that nothing changes with `memory-kind` absent, for that one turn shape only. Read, 2026-09-27, as every completion while the nudged turn is open, its subagents' included, up to and including its own: each such completion quotes the nudge as "User asked:", and the option the operator chose was a flag recorded at the turn's start. Before this plan only the first completion inside a nudged turn was skipped, whichever it was.
 
 ## Sections of Work
 
@@ -274,4 +274,13 @@ Advisory dispositions:
 - Minor, journey wording in two backlog sentences: rewritten as current fact. The flag's comment now says it clears at the turn's own completion.
 - Gate after the fix: tick suite 5768 OK / 0, tsc exit 0.
 
-**Next action.** Round 5, the adversarial lens over round 4's fix; then the documentation curator, the final Chapter and the pull request.
+**Next action (superseded below).** Round 5, the adversarial lens over round 4's fix; then the documentation curator, the final Chapter and the pull request.
+
+**Round 5, adversarial at opus, Workflow, effort high, over `99ec93a..80d8d1e`.** APPROVED_WITH_CONCERNS; all five brief checks confirmed, the suite re-run green by the reviewer, the tree clean before and after. This is the fifth round of the pass.
+- Major, spec-traceable: the skip covers subagent completions inside the nudged turn, not only its own completion, so with `memory-kind` absent a second in-turn subagent completion is no longer classified. Justified-not-fixed: narrowing the skip to the turn's own completion would classify completions that quote the nudge as "User asked:", the controller's own words the operator chose to stop classifying, and the prior behavior skipped only whichever completion came first. The amendment now states this reading, and the plan-end message names it for the operator to overrule.
+- Minor, fix-introduced: the clear ran after the handler's awaits, so a completion landing in them read the flag set. Fixed in the close pass: the flag clears beside its capture when the completion is the turn's own, before any await.
+- Minor: the own-id subagent fixture used one value for its turn id and agent id; now distinct.
+- Minor: the backlog's overlap sentence named one order with the other order's reason; now states both.
+- The terminal condition is met: no correctness Critical, the Major disposed, and the close-pass delta, a one-line move of the clear plus a fixture id and a sentence, owes no round by author judgment, recorded as an author re-read: the clear fires only on the gate turn's own completion, after the capture. Gate: tick suite 5768 OK / 0, tsc exit 0.
+
+**Next action.** Step 5, the documentation curator; then the final Chapter, the archive, the whole gate and the pull request.

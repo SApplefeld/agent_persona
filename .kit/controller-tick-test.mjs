@@ -23846,7 +23846,7 @@ async function caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentComplete
     check(`${label} control: the idle tick nudged the entry`, idle.nudged === true, idle);
     const before = memorySiteCalls(h);
     await openQueuedTurn(h, "t-mgn-nudged");
-    await h.handlers["turn.complete"](h.fake, { turnId: "sub-mgn-own", agentId: "sub-mgn-own", answer: "The subagent's own report.", reason: "completed" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-sub-mgn-own", agentId: "sub-mgn-own", answer: "The subagent's own report.", reason: "completed" }, async () => ({ result: "ok" }));
     await new Promise((r) => setTimeout(r, 60));
     await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-nudged", agentId: "sub-mgn", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
     await new Promise((r) => setTimeout(r, 60));
