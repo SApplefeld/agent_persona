@@ -265,4 +265,13 @@ Advisory dispositions:
 
 **Nudge guard, 2026-09-27.** The operator answered fix it here. `turn.start` now records whether a nudge entry matched the turn, and the memory step reads that flag at completion in place of `wasNudged`, so a subagent's completion no longer makes a nudged turn read as un-nudged. Red first: the new tick case failed on both legs, `memory-kind` live and not live, with its controls passing; after the fix the tick suite reads 5766 OK / 0, up from 5760 by the case's six checks, and tsc exits 0. The goal-nudge backlog entry drops the fixed cause, and the scoring-path entry notes the memory step is outside it.
 
-**Next action.** Round 4, the adversarial lens over the nudge fix; then the documentation curator, the final Chapter and the pull request.
+**Next action (superseded below).** Round 4, the adversarial lens over the nudge fix; then the documentation curator, the final Chapter and the pull request.
+
+**Round 4, adversarial at opus, Workflow, effort high, over `06ffa60..99ec93a`.** APPROVED_WITH_CONCERNS; the tree read clean before and after.
+- Major, fix-introduced: the flag was cleared only at the next `turn.start`, so a completion after the nudged turn ended, a late subagent or a turn never seen starting, was skipped too, past the one turn shape the ruling waived. Fixed: the flag clears at the turn's own completion, beside `currentGateTurnId`. Red first: a new leg completing an unseen turn after the nudged turn's end failed on both legs, then passed.
+- Minor, the subagent fixture carried the parent's turn id: fixed with a leg completing a subagent under its own id, the shape the harness sends.
+- Minor, the flag holds only the latest turn's start, so an overlapping turn masks a nudged one: pre-existing in `currentTurnKind` and rare behind the idle tick's open-turn refusal; recorded in the goal-nudge backlog entry, no fix owed here.
+- Minor, journey wording in two backlog sentences: rewritten as current fact. The flag's comment now says it clears at the turn's own completion.
+- Gate after the fix: tick suite 5768 OK / 0, tsc exit 0.
+
+**Next action.** Round 5, the adversarial lens over round 4's fix; then the documentation curator, the final Chapter and the pull request.

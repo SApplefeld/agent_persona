@@ -4650,11 +4650,13 @@ export const register: Register = async (on, options) => {
   // this_turn_was_asked. Set at turn.start from the event's own text and read
   // at turn.complete with the other boundary facts, before any await.
   let currentTurnAskedText = "";
-  // Whether the plugin's own goal nudge opened the current turn. Set at
-  // turn.start from the matched entry and read at turn.complete with the
-  // other boundary facts. currentTurnKind cannot answer this at completion,
-  // because every completion resets it, a subagent's included, so a nudged
-  // turn that dispatched a subagent would read as not nudged at its own end.
+  // Whether the plugin's own goal nudge opened the turn open now. Set at
+  // turn.start from the matched entry, read at turn.complete with the other
+  // boundary facts, and cleared at the turn's own completion, so a completion
+  // arriving after the turn ended is not read as nudged. currentTurnKind
+  // cannot answer this, because every completion resets it, a subagent's
+  // included, so a nudged turn that dispatched a subagent would read as not
+  // nudged at its own end.
   let currentTurnNudged = false;
   // The turns open right now, each id against the clock at its turn.start, so
   // the controller tick can skip while the worker is inside one.
@@ -9290,6 +9292,7 @@ export const register: Register = async (on, options) => {
       currentTurnIsPriming = false;
       currentTurnEntry = null;
       currentGateTurnId = null;
+      currentTurnNudged = false;
     }
 
     // C3: error streak fold.

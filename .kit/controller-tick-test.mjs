@@ -23819,7 +23819,10 @@ async function caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(cl
 // it dispatched completes inside it. Each completion resets the turn's kind,
 // so the skip reads a flag the turn's start recorded, the way the
 // task-notification skip reads the turn's opening text. Run with memory-kind
-// live and not live, since the skip guards both paths.
+// live and not live, since the skip guards both paths. The subagent completes
+// once under its own id, the shape the harness sends, and once under the
+// parent's. A completion arriving after the nudged turn's own end is
+// classified, so the skip ends with the turn.
 async function caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentCompletes(clock) {
   console.log("\n=== Memory gate: a nudged turn makes no memory call, a subagent completing inside it included ===");
   for (const live of [true, false]) {
@@ -23843,6 +23846,8 @@ async function caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentComplete
     check(`${label} control: the idle tick nudged the entry`, idle.nudged === true, idle);
     const before = memorySiteCalls(h);
     await openQueuedTurn(h, "t-mgn-nudged");
+    await h.handlers["turn.complete"](h.fake, { turnId: "sub-mgn-own", agentId: "sub-mgn-own", answer: "The subagent's own report.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
     await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-nudged", agentId: "sub-mgn", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
     await new Promise((r) => setTimeout(r, 60));
     await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-nudged", answer: "Still working on it.", reason: "completed" }, async () => ({ result: "ok" }));
@@ -23853,6 +23858,13 @@ async function caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentComplete
         && after.requests.length === before.requests.length && after.calls.length === before.calls.length,
       { classify: [before.classify.length, after.classify.length], complete: [before.complete.length, after.complete.length],
         requests: [before.requests.length, after.requests.length], calls: [before.calls.length, after.calls.length] });
+    // A completion after the nudged turn ended, for a turn this session never
+    // saw start, is not the nudged turn's and is classified.
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-unseen", answer: "Another report, later.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    check(`${label}: a completion after the nudged turn's end was classified at the memory site`,
+      memorySiteCalls(h).classify.length === after.classify.length + 1,
+      { before: after.classify.length, after: memorySiteCalls(h).classify.length });
   }
 }
 
