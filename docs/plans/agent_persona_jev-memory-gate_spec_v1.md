@@ -45,6 +45,7 @@ Provenance: the operator's channel messages on 2026-09-25, the ARCHITECT's count
 ## Standing Brief Amendments
 
 - Section 2 acceptance: `JEV_PROMOTABLE_SET_IDS` in `bin/agentic-common.sh` names `memory-kind` beside `turn-open` and `turn-disposition`, so a roster `jevLive` naming `memory-kind` is carried to the plugin rather than refused at launch, and the parity pin in `.kit/settings-plugin-key-test.sh` against `PROMOTABLE_SET_IDS` passes.
+- Section 2 acceptance: a run directory that already holds a settings file gains `memoryGateDiscardPercent` under both plugin ids from the roster field on every launch where the field is set, and is left byte for byte where it is not, so the roster floor reaches a persona that has launched before.
 
 ## Sections of Work
 
@@ -164,6 +165,55 @@ Gate: targeted lane, 2026-09-27 on this worktree at 0ec505a plus the fix delta, 
 Next: 2. The floor through the roster
 Commit Model: Branch-and-PR
 Delta: 2026-09-27, this box, the worktree at 0ec505a plus the fix delta, measured before the section's close commit.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 2 - 2026-09-27
+Completed: 2. The floor through the roster
+Implemented By: implementer-sonnet, with one fix round by the same agent
+Metrics: review rounds 2, closed claim-exit; provenance 2 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 1 findings, 1 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- Section open: carries memoryGateDiscardPercent from the roster to the plugin (keeper map, supervisor read with a 50-to-100 startup refusal, digits-only shape loop, emitter under both ids, plugin.json declaration) and adds memory-kind to the supervisor's promotable list; serves the Goal's "the confidence floor is a roster field ... the operator tunes it per persona" and "names memory-kind in a persona's jevLive field"; adds no mechanism beyond the setting path every numeric setting takes and one array member; about 15 script lines and 20 test lines; without it the floor is fixed at 90 and memory-kind cannot be promoted through the roster at all.
+- Round 1 fix (adversarial Major, the floor never reaches a provided settings file): add ensure_settings_memory_gate_discard_percent beside ensure_settings_jev_live and call it on the provided-file branch, writing the value under both ids only where the roster field is set and leaving the file byte for byte otherwise; serves the Goal's "the operator tunes it per persona in fleet.json and never edits a script"; adds one helper, the form the plan's own Assumption names as its reversal; about 30 script lines and 20 test lines; not doing it leaves the roster field inert on every persona that has launched before, which is the whole running fleet.
+- Round 1 fix (security Major, claim on a boundary comment, plus Minors): the jev_live_to_csv boundary comment and the line 226 count stop naming two ids; accepted legs at 50 and 100; the zero leg retitled; parity comments count-free; plugin.json names the jevLive precondition; the supervise.sh comment states the real reason; serves section 2's Tests line and the nothing-untrue-ships rule; adds no mechanism; about 15 lines.
+- The plan's Assumption that a provided settings file carries this setting "exactly as it carries `heartbeatMs` today, which is not at all" is reversed. Every running persona already holds a settings file, so the Assumption left the Goal's roster sentence unmet on the whole fleet. The reversal is the one the Assumption names, and it is recorded as the second Standing Brief Amendments entry. Approval drift, recorded here.
+- The plan's "line 153" for the shape loop was stale: the loop is at `bin/agentic-common.sh:250`. Its "export it where the other emitted settings are exported" resolves to no export, since no emitted setting is exported and `emit_settings_json` reads them from the same shell. Its expectation that the retention plan would first move the defaults count to six did not hold at this trunk, so the count went from five to six here.
+- The implementer's red proofs swapped pristine copies of its own files into the tree, restored from filesystem copies and verified by `diff -q`. The first swap ran while the section 1 fix round and my section 1 close gate ran in the same worktree. The swapped files were section 2's alone, which the section 1 suites do not read (inferred), and the section 1 close gate reproduced its pre-swap counts exactly.
+- The implementer left three hung processes from a read-only `python3` line-ending check. I stopped exactly those three PIDs, attributed by their command lines, and checked the line endings with node instead: every file clean CRLF.
+Failed approaches: none
+Assumptions:
+- assumed 2026-09-27 (default, section 2): the range check is `positive_number` with a minimum of 50 followed by a separate `-gt 100` refusal, each with an `ERROR:` line; reversal: one combined check.
+- assumed 2026-09-27 (default, section 2): the provided-file helper is keyed on the raw roster variable, so an unset field leaves a hand-set floor in the file untouched; reversal: key it on the defaulted variable and write 90 on every launch.
+Review Findings: review: adversarial + blind + security at opus, Workflow (high); round 2 review: adversarial at sonnet, Workflow (high). Critical: none. Majors: the adversarial finding that the floor never reached a provided settings file (spec-traceable to the Goal), fixed in round 1's fix delta, which wrote outside the tree and so owed round 2. The security lens's false boundary comment counting two ids, fixed. Round 2: two Minors, one fixed in the close pass. Minors: 7 fixed (one upgraded on a stated consequence, the untested accepting edges), 1 upgraded, 4 left with the reason in `.kit/scratch/jev-gate/minors-section-2.md`.
+Stamps: adjudicated 2, stamped 0: both operator records were read by other sessions.
+Gate: targeted lane, 2026-09-27 on this worktree at 30f4acd plus the close-pass BOM escape, no foreign runner by the process poll: `bash -n bin/supervise.sh` exit 0; supervisor-model-test 263 OK / 0 FAIL, exit 0; settings-plugin-key-test 226 OK / 0 FAIL, exit 0; keeper-unit-test 97 passed / 0 failed, exit 0. Baseline on the same lane at 26977e0, per the implementer's run against pristine copies (reported): supervisor-model-test 256 OK; settings-plugin-key-test red on the parity pin, which section 1's delta caused; keeper-unit-test 96. Delta +7 supervisor checks, +6 settings checks beyond the pin, +1 keeper check; the parity pin red to green. Tests added: four refusals (`abc`, `0`, `49`, `101`) and two accepted edges (50, 100) pinning the startup range; the default in the defaults loop; the emitted default and an emitted 85 under both ids; `JEV_LIVE=memory-kind` reaching `jevLive`; the provided-file helper setting, leaving untouched, and refusing; the keeper full-entry mapping. Tests edited to stay green: the parity-pin comments and control titles, made count-free. No added test spawns a process beyond the suites' existing supervisor and library drivers. No contention lane: the delta touches no machine-shared state.
+Next: 3. The documents
+Commit Model: Branch-and-PR
+Delta: 2026-09-27, this box, the worktree at 5ca953b plus the close-pass edit, measured before the section's close commit.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 3 - 2026-09-27
+Completed: 3. The documents
+Implemented By: main session (Locus: inline, since the section writes under docs/)
+Metrics: review rounds 1, closed major-closed; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- Section open (written at close, which the section open should have done): writes the memory gate into README.md and docs/architecture.md, the floor setting into both settings tables, the roster and the Startup Checks, the liveAsk passage's new return, the haiku_kind outcome, and one failure-modes row; serves section 3's acceptance line and its four must-answer questions; adds no mechanism; about 50 README lines and 3 architecture lines; without it the documents describe a memory step that always asks Haiku and a live list of two questions.
+- The plan's README line anchors were stale throughout. Each passage was re-located by grep. The outcome `kind` row counted eight kinds, not the six the plan expected, so it now reads nine.
+- Section 2's round 1 fix made a sentence I wrote false: that a provided settings file keeps whatever floor it carries. It was corrected in 134626b before this section's review.
+- The review found passages this plan made false outside the section's list: `docs/architecture.md` still named only two promotable ids and only turn record questions as live, and the journal suite's coverage line counted eight outcome kinds. The `jevLive` settings row the plan named was missed in the first draft. All are fixed in 5ca953b.
+- The new subsection is headed "Memory gate", without the article its sibling headings carry. The siblings are left as they are.
+Failed approaches: none
+Assumptions:
+- assumed 2026-09-27 (default, section 3): the operator's one-in-twenty fallback reading from the plan's Operator Verification is stated in the architecture row as a reading, not as plugin behavior; reversal: drop the clause.
+Review Findings: review: blind-reader + prose-reviewer (1 reader) at fable, Agent tool, after a capacity reading of "no reading (stale) -> ladder governs"; both returned inside the first-turn window. `blind: no code diff`. The prose reviewer's two Criticals and the reader's two Majors were claims on published documents that this plan's change had made false, held to the behavior bar and fixed in 5ca953b. The prose Majors (the unchanged `jevLive` row, the heading article, the ambiguous "one setting" sentence) were fixed there too. The fix delta is prose only and owed no further round; the author re-read checked each changed sentence against the code the reviewer cited. Minors: 7 fixed, 0 upgraded, 2 left: the `setting_clamped` name, which is the plugin's own decision name, and the basis of the one-in-twenty figure, which the plan's Operator Verification states. The plan's acceptance count of "seven" for the kind row is stale; the row reads nine, matching `OUTCOME_KINDS`.
+Stamps: none surfaced beyond Chapter 2's adjudication, the same window.
+Gate: targeted lane for a documents section, 2026-09-27 on this worktree at 5ca953b: the acceptance greps find `memoryGateDiscardPercent` on 9 README lines (both settings tables, the Startup Checks, the roster, the seam row and the memory gate subsection) and `haiku_kind` on 6 README lines and 1 architecture line; the kind row reads nine; a sweep of every sentence pairing the memory site, memory curation, the memory step or `memory-kind` with Haiku or classify finds none that lacks the live exception, the old latency line serving as the sweep's control; a sweep for "two ids", "the two ids", "eight outcome" and "turn record question the" finds only line 395's two plugin ids, which is correct; both files 0 bare LF. No suite reads the documents.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: 2026-09-27, this box, the worktree at 5ca953b plus the close-pass edit.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```

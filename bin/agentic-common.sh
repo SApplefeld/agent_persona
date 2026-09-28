@@ -641,7 +641,7 @@ const [file, devId, installedId, value] = process.argv.slice(1);
 const fail = (msg) => { console.error("ERROR: ensure_settings_memory_gate_discard_percent: " + file + " " + msg); process.exit(1); };
 const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 let s;
-try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
 if (!plain(s)) fail("is not a JSON object");
 let changed = false;
 const n = Number(value);
