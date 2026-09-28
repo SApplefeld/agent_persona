@@ -43,6 +43,10 @@ Provenance: the operator's channel messages on 2026-09-25, the design council re
 
 **Surfaces that speak these contracts, from the sweep.** Searches run over this tree at `fd5b2d6`: `state.memory`, `MEMQ`, `memoryBlock`, `memory_add`, `No decay`, `Memory:`. The code: `hooks/index.ts` (the persist cap at 2297, the session-start count at 3788, the self-review reads at 5312 to 5422, the tick summary at 6097 and 6263, the distiller at 7635 to 7700, the activation replies at 7871, 7948 and 7974, the `memory_add` handler at 8906 to 8940, the injection block at 9656 to 9700), `hooks/agent-state.ts` (`MemoryEntry` at 5, `AgentState` at 334 with `version: 4` at 332, `MEMORY_MAX` at 370, `parseState` and `enforceInvariants`), `hooks/self-review.ts`. The tests: `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs` (the `process.run` stub at 406 and the `fs.write` capture at 103), `.kit/injection-duplicate-test.mjs`, `.kit/injection-ledger.mjs` (`extractMemoryBlock` at 1034, which pins the block's exact shape and throws on a change) and `.kit/injection-ledger.json`. The docs: `README.md` (the tick summary row at 136, the Memory module at 229 to 233, the module list at 278 and 282, the persona-file bound at 655, Limitations at 730 to 736, Next steps 1 and 4 at 740 and 743, the `memory-kind` row at 757), `docs/architecture.md` (the symptom row at 295), `docs/README.md`.
 
+## Standing Brief Amendments
+
+- The launch directory memq runs from is captured once, in session memory, at the first `session.start` that yields one. A later `session.start`, a plugin reload among them, leaves it. It is neither persisted nor kept under a store key.
+
 ## Sections of Work
 
 ### 1. The spawn helper and the stand-down

@@ -32968,6 +32968,15 @@ async function caseMemq1_theSpawnRunsFromTheLaunchDirectory(clock) {
     JSON.stringify(run.argv) === JSON.stringify(["node", MEMQ1_SCRIPT, ...MEMQ1_READ]), run.argv);
   check("memq1 spawn: cwd is the launch directory session.start captured, not the session's cwd() at the call",
     run.init && run.init.cwd === HARNESS_CWD, run.init);
+  // A plugin reload fires session.start again, whose cwd is the session's
+  // cwd() at that moment. memq keeps the launch directory the first start
+  // captured.
+  await fireSessionStart(h);
+  const reloadBefore = h.processRuns.length;
+  await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const reloadRun = h.processRuns[reloadBefore] || {};
+  check("memq1 spawn: after a second session.start with the cwd moved, memq still runs in the first launch directory",
+    reloadRun.init && reloadRun.init.cwd === HARNESS_CWD, reloadRun.init);
   check("memq1 spawn: env carries the session id and nothing else",
     run.init && JSON.stringify(run.init.env) === JSON.stringify({ CLAUDE_CODE_SESSION_ID: SESSION_ID }), run.init);
   check("memq1 spawn: the caller's bound is the run's timeout", run.init && run.init.timeoutMs === 2500, run.init);

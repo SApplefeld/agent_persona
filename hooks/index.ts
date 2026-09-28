@@ -2169,6 +2169,11 @@ const sess: {
   // memq_spawn_failed decision for each cause, "" until it has. Session
   // memory, so a restart logs its first failure of the day again.
   memqFailedDay: { start: string; timeout: string };
+  // The launch directory kitMemq runs memq from: the first non-empty
+  // directory a session.start captured, "" until one has. A later
+  // session.start, a plugin reload among them, leaves it, because its cwd is
+  // wherever the session stands then. Session memory, which a reload keeps.
+  memqLaunchDir: string;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -2197,6 +2202,7 @@ const sess: {
   heartbeatPath: "",
   memqStandDownUntil: 0,
   memqFailedDay: { start: "", timeout: "" },
+  memqLaunchDir: "",
 };
 
 // The store cause sess.stateNotLoaded takes where session.start's store read
@@ -2676,10 +2682,10 @@ const MEMQ_STAND_DOWN_MS = 5 * 60_000;
 export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: string };
 
 // Runs the kit's memq command with `argv` for this session, as
-// node <installPath>/scripts/memq.js ...argv, in the launch directory
-// session.start captured rather than wherever $.session.cwd() stands now, so
-// memq resolves the launch directory's store even after a bare cd in a tool
-// call. The child takes the session id in its environment. Resolves the
+// node <installPath>/scripts/memq.js ...argv, in the launch directory the
+// first session.start captured rather than wherever $.session.cwd() stands
+// now, so memq resolves the launch directory's store even after a bare cd in
+// a tool call and a plugin reload after it. The child takes the session id in its environment. Resolves the
 // child's result, a non-zero exit included, for the caller to read, or null
 // where the command did not run to an exit. Nothing throws.
 //
@@ -2719,7 +2725,7 @@ export async function kitMemq(
   };
   const sessionId = sess.mySessionId;
   if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId === "pending") return failed("start", "no session id");
-  if (typeof sess.workdir !== "string" || sess.workdir.length === 0) return failed("start", "no launch directory");
+  if (sess.memqLaunchDir.length === 0) return failed("start", "no launch directory");
   const located = await kitInstallPathOf(dp);
   if ("skip" in located) return failed("start", located.skip);
   const script = `${located.installPath.replace(/[/\\]+$/, "")}/scripts/memq.js`;
@@ -2727,7 +2733,7 @@ export async function kitMemq(
   let res: any;
   try {
     res = await dp.process.run(["node", script, ...argv], {
-      cwd: sess.workdir,
+      cwd: sess.memqLaunchDir,
       env: { CLAUDE_CODE_SESSION_ID: sessionId },
       timeoutMs,
     });
@@ -5089,6 +5095,9 @@ export const register: Register = async (on, options) => {
       }
     } catch {
       // cwd unavailable; the commons entry publishes "" for it
+    }
+    if (sess.memqLaunchDir === "" && typeof sess.workdir === "string" && sess.workdir.length > 0) {
+      sess.memqLaunchDir = sess.workdir;
     }
     // Anchor the two remaining workdir files now that the launch directory is
     // known, so every later sess.storePath and sess.yieldLogPath read resolves
