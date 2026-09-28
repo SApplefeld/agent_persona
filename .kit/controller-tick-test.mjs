@@ -32,6 +32,7 @@ const Seam = await import("../hooks/decision-seam.ts");
 // stamp id counter and the real split through it.
 const Journal = await import("../hooks/decision-journal.ts");
 import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
+import { fnv1aHash } from "../hooks/cost-ledger.ts";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -4137,6 +4138,14 @@ async function main() {
     await caseMemq1_theSpawnRunsFromTheLaunchDirectory(clock);
     await caseMemq2_aFailureLogsOncePerCausePerDay(clock);
     await caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock);
+
+    // The persona memory port's write: the distiller and memory_add write
+    // through memq put, the distillates the JSON holds move once at an
+    // owner's start, and the counts the summary and replies carry.
+    await caseMemq4_theDistillerWritesThroughPut(clock);
+    await caseMemq5_memoryAddWritesThroughPut(clock);
+    await caseMemq6_theDistillatesInTheJsonMoveOnce(clock);
+    await caseMemq7_theCountsNameLessonsAndWrites(clock);
   } finally {
     clock.restore();
   }
@@ -4512,6 +4521,15 @@ function untrackedLines(h) {
   return getDecisions(h).filter(d => d.action === "untracked_work");
 }
 
+// The newest decision the memory step did not log. That step runs after the
+// untracked_work backstop in turn.complete and logs its write's outcome every
+// turn it distills, in the memory loop, beside the first memq_spawn_failed of
+// the day where memq cannot run. So the line a firing re-pushes is the tail of
+// what the turn's other bookkeeping wrote rather than of the whole log.
+function lastNonMemoryDecision(h) {
+  return getDecisions(h).filter(d => d.loop !== "memory" && d.action !== "memq_spawn_failed").at(-1);
+}
+
 async function caseItem2_untrackedWorkLogsLineAndBuildsNoRoot(clock) {
   console.log("\n=== Item 2: a working turn with no tree logs untracked_work and builds no root ===");
   clock.set(T0);
@@ -4734,9 +4752,9 @@ async function caseItem2_untrackedWorkCollapsesToOneLine(clock) {
 
   const decisions = getDecisions(h);
   const lines = untrackedLines(h);
-  const last = decisions[decisions.length - 1];
+  const last = lastNonMemoryDecision(h);
   check("item2 collapse: exactly one untracked_work line after three firings", lines.length === 1, lines);
-  check("item2 collapse: the line is the tail of the log", last?.action === "untracked_work", last);
+  check("item2 collapse: the line is the tail of the log outside the memory loop", last?.action === "untracked_work", last);
   check("item2 collapse: its detail opens x3: and carries the newest excerpt", last?.detail === "x3: third request", last?.detail);
   check("item2 collapse: its clock is the third firing's, newer than the first", typeof firstAt === "number" && last?.timestamp > firstAt, { firstAt, last: last?.timestamp });
   check("item2 collapse: a turn_start was written after the first firing", decisions.some(d => d.action === "turn_start" && d.timestamp > firstAt));
@@ -4767,9 +4785,9 @@ async function caseItem2_untrackedWorkCollapsesToOneLine(clock) {
   clock.advance(10_000);
   await untrackedWorkTurn(h2, "t-f2", "fresh again");
   fresh = untrackedLines(h2);
-  const tail = getDecisions(h2).at(-1);
+  const tail = lastNonMemoryDecision(h2);
   check("item2 collapse fresh: a second firing removes only this session's own line", fresh.length === 2 && fresh[0]?.detail === "x3: third request" && fresh[1]?.detail === "x2: fresh again", fresh);
-  check("item2 collapse fresh: this session's line is the tail", tail?.action === "untracked_work" && tail?.detail === "x2: fresh again", tail);
+  check("item2 collapse fresh: this session's line is the tail outside the memory loop", tail?.action === "untracked_work" && tail?.detail === "x2: fresh again", tail);
 }
 
 // The held line can leave the log before the next firing, because the
@@ -4807,7 +4825,7 @@ async function caseItem2_untrackedWorkCarriesCountPastCap(clock) {
   const lines = untrackedLines(h);
   check("item2 cap: the next firing pushes one line", lines.length === 1, lines);
   check("item2 cap: the count carries on from the dropped line", lines[0]?.detail === "x2: after the cap", lines[0]?.detail);
-  check("item2 cap: the line is the tail of the log", getDecisions(h).at(-1)?.action === "untracked_work");
+  check("item2 cap: the line is the tail of the log outside the memory loop", lastNonMemoryDecision(h)?.action === "untracked_work");
 }
 
 // The held line lives in one persona's log. agentic_identity switching the
@@ -20380,10 +20398,14 @@ async function casePlannerCatch_switchReasonAndDistillSitesReadTheObject(clock) 
   const factClassify = (_state, labels) => (Array.isArray(labels) && labels.includes("fact") ? "fact" : "on-goal");
   clock.set(T0);
   const d = await createTickHarness({ ...OPTS, caseName: "planner_catch_distill_object", classifyValue: factClassify, completeValue: { isAnswered: true, text: "The user drinks tea.", usage: {} }, stateOpts: { now: T0 } });
+  await bank2SeedInstalled(d, bank2Installed());
+  d.setProcessRun(MEMQ4_WRITTEN);
   await openPromptTurn(d, { originKind: "composer", text: "I drink tea, not coffee.", turnId: "t-distill" });
   await d.handlers["turn.complete"](d.fake, { turnId: "t-distill", answer: "Noted: tea.", reason: "answer" }, async () => ({ result: "ok" }));
   await new Promise((res) => setTimeout(res, 30));
-  check("planner-catch distill object: the object's text is remembered", getState(d).memory.some((m) => m.text === "The user drinks tea."), getState(d).memory.map((m) => m.text));
+  check("planner-catch distill object: the object's text is written as one memq put and logged remember",
+    memq4Puts(d).length === 1 && memq4Puts(d)[0].argv[6].startsWith("The user drinks tea.\n\n") && getDecisions(d).some((dd) => dd.action === "remember"),
+    memq4Puts(d).map((r) => r.argv));
   clock.set(T0);
   const d2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_distill_no_text", classifyValue: factClassify, completeValue: { isAnswered: false, reason: "aborted", usage: {} }, stateOpts: { now: T0 } });
   await openPromptTurn(d2, { originKind: "composer", text: "I drink tea, not coffee.", turnId: "t-distill-2" });
@@ -21094,11 +21116,14 @@ async function caseGtc1_theOtherWritingToolsAnswerOnTheirOwnTerms(clock) {
   const freshEntry = () => JSON.parse(fresh.fsMap.get(PERSONA_STORE_FILE)).default;
   const freshActions = () => (freshEntry()?.decisions ?? []).map((d) => d.action);
 
+  await bank2SeedInstalled(fresh, bank2Installed());
+  fresh.setProcessRun(MEMQ4_WRITTEN);
   const remembered = await freshCall({ tool: "mcp__agentic-plugin__memory_add", text: "a memory worth keeping" });
   check("gtc1 other writers fresh: memory_add is answered rather than refused on the state",
     remembered?.deny === undefined && remembered?.threw === undefined, remembered);
-  check("gtc1 other writers fresh: and the memory reached the store file",
-    freshEntry()?.memory?.length === 1, freshEntry()?.memory);
+  check("gtc1 other writers fresh: and the record went to one memq put, with its remember decision in the store file and no memory entry",
+    memq4Puts(fresh).length === 1 && freshActions().filter((a) => a === "remember").length === 1 && (freshEntry()?.memory?.length ?? 0) === 0,
+    { puts: memq4Puts(fresh).length, actions: freshActions(), memory: freshEntry()?.memory });
 
   const shutdown = await freshCall({ tool: "mcp__agentic-plugin__supervisor_shutdown", reason: "done for the day" });
   check("gtc1 other writers fresh: supervisor_shutdown is answered",
@@ -23390,7 +23415,18 @@ async function memoryGateHarness(caseName, clock, options = {}) {
   h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
   h.setClassifyValue(memoryGateClassify);
   h.setCompleteValue(MEMORY_GATE_DISTILLED);
+  // The kit located and memq's put answering exit 0, so a distillate the
+  // site keeps is a memq put the cases can count.
+  await bank2SeedInstalled(h, bank2Installed());
+  h.setProcessRun(MEMQ4_WRITTEN);
   return h;
+}
+
+// Whether the memory site wrote the distillate as exactly one memq put, and
+// left the persona's JSON with no memory entry.
+function memoryGateWroteThroughPut(h) {
+  const puts = memq4Puts(h);
+  return puts.length === 1 && puts[0].argv[6].startsWith(`${MEMORY_GATE_DISTILLED}\n\n`) && getState(h).memory.length === 0;
 }
 
 // One worker turn over the memory site, at a clock reading that lands the
@@ -23412,8 +23448,8 @@ function checkMemoryGatePassed(label, h, split, condition, p) {
     site.calls.map((c) => [c.mode, c.result, c.stampId]));
   check(`${label}: Haiku classified the exchange once and the distill ran once`,
     site.classify.length === 1 && site.complete.length === 1, { classify: site.classify.length, complete: site.complete.length });
-  check(`${label}: the distilled entry was stored`,
-    getState(h).memory.some((m) => m.text === MEMORY_GATE_DISTILLED), getState(h).memory.map((m) => m.text));
+  check(`${label}: the distillate was written as one memq put, and the JSON gained no entry`,
+    memoryGateWroteThroughPut(h), { puts: memq4Puts(h).map((r) => r.argv), memory: getState(h).memory });
   const haikuKind = journalLinesOfKind(h, "outcome").filter((o) => o.kind === "haiku_kind");
   check(`${label}: one haiku_kind outcome against the live stamp id, carrying Haiku's label`,
     haikuKind.length === 1 && haikuKind[0].callStampId === stampId && haikuKind[0].value === "fact", haikuKind);
@@ -23443,8 +23479,8 @@ function checkMemoryGateSkipped(label, h, p) {
     site.calls.map((c) => [c.mode, c.result, c.stampId]));
   check(`${label}: no classify and no completion at the memory site`,
     site.classify.length === 0 && site.complete.length === 0, { classify: site.classify.length, complete: site.complete.length });
-  check(`${label}: the store gains no entry and no remember decision is logged`,
-    getState(h).memory.length === 0 && !getDecisions(h).some((d) => d.action === "remember"), getState(h).memory);
+  check(`${label}: no memq put, no JSON entry and no remember decision`,
+    memq4Puts(h).length === 0 && getState(h).memory.length === 0 && !getDecisions(h).some((d) => d.action === "remember"), { puts: memq4Puts(h).length, memory: getState(h).memory });
   check(`${label}: no haiku_kind outcome is written`,
     !journalLinesOfKind(h, "outcome").some((o) => o.kind === "haiku_kind"), journalLinesOfKind(h, "outcome"));
   const gate = memoryGateDecisions(h);
@@ -23657,8 +23693,8 @@ async function caseMemoryGate_everyFailureFallsBackToHaikuWithNoShadowCall(clock
         && site.requests.length === (reason === "no_key" ? 0 : 1),
       { calls: site.calls.map((c) => [c.mode, c.result]), requests: site.requests.length });
     check(`${label}: Haiku classified the exchange once and the distill ran once, as today`,
-      site.classify.length === 1 && site.complete.length === 1 && getState(h).memory.some((m) => m.text === MEMORY_GATE_DISTILLED),
-      { classify: site.classify.length, complete: site.complete.length, memory: getState(h).memory.map((m) => m.text) });
+      site.classify.length === 1 && site.complete.length === 1 && memoryGateWroteThroughPut(h),
+      { classify: site.classify.length, complete: site.complete.length, puts: memq4Puts(h).length, memory: getState(h).memory.map((m) => m.text) });
     check(`${label}: no haiku_kind outcome, since no answer came back to pair it with`,
       !journalLinesOfKind(h, "outcome").some((o) => o.kind === "haiku_kind"), journalLinesOfKind(h, "outcome"));
     const stampId = site.calls.length === 1 ? site.calls[0].stampId : null;
@@ -23682,8 +23718,8 @@ async function caseMemoryGate_theQuestionNotLiveLeavesTheSiteAsToday(clock) {
   const offSite = memorySiteCalls(off);
   check("memory gate off: no request left and no journal line was written",
     off.httpCalls.length === 0 && journalLines(off).length === 0, { calls: off.httpCalls.length, lines: journalLines(off).length });
-  check("memory gate off: Haiku classified once and the distill ran once, storing the entry",
-    offSite.classify.length === 1 && offSite.complete.length === 1 && getState(off).memory.some((m) => m.text === MEMORY_GATE_DISTILLED),
+  check("memory gate off: Haiku classified once and the distill ran once, writing one memq put",
+    offSite.classify.length === 1 && offSite.complete.length === 1 && memoryGateWroteThroughPut(off),
     { classify: offSite.classify.length, complete: offSite.complete.length });
   check("memory gate off: no gate decision was logged",
     memoryGateDecisions(off).length === 0, memoryGateDecisions(off));
@@ -23701,8 +23737,8 @@ async function caseMemoryGate_theQuestionNotLiveLeavesTheSiteAsToday(clock) {
     unnamedSite.calls.length === 1 && shadowCall.mode === "shadow" && shadowCall.result === "ok" && Journal.splitOf(shadowCall.stampId) === "dev"
       && shadowAnswer !== undefined && shadowAnswer.value === "discard" && shadowAnswer.probabilities.discard === 0.99,
     { calls: unnamedSite.calls.map((c) => [c.mode, c.result]), answer: shadowAnswer });
-  check("memory gate unnamed: Haiku classified once and the distill ran once, storing the entry",
-    unnamedSite.classify.length === 1 && unnamedSite.complete.length === 1 && getState(unnamed).memory.some((m) => m.text === MEMORY_GATE_DISTILLED),
+  check("memory gate unnamed: Haiku classified once and the distill ran once, writing one memq put",
+    unnamedSite.classify.length === 1 && unnamedSite.complete.length === 1 && memoryGateWroteThroughPut(unnamed),
     { classify: unnamedSite.classify.length, complete: unnamedSite.complete.length });
   check("memory gate unnamed: the shadow answer carries Haiku's value, as today",
     shadowAnswer !== undefined && shadowAnswer.haikuValue === "fact", shadowAnswer);
@@ -23741,8 +23777,8 @@ async function caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock) {
     const gate = memoryGateDecisions(h);
     check(`memory gate task notification (${name}): one memory_skipped_task_notification decision and no gate decision`,
       gate.length === 1 && gate[0].action === "memory_skipped_task_notification" && gate[0].loop === "memory", gate);
-    check(`memory gate task notification (${name}): nothing stored`,
-      getState(h).memory.length === 0, getState(h).memory);
+    check(`memory gate task notification (${name}): no memq put and nothing in the JSON`,
+      memq4Puts(h).length === 0 && getState(h).memory.length === 0, { puts: memq4Puts(h).length, memory: getState(h).memory });
   }
 
   // The other direction, on the same drive: a prompt that carries the block
@@ -23759,8 +23795,8 @@ async function caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock) {
       { classify: site.classify.length, complete: site.complete.length, requests: site.requests.length, calls: site.calls.length });
     check(`memory gate task notification in the body (${name}): no memory_skipped_task_notification decision`,
       !getDecisions(h).some((d) => d.action === "memory_skipped_task_notification"), memoryGateDecisions(h));
-    check(`memory gate task notification in the body (${name}): the entry was stored`,
-      getState(h).memory.some((m) => m.text === MEMORY_GATE_DISTILLED), getState(h).memory.map((m) => m.text));
+    check(`memory gate task notification in the body (${name}): the distillate was written as one memq put`,
+      memoryGateWroteThroughPut(h), { puts: memq4Puts(h).map((r) => r.argv), memory: getState(h).memory });
   }
 }
 
@@ -33177,4 +33213,296 @@ async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
     writeTimedOut === null && writeFailures.length === 1 && /^cause timeout; /.test(writeFailures[0].detail), writeFailures);
   check("memq3: a write's timeout arms no stand-down, so the next read spawns",
     w.processRuns.length === wRuns + 1 && JSON.stringify(readAfterWrite) === JSON.stringify(MEMQ1_OK), { runs: w.processRuns.length - wRuns, readAfterWrite });
+}
+
+// --- Persona memory port Section 2: the write through memq put, and the one-time migration ---
+
+// Haiku's label at the memory site, told from every other classify site by
+// the label array it was handed.
+const memq4FactClassify = (_state, labels) => (Array.isArray(labels) && labels.includes("fact") ? "fact" : "on-goal");
+const MEMQ4_WRITTEN = Object.freeze({ exitCode: 0, stdout: "", stderr: "" });
+// The UTC date the provenance line names for a write at T0.
+const MEMQ4_T0_DATE = new Date(T0).toISOString().slice(0, 10);
+
+// The refusal memq put gives a name the store already holds.
+function memq4Exists(name) {
+  return { exitCode: 1, stdout: "", stderr: `memq: '${name}' already exists in the project tier\n` };
+}
+
+// The record name the spec fixes: the kind, then fnv1a over the text
+// lowercased and trimmed, in base 36.
+function memq4Name(kind, text) {
+  return `${kind}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
+}
+
+// Every memq put the session spawned, in order.
+function memq4Puts(h) {
+  return h.processRuns.filter((r) => Array.isArray(r.argv) && r.argv[0] === "node" && r.argv[1] === MEMQ1_SCRIPT && r.argv[2] === "put");
+}
+
+// Whether one put's argv is exactly the Approach's, for `text` under
+// `source` and `kind`, with the body read as the text, a blank line and one
+// provenance line naming the persona, the source, the session id and `date`.
+function memq4PutShape(run, text, source, kind, date) {
+  const argv = run && Array.isArray(run.argv) ? run.argv : [];
+  const body = typeof argv[6] === "string" ? argv[6] : "";
+  const provenance = body.startsWith(`${text}\n\n`) ? body.slice(text.length + 2) : null;
+  return JSON.stringify([...argv.slice(0, 6), ...argv.slice(7)]) === JSON.stringify([
+    "node", MEMQ1_SCRIPT, "put", memq4Name(kind, text), text.split("\n")[0].slice(0, 120), "--body",
+    "--tag", source, "--tag", kind, "--tag", "persona-default", "--author", "persona:default",
+  ])
+    && provenance !== null && provenance.length > 0 && !/[\r\n]/.test(provenance)
+    && provenance.includes("default") && provenance.includes(source) && provenance.includes(SESSION_ID) && provenance.includes(date)
+    && run.init && run.init.timeoutMs === 5000;
+}
+
+// A worker turn over the memory site whose distill completion returns
+// `distilled`, with the kit located and memq answering `answer`.
+async function memq4DistillHarness(clock, caseName, distilled, answer) {
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName, classifyValue: memq4FactClassify, completeValue: distilled, stateOpts: { now: T0, hasActiveLeaf: false } });
+  await bank2SeedInstalled(h, bank2Installed());
+  h.setProcessRun(answer);
+  return h;
+}
+async function memq4DistillTurn(h, turnId) {
+  await openPromptTurn(h, { originKind: "composer", text: "I drink tea, not coffee.", turnId });
+  await h.handlers["turn.complete"](h.fake, { turnId, answer: "Noted: tea.", reason: "answer" }, async () => ({ result: "ok" }));
+  await new Promise((res) => setTimeout(res, 30));
+}
+
+async function caseMemq4_theDistillerWritesThroughPut(clock) {
+  console.log("\n=== Persona memory 4: a distilled fact is one memq put, and the persona's JSON gains nothing ===");
+  // A first line past 120 characters, so the description's cut is read, and
+  // a second line the description leaves out.
+  const text = `The operator keeps a pot of green tea by the keyboard and prefers it to coffee on every working day of the week, always ${"x".repeat(10)}\nSecond line.`;
+  const name = memq4Name("fact", text);
+  const h = await memq4DistillHarness(clock, "memq4_distill", text, MEMQ4_WRITTEN);
+  await memq4DistillTurn(h, "t-memq4-1");
+  let puts = memq4Puts(h);
+  check("memq4 distill: one put spawn", puts.length === 1, h.processRuns.map((r) => r.argv));
+  check("memq4 distill: the put carries the derived name, the 120-character first line, the body with its provenance line, the three tags and the author",
+    memq4PutShape(puts[0], text, "distilled", "fact", MEMQ4_T0_DATE), puts[0]);
+  check("memq4 distill: the description is the first line cut to 120 characters",
+    puts[0] && puts[0].argv[4].length === 120 && !puts[0].argv[4].includes("Second line"), puts[0] && puts[0].argv[4]);
+  check("memq4 distill: the persona's JSON gains no memory entry", getState(h).memory.length === 0, getState(h).memory);
+  let remembered = getDecisions(h).filter((d) => d.action === "remember");
+  check("memq4 distill: one remember decision naming the record and the text's first 80 characters",
+    remembered.length === 1 && remembered[0].loop === "memory" && remembered[0].detail === `${name}: ${text.slice(0, 80)}`, remembered);
+
+  // The same fact again, with memq refusing the existing name: put's refusal
+  // is the dedupe.
+  h.setProcessRun(memq4Exists(name));
+  await memq4DistillTurn(h, "t-memq4-2");
+  puts = memq4Puts(h);
+  remembered = getDecisions(h).filter((d) => d.action === "remember");
+  const duplicates = getDecisions(h).filter((d) => d.action === "memory_duplicate");
+  check("memq4 distill twice: two put spawns under the same name", puts.length === 2 && puts[1].argv[3] === name, puts.map((r) => r.argv[3]));
+  check("memq4 distill twice: one remember and one memory_duplicate naming the record",
+    remembered.length === 1 && duplicates.length === 1 && duplicates[0].loop === "memory" && duplicates[0].detail.startsWith(`${name}: `), { remembered, duplicates });
+  check("memq4 distill twice: the JSON still holds no memory entry", getState(h).memory.length === 0, getState(h).memory);
+  check("memq4 distill twice: no memory_write_failed", !getDecisions(h).some((d) => d.action === "memory_write_failed"), getDecisions(h).map((d) => d.action));
+
+  // A text opening with `--` that memq refuses as usage: the fact is dropped.
+  const dashed = "--the operator prefers tea";
+  const u = await memq4DistillHarness(clock, "memq4_usage", dashed, { exitCode: 2, stdout: "", stderr: "\nmemq: usage: put <name> \"<description>\" [--body v]\nsecond usage line\n" });
+  await memq4DistillTurn(u, "t-memq4-usage");
+  const failed = getDecisions(u).filter((d) => d.action === "memory_write_failed");
+  check("memq4 usage: the put was spawned once", memq4Puts(u).length === 1, u.processRuns.map((r) => r.argv));
+  check("memq4 usage: one memory_write_failed carrying the first non-empty stderr line and not the second",
+    failed.length === 1 && failed[0].loop === "memory" && failed[0].detail.includes("memq: usage: put <name>") && !failed[0].detail.includes("second usage line"), failed);
+  check("memq4 usage: no remember and nothing written to the JSON",
+    !getDecisions(u).some((d) => d.action === "remember") && getState(u).memory.length === 0, { memory: getState(u).memory });
+
+  // A spawn that never ran to an exit is a failure too, with a short cause.
+  const r = await memq4DistillHarness(clock, "memq4_rejected", "The operator prefers tea.", processRunRejects("spawn node ENOENT"));
+  await memq4DistillTurn(r, "t-memq4-rejected");
+  const rejectedFailed = getDecisions(r).filter((d) => d.action === "memory_write_failed");
+  check("memq4 rejected: one memory_write_failed with a cause and nothing written to the JSON",
+    rejectedFailed.length === 1 && rejectedFailed[0].detail.length > `${memq4Name("fact", "The operator prefers tea.")}: `.length
+      && !getDecisions(r).some((d) => d.action === "remember") && getState(r).memory.length === 0, rejectedFailed);
+}
+
+async function caseMemq5_memoryAddWritesThroughPut(clock) {
+  console.log("\n=== Persona memory 5: memory_add is one memq put tagged worker, and its reply names the record ===");
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName: "memq5_memory_add" });
+  await bank2SeedInstalled(h, bank2Installed());
+  h.setProcessRun(MEMQ4_WRITTEN);
+
+  const reg = h.toolRegisters.find((t) => t.name === "memory_add");
+  check("memq5 registration: no confidence input", reg && reg.inputSchema && reg.inputSchema.properties && !("confidence" in reg.inputSchema.properties), reg && reg.inputSchema);
+  check("memq5 registration: the description names the shared memory store and the returned name",
+    reg && /shared memory store/i.test(reg.description) && /returns the record's name/i.test(reg.description), reg && reg.description);
+
+  const text = "The operator prefers short replies.";
+  const name = memq4Name("preference", text);
+  const res = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text, kind: "preference", confidence: 0.9 });
+  const puts = memq4Puts(h);
+  check("memq5 written: a call passing confidence is answered, not refused", res && res.deny === undefined && typeof res.result === "string", res);
+  check("memq5 written: the reply names the record", res && typeof res.result === "string" && res.result.includes(name), res);
+  check("memq5 written: one put of the Approach's shape, tagged worker and preference",
+    puts.length === 1 && memq4PutShape(puts[0], text, "worker", "preference", MEMQ4_T0_DATE), puts);
+  check("memq5 written: the persona's JSON gains no memory entry", getState(h).memory.length === 0, getState(h).memory);
+  const remembered = getDecisions(h).filter((d) => d.action === "remember");
+  check("memq5 written: one remember decision naming the record, persisted",
+    remembered.length === 1 && remembered[0].detail === `${name}: ${text.slice(0, 80)}`, remembered);
+
+  // A kind outside the three is written as fact.
+  const odd = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "The build runs on Tuesdays.", kind: "goal" });
+  const oddPut = memq4Puts(h)[1];
+  check("memq5 kind: a kind outside fact, preference and lesson is written as fact",
+    oddPut && memq4PutShape(oddPut, "The build runs on Tuesdays.", "worker", "fact", MEMQ4_T0_DATE) && odd.result.includes(memq4Name("fact", "The build runs on Tuesdays.")), { oddPut, odd });
+
+  // The existing-name refusal answers with the existing record, not a deny.
+  h.setProcessRun(memq4Exists(name));
+  const dup = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text, kind: "preference" });
+  const duplicates = getDecisions(h).filter((d) => d.action === "memory_duplicate");
+  check("memq5 duplicate: answered rather than refused, naming the existing record",
+    dup && dup.deny === undefined && typeof dup.result === "string" && dup.result.includes(name), dup);
+  check("memq5 duplicate: one memory_duplicate decision", duplicates.length === 1 && duplicates[0].detail.startsWith(`${name}: `), duplicates);
+
+  // Any other failure is a deny carrying the reason.
+  h.setProcessRun({ exitCode: 3, stdout: "", stderr: "memq: the project tier is locked\n" });
+  const fail = await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "Another fact.", kind: "fact" });
+  const failed = getDecisions(h).filter((d) => d.action === "memory_write_failed");
+  check("memq5 failure: denied with the first stderr line", fail && typeof fail.deny === "string" && fail.deny.includes("memq: the project tier is locked"), fail);
+  check("memq5 failure: one memory_write_failed decision", failed.length === 1 && failed[0].detail.includes("memq: the project tier is locked"), failed);
+  check("memq5: nothing entered the persona's JSON across all four calls", getState(h).memory.length === 0, getState(h).memory);
+
+  // A non-owner is refused as before, and spawns nothing.
+  clock.set(T0);
+  const reader = await seedReaderHarness("memq5_reader", T0, "owner-memq5", {}, { turnStartedAt: null, workdir: HARNESS_CWD });
+  await bank2SeedInstalled(reader, bank2Installed());
+  reader.setProcessRun(MEMQ4_WRITTEN);
+  const refused = await callTool(reader, { tool: "mcp__agentic-plugin__memory_add", text });
+  check("memq5 non-owner: refused with the held deny text", refused && refused.deny === SHUTDOWN_HELD_DENY, refused);
+  check("memq5 non-owner: no put was spawned", memq4Puts(reader).length === 0, reader.processRuns.map((r) => r.argv));
+}
+
+// Legacy entries of each source, dated a day apart before T0.
+function memq6Entry(id, source, kind, text, daysBefore) {
+  return { id, kind, text, confidence: 0.5, source, createdAt: T0 - daysBefore * 86_400_000, lastAccessed: T0, accessCount: 0, pinned: false };
+}
+function memq6Seed() {
+  return [
+    memq6Entry("m-d1", "distilled", "fact", "The operator drinks tea.", 3),
+    memq6Entry("m-s1", "self-review", "lesson", "Check the plan before a nudge.", 3),
+    memq6Entry("m-d2", "distilled", "preference", "The operator prefers short replies.", 2),
+    memq6Entry("m-w1", "worker", "goal", "The build runs on Tuesdays.", 2),
+    memq6Entry("m-s2", "self-review", "lesson", "Read the chapter first.", 1),
+    memq6Entry("m-d3", "distilled", "lesson", "Run the targeted lane after a fix.", 1),
+  ];
+}
+
+// An owner session over a store holding `memory`, with the kit located and
+// memq answering `answer` before session.start runs.
+async function memq6Harness(caseName, memory, answer) {
+  const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart: true, stateOpts: { now: T0, memory } });
+  await bank2SeedInstalled(h, bank2Installed());
+  h.setProcessRun(answer);
+  await fireSessionStart(h);
+  return h;
+}
+
+async function caseMemq6_theDistillatesInTheJsonMoveOnce(clock) {
+  console.log("\n=== Persona memory 6: an owner's start moves the JSON's distillates to memq once, and keeps the lessons ===");
+  clock.set(T0);
+  const h = await memq6Harness("memq6_moves", memq6Seed(), MEMQ4_WRITTEN);
+  const puts = memq4Puts(h);
+  const seed = memq6Seed().filter((m) => m.source !== "self-review");
+  check("memq6 moves: four puts, in store order", puts.length === 4
+    && puts.every((p, i) => p.argv[3] === memq4Name(seed[i].kind === "goal" ? "fact" : seed[i].kind, seed[i].text)), puts.map((p) => p.argv[3]));
+  check("memq6 moves: each put carries its own source and held kind, dated by its createdAt",
+    puts.length === 4 && seed.every((m, i) => memq4PutShape(puts[i], m.text, m.source, m.kind === "goal" ? "fact" : m.kind, new Date(m.createdAt).toISOString().slice(0, 10))), puts);
+  const kept = getState(h).memory;
+  check("memq6 moves: the JSON keeps the two self-review lessons and nothing else",
+    kept.length === 2 && kept.every((m) => m.source === "self-review"), kept.map((m) => [m.id, m.source]));
+  const migrated = getDecisions(h).filter((d) => d.action === "memory_migrated");
+  check("memq6 moves: one memory_migrated naming 4 moved, 0 present, 0 left",
+    migrated.length === 1 && migrated[0].detail === "moved 4, present 0, left 0", migrated);
+  check("memq6 moves: the migration logs no remember decision", !getDecisions(h).some((d) => d.action === "remember"), getDecisions(h).map((d) => d.action));
+
+  // A later start finds nothing to move: no spawn and no decision.
+  const runs = h.processRuns.length;
+  await fireSessionStart(h);
+  check("memq6 moves: a later start with nothing left spawns nothing and logs no second memory_migrated",
+    h.processRuns.length === runs && getDecisions(h).filter((d) => d.action === "memory_migrated").length === 1, getDecisions(h).filter((d) => d.action === "memory_migrated"));
+
+  // A record the store already holds counts as present and leaves the JSON.
+  clock.set(T0);
+  const presentName = memq4Name("preference", "The operator prefers short replies.");
+  const p = await memq6Harness("memq6_present", memq6Seed(), processRunByPrefix([[["node", MEMQ1_SCRIPT, "put", presentName], memq4Exists(presentName)]], MEMQ4_WRITTEN));
+  const presentDecision = getDecisions(p).filter((d) => d.action === "memory_migrated");
+  check("memq6 present: one memory_migrated naming 3 moved, 1 present, 0 left",
+    presentDecision.length === 1 && presentDecision[0].detail === "moved 3, present 1, left 0", presentDecision);
+  check("memq6 present: the JSON keeps the two lessons only", getState(p).memory.length === 2 && getState(p).memory.every((m) => m.source === "self-review"), getState(p).memory.map((m) => m.id));
+
+  // A failure leaves its entry for the next start, which retries it.
+  clock.set(T0);
+  const failName = memq4Name("fact", "The build runs on Tuesdays.");
+  const f = await memq6Harness("memq6_left", memq6Seed(), processRunByPrefix([[["node", MEMQ1_SCRIPT, "put", failName], { exitCode: 3, stdout: "", stderr: "memq: the project tier is locked\n" }]], MEMQ4_WRITTEN));
+  const leftDecision = getDecisions(f).filter((d) => d.action === "memory_migrated");
+  check("memq6 left: one memory_migrated naming 3 moved, 0 present, 1 left",
+    leftDecision.length === 1 && leftDecision[0].detail === "moved 3, present 0, left 1", leftDecision);
+  check("memq6 left: the failed entry stays in the JSON beside the two lessons",
+    getState(f).memory.map((m) => m.id).sort().join(",") === "m-s1,m-s2,m-w1", getState(f).memory.map((m) => m.id));
+  f.setProcessRun(MEMQ4_WRITTEN);
+  const before = memq4Puts(f).length;
+  await fireSessionStart(f);
+  const retried = memq4Puts(f).slice(before);
+  const retryDecision = getDecisions(f).filter((d) => d.action === "memory_migrated");
+  check("memq6 left: the next start retries only the left entry", retried.length === 1 && retried[0].argv[3] === failName, retried.map((r) => r.argv[3]));
+  check("memq6 left: the retry logs moved 1, present 0, left 0 and the JSON keeps the lessons only",
+    retryDecision.length === 2 && retryDecision[1].detail === "moved 1, present 0, left 0"
+      && getState(f).memory.length === 2 && getState(f).memory.every((m) => m.source === "self-review"), { retryDecision, memory: getState(f).memory.map((m) => m.id) });
+
+  // A spawn that never ran stops the pass, and the rest count as left.
+  clock.set(T0);
+  const s = await memq6Harness("memq6_stop", memq6Seed(), processRunRejects("spawn node ENOENT"));
+  // No entry left the JSON, so the pass saved nothing, and the decision
+  // reaches the store file with the next save.
+  await (await loadModule("memq6_stop")).persist(s.fake);
+  const stopDecision = getDecisions(s).filter((d) => d.action === "memory_migrated");
+  check("memq6 stop: the first null stops the pass after one spawn", memq4Puts(s).length === 1, memq4Puts(s).map((r) => r.argv[3]));
+  check("memq6 stop: one memory_migrated naming 0 moved, 0 present, 4 left",
+    stopDecision.length === 1 && stopDecision[0].detail === "moved 0, present 0, left 4", stopDecision);
+  check("memq6 stop: the JSON keeps all six entries", getState(s).memory.length === 6, getState(s).memory.map((m) => m.id));
+
+  // A store holding lessons alone has no candidate: no spawn, no decision.
+  clock.set(T0);
+  const l = await memq6Harness("memq6_lessons_only", memq6Seed().filter((m) => m.source === "self-review"), MEMQ4_WRITTEN);
+  check("memq6 lessons only: no put and no memory_migrated",
+    memq4Puts(l).length === 0 && !getDecisions(l).some((d) => d.action === "memory_migrated") && getState(l).memory.length === 2, getDecisions(l).map((d) => d.action));
+}
+
+async function caseMemq7_theCountsNameLessonsAndWrites(clock) {
+  console.log("\n=== Persona memory 7: the summary, the start log and the activation reply count lessons and this session's writes ===");
+  clock.set(T0);
+  const h = await memq6Harness("memq7_counts", memq6Seed(), MEMQ4_WRITTEN);
+  check("memq7 start log: names the two self-review lessons",
+    h.uiLogs.includes("Agentic: persona 'default', 2 self-review lessons, owner"), h.uiLogs.filter((l) => l.startsWith("Agentic: persona")));
+
+  // One write this session; the migration's four do not count.
+  await callTool(h, { tool: "mcp__agentic-plugin__memory_add", text: "The operator prefers short replies today." });
+  h.resetClassifyCalls();
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const summary = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+  check("memq7 summary: reads Memory: 2 self-review lessons, 1 written this session, with the LESSON line under it",
+    /\nMemory: 2 self-review lessons, 1 written this session\nLESSON: Read the chapter first\.\n/.test(summary), summary.split("\n").filter((line) => line.startsWith("Memory") || line.startsWith("LESSON")));
+
+  // A later session.start leaves the count.
+  await fireSessionStart(h);
+  h.resetClassifyCalls();
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  const later = h.classifyCalls.length > 0 ? String(h.classifyCalls[0][0]) : "";
+  check("memq7 summary: a later session.start leaves the written count at 1",
+    later.includes("\nMemory: 2 self-review lessons, 1 written this session\n"), later.split("\n").filter((line) => line.startsWith("Memory")));
+
+  const identity = await callTool(h, { tool: "mcp__agentic-plugin__agentic_identity", persona: "default" });
+  check("memq7 activation: the owner's reply says 2 self-review lessons",
+    identity && typeof identity.result === "string" && identity.result.includes("active (epoch") && identity.result.includes(". 2 self-review lessons. "), identity);
 }

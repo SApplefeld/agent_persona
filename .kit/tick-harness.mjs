@@ -761,7 +761,9 @@ function makeState(opts = {}) {
     persona: "default",
     activeSessionId: SESSION_ID,
     epoch: 1,
-    memory: [],
+    // Empty unless a case seeds entries, such as legacy distillates for the
+    // one-time migration to read.
+    memory: opts.memory || [],
     goals,
     activeGoalId,
     // A pre-5 store never carried a tasks field. A case built below version 5

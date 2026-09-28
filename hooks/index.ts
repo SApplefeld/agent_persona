@@ -2175,6 +2175,11 @@ const sess: {
   // then. It lives in this module, so a reload that rebuilds the module starts
   // it empty and the next session.start captures afresh.
   memqLaunchDir: string;
+  // How many records the distiller and memory_add wrote to the kit's memory
+  // store in this session, each a memq put that exited 0. The one-time
+  // migration's writes are not counted. Session memory, never reset by a
+  // later session.start, and read by the tick summary's Memory: line.
+  memqWrittenThisSession: number;
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -2204,6 +2209,7 @@ const sess: {
   memqStandDownUntil: 0,
   memqFailedDay: { start: "", timeout: "" },
   memqLaunchDir: "",
+  memqWrittenThisSession: 0,
 };
 
 // The store cause sess.stateNotLoaded takes where session.start's store read
@@ -2754,6 +2760,122 @@ export async function kitMemq(
     stdout: res && typeof res.stdout === "string" ? res.stdout : "",
     stderr: res && typeof res.stderr === "string" ? res.stderr : "",
   };
+}
+
+// How long one memq put may run. A put takes the tier's lock, and a write
+// costs the prompt nothing, so its bound is twice a read's.
+const MEMQ_WRITE_TIMEOUT_MS = 5_000;
+
+// The memory kind a record is written under: fact, preference or lesson as
+// given, and fact for anything else.
+function memqKindOf(kind: unknown): "fact" | "preference" | "lesson" {
+  return kind === "preference" || kind === "lesson" ? kind : "fact";
+}
+
+// What one memq put came to. `written` is exit 0. `duplicate` is exit 1 with
+// memq's refusal of a name the store already holds, which is the dedupe: the
+// same text always derives the same name. `failed` is anything else, with the
+// first non-empty stderr line as its reason, and `ran` false where memq never
+// ran to an exit.
+type MemoryWriteOutcome =
+  | { outcome: "written"; name: string }
+  | { outcome: "duplicate"; name: string }
+  | { outcome: "failed"; name: string; reason: string; ran: boolean };
+
+// Writes `text` as one record in the kit's memory store through memq put,
+// tagged with its source, its kind and this persona, and authored by the
+// persona. The name is the kind and the base-36 fnv1a hash of the text
+// lowercased and trimmed. The description is the text's first line cut to
+// 120 characters. The body is the text, a blank line, and one provenance line
+// naming the persona, the source, this session and the UTC date of
+// `createdAt`. Logs nothing itself: kitMemq logs a spawn that failed, and
+// each caller logs the outcome its own way.
+async function writeMemoryRecord(
+  dp: any,
+  text: string,
+  { kind, source, createdAt }: { kind: unknown; source: "distilled" | "worker" | "user"; createdAt: number },
+): Promise<MemoryWriteOutcome> {
+  const heldKind = memqKindOf(kind);
+  const name = `${heldKind}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
+  const description = text.split(LINE_TERMINATOR)[0].slice(0, 120);
+  const date = new Date(Number.isFinite(createdAt) ? createdAt : Date.now()).toISOString().slice(0, 10);
+  const body = `${text}\n\nWritten by persona ${sess.persona} from source ${source} in session ${sess.mySessionId} on ${date}.`;
+  const res = await kitMemq(dp, [
+    "put", name, description,
+    "--body", body,
+    "--tag", source,
+    "--tag", heldKind,
+    "--tag", "persona-" + sess.persona,
+    "--author", "persona:" + sess.persona,
+  ], { timeoutMs: MEMQ_WRITE_TIMEOUT_MS });
+  if (res === null) return { outcome: "failed", name, reason: "memq did not run to an exit", ran: false };
+  if (res.exitCode === 0) return { outcome: "written", name };
+  const lines = res.stderr.split(LINE_TERMINATOR);
+  if (res.exitCode === 1 && lines.some((line: string) => line.startsWith(`memq: '${name}' already exists`))) {
+    return { outcome: "duplicate", name };
+  }
+  const firstLine = (lines.find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150);
+  return { outcome: "failed", name, reason: firstLine || `memq exited ${res.exitCode === null ? "unknown" : res.exitCode}`, ran: true };
+}
+
+// Logs what the distiller's or memory_add's write came to, and counts a
+// written record for the tick summary: remember names the record and the
+// text's opening, memory_duplicate names the record the store already held,
+// and memory_write_failed names the reason. A failed fact is dropped rather
+// than queued, since the next turn distills again.
+function noteMemoryWrite(written: MemoryWriteOutcome, text: string): void {
+  if (written.outcome === "written") sess.memqWrittenThisSession += 1;
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "memory",
+    action: written.outcome === "written" ? "remember" : written.outcome === "duplicate" ? "memory_duplicate" : "memory_write_failed",
+    detail: written.outcome === "failed" ? `${written.name}: ${written.reason}` : `${written.name}: ${text.slice(0, 80)}`,
+  });
+}
+
+// Moves the distillates a persona's JSON still holds into the kit's memory
+// store, once, at an owner's start. Every entry whose source is worker,
+// distilled or user is written in order through writeMemoryRecord under its
+// own source, and leaves the JSON on a write or on the store already holding
+// its name. Any other outcome leaves it for the next start. A write that
+// memq never ran to an exit ends the pass and counts the rest as left, so a
+// host that is down costs the start one bound rather than one per entry.
+// Self-review lessons stay. One memory_migrated decision names the counts
+// wherever there was a candidate, and the state is saved where any entry
+// left the JSON.
+async function migrateLegacyMemories(dp: any): Promise<void> {
+  const candidates = sess.state.memory.filter((m) => m.source === "worker" || m.source === "distilled" || m.source === "user");
+  if (candidates.length === 0) return;
+  const done = new Set<AgentState["memory"][number]>();
+  let moved = 0;
+  let present = 0;
+  let left = 0;
+  let stopped = false;
+  for (const entry of candidates) {
+    if (stopped) { left += 1; continue; }
+    const written = await writeMemoryRecord(dp, String(entry.text), {
+      kind: entry.kind,
+      source: entry.source as "worker" | "distilled" | "user",
+      createdAt: entry.createdAt,
+    });
+    if (written.outcome === "written") { moved += 1; done.add(entry); }
+    else if (written.outcome === "duplicate") { present += 1; done.add(entry); }
+    else { left += 1; if (!written.ran) stopped = true; }
+  }
+  if (done.size > 0) sess.state.memory = sess.state.memory.filter((m) => !done.has(m));
+  sess.state.decisions.push({
+    timestamp: Date.now(),
+    loop: "memory",
+    action: "memory_migrated",
+    detail: `moved ${moved}, present ${present}, left ${left}`,
+  });
+  if (done.size > 0) await persist(dp);
+}
+
+// The self-review lessons the persona's JSON holds, the one kind of entry it
+// keeps now that distillates live in the kit's memory store.
+function selfReviewLessonCount(): number {
+  return sess.state.memory.filter((m) => m.source === "self-review").length;
 }
 
 // How long bin/restart-recap.mjs may run before $.process.run kills it and
@@ -5477,7 +5599,7 @@ export const register: Register = async (on, options) => {
     await registerTool("memory_add", () => $.tool.register({
       name: "memory_add",
       description:
-        "Add one entry to this persona's durable memory store, which later sessions read.",
+        "Write one record to the kit's shared memory store for this persona. Returns the record's name.",
       inputSchema: {
         type: "object",
         properties: {
@@ -5488,10 +5610,6 @@ export const register: Register = async (on, options) => {
           kind: {
             type: "string",
             description: 'Memory kind: "fact", "preference", or "lesson".',
-          },
-          confidence: {
-            type: "number",
-            description: "confidence runs 0 to 1. Default 0.7.",
           },
         },
         required: ["text"],
@@ -5956,9 +6074,15 @@ export const register: Register = async (on, options) => {
           await persist($);
         }
       } catch { /* non-fatal */ }
+      // The distillates an earlier version kept in the persona's JSON move to
+      // the kit's memory store; an entry whose write fails waits for the next
+      // start.
+      try {
+        await migrateLegacyMemories($);
+      } catch { /* non-fatal */ }
     }
 
-    $.ui.log(`Agentic: persona '${sess.persona}', ${sess.state.memory.length} memories, ${sess.isOwner ? "owner" : "passive reader"}`);
+    $.ui.log(`Agentic: persona '${sess.persona}', ${selfReviewLessonCount()} self-review lessons, ${sess.isOwner ? "owner" : "passive reader"}`);
 
     // Note: $ is available in the timer callback scope (session.start hook).
 
@@ -8410,7 +8534,7 @@ export const register: Register = async (on, options) => {
         `Idle time: ${idleDisplay}\n` +
         `Nudged answers with no status line: ${sess.nudgedAnswersWithoutStatus}\n` +
         `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
-        `Memory: ${sess.state.memory.length} entries (self-review lessons: ${sess.state.memory.filter((m) => m.source === "self-review").length})\n` +
+        `Memory: ${selfReviewLessonCount()} self-review lessons, ${sess.memqWrittenThisSession} written this session\n` +
         (() => {
           const sr = sess.state.memory.filter((m) => m.source === "self-review" && m.kind === "lesson");
           if (sr.length === 0) return "";
@@ -8576,7 +8700,7 @@ export const register: Register = async (on, options) => {
               `Node: ${g.id} (${g.kind}), status ${g.status}, ${roundSummaryText(sess.state, g)}\n` +
               `Last 5 scores: ${last5}\n` +
               `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
-              `Memory: ${sess.state.memory.length} entries\n` +
+              `Memory: ${selfReviewLessonCount()} self-review lessons, ${sess.memqWrittenThisSession} written this session\n` +
               (() => {
                 const sr = sess.state.memory.filter((m) => m.source === "self-review" && m.kind === "lesson");
                 if (sr.length === 0) return "";
@@ -10213,29 +10337,11 @@ export const register: Register = async (on, options) => {
             if (distilledText === null) noteCompletionShape("memory-distill", rawDistilled);
             const distilled = (distilledText ?? "").trim();
             if (distilled.length > 0 && distilled.toUpperCase() !== "NONE") {
-              const normalized = distilled.toLowerCase().trim();
-              const isDupe = sess.state.memory.some(
-                (m) => m.text.toLowerCase().trim() === normalized
-              );
-              if (!isDupe) {
-                sess.state.memory.push({
-                  id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                  kind: kind as "fact" | "preference" | "lesson",
-                  text: distilled,
-                  confidence: 0.4,
-                  source: "distilled",
-                  createdAt: Date.now(),
-                  lastAccessed: Date.now(),
-                  accessCount: 0,
-                  pinned: false,
-                });
-                sess.state.decisions.push({
-                  timestamp: Date.now(),
-                  loop: "memory",
-                  action: "remember",
-                  detail: `${kind}: ${distilled.slice(0, 80)}`,
-                });
-              }
+              // One record in the kit's memory store, never an entry in the
+              // persona's JSON. The same fact distilled again derives the
+              // same name, and memq's refusal of it is the dedupe.
+              const written = await writeMemoryRecord($, distilled, { kind, source: "distilled", createdAt: Date.now() });
+              noteMemoryWrite(written, distilled);
             }
           }
         }
@@ -10645,7 +10751,7 @@ export const register: Register = async (on, options) => {
         });
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
         return {
-          result: `persona '${sess.persona}': joined as reader (arming reader). ${sess.state.memory.length} memories. ${previousSessionsText(sess.state)}`,
+          result: `persona '${sess.persona}': joined as reader (arming reader). ${selfReviewLessonCount()} self-review lessons. ${previousSessionsText(sess.state)}`,
         };
       }
       // Backlog fix (commons claim staleness): a commons session record shares
@@ -10722,7 +10828,7 @@ export const register: Register = async (on, options) => {
         // D2: Claim the reader role
         await claimReaderRole(commonsStoreOf($), sess.persona, sess.mySessionId, Date.now(), commonsMeta());
         return {
-          result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${sess.state.memory.length} memories. ${previousSessionsText(sess.state)}`,
+          result: `persona '${sess.persona}' is held by session ${shouldYieldTo}; joined as reader. ${selfReviewLessonCount()} self-review lessons. ${previousSessionsText(sess.state)}`,
         };
       }
 
@@ -10749,7 +10855,7 @@ export const register: Register = async (on, options) => {
       // must not go through persist's yield check.
       await writeClaimDirect($);
       return {
-        result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${sess.state.memory.length} memories. ${previousSessionsText(sess.state)}`,
+        result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${selfReviewLessonCount()} self-review lessons. ${previousSessionsText(sess.state)}`,
       };
     }
 
@@ -11933,33 +12039,23 @@ export const register: Register = async (on, options) => {
         toolErrorsThisTurn++;
         return { deny: "memory_add requires a non-empty 'text'." };
       }
-      const kind = (String((e as any).kind || "fact").trim() as "fact" | "preference" | "lesson") || "fact";
-      const confidence = Math.min(Math.max(parseFloat(String((e as any).confidence || "0.7")) || 0.7, 0), 1);
-      sess.state.memory.push({
-        id: `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        kind,
-        text,
-        confidence,
-        source: "worker",
-        createdAt: Date.now(),
-        lastAccessed: Date.now(),
-        accessCount: 0,
-        pinned: false,
-      });
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "memory",
-        action: "remember",
-        detail: `${kind}: ${text.slice(0, 80)}`,
-      });
-      const writeOk = await persist($);
-      if (writeOk) {
-        return {
-          result: `Memory saved (${kind}, confidence ${confidence}): "${text.slice(0, 80)}"`,
-        };
+      // One record in the kit's memory store. A confidence argument is
+      // ignored, since the record carries none. The reply names the record,
+      // so the worker can touch or forget it with memq later. The decision is
+      // saved with the state, and the record stands in the store whatever
+      // that save returns.
+      const kind = String((e as any).kind ?? "").trim();
+      const written = await writeMemoryRecord($, text, { kind, source: "worker", createdAt: Date.now() });
+      noteMemoryWrite(written, text);
+      await persist($);
+      if (written.outcome === "written") {
+        return { result: `Wrote memory record ${written.name} to the shared memory store.` };
+      }
+      if (written.outcome === "duplicate") {
+        return { result: `The shared memory store already holds this text as record ${written.name}; nothing new was written.` };
       }
       toolErrorsThisTurn++;
-      return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
+      return { deny: `memory_add could not write record ${written.name}: ${written.reason}` };
     }
 
     // The closing clause of agentic_say's and agentic_inbox's reach refusal,
