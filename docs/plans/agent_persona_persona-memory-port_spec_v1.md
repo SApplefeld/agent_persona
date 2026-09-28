@@ -130,7 +130,7 @@ Acceptance:
 - A re-run of the sweep's searches over `README.md`, `docs/architecture.md` and `docs/README.md` finds no sentence still saying memory entries do not decay, that MEMQ is not connected, or that the plugin ranks by confidence, checked against a withheld control run separately over `docs/archive/agent_persona_passive-supervisor_v1.md`, which still holds its own no-decay and MEMQ sentences and is found by the same searches.
 - `README.md`'s decision names match the decisions the code logs, read from `hooks/index.ts`.
 
-Files in scope: `README.md`, `docs/architecture.md`, `docs/README.md`.
+Files in scope: `README.md`, `docs/architecture.md`, `docs/README.md`, `docs/security-model.md`.
 Audience: the operator and the persona seats reading the plugin's README, expert in the loop. Voice: none. Fact base: the files in scope of sections 1 to 4 as built.
 
 ### 6. The launch directory survives a reload of the plugin's code
