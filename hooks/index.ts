@@ -2705,8 +2705,10 @@ const MEMQ_STAND_DOWN_MS = 60_000;
 const MEMQ_TIMEOUT_SLACK_MS = 100;
 
 // The opening of the stderr line memq judged prints, exiting 0 with nothing
-// on stdout, when it could not reach the store: a database or embedding leg
-// that did not answer, or a store root that is not the machine's own.
+// on stdout, whenever it could not run the judged block against the store: a
+// store root that is not the machine's own, or a query that stood down, such
+// as a database or embedding leg that did not answer, a refused query, a
+// spent budget, a cancelled call or a schema mismatch.
 const MEMQ_UNAVAILABLE_LINE = "memq: the judged block did not run (";
 
 export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: string };
@@ -2730,8 +2732,8 @@ export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: s
 // rejection, and also no session id, no launch directory or no located kit
 // install, which spawn nothing. A third cause, `unavailable`, is a read that
 // ran to exit 0 with an empty stdout and a stderr line opening
-// MEMQ_UNAVAILABLE_LINE, which memq prints when it could not reach the store
-// host; that result still resolves for the caller. Each cause
+// MEMQ_UNAVAILABLE_LINE, which memq prints whenever it could not run the
+// judged block against the store; that result still resolves for the caller. Each cause
 // logs one memq_spawn_failed decision per UTC day, carrying the first line of
 // the reason, memq's own line for `unavailable`. The verb decides read or
 // write, so no caller can mislabel one: a `judged` call is a read, and a read
@@ -2755,7 +2757,7 @@ export async function kitMemq(
       sess.memqFailedDay[cause] = day;
       sess.state.decisions.push({
         timestamp: Date.now(),
-        loop: "monitor",
+        loop: "memory",
         action: "memq_spawn_failed",
         detail: `cause ${cause}; ${reason.slice(0, 150)}; verb ${verb}`,
       });
@@ -2919,7 +2921,7 @@ function noteMemoryWrite(written: MemoryWriteOutcome, text: string): void {
     timestamp: Date.now(),
     loop: "memory",
     action: written.outcome === "written" ? "remember" : written.outcome === "duplicate" ? "memory_duplicate" : "memory_write_failed",
-    detail: written.outcome === "failed" ? `${written.name}: ${written.reason}` : `${written.name}: ${text.slice(0, 80)}`,
+    detail: written.outcome === "failed" ? `${written.name}: ${bracketSafeText(written.reason)}` :`${written.name}: ${text.slice(0, 80)}`,
   });
 }
 
@@ -4812,7 +4814,7 @@ function completeLeafReturningClosed(id: string, note: string): string[] {
 // coming. Only the owner asks, since only the owner stamps: a reader
 // session clears the goals' entries and queues nothing. Top level because it
 // takes `dp`; `expectedTurns` is register's expected-turn list.
-function queueMemoryCheck(dp: any, expectedTurns: ExpectedTurn[], goalId: string, title: string, goalIds: string[] = [goalId]): void {
+function queueMemoryCheck(dp: any, expectedTurns: ExpectedTurn[], goalId: string, title: string, goalIds: string[]): void {
   const names = shownNamesUnder(goalIds);
   if (names.length === 0) return;
   if (!sess.isOwner) {
@@ -4907,7 +4909,7 @@ async function answerMemoryCheck(dp: any, goalId: string, goalIds: string[], ans
         timestamp: Date.now(),
         loop: "memory",
         action: "memory_stamp_failed",
-        detail: `${goalId}: ${name}: ${reason}`,
+        detail: `${goalId}: ${name}: ${bracketSafeText(reason)}`,
       });
     }
     if (res === null) break;
@@ -12406,7 +12408,7 @@ export const register: Register = async (on, options) => {
         return { result: `The shared memory store already holds this text as record ${written.name}; nothing new was written.` };
       }
       toolErrorsThisTurn++;
-      return { deny: `memory_add could not write record ${written.name}: ${written.reason}` };
+      return { deny: `memory_add could not write record ${written.name}: ${bracketSafeText(written.reason)}` };
     }
 
     // The closing clause of agentic_say's and agentic_inbox's reach refusal,
@@ -13258,7 +13260,7 @@ export const register: Register = async (on, options) => {
       }
       sess.state.decisions.push({
         timestamp: shownAt,
-        loop: "monitor",
+        loop: "memory",
         action: "memory_inject",
         detail: `memory_inject: ${judgedLines.length} records`,
       });

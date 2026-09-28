@@ -34077,8 +34077,8 @@ async function caseMemq13_theReadInjectsWhatMemqJudged(clock) {
   check("memq13: the shown list holds the two names under the active goal, in printed order",
     JSON.stringify(stored.shownMemories) === JSON.stringify(MEMQ13_NAMES.map((name) => ({ name, goalId: "g-plan", shownAt: T0 }))), stored.shownMemories);
   const injects = stored.decisions.filter((d) => d.action === "memory_inject");
-  check("memq13: one memory_inject decision on the monitor loop naming 2 records",
-    injects.length === 1 && injects[0].loop === "monitor" && /\b2\b/.test(injects[0].detail), injects);
+  check("memq13: one memory_inject decision on the memory loop naming 2 records",
+    injects.length === 1 && injects[0].loop === "memory" && /\b2\b/.test(injects[0].detail), injects);
 
   // A line of any other shape rides the block and records no name.
   const o = await memq13Harness(clock, "memq13_other_shape");
