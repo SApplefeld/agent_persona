@@ -24,7 +24,7 @@
       "type": "number",
       "default": 90,
       "title": "Memory gate discard floor (percent)",
-      "description": "The confidence floor, 50 to 100, at which Jev's own discard probability skips the memory-kind Haiku classify and distill calls outright, on a dev-split turn. Default 90."
+      "description": "The confidence floor, 50 to 100, at which Jev's own discard probability skips the memory-kind Haiku classify and distill calls outright, on a dev-split turn. Acts only where memory-kind is named in jevLive; otherwise this setting does nothing. Default 90."
     },
     "controllerTickMs": {
       "type": "number",

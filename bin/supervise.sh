@@ -343,11 +343,13 @@ fi
 HEARTBEAT_MS="${heartbeatMs:-30000}"
 STALE_AFTER_MS="${staleAfterMs:-90000}"
 # The memory gate's confidence floor: a percent, checked beside the other
-# settings that end the run rather than only at the emitter's own rule, since
-# a range violation here is the same silent-failure shape staleAfterMs is
-# checked to avoid. 50 to 100: positive_number's own minimum covers the lower
-# edge, and the upper edge is checked here because positive_number has no
-# maximum of its own.
+# settings that end the run rather than left to the plugin's own clamp. The
+# plugin folds a value outside 50 to 100 to 90 with one setting_clamped
+# decision and keeps running, so a roster typo there costs only a line in the
+# journal an operator may never read. Checked here instead, a typo stops the
+# launch at startup, where it is visible in the supervisor's own log. 50 to
+# 100: positive_number's own minimum covers the lower edge, and the upper
+# edge is checked here because positive_number has no maximum of its own.
 MEMORY_GATE_DISCARD_PERCENT="${memoryGateDiscardPercent:-90}"
 if ! positive_number "$MEMORY_GATE_DISCARD_PERCENT" 50; then
   echo "ERROR: memoryGateDiscardPercent '$MEMORY_GATE_DISCARD_PERCENT' is not a whole number in the range 50 to 100, written with digits only, no leading zero and at most 9 digits" >&2
@@ -463,6 +465,14 @@ else
   # needs the same carry-through or a roster that names a question live would
   # reach no persona that already has a run directory.
   if ! ensure_settings_jev_live "$SETTINGS_FILE" 2>>"$LOG"; then
+    echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
+  # Same reasoning as the jevMode and jevLive calls above, for the memory
+  # gate's floor: the emit branch writes it from memoryGateDiscardPercent, so
+  # a provided settings file needs the same carry-through or a roster that
+  # tunes the floor would reach no persona that already has a run directory.
+  if ! ensure_settings_memory_gate_discard_percent "$SETTINGS_FILE" 2>>"$LOG"; then
     echo "ERROR: could not complete $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
     exit 1
   fi
