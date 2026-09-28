@@ -148,7 +148,7 @@ Acceptance: the README states each surviving question's version, state, options 
 
 ## Related
 - `docs/plans/agent_persona_goal-every-turn_spec_v1.md`: ships `turn_tool_activity` and the two live questions; this plan reads the summary and changes neither question.
-- `docs/plans/agent_persona_jev-memory-gate_spec_v1.md`: owns `memory-kind`; the task-notification rule is its amendment.
+- `docs/archive/agent_persona_jev-memory-gate_spec_v1.md`: owns `memory-kind`; the task-notification rule is its amendment.
 - `docs/archive/agent_persona_decision-seam_v1.md`: the seam whose questions this plan re-poses.
 
 ## Chapters

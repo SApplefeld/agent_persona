@@ -1,6 +1,6 @@
 # Jev gates the memory distiller, so a turn Jev is sure holds nothing memorable costs no Haiku call
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-25
 
@@ -27,6 +27,8 @@ Alternatives refused:
 - A fixed floor constant. Refused: the operator tunes fleet behavior through the roster, and the right floor moves as the journal grows.
 
 Rulings: 2026-09-26, relayed by the assistant persona from the operator's read of the eight Haiku keeps the 0.9 floor would lose, four of them subagent report turns: a turn opened by a task-notification prompt makes no memory call at all, once a count over the journal shows no genuine memory ever came from one. Section 1 carries the rule and its precondition, and the Chapter that lands it names this as drift.
+
+2026-09-27, the operator on the relay thread, answering the scope adjudicator's ask: a turn the plugin's goal nudge opened makes no memory call, fixed in this plan through a flag recorded at the turn's start, which waives the Goal's "nothing changes" sentence for that turn shape. The reading this plan built, every completion while the nudged turn is open, is stated in the Standing Brief Amendments block.
 
 Provenance: the operator's channel messages on 2026-09-25, the ARCHITECT's count over `~/.claude/agentic-decisions/*/` the same day, and the read of `hooks/index.ts`, `hooks/decision-seam.ts`, `hooks/decision-journal.ts`, `hooks/question-catalog.ts` and the goal-every-turn plan at `fd5b2d6`.
 
@@ -97,6 +99,8 @@ Audience: a developer of the agent_persona plugin who knows the decision seam an
 ## Operator Verification
 - After this plan merges and the plugin cache updates, name `memory-kind` in one persona's `jevLive` roster field and relaunch it. Over the next day, confirm in that persona's decisions that `memory_gate_skipped` and `memory_gate_passed` both appear, and that no `memory_gate_skipped` decision carries the split `holdout` in its detail. What reopens the work: a skip on a holdout stamp, or a `memory_gate_fallback` rate above one call in twenty, which says the live timeout is too short for this machine.
 - After a week, count the `haiku_kind` outcome lines on holdout stamps whose Jev `discard` probability was at or above the floor: the share whose Haiku label is not `discard` is the live miss rate. Lower or raise `memoryGateDiscardPercent` from that reading.
+- Decide whether `docs/security-model.md` should name the Jev service as a party that receives each shadowed and live question's state text. A live `memory-kind` call sends the text the shadow call has sent since 2026-09-20, so the gate adds no new egress.
+- Keep or overrule the nudge skip's reach: with `memory-kind` live or not, no completion inside a goal-nudged turn is classified, a subagent's included. Overruling narrows the skip to the turn's own completion, one condition at the memory site.
 
 ## Open Questions
 - The journal holds `memory-kind` call lines whose state opens with the plugin's own `[GOAL]` nudge text, from `dev-discord` and `DEV-DISCORD` among others, although the site is guarded by `!wasNudged`. Either those lines predate the guard or a nudge path sets no `wasNudged`. Not this plan's to fix; the executing session notes what it finds in the Chapter, and a live nudge path reaching the site is a defect for the DEV-PERSONA queue.
@@ -283,4 +287,39 @@ Advisory dispositions:
 - Minor: the backlog's overlap sentence named one order with the other order's reason; now states both.
 - The terminal condition is met: no correctness Critical, the Major disposed, and the close-pass delta, a one-line move of the clear plus a fixture id and a sentence, owes no round by author judgment, recorded as an author re-read: the clear fires only on the gate turn's own completion, after the capture. Gate: tick suite 5768 OK / 0, tsc exit 0.
 
-**Next action.** Step 5, the documentation curator; then the final Chapter, the archive, the whole gate and the pull request.
+**Next action (superseded by Chapter 4).** Step 5, the documentation curator; then the final Chapter, the archive, the whole gate and the pull request.
+
+**Step 5, documentation curator.** Two docs updated: `docs/architecture.md` gains "The memory step", and `docs/README.md`'s summary, order and status lines are current. Drift adjudicated:
+- D1 and D2, tagged mistake, are false README sentences rather than code defects: "the kind-classify runs on every `turn.complete`" and "its first line is the operator's own prompt". The code matches the spec for the first and carries a filed backlog defect for the second. Both sentences are corrected. Neither Basis carries the no-Bash marker, so no pre-change read was owed. Section 3's sweep had missed the first.
+- D3 to D8, deviations: the nudge skip's reach; the provided-file floor; `liveAsk`'s `rejected` reason, which writes no call line; the live bound covering the request only; the spec's stale outcome count of seven against nine; the plan index's stale count and order.
+- Library hygiene: the resolved "two running orders" backlog entry is pruned to the Q3 snapshot; two stale index rows are corrected; the plan row moves to the archive list.
+- Curator claims spot-checked against the code: the distill's 0.4 confidence, `NaN` reading 90 silently, and the step's catch.
+
+### Chapter 4 - 2026-09-27
+Completed: finishing-work
+Implemented By: main session, fix rounds inline; reviews dispatched
+Metrics: review rounds 5, closed major-closed; provenance 3 spec-traceable, 4 fix-introduced, 1 new-requirement, rulings (0 refused, 5 declared, 1 asked); advisory: 4 findings, 0 fixed, 2 deferred, 2 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: When this ships, and the operator names `memory-kind` in a persona's `jevLive` roster field, that persona's turn-end memory step asks Jev first and Haiku only on what Jev leaves open. Where Jev is confident the exchange holds nothing memorable, the step makes neither of the two Haiku calls it makes today and records that it skipped them. Where Jev is unsure, or fails, or times out, the step runs exactly as it does today. One journaled call in five keeps running Haiku whatever Jev said, so the rate at which the gate would have skipped a memory Haiku kept stays measurable after promotion, from the same journal that measured it before. The confidence floor is a roster field, `memoryGateDiscardPercent`, default 90, so the operator tunes it per persona in `fleet.json` and never edits a script. With `memory-kind` absent from `jevLive`, nothing changes: the site keeps asking Haiku and shadowing Jev as it does today.; What the tree does now: at the end of each persona turn, where the operator has named `memory-kind` in that persona's live list, the memory step asks Jev first and skips both Haiku calls when Jev is at least as sure as the roster floor `memoryGateDiscardPercent` (default 90) that nothing is memorable, while one stamp in five still runs Haiku so the miss rate stays measurable and every Jev failure falls back to Haiku; with or without the gate, a turn opened by a finished task's notification makes no memory call, and neither does any completion inside a turn the controller's goal nudge opened; Refinements during the run: the supervisor's promotable list gained `memory-kind` (amendment, section 1); a provided settings file now receives the roster floor, reversing the plan's Assumption (amendment, section 2); the 2026-09-26 task-notification ruling landed, with its skip keyed on the turn's recorded opening text after two review rounds; the operator's 2026-09-27 ruling fixed the nudge skip here, waiving the Goal's "nothing changes" sentence for nudged turns, read as every completion while the nudged turn is open; Operator-pending: promote `memory-kind` on one persona and watch a day of decisions; after a week read the holdout miss rate and tune the floor; decide whether the threat model names the Jev service; keep or overrule the nudge skip's reach
+Decisions / Surprises:
+- Base ref `d37cbd3`, the merge-base after the trunk merge `f0750ff`; the changeset matched the sections' scope lines plus the plan doc.
+- Round 3's held Major on the pre-existing `!wasNudged` guard went to the scope adjudicator, which ruled ASK; the operator answered fix it here. Add-decision: a per-turn nudge flag recorded at `turn.start`, read at completion in place of `wasNudged`; serves the operator's ruling; adds one module-level flag; about 10 code lines and 40 test lines; not doing it leaves the memory step classifying the controller's nudge text whenever a nudged turn runs a subagent.
+- Round 4 found the flag outlived its turn; it now clears at the turn's own completion, and round 5 moved that clear ahead of the handler's awaits.
+- Round 5's Major, that the skip reaches subagent completions inside the nudged turn, is justified-not-fixed on the reading stated in the Standing Brief Amendments block, and the close-out offers the operator the overrule.
+- The fifth round met the terminal condition, so the review-round backstop did not fire; its close-pass delta took an author re-read rather than a round.
+- Chapter 3's sweep missed README's "Classify every turn" line; step 5 caught and fixed it.
+Failed approaches: round 1 keyed the task-notification skip on the turn being unaccounted, which every completion resets; round 2 replaced it with the turn's recorded opening text.
+Assumptions:
+- assumed 2026-09-27 (default, section 1): `liveAsk` keeps its `onStamp` callback beside the widened return; reversal: drop the callback and move both callers to the returned stamp id.
+- assumed 2026-09-27 (default, section 1): `liveAsk`'s catch returns a wrapper-owned reason `rejected`, typed outside `SeamFailureReason`; reversal: return null there and let the memory site name the rejection.
+- assumed 2026-09-27 (source: the journal count above, section 1): the task-notification match is `currentPrompt.trimStart().startsWith("<task-notification>")`; reversal: one string in `hooks/index.ts`.
+- assumed 2026-09-27 (default, section 1): a passed call whose Haiku classify returns no string writes no `haiku_kind` outcome and distills nothing; reversal: write the outcome with a null value.
+- assumed 2026-09-27 (default, section 1): a validated answer with no `discard` probability passes as `below-floor`, with no probability in the detail; reversal: a third condition token.
+- assumed 2026-09-27 (default, section 1): `Infinity` for the floor is clamped with a `setting_clamped` decision, and `NaN` falls silently to 90; reversal: `Number.isFinite` in the read.
+- assumed 2026-09-27 (default, section 2): the range check is `positive_number` with a minimum of 50 followed by a separate `-gt 100` refusal, each with an `ERROR:` line; reversal: one combined check.
+- assumed 2026-09-27 (default, section 2): the provided-file helper is keyed on the raw roster variable, so an unset field leaves a hand-set floor in the file untouched; reversal: key it on the defaulted variable and write 90 on every launch.
+- assumed 2026-09-27 (default, section 3): the operator's one-in-twenty fallback reading from the plan's Operator Verification is stated in the architecture row as a reading, not as plugin behavior; reversal: drop the clause.
+Review Findings: review: performance + security + adversarial at fable, Workflow (high), one wave; fix rounds 2 to 5: adversarial at opus, Workflow (high); goal read: scope-adjudicator at fable, Agent tool; held-Major ruling: scope-adjudicator, Agent tool. Critical: none. Majors: 8 correctness, 7 fixed and 1 justified-not-fixed (round 5's reach), plus round 3's merged-turn Major refused on the journal's reading. Advisory: performance CLEAR and security CLEAR, their four Minors dispositioned on Interim board 3. Goal read: ASKED-BUT-UNBUILT empty; BUILT-BUT-UNASKED five, each accept-and-declare (the 50-to-100 range and `setting_clamped`, the provided-file helper, `liveAsk`'s widened return, the `rejected` reason, the one-in-twenty figure). Docs curator: 2 mistakes corrected as README claims, 6 deviations recorded. Every Workflow review round ran at its requested tier by dispatch record; no transcript distribution was tallied.
+Stamps: none surfaced this pass beyond the section Chapters' adjudication.
+Gate: whole gate, 2026-09-28 on this worktree over the archived tree, process poll clean of foreign runners but for one unattributed `bash - bin/supervise.sh` process: 29 of 30 lanes exit 0 (21 node suites, 6 of 7 shell suites, tsc, `claude plugin validate` passing with warnings); controller-tick-test 5768 OK / 0 FAIL, exit 0; `supervisor-natural-exit-parallel` exit 1, 221 OK / 3 FAIL on the three `root_complete` pins, identical to the step 1 baseline and the trunk reading; gate.exit 1 from that lane alone. Contention lane `bash .kit/live-all.sh` exit 10, refusing beside the live STEWARD claim; the live suites are deferred to the deferred gate run.
+Next: none, plan complete
+Commit Model: Branch-and-PR
