@@ -890,6 +890,26 @@ async function fireSessionStart(harness) {
   await startH(harness.fake, {}, () => {});
 }
 
+// --- Compaction driver: fires session.compact once, as the engine does ---
+
+// Fires session.compact with `e` and returns what the plugin handed its
+// `next`, as { received, result }: `received` is the event the plugin passed
+// down, or undefined where it never called next, and `result` is what the
+// hook resolved. The default event is the main conversation compacting at
+// the engine's threshold over no messages; a case passes its own fields
+// (instructions, trigger, agentId) over it.
+async function fireSessionCompact(harness, e = {}) {
+  const compactH = harness.handlers["session.compact"];
+  if (!compactH) throw new Error("session.compact handler not registered");
+  const event = { trigger: "auto", messages: [], ...e };
+  let received;
+  const result = await compactH(harness.fake, event, async (down) => {
+    received = down;
+    return { messages: [] };
+  });
+  return { event, received, result };
+}
+
 // --- Seed the fake fs with persona store + stale heartbeat ---
 
 function seedPersonaStore(harness, state) {
@@ -974,6 +994,7 @@ export {
   fireTick,
   fireHeartbeat,
   fireSessionStart,
+  fireSessionCompact,
   seedPersonaStore,
   loadModule,
   journalLines,

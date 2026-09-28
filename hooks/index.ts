@@ -1577,7 +1577,11 @@ function targetPersonaOf(arg: unknown, own: string): { persona: string } | { den
 // A proposal entry is the idle proposal's [PROPOSE] turn. It is a plugin
 // turn in every other respect, and its own kind is what lets the agentic_say
 // handler ledger the proposal the persona sends inside it.
-type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string; ground: string; seatLead: boolean } | { kind: "nudge" } | { kind: "plugin" } | { kind: "proposal" });
+//
+// A memoryCheck entry is the [MEMORY CHECK] turn a goal's close queues. It
+// carries the closed goal's id, so the turn's answer is read against the
+// records shown under that goal and no other.
+type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string; ground: string; seatLead: boolean } | { kind: "nudge" } | { kind: "plugin" } | { kind: "proposal" } | { kind: "memoryCheck"; goalId: string });
 
 // Whether a turn's opening text is the text an entry was submitted with, on
 // either of the entry's two keys. An empty turn text (a continuation) and an
@@ -4794,7 +4798,9 @@ export const register: Register = async (on, options) => {
   // text; a plugin entry is the kaizen announcement, the reply backstop or
   // the ask re-raise, a turn that stamps nothing; a proposal entry is the
   // idle proposal's [PROPOSE] turn, which stamps nothing and is not scored,
-  // and inside which agentic_say ledgers the proposal. Two queued submits with
+  // and inside which agentic_say ledgers the proposal; a memoryCheck entry is
+  // a closed goal's [MEMORY CHECK] turn, whose answer turn.complete reads
+  // against that goal's shown records. Two queued submits with
   // identical text are a known limit: the first queued entry wins.
   const expectedTurns: ExpectedTurn[] = [];
   const expectTurn = (entry: ExpectedTurn): ExpectedTurn => { expectedTurns.push(entry); return entry; };
@@ -4814,6 +4820,105 @@ export const register: Register = async (on, options) => {
   // Null where no nudged turn is open, and where the nudged turn's start
   // carried no id, whose completion then moves the count by nothing.
   let nudgedTurnId: string | null = null;
+  // The [MEMORY CHECK] turns that have opened and not yet completed, each
+  // turn id against the id of the goal whose close queued it. Set at
+  // turn.start when the matched entry is a memoryCheck and spent by the
+  // completion carrying that same id, as nudgedTurnId is, so two goals
+  // closing before either answer is read are each answered against their own
+  // records. A check whose turn opened with no id is never answered. Session
+  // memory only: a restart between the ask and the answer loses the check,
+  // and the goal's shown entries stay until the list's cap drops them.
+  const memoryCheckTurns = new Map<string, string>();
+  // Asks the worker which of the records shown while it worked goal `goalId`
+  // changed what it did, where the shown list holds any for that goal: one
+  // [MEMORY CHECK] turn, queued behind whatever the plugin already queued,
+  // naming each record once in the list's order. Nothing is queued where the
+  // list holds none. The goal title is text the worker wrote and the names
+  // are store text, so both pass through bracketSafeText, the title folded
+  // to one line and cut at the 80 characters a title is stored at. The entry
+  // goes into the expected-turn list before the submit, which is not awaited:
+  // $.prompt.submit resolves only once the session is next idle, and two of
+  // the four close sites run inside the turn itself. A refused submit leaves
+  // the list through submitExpectedTurn and the goal's entries stay. Only
+  // the owner asks, since only the owner stamps: a reader session clears the
+  // goal's entries and queues nothing.
+  const queueMemoryCheck = (dp: any, goalId: string, title: string): void => {
+    const names = [...new Set(sess.state.shownMemories.filter((m) => m.goalId === goalId).map((m) => m.name))];
+    if (names.length === 0) return;
+    if (!sess.isOwner) {
+      sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId !== goalId);
+      return;
+    }
+    const safeTitle = bracketSafeText(oneLine(String(title).slice(0, 80)));
+    const nameLines = names.map(bracketSafeText).join("\n");
+    const memoryCheckText =
+      `[MEMORY CHECK] These records were shown while you worked ${safeTitle}:\n` +
+      nameLines +
+      `\nReply with the names of the ones that changed what you did, one per line, or NONE.`;
+    const memoryCheckEntry = expectTurn({ kind: "memoryCheck", goalId, text: memoryCheckText });
+    void submitExpectedTurn(dp, expectedTurns, memoryCheckEntry);
+  };
+  // Reads a [MEMORY CHECK] turn's answer for goal `goalId` and stamps what it
+  // names. The answer's whitespace-separated tokens, each trimmed at both
+  // ends of every character outside [A-Za-z0-9_-], are matched exactly
+  // against the names shown under that goal, so a name never shown under it
+  // is never stamped, whatever the answer says. Each match is stamped once,
+  // in the list's order, through memq touch --applied, awaited one at a time:
+  // exit 0 logs memory_applied naming the record; any other outcome logs one
+  // memory_stamp_failed for the whole check, carrying the first stderr line
+  // or the cause. A non-zero exit moves on to the next name, and a spawn that
+  // never ran to an exit ends the check, so a store host that is down costs
+  // one bound per check. An answer matching nothing (NONE, an empty answer,
+  // names not on the list) logs memory_applied_none; NONE beside a shown
+  // name stamps the name. The goal's entries leave the list in every case. A
+  // reader session stamps nothing and still clears them. Nothing throws.
+  const answerMemoryCheck = async (dp: any, goalId: string, answer: string): Promise<void> => {
+    const shown = [...new Set(sess.state.shownMemories.filter((m) => m.goalId === goalId).map((m) => m.name))];
+    sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId !== goalId);
+    if (!sess.isOwner) return;
+    const tokens = new Set(
+      (typeof answer === "string" ? answer : "").split(/\s+/)
+        .map((token) => token.replace(/^[^A-Za-z0-9_-]+|[^A-Za-z0-9_-]+$/g, ""))
+        .filter((token) => token !== ""),
+    );
+    const named = shown.filter((name) => tokens.has(name));
+    if (named.length === 0) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "memory",
+        action: "memory_applied_none",
+        detail: `${goalId}: no shown record named, ${shown.length} cleared`,
+      });
+      return;
+    }
+    let failureLogged = false;
+    for (const name of named) {
+      const res = await kitMemq(dp, ["touch", name, "--applied"], { timeoutMs: MEMQ_WRITE_TIMEOUT_MS });
+      if (res !== null && res.exitCode === 0) {
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "memory",
+          action: "memory_applied",
+          detail: `${goalId}: ${name}`,
+        });
+        continue;
+      }
+      if (!failureLogged) {
+        failureLogged = true;
+        const reason = res === null
+          ? "memq did not run to an exit"
+          : (res.stderr.split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150) ||
+            `memq exited ${res.exitCode === null ? "unknown" : res.exitCode}`;
+        sess.state.decisions.push({
+          timestamp: Date.now(),
+          loop: "memory",
+          action: "memory_stamp_failed",
+          detail: `${goalId}: ${name}: ${reason}`,
+        });
+      }
+      if (res === null) break;
+    }
+  };
   // A delivery whose $.prompt.submit rejected or was dropped: its entry has
   // left the list and the refusal is recorded, and nothing else. The record
   // stays as the delivery wrote it and ages out under the TTL; no delivery
@@ -9187,6 +9292,7 @@ export const register: Register = async (on, options) => {
               action: "completed_by_controller",
               detail: `${completedId}: ${finalReason || "controller complete"}`,
             });
+            queueMemoryCheck($, completedId, g.title);
             // R3: activate next.
             const nextId = activateNext(sess.state, completedId);
             activate($, nextId, `${completedId} complete`);
@@ -9377,6 +9483,7 @@ export const register: Register = async (on, options) => {
         nudgedTurnId = e.turnId ? e.turnId : null;
         countResetSinceNudgeOpened = false;
       }
+      if (matched.kind === "memoryCheck" && e.turnId) memoryCheckTurns.set(e.turnId, matched.goalId);
     } else {
       currentTurnKind = "unaccounted";
       // A delivery entry outlives its record when no turn opens with a
@@ -9588,6 +9695,14 @@ export const register: Register = async (on, options) => {
     // is read once.
     const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
+    // The goal a [MEMORY CHECK] turn asked about, where this completion is
+    // that turn's own: read by the id its turn.start carried and spent here,
+    // before any await. A subagent's completion inside the turn is not the
+    // worker's answer, whatever id it carries.
+    const memoryCheckGoalId = typeof e.turnId === "string" && !(typeof e.agentId === "string" && e.agentId.length > 0)
+      ? memoryCheckTurns.get(e.turnId)
+      : undefined;
+    if (memoryCheckGoalId !== undefined) memoryCheckTurns.delete(e.turnId);
     currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId && !(typeof e.agentId === "string" && e.agentId.length > 0)) {
       currentTurnOriginKind = "unclassified";
@@ -9989,6 +10104,7 @@ export const register: Register = async (on, options) => {
                 action: "complete",
                 detail: `${completedId}: Goal completed in ${g.completedRounds} rounds`,
               });
+              queueMemoryCheck($, completedId, g.title);
               const nextId = activateNext(sess.state, completedId);
               activate($, nextId, `${completedId} complete`);
               // L11: plan completion is a log line, not a speech.
@@ -10190,6 +10306,7 @@ export const register: Register = async (on, options) => {
               action: "complete",
               detail: `${completedId}: ${cause}`,
             });
+            queueMemoryCheck($, completedId, holder.title);
             const nextId = activateNext(sess.state, completedId);
             activate($, nextId, `${completedId} complete`);
             try { $.ui.log(`Agentic: ${completedId} plan complete (${cause})`); } catch { /* non-fatal */ }
@@ -10680,6 +10797,10 @@ export const register: Register = async (on, options) => {
       }
     }
 
+    // A [MEMORY CHECK] turn's answer stamps the records it names, before the
+    // save below carries the cleared list.
+    if (memoryCheckGoalId !== undefined) await answerMemoryCheck($, memoryCheckGoalId, e.answer);
+
     // M7: single guarded-write path (shared helper).
     // Attempted rather than depended on. A throw from here would skip the
     // next(e) below and leave the turn hook chain unfinished for every hook
@@ -10721,6 +10842,27 @@ export const register: Register = async (on, options) => {
     }
 
     return next(e);
+  });
+
+  // --- session.compact: carry the shown records through a compaction ---
+  // A compaction of the main conversation, whatever its trigger, tells the
+  // summarizer the names of the records shown under the active goal, so the
+  // summary the worker resumes from still carries what the goal's
+  // [MEMORY CHECK] will ask about. The sentence is the instructions where
+  // none arrived, and follows the instructions that did after one space.
+  // The names are store text, so each passes through bracketSafeText. A
+  // subagent's own compaction, and one with no records shown under the
+  // active goal, passes on unchanged. The shown list is only read here.
+  on("session.compact", async ($, e, next) => {
+    const goalId = sess.state.activeGoalId ?? null;
+    const subagent = typeof e.agentId === "string" && e.agentId.length > 0;
+    const names = goalId === null || subagent
+      ? []
+      : [...new Set(sess.state.shownMemories.filter((m) => m.goalId === goalId).map((m) => m.name))];
+    if (names.length === 0) return next(e);
+    const sentence = `Records shown during the current goal, to be asked about at its close: ${names.map(bracketSafeText).join(", ")}.`;
+    const instructions = typeof e.instructions === "string" && e.instructions !== "" ? `${e.instructions} ${sentence}` : sentence;
+    return next({ ...e, instructions });
   });
 
   // --- tool.call: serve tools, enforce constraints ---
@@ -11653,6 +11795,7 @@ export const register: Register = async (on, options) => {
         action: "done",
         detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${byNameId ? " by name" : ""}${note ? `: ${note.slice(0, 80)}` : ""}`,
       });
+      queueMemoryCheck($, completedId, completedTitle);
       // An open ask on an entry this call completed closes the way
       // goal_resume closes one. Those entries are the one named and any plan
       // completeLeaf's walk took to complete. An ask on any other entry stays

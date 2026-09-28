@@ -164,6 +164,12 @@
       "words": 15
     },
     {
+      "name": "MEMORY_CHECK_FRAME",
+      "file": "hooks/index.ts",
+      "chars": 142,
+      "words": 27
+    },
+    {
       "name": "SUPERVISOR_SHUTDOWN_FRAME",
       "file": "hooks/index.ts",
       "chars": 17,

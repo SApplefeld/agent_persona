@@ -966,6 +966,19 @@ function extractBackstopFrame(src) {
   return record("REPLY_BACKSTOP_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "REPLY_BACKSTOP_FRAME"));
 }
 
+// The [MEMORY CHECK] frame a goal's close queues: `[MEMORY CHECK] These
+// records were shown while you worked ${safeTitle}:\n` + nameLines +
+// `\nReply with the names...or NONE.`. The title is an interpolation and is
+// stripped; nameLines is the shown records' names, per-goal store data, and
+// is excluded as goalLines is in the [PROPOSE] frame. The capture is bounded
+// by the statement's own semicolon, so a piece added anywhere in the chain is
+// inside it.
+function extractMemoryCheckFrame(src) {
+  const m = /const memoryCheckText =\s*([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("[MEMORY CHECK] frame not found in hooks/index.ts");
+  return record("MEMORY_CHECK_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "MEMORY_CHECK_FRAME", ["nameLines"]));
+}
+
 // The supervisor's shutdown delivery: `[SUPERVISOR id=${rec.id}] ${...}`,
 // where the id and the quoted record text are mailbox data and are stripped as
 // interpolation, leaving the label's literal frame. The capture is bounded by
@@ -1310,6 +1323,7 @@ const PROMPT_CALL_SITES = [
   { anchor: "expectedNudgeTurn", entries: ["NUDGE_TEXT_idle_gap_converted", "NUDGE_TEXT_idle_timeout"] },
   { anchor: "backstopText", entries: ["REPLY_BACKSTOP_FRAME"] },
   { anchor: "shutdownEntry", entries: ["SUPERVISOR_SHUTDOWN_FRAME"] },
+  { anchor: "memoryCheckEntry", entries: ["MEMORY_CHECK_FRAME"] },
 ];
 
 // The exclusions above in a public shape, so the duplicate test can pin the
@@ -1620,6 +1634,7 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractSimpleTextConst(tsSrc, "PROPOSE_FRAME_PLAN_AND_START_TEXT"),
     extractProposeFrameNoTreeClause(tsSrc),
     extractBackstopFrame(tsSrc),
+    extractMemoryCheckFrame(tsSrc),
     extractShutdownFrame(tsSrc),
     extractPlanDocumentLine(tsSrc),
     ...extractNudgeFrames(tsSrc),

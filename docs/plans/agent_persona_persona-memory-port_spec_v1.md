@@ -115,7 +115,7 @@ Acceptance:
 - A `session.compact` event with shown names for the active goal reaches `next(e)` with `instructions` carrying one sentence that names them, and with none reaches it unchanged; the shown list is unchanged by the compaction.
 - A restart between the show and the close, driven through the harness's persisted store, presents the same names at the close.
 
-Files in scope: `hooks/index.ts`, `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs` (a `session.compact` driver).
+Files in scope: `hooks/index.ts`, `.kit/controller-tick-test.mjs`, `.kit/tick-harness.mjs` (a `session.compact` driver), `.kit/injection-ledger.mjs`, `.kit/injection-ledger.json`.
 Tests: lock that a name never shown is never stamped, since a stamp on the worker's say-so alone is the validation signal the store's decay and ranking read.
 
 ### 5. The documents

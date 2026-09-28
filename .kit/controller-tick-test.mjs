@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, processRunByPrefix, processRunRejects, processRunTimesOut, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireSessionCompact, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, processRunByPrefix, processRunRejects, processRunTimesOut, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
 // Loaded after the harness, whose resolve hook maps the extensionless
@@ -4161,6 +4161,17 @@ async function main() {
     await caseMemq17_theSituationAndTheTag(clock);
     await caseMemq18_theShownListLoads();
     await caseMemq19_theRealMemqAcceptsTheRead(clock);
+
+    // The persona memory port's applied ask: a goal's close asks which shown
+    // records changed the work, the answer stamps them, and a compaction
+    // carries the shown names.
+    await caseMemq20_eachCloseSiteQueuesOneCheck(clock);
+    await caseMemq21_theAnswerStampsOnlyShownNames(clock);
+    await caseMemq22_aFailedStampLogsOnceAndClears(clock);
+    await caseMemq23_theCompactionCarriesTheShownNames(clock);
+    await caseMemq24_aRestartKeepsTheNamesForTheClose(clock);
+    await caseMemq25_twoPendingChecksAnswerTheirOwnGoals(clock);
+    await caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock);
   } finally {
     clock.restore();
   }
@@ -34271,4 +34282,367 @@ async function caseMemq19_theRealMemqAcceptsTheRead(clock) {
     rmSync(root, { recursive: true, force: true });
   }
   console.log(`  memq19: ${spawns} real memq spawns in ${Math.round(performance.now() - started)} ms`);
+}
+
+// --- Persona memory port Section 4: the applied ask at goal close, and the compaction fold ---
+
+// The closed goal's title, and a record shown under another goal, which no
+// answer about the closed goal may stamp.
+const MEMQ20_TITLE = "Ship the release checklist";
+const MEMQ20_OTHER = "fact-default-777zzz";
+
+// The [MEMORY CHECK] turn's text for a goal titled `title` whose shown
+// records are `names`, in order.
+function memq20CheckText(title, names) {
+  return `[MEMORY CHECK] These records were shown while you worked ${title}:\n${names.join("\n")}\n` +
+    "Reply with the names of the ones that changed what you did, one per line, or NONE.";
+}
+
+// A root holding task-1, active and titled MEMQ20_TITLE, and task-2 pending.
+function memq20TaskTree() {
+  return {
+    goals: [
+      makeGoalNode({ id: "root-1", parentId: null, kind: "root", status: "pending", createdAt: T0 - 30000 }),
+      makeGoalNode({ id: "task-1", parentId: "root-1", kind: "task", status: "active", title: MEMQ20_TITLE, maxRounds: 10, createdAt: T0 - 20000 }),
+      makeGoalNode({ id: "task-2", parentId: "root-1", kind: "task", status: "pending", title: "Second task", maxRounds: 10, createdAt: T0 - 10000 }),
+    ],
+    activeGoalId: "task-1",
+  };
+}
+
+// The two MEMQ13 names shown under `goalId`, with MEMQ20_OTHER shown under
+// `otherGoalId` between them. `withOwn` false leaves only the other goal's.
+function memq20Shown(goalId, otherGoalId, withOwn = true) {
+  const other = { name: MEMQ20_OTHER, goalId: otherGoalId, shownAt: T0 - 2000 };
+  if (!withOwn) return [other];
+  return [
+    { name: MEMQ13_NAMES[0], goalId, shownAt: T0 - 3000 },
+    other,
+    { name: MEMQ13_NAMES[1], goalId, shownAt: T0 - 1000 },
+  ];
+}
+
+// An owner session over `tree` with `shown` seeded, the kit located, and a
+// health command, so each close site's runHealth spawns. Every submit records
+// whether the health run had already spawned when it went out.
+async function memq20Harness(clock, caseName, tree, shown) {
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName, stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId, shownMemories: shown } });
+  await bank2SeedInstalled(h, bank2Installed());
+  h.fsMap.set(".agentic-health", "true");
+  h.submitOrder = [];
+  const submit = h.fake.prompt.submit;
+  h.fake.prompt.submit = (args) => {
+    h.submitOrder.push({ text: args.text, afterHealth: h.processRuns.some((r) => Array.isArray(r.argv) && r.argv[0] === "true") });
+    return submit(args);
+  };
+  return h;
+}
+
+// Every [MEMORY CHECK] submit the session made, in order.
+function memq20Checks(h) {
+  return h.promptSubmits.filter((t) => typeof t === "string" && t.startsWith("[MEMORY CHECK]"));
+}
+
+// Every memq touch the session spawned, in order.
+function memq20Touches(h) {
+  return h.processRuns.filter((r) => Array.isArray(r.argv) && r.argv[0] === "node" && r.argv[1] === MEMQ1_SCRIPT && r.argv[2] === "touch");
+}
+
+// Opens the turn the oldest queued submit begins and completes it with
+// `answer`. Every classify answers discard, so the scorer spends no round
+// and the distiller writes nothing.
+async function memq20Answer(h, turnId, answer) {
+  h.setClassifyValue("discard");
+  await openQueuedTurn(h, turnId);
+  await h.handlers["turn.complete"](h.fake, { turnId, answer, reason: "completed" }, async () => ({ result: "ok" }));
+}
+
+// The four sites a goal closes at, each driven as the suite's own cases for
+// that site drive it. Each returns whether the close itself happened, the
+// control that the site ran whatever it queued.
+const MEMQ20_SITES = [
+  {
+    label: "controller",
+    goalId: "task-1",
+    tree: memq20TaskTree,
+    close: async (h, clock) => {
+      h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("complete")) ? "complete" : "discard");
+      clock.advance(130_000);
+      await tickAndSettle(h, clock, 50);
+      return getDecisions(h).some((d) => d.action === "completed_by_controller" && d.detail.startsWith("task-1:"));
+    },
+  },
+  {
+    label: "scorer",
+    goalId: "task-1",
+    tree: memq20TaskTree,
+    close: async (h) => {
+      await plan2ScoredTurn(h, "t-memq20-score", "complete");
+      return getDecisions(h).some((d) => d.action === "complete" && d.detail.startsWith("task-1: Goal completed"));
+    },
+  },
+  {
+    label: "plan document",
+    goalId: "plan-1",
+    tree: () => {
+      const tree = plan2Goals({ chapterCount: 0 });
+      tree.goals.find((g) => g.id === "plan-1").title = MEMQ20_TITLE;
+      return tree;
+    },
+    close: async (h) => {
+      h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1 - 2026-09-21"]));
+      await plan2ScoredTurn(h, "t-memq20-doc", "on-goal");
+      return getDecisions(h).some((d) => d.action === "complete" && d.detail.startsWith("plan-1: plan document"));
+    },
+  },
+  {
+    label: "goal_done",
+    goalId: "task-1",
+    tree: memq20TaskTree,
+    close: async (h) => {
+      const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+      return !!done && typeof done.result === "string" && done.result.startsWith(`Complete: "${MEMQ20_TITLE}"`);
+    },
+  },
+];
+
+async function caseMemq20_eachCloseSiteQueuesOneCheck(clock) {
+  console.log("\n=== Persona memory 20: each of the four close sites queues one [MEMORY CHECK] naming the goal's shown records, and none where it has none ===");
+  for (const site of MEMQ20_SITES) {
+    const tag = site.label.replace(/[^a-z0-9]+/gi, "_");
+    const otherGoalId = site.goalId === "plan-1" ? "plan-2" : "task-2";
+    const h = await memq20Harness(clock, `memq20_${tag}`, site.tree(), memq20Shown(site.goalId, otherGoalId));
+    const closed = await site.close(h, clock);
+    check(`memq20 ${site.label} setup: the goal closed at this site`, closed, getDecisions(h).slice(-8));
+    const checks = memq20Checks(h);
+    check(`memq20 ${site.label}: one check, naming the goal's two records in list order and not the other goal's`,
+      checks.length === 1 && checks[0] === memq20CheckText(MEMQ20_TITLE, MEMQ13_NAMES), checks);
+    const sent = h.submitOrder.find((s) => s.text.startsWith("[MEMORY CHECK]"));
+    check(`memq20 ${site.label}: the check went out after the site's health run`, sent && sent.afterHealth === true, h.submitOrder);
+    check(`memq20 ${site.label}: the check waits in the queue for its own turn`,
+      h.queuedTurnTexts.includes(memq20CheckText(MEMQ20_TITLE, MEMQ13_NAMES)), h.queuedTurnTexts);
+    check(`memq20 ${site.label}: queuing the check stamps nothing and clears nothing`,
+      memq20Touches(h).length === 0 && JSON.stringify(getState(h).shownMemories) === JSON.stringify(memq20Shown(site.goalId, otherGoalId)), { touches: memq20Touches(h).length, shown: getState(h).shownMemories });
+
+    const n = await memq20Harness(clock, `memq20_${tag}_none`, site.tree(), memq20Shown(site.goalId, otherGoalId, false));
+    const closedNone = await site.close(n, clock);
+    check(`memq20 ${site.label} none setup: the goal closed at this site`, closedNone, getDecisions(n).slice(-8));
+    check(`memq20 ${site.label} none: a goal with no shown record of its own queues no check`,
+      memq20Checks(n).length === 0 && !n.queuedTurnTexts.some((t) => t.startsWith("[MEMORY CHECK]")), n.promptSubmits);
+  }
+}
+
+async function caseMemq21_theAnswerStampsOnlyShownNames(clock) {
+  console.log("\n=== Persona memory 21: the answer stamps the shown records it names and no other, and every answer clears the goal's entries ===");
+  const [n0, n1] = MEMQ13_NAMES;
+  const legs = [
+    { label: "one named, in list punctuation", answer: `The first shaped the release plan:\n- \`${n0}\`,`, stamped: [n0] },
+    { label: "NONE", answer: "NONE", stamped: [] },
+    { label: "none in lower case with a period", answer: "none.", stamped: [] },
+    { label: "an empty answer", answer: "", stamped: [] },
+    // The refusals: MEMQ20_OTHER is on the list under another goal, the
+    // second name was never shown, and the third holds a shown name only as a
+    // prefix. Each is refused by the exact match against the closed goal's
+    // entries.
+    { label: "names never shown under this goal", answer: `${MEMQ20_OTHER}\nfact-default-000000\n${n0}x`, stamped: [] },
+    { label: "NONE beside a shown name", answer: `NONE\n${n1}`, stamped: [n1] },
+    { label: "both named, one twice, out of order", answer: `${n1}\n${n0}\n${n1}`, stamped: [n0, n1] },
+  ];
+  for (const leg of legs) {
+    const tag = leg.label.replace(/[^a-z0-9]+/gi, "_");
+    const h = await memq20Harness(clock, `memq21_${tag}`, memq20TaskTree(), memq20Shown("task-1", "task-2"));
+    h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+    await MEMQ20_SITES[3].close(h, clock);
+    check(`memq21 ${leg.label} setup: the check is the next queued turn`,
+      h.queuedTurnTexts[0] === memq20CheckText(MEMQ20_TITLE, MEMQ13_NAMES), h.queuedTurnTexts);
+    await memq20Answer(h, `t-memq21-${tag}`, leg.answer);
+    const touches = memq20Touches(h);
+    check(`memq21 ${leg.label}: one touch --applied per stamped name, in list order`,
+      JSON.stringify(touches.map((r) => r.argv)) === JSON.stringify(leg.stamped.map((name) => ["node", MEMQ1_SCRIPT, "touch", name, "--applied"])),
+      touches.map((r) => r.argv));
+    check(`memq21 ${leg.label}: each touch is bounded at 5000 ms and runs in the launch directory`,
+      touches.every((r) => r.init && r.init.timeoutMs === 5000 && r.init.cwd === HARNESS_CWD), touches.map((r) => r.init));
+    const decisions = getDecisions(h);
+    const applied = decisions.filter((d) => d.action === "memory_applied");
+    check(`memq21 ${leg.label}: one memory_applied on the memory loop per stamped name, naming it`,
+      applied.length === leg.stamped.length && applied.every((d, i) => d.loop === "memory" && d.detail.includes(leg.stamped[i])), applied);
+    const none = decisions.filter((d) => d.action === "memory_applied_none");
+    check(`memq21 ${leg.label}: memory_applied_none only where nothing was stamped`,
+      none.length === (leg.stamped.length === 0 ? 1 : 0) && none.every((d) => d.loop === "memory" && d.detail.includes("task-1")), none);
+    check(`memq21 ${leg.label}: no stamp failure`, countAction(decisions, "memory_stamp_failed") === 0, decisions.filter((d) => d.action === "memory_stamp_failed"));
+    check(`memq21 ${leg.label}: the goal's entries left the list and the other goal's stayed`,
+      JSON.stringify(getState(h).shownMemories) === JSON.stringify([{ name: MEMQ20_OTHER, goalId: "task-2", shownAt: T0 - 2000 }]), getState(h).shownMemories);
+  }
+}
+
+async function caseMemq22_aFailedStampLogsOnceAndClears(clock) {
+  console.log("\n=== Persona memory 22: a failed stamp logs memory_stamp_failed once, a spawn that never ran ends the check, and the entries still clear ===");
+  const [n0, n1] = MEMQ13_NAMES;
+  const notFound = (argv) => ({ exitCode: 1, stdout: "", stderr: `\nmemq: no record named '${argv[3]}'\nsecond line\n` });
+  const legs = [
+    { label: "every touch exits 1", answer: processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], notFound]]), spawns: [n0, n1], applied: [], failedToken: "no record named" },
+    { label: "the first touch never runs", answer: processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], processRunRejects("spawn node ENOENT")]]), spawns: [n0], applied: [], failedToken: "did not run" },
+    { label: "the first touch times out", answer: processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], processRunTimesOut(clock)]]), spawns: [n0], applied: [], failedToken: "did not run" },
+    {
+      label: "the first exits 1 and the second is written",
+      answer: processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch", n0], notFound], [["node", MEMQ1_SCRIPT, "touch", n1], MEMQ4_WRITTEN]]),
+      spawns: [n0, n1],
+      applied: [n1],
+      failedToken: "no record named",
+    },
+  ];
+  for (const leg of legs) {
+    const tag = leg.label.replace(/[^a-z0-9]+/gi, "_");
+    const h = await memq20Harness(clock, `memq22_${tag}`, memq20TaskTree(), memq20Shown("task-1", "task-2"));
+    h.setProcessRun(leg.answer);
+    await MEMQ20_SITES[3].close(h, clock);
+    await memq20Answer(h, `t-memq22-${tag}`, `${n0}\n${n1}`);
+    const touches = memq20Touches(h);
+    check(`memq22 ${leg.label}: the touches spawned are ${leg.spawns.length}, in list order`,
+      JSON.stringify(touches.map((r) => r.argv[3])) === JSON.stringify(leg.spawns), touches.map((r) => r.argv));
+    const decisions = getDecisions(h);
+    const failed = decisions.filter((d) => d.action === "memory_stamp_failed");
+    check(`memq22 ${leg.label}: one memory_stamp_failed on the memory loop, naming the first failed record and its reason`,
+      failed.length === 1 && failed[0].loop === "memory" && failed[0].detail.includes(n0) && failed[0].detail.includes(leg.failedToken) && !failed[0].detail.includes("second line"), failed);
+    const applied = decisions.filter((d) => d.action === "memory_applied");
+    check(`memq22 ${leg.label}: memory_applied names only the written record`,
+      JSON.stringify(applied.map((d) => leg.applied.find((name) => d.detail.includes(name)))) === JSON.stringify(leg.applied), applied);
+    check(`memq22 ${leg.label}: no memory_applied_none`, countAction(decisions, "memory_applied_none") === 0, decisions.filter((d) => d.action === "memory_applied_none"));
+    check(`memq22 ${leg.label}: the goal's entries still left the list`,
+      JSON.stringify(getState(h).shownMemories) === JSON.stringify([{ name: MEMQ20_OTHER, goalId: "task-2", shownAt: T0 - 2000 }]), getState(h).shownMemories);
+  }
+}
+
+async function caseMemq23_theCompactionCarriesTheShownNames(clock) {
+  console.log("\n=== Persona memory 23: a compaction's instructions carry the active goal's shown names, and the shown list is unchanged ===");
+  const [n0, n1] = MEMQ13_NAMES;
+  const sentence = `Records shown during the current goal, to be asked about at its close: ${n0}, ${n1}.`;
+  const shown = memq20Shown("task-1", "task-2");
+  const h = await memq20Harness(clock, "memq23_fold", memq20TaskTree(), shown);
+  h.mod = await loadModule("memq23_fold");
+  const messages = [{ role: "user", content: "hello" }];
+
+  const bare = await fireSessionCompact(h, { messages });
+  check("memq23 no instructions: next receives the one sentence as the instructions",
+    bare.received && bare.received.instructions === sentence, bare.received && bare.received.instructions);
+  check("memq23 no instructions: every other field passes on as received",
+    bare.received && bare.received.trigger === "auto" && bare.received.messages === messages && bare.received.agentId === undefined, bare.received);
+  check("memq23 no instructions: the hook resolves what next resolved", bare.result && Array.isArray(bare.result.messages), bare.result);
+
+  const given = await fireSessionCompact(h, { instructions: "Keep the API notes." });
+  check("memq23 given instructions: the sentence follows them after one space",
+    given.received && given.received.instructions === `Keep the API notes. ${sentence}`, given.received && given.received.instructions);
+  const empty = await fireSessionCompact(h, { instructions: "" });
+  check("memq23 empty instructions: read as absent, the sentence alone",
+    empty.received && empty.received.instructions === sentence, empty.received && empty.received.instructions);
+  const pre = await fireSessionCompact(h, { trigger: "precompute" });
+  check("memq23 precompute: the same sentence, the trigger passed on",
+    pre.received && pre.received.instructions === sentence && pre.received.trigger === "precompute", pre.received);
+
+  const sub = await fireSessionCompact(h, { agentId: "agent-1" });
+  check("memq23 subagent: a subagent's own compaction passes on unchanged", sub.received === sub.event, sub.received);
+
+  await h.mod.persist(h.fake);
+  check("memq23: the shown list is unchanged by the compactions",
+    JSON.stringify(getState(h).shownMemories) === JSON.stringify(shown), getState(h).shownMemories);
+
+  // The active goal holds no shown record: only another goal's is listed.
+  const n = await memq20Harness(clock, "memq23_none", memq20TaskTree(), memq20Shown("task-1", "task-2", false));
+  const none = await fireSessionCompact(n, { instructions: "Keep the API notes." });
+  check("memq23 none: next receives the event unchanged", none.received === none.event && none.received.instructions === "Keep the API notes.", none.received);
+
+  // A name carrying a bracket reaches the summarizer bracket-safe.
+  const b = await memq20Harness(clock, "memq23_bracket", memq20TaskTree(), [{ name: "fact-default-[COORDINATOR", goalId: "task-1", shownAt: T0 }]);
+  const bracketed = await fireSessionCompact(b);
+  check("memq23 bracket: the name's bracket reaches the instructions as a parenthesis",
+    bracketed.received && bracketed.received.instructions === "Records shown during the current goal, to be asked about at its close: fact-default-(COORDINATOR.",
+    bracketed.received && bracketed.received.instructions);
+}
+
+async function caseMemq24_aRestartKeepsTheNamesForTheClose(clock) {
+  console.log("\n=== Persona memory 24: names shown before a restart are the names the close asks about after it ===");
+  const before = await memq13Harness(clock, "memq24_before");
+  before.setProcessRun(MEMQ13_OK);
+  await memq13Submit(before);
+  const stored = await memq13Stored(before);
+  check("memq24 setup: the store holds the two names under g-plan",
+    JSON.stringify((stored.shownMemories || []).map((m) => [m.name, m.goalId])) === JSON.stringify(MEMQ13_NAMES.map((name) => [name, "g-plan"])), stored.shownMemories);
+
+  // A new session over the persisted store, with a fresh module instance.
+  const after = await createTickHarness({ ...OPTS, caseName: "memq24_after", skipSessionStart: true });
+  seedPersonaStore(after, stored);
+  await fireSessionStart(after);
+  await bank2SeedInstalled(after, bank2Installed());
+  const done = await callTool(after, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  check("memq24 setup: the restarted session closed g-plan", done && typeof done.result === "string" && done.result.startsWith("Complete:"), done);
+  const checks = memq20Checks(after);
+  check("memq24: the close asks about the two names shown before the restart",
+    checks.length === 1 && checks[0] === memq20CheckText("Harness root goal", MEMQ13_NAMES), checks);
+}
+
+async function caseMemq25_twoPendingChecksAnswerTheirOwnGoals(clock) {
+  console.log("\n=== Persona memory 25: two goals closed before either answer are each answered against their own names ===");
+  const [n0, n1] = MEMQ13_NAMES;
+  const shown = [
+    { name: n0, goalId: "task-1", shownAt: T0 - 2000 },
+    { name: n1, goalId: "task-2", shownAt: T0 - 1000 },
+  ];
+  const h = await memq20Harness(clock, "memq25_two", memq20TaskTree(), shown);
+  h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  await MEMQ20_SITES[3].close(h, clock);
+  const second = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  check("memq25 setup: the second goal closed too", second && typeof second.result === "string" && second.result.startsWith('Complete: "Second task"'), second);
+  check("memq25 setup: two checks queued, one per goal, in close order",
+    JSON.stringify(h.queuedTurnTexts) === JSON.stringify([memq20CheckText(MEMQ20_TITLE, [n0]), memq20CheckText("Second task", [n1])]), h.queuedTurnTexts);
+
+  // The first answer names both records; only the one shown under its own
+  // goal is stamped.
+  await memq20Answer(h, "t-memq25-first", `${n0}\n${n1}`);
+  check("memq25 first: only the first goal's record is stamped",
+    JSON.stringify(memq20Touches(h).map((r) => r.argv[3])) === JSON.stringify([n0]), memq20Touches(h).map((r) => r.argv));
+  check("memq25 first: the second goal's entry is still listed",
+    JSON.stringify(getState(h).shownMemories) === JSON.stringify([shown[1]]), getState(h).shownMemories);
+  await memq20Answer(h, "t-memq25-second", n1);
+  check("memq25 second: the second answer stamps the second goal's record",
+    JSON.stringify(memq20Touches(h).map((r) => r.argv[3])) === JSON.stringify([n0, n1]), memq20Touches(h).map((r) => r.argv));
+  check("memq25 second: two memory_applied, and the list is empty",
+    countAction(getDecisions(h), "memory_applied") === 2 && getState(h).shownMemories.length === 0, { applied: getDecisions(h).filter((d) => d.action === "memory_applied"), shown: getState(h).shownMemories });
+}
+
+async function caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock) {
+  console.log("\n=== Persona memory 26: a reader's close asks nothing, and a check answered after the owner was displaced stamps nothing ===");
+  // A reader whose scorer closes task-1: the one close site not gated to the
+  // owner.
+  clock.set(T0);
+  const r = await createTickHarness({ ...OPTS, caseName: "memq26_reader" });
+  r.storeMap.delete(`commons:${SESSION_ID}`);
+  seedOwnerCommons(r, "owner-memq26", T0, { turnStartedAt: null, workdir: HARNESS_CWD });
+  const tree = memq20TaskTree();
+  const held = makeState({ now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId, shownMemories: memq20Shown("task-1", "task-2") });
+  held.activeSessionId = "owner-memq26";
+  r.fsMap.set(PERSONA_STORE_FILE, JSON.stringify({ default: held }));
+  r.fsMap.set(HEARTBEAT_FILE, JSON.stringify({ default: { sessionId: "owner-memq26", epoch: 1, lastSeen: T0 } }));
+  await fireSessionStart(r);
+  await bank2SeedInstalled(r, bank2Installed());
+  r.setProcessRun(MEMQ4_WRITTEN);
+  await plan2ScoredTurn(r, "t-memq26-reader", "complete");
+  check("memq26 reader setup: the reader's scorer closed task-1", r.uiLogs.includes("Agentic: task-1 plan complete"), r.uiLogs.slice(-6));
+  check("memq26 reader: no check is asked and no touch spawned", memq20Checks(r).length === 0 && memq20Touches(r).length === 0, { submits: r.promptSubmits, runs: r.processRuns.map((x) => x.argv) });
+
+  // An owner that closes task-1, is displaced before the answer, and learns
+  // so at memory_add's save. Its answer names a shown record and stamps
+  // nothing; memq21's first leg is the same answer stamping as owner.
+  const d = await memq20Harness(clock, "memq26_displaced", memq20TaskTree(), memq20Shown("task-1", "task-2"));
+  d.setProcessRun(MEMQ4_WRITTEN);
+  await MEMQ20_SITES[3].close(d, clock);
+  check("memq26 displaced setup: the owner asked", memq20Checks(d).length === 1, d.promptSubmits);
+  const taken = JSON.parse(d.fsMap.get(PERSONA_STORE_FILE));
+  taken.default.activeSessionId = "taker-memq26";
+  taken.default.epoch = (taken.default.epoch ?? 1) + 1;
+  d.fsMap.set(PERSONA_STORE_FILE, JSON.stringify(taken));
+  const refused = await callTool(d, { tool: "mcp__agentic-plugin__memory_add", text: "The operator prefers tea.", kind: "fact" });
+  check("memq26 displaced setup: the save found the takeover", refused && refused.deny === SHUTDOWN_HELD_DENY, refused);
+  await memq20Answer(d, "t-memq26-displaced", MEMQ13_NAMES[0]);
+  check("memq26 displaced: the answer stamps nothing", memq20Touches(d).length === 0, d.processRuns.map((x) => x.argv));
 }
