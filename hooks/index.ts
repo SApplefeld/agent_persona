@@ -9193,9 +9193,11 @@ export const register: Register = async (on, options) => {
     // settled too late to owe a bank. The entry active now, as the turn left
     // it, is read here too, for a turn that opened with none active.
     // A completion naming a subagent loop (e.agentId set) is never the
-    // persona's own turn end, whatever turn id it carries.
+    // persona's own turn end, whatever turn id it carries. The scorer reads
+    // the same fact: a subagent's report is not the worker's answer.
+    const completesSubagentLoop = typeof e.agentId === "string" && e.agentId.length > 0;
     const completesGateTurn = currentGateTurnId !== null && e.turnId === currentGateTurnId
-      && !(typeof e.agentId === "string" && e.agentId.length > 0);
+      && !completesSubagentLoop;
     const turnKindAtStart: string = currentTurnKind;
     const turnOpenAfterDelete = turnIsOpen();
     const turnStartSeqAtDelete = turnStartSeq;
@@ -9593,7 +9595,11 @@ export const register: Register = async (on, options) => {
       else sess.nudgedAnswersWithoutStatus += 1;
     }
 
-    if (!skipped && turnLeaf) {
+    // A subagent's completion is not scored: its answer is the subagent's
+    // report rather than the worker's, so it makes no classify, no shadow call
+    // and no score, and leaves the turn-start leaf for the persona's own
+    // completion to score.
+    if (!skipped && turnLeaf && !completesSubagentLoop) {
       if (turnLeaf.status === "complete") {
         // M11: goal_done ran during this turn, the credit is already in the
         // goal_done handler. Log score_skipped here.

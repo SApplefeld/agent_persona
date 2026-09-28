@@ -56,12 +56,12 @@ registerHooks({ resolve: resolveHook });
 const { ask, askAll } = await import("../../hooks/decision-seam.ts");
 const {
   CONTROLLER_DECISION, CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH,
-  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText,
+  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText, kaizenLine,
   BLOCK_OWNER, BLOCK_OWNER_OPTIONS, WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES,
   PLAN_HEALTH_STATE_CLOSING, PLAN_HEALTH_STATE_RECENT,
   resolverOf,
 } = await import("../../hooks/question-catalog.ts");
-const { QUESTIONS, homeDir } = await import("./sample.mjs");
+const { QUESTIONS, homeDir, withoutHarnessTrailer } = await import("./sample.mjs");
 
 const MODE = "shadow";
 
@@ -101,8 +101,10 @@ export function buildHost(env = process.env) {
 // --- Which options a record's call offered ---
 
 // The known option sets per question, in the order a request should carry
-// them. turn-score's v2 offers the same two sets its v1 did. controller-decision drops or keeps switch; turn-score drops or keeps
-// off-goal-by-instruction on a nudged turn (hooks/index.ts:9613, 9623-9625).
+// them. turn-score's v2 offers the same two sets its v1 did. controller-decision
+// drops or keeps switch; turn-score drops or keeps off-goal-by-instruction on a
+// nudged turn, the choice between SCORER_LABELS_AFTER_NUDGE and SCORER_LABELS
+// the scorer in hooks/index.ts's turn.complete handler makes.
 const OFFERED_OPTION_SETS = Object.freeze({
   "controller-decision": [CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH],
   "turn-score": [SCORER_LABELS_AFTER_NUDGE, SCORER_LABELS],
@@ -117,7 +119,7 @@ function sameIdSet(a, b) {
 // The option ids a sampled record's own call actually offered, recovered
 // from its Jev probabilities rather than guessed from the state text:
 // decision-seam.ts's choiceAnswerOf refuses any probability key outside the
-// ids the caller sent (decision-seam.ts:437), so the key set the sample
+// ids the caller sent, so the key set the sample
 // carries is exactly what was offered. Checked against the known sets for
 // the question, since more than one exists; a record whose keys match
 // neither is a sampler or journal defect this tool refuses to guess past.
@@ -149,24 +151,54 @@ export function parseToolActivity(line) {
   return { flags, calls: ring === "" ? [] : ring.split(",") };
 }
 
-// The goal objective a v1 turn-score state carries: the text after its last
-// "Goal objective: " part and before the question sentence the v1 state ends
-// with, or null where the state is not in that shape.
-const V1_OBJECTIVE_OPEN = "\n\nGoal objective: ";
+// The opening text and the goal objective a journaled turn-score state
+// carries, read off either shape the scorer has sent. v1 is "User asked: ",
+// the answer, "Goal objective: " and a closing question sentence; v2 is
+// "Turn opened with: ", the answer, "Goal objective: " and a "Tools: " part.
+// The objective is anchored on the first "Goal objective: " part after the
+// answer's label, so an objective that itself carries that label is read
+// whole. Returns null where the state is in neither shape.
+const ANSWER_LABEL = "\n\nWorker answered: ";
+const OBJECTIVE_LABEL = "\n\nGoal objective: ";
+const V1_OPENING = "User asked: ";
 const V1_QUESTION = "\n\nDid the worker's answer advance the goal objective?";
-export function objectiveOfV1State(state) {
-  if (typeof state !== "string" || !state.endsWith(V1_QUESTION)) return null;
-  const body = state.slice(0, -V1_QUESTION.length);
-  const at = body.lastIndexOf(V1_OBJECTIVE_OPEN);
-  return at < 0 ? null : body.slice(at + V1_OBJECTIVE_OPEN.length);
+const V2_OPENING = "Turn opened with: ";
+const V2_TOOLS_LABEL = "\n\nTools: ";
+export function scoreStateParts(state) {
+  if (typeof state !== "string") return null;
+  const v1 = state.startsWith(V1_OPENING) && state.endsWith(V1_QUESTION);
+  const v2 = state.startsWith(V2_OPENING);
+  if (!v1 && !v2) return null;
+  const answerAt = state.indexOf(ANSWER_LABEL);
+  if (answerAt < 0) return null;
+  const objectiveAt = state.indexOf(OBJECTIVE_LABEL, answerAt + ANSWER_LABEL.length);
+  if (objectiveAt < 0) return null;
+  const objectiveFrom = objectiveAt + OBJECTIVE_LABEL.length;
+  const objectiveTo = v1 ? state.length - V1_QUESTION.length : state.indexOf(V2_TOOLS_LABEL, objectiveFrom);
+  if (objectiveTo < objectiveFrom) return null;
+  return {
+    opening: state.slice((v1 ? V1_OPENING : V2_OPENING).length, answerAt),
+    objective: state.slice(objectiveFrom, objectiveTo),
+  };
 }
 
+// Two texts compared the way the state's own guard and collapse would leave
+// them: folded to one line with brackets rewritten, whitespace set aside.
+const comparable = (text) => kaizenLine(text).replace(/\s+/g, "");
+
 // The v2 state for one sampled record: the opening prompt and the final
-// message from its transcript turn, the objective from its v1 state, and the
-// Tools line from its activity line. A record missing any of the four is
-// refused, naming the record and the part, so no request goes out over a
-// partial state. An empty final message is refused too, since the plugin
-// scores no turn without an answer.
+// message from its transcript turn, the prompt with the engine's trailer
+// removed as sample.mjs's reader removes it, the objective from its journaled
+// state, and the Tools line from its activity line. A record missing any of
+// the four throws, naming the record and the part, since that is a sampler
+// defect; an empty final message throws too, since the plugin scores no turn
+// without an answer. Returns { ok: true, state } where the transcript's prompt
+// opens with the text the journaled state carries, whitespace set aside, and
+// { ok: false, reason: "prompt_mismatch" } where it does not: the transcript's
+// opening message is then not the text the plugin scored, and a state built
+// from it would not be the plugin's bytes, so the record is written as a
+// failure and excluded from every figure.
+export const PROMPT_MISMATCH = "prompt_mismatch";
 export function turnScoreV2State(record) {
   const refuse = (part) => new Error(`record ${record.id}: ${part}, so its turn-score v2 state cannot be built`);
   const t = record.transcript;
@@ -175,9 +207,13 @@ export function turnScoreV2State(record) {
   if (typeof t.finalMessage !== "string" || t.finalMessage.length === 0) throw refuse("its transcript carries no final message");
   const tools = parseToolActivity(t.toolActivity);
   if (tools === null) throw refuse("its transcript's toolActivity is not a turn_tool_activity line");
-  const objective = objectiveOfV1State(record.state);
-  if (objective === null) throw refuse("its v1 state carries no goal objective");
-  return turnScoreStateText(t.prompt, t.finalMessage, objective, tools);
+  const parts = scoreStateParts(record.state);
+  if (parts === null) throw refuse("its journaled state carries no goal objective");
+  const prompt = withoutHarnessTrailer(t.prompt);
+  if (!comparable(prompt).startsWith(comparable(parts.opening))) {
+    return { ok: false, reason: PROMPT_MISMATCH, detail: "the transcript's opening message is not the text the plugin scored" };
+  }
+  return { ok: true, state: turnScoreStateText(prompt, t.finalMessage, parts.objective, tools) };
 }
 
 // --- One record's replay ---
@@ -225,8 +261,9 @@ export async function replayRecord(host, question, version, record) {
   }
   if (question === "turn-score") {
     const optionIds = offeredOptionIds(question, record);
-    const state = turnScoreV2State(record);
-    const result = await ask(host, TURN_SCORE, optionIds, state, MODE, record.haikuValue, resolverOf(host));
+    const built = turnScoreV2State(record);
+    if (!built.ok) return { id: record.id, stampId: record.stampId, version, ok: false, reason: built.reason, detail: built.detail };
+    const result = await ask(host, TURN_SCORE, optionIds, built.state, MODE, record.haikuValue, resolverOf(host));
     return answerLine(record, version, result);
   }
   if (question === "block-owner") {
@@ -325,7 +362,8 @@ export async function main(argv, env = process.env) {
     log: (i, total) => process.stdout.write(`replayed ${i + 1}/${total}\n`),
   });
   const failed = rows.filter((r) => !r.ok).length;
-  process.stdout.write(`${rows.length} record(s) replayed, ${failed} failed, written to ${out}\n`);
+  const mismatched = rows.filter((r) => r.reason === PROMPT_MISMATCH).length;
+  process.stdout.write(`${rows.length} record(s) replayed, ${failed} failed (${mismatched} refused as ${PROMPT_MISMATCH}), written to ${out}\n`);
   return 0;
 }
 

@@ -4070,6 +4070,7 @@ async function main() {
     await caseTurnClose_theCompactionRuleInBothDirections(clock);
     await caseTurnClose_theJournaledStateCarriesTheFourFields(clock);
     await caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock);
+    await caseTurnScore_aSubagentCompletionIsNotScored(clock);
     await caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock);
     await caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock);
 
@@ -26315,7 +26316,10 @@ async function caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock) {
     },
   };
   let replayState = null;
-  try { replayState = turnScoreV2State(record); } catch (e) { replayState = `threw: ${e.message}`; }
+  try {
+    const built = turnScoreV2State(record);
+    replayState = built.ok ? built.state : `refused: ${built.reason}`;
+  } catch (e) { replayState = `threw: ${e.message}`; }
   check("turn score v2: the replay's v2 state for the same turn is byte-identical to the state the plugin sent",
     typeof jevState === "string" && replayState === jevState,
     { plugin: jevState?.slice(-120), replay: typeof replayState === "string" ? replayState.slice(-120) : replayState });
@@ -26358,6 +26362,42 @@ async function caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock) {
     nudgedScorer.length === 1 && nudgedBodies.length === 1 && nudgedScorer[0][0] === nudgedBodies[0].state
       && nudgedBodies[0].state.startsWith("Turn opened with: (GOAL) The active goal is"),
     nudgedBodies[0]?.state?.slice(0, 80));
+}
+
+// A subagent's completion is not scored. It arrives inside the persona's
+// open turn carrying the subagent's report as its answer and a non-empty
+// agentId, and makes no scorer classify, writes no turn-score call line and
+// pushes no score onto the goal. The persona's own completion of the same turn
+// afterwards is scored once, which is the control that the instrument reading
+// the absences speaks.
+async function caseTurnScore_aSubagentCompletionIsNotScored(clock) {
+  console.log("\n=== Turn score: a subagent's completion is not scored, and the persona's own completion after it is ===");
+  const scorerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("on-goal"));
+  const callLinesOf = (h) => journalLinesOfKind(h, "call").filter((line) => line.questionSet === Catalog.TURN_SCORE);
+  const scoresOf = (h) => getState(h).goals.find((g) => g.id === "g-plan")?.scores?.length ?? -1;
+  clock.set(T0);
+  const h = await seedSeamHarness("turn_score_subagent", clock);
+  h.setHttpResponse((url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 }));
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  const turnId = "t-ts-sub";
+  await submitMessage(h, "Tidy the notes.");
+  await recordTurnStart(h, turnId, "Tidy the notes.");
+  const scoresBefore = scoresOf(h);
+  await h.handlers["turn.complete"](h.fake, { turnId, agentId: "sub-ts", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(h);
+  check("turn score subagent: the subagent's completion made no scorer classify",
+    scorerCallsOf(h).length === 0, scorerCallsOf(h).length);
+  check("turn score subagent: the subagent's completion wrote no turn-score call line",
+    callLinesOf(h).length === 0, callLinesOf(h).length);
+  check("turn score subagent: the subagent's completion pushed no score",
+    scoresBefore >= 0 && scoresOf(h) === scoresBefore, { before: scoresBefore, after: scoresOf(h) });
+  await recordTurnComplete(h, turnId, "Tidied them.");
+  await settleJournalWrites(h);
+  check("turn score subagent (control): the persona's own completion was scored once, with one call line and one score",
+    scorerCallsOf(h).length === 1 && callLinesOf(h).length === 1 && scoresOf(h) === scoresBefore + 1,
+    { classify: scorerCallsOf(h).length, lines: callLinesOf(h).length, scores: scoresOf(h) });
+  check("turn score subagent (control): the scored answer is the persona's own, not the subagent's report",
+    callLinesOf(h)[0]?.state?.includes("Worker answered: Tidied them.") === true, callLinesOf(h)[0]?.state?.slice(0, 120));
 }
 
 // next_prompt_kind is written once against every disposition stamp pending on

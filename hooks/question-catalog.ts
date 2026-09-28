@@ -231,7 +231,7 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
     instructions: "Given the goal objective, what did this turn's answer do about it?",
     options: {
       "on-goal": "The answer moved the objective forward or kept it correctly in hand. That includes a step taken, a commit, a dispatch, or a section or review round landed while the objective still has work left. It includes a WAITING or BLOCKED turn whose wait is on the worker's own work for the objective, such as its implementer, reviewers, test run or QA check, even where the turn only checked that this work is still alive, and a hold that names what blocks the objective. A turn opened by a task notification or a channel message is still on-goal when what it did was work on the objective, and a side note or a short reply beside that work does not change it.",
-      "off-goal-by-instruction": "The prompt that opened the turn asked for something outside the objective, and the answer spent the turn doing it: answering an operator's question, following a coordinator's or another session's steer about a different plan, or relaying a notice, even where that took commits and pushes. What decides it is what the opening prompt asked for, not who sent it or how much work it took. A turn opened by a channel message or a delivered record is normally skipped rather than scored; where one is scored and it asked for other work, this is the answer.",
+      "off-goal-by-instruction": "The prompt that opened the turn asked for something outside the objective, and the answer spent the turn doing it: answering an operator's question, following a coordinator's or another session's steer about a different plan, or relaying a notice, even where that took commits and pushes. What decides it is what the opening prompt asked for, not who sent it or how much work it took. A turn opened by a channel message or a delivered record is scored only when it answers a nudge, and a nudged turn is never offered this option.",
       "drift": "The answer went elsewhere, or did nothing toward the objective, with no instruction in the opening prompt to do so: it declined or set aside the objective, spent the turn on an unrelated fix or chore, or waited on work that serves a different plan. A nudge restating the objective, and a task notification, are not instructions to go elsewhere, so declining the nudge or following a notification into other work is drift. Waiting on the worker's own work for this objective is not drift.",
       "complete": "The objective itself is finished in this turn, all of what it names, such as the plan reaching Complete and archived where that is the objective. A section landed, a review round passed, a commit pushed or a pull request opened that leaves the objective with steps still to do is on-goal, not complete.",
     },
@@ -367,33 +367,44 @@ export const TURN_SCORE_ANSWER_MAX = 3000;
 // yes-or-no readings of hooks/index.ts's turn_tool_activity line, under that
 // line's own names, so the replay reads a sampled record's activity line back
 // onto these keys.
-export const TURN_SCORE_TOOL_FLAGS: readonly string[] = Object.freeze([
+export const TURN_SCORE_TOOL_FLAGS = Object.freeze([
   "plan_read", "plan_edited", "commit", "push", "agent_dispatched", "goal_done", "reply",
-]);
+] as const);
+export type TurnScoreToolFlag = (typeof TURN_SCORE_TOOL_FLAGS)[number];
 
-// The turn's tool activity: which of TURN_SCORE_TOOL_FLAGS held, and the tool
-// names the turn called, in call order.
+// The turn's tool activity: which of TURN_SCORE_TOOL_FLAGS held, and the names
+// of the last eight tools the turn called, in call order, the ring
+// hooks/index.ts keeps under TURN_TOOL_RING_MAX.
 export type TurnScoreTools = {
-  flags: Readonly<Record<string, boolean>>;
+  flags: Readonly<Record<TurnScoreToolFlag, boolean>>;
   calls: readonly string[];
 };
 
-// The Tools line: the flags that held, by name, then the tool names in call
-// order, each list reading `none` where it is empty.
+// The Tools line: the flags that held, by name, then the ring's tool names in
+// call order, each list reading `none` where it is empty.
 function turnScoreToolsLine(tools: TurnScoreTools): string {
   const held = TURN_SCORE_TOOL_FLAGS.filter((name) => tools.flags[name] === true);
   return `flags: ${held.length > 0 ? held.join(", ") : "none"}; calls: ${tools.calls.length > 0 ? tools.calls.join(", ") : "none"}`;
 }
 
-// The two cuts are applied before kaizenLine, so each bound counts the text as
-// it arrived. Every value goes through kaizenLine, the prompt and the answer
-// being external and model text and the objective stored text, so no value can
-// write a fifth part.
+// One value of the state: kaizenLine's fold, then every run of whitespace
+// collapsed to one space and the ends trimmed. The collapse is what lets the
+// replay rebuild the plugin's bytes from a transcript, whose reader trims a
+// message and joins its text blocks with a line break where the hook's own
+// text may not, so two texts differing in whitespace alone read the same.
+function stateValue(text: string): string {
+  return kaizenLine(text).replace(/\s+/g, " ").trim();
+}
+
+// Each cut is applied to the collapsed value, so each bound counts the text
+// as it is sent. Every value goes through stateValue, the prompt and the
+// answer being external and model text and the objective stored text, so no
+// value can write a fifth part.
 export function turnScoreStateText(prompt: string, answer: string, objective: string, tools: TurnScoreTools): string {
-  return `Turn opened with: ${kaizenLine(prompt.slice(0, TURN_SCORE_PROMPT_MAX))}\n\n` +
-    `Worker answered: ${kaizenLine(answer.slice(0, TURN_SCORE_ANSWER_MAX))}\n\n` +
-    `Goal objective: ${kaizenLine(objective)}\n\n` +
-    `Tools: ${kaizenLine(turnScoreToolsLine(tools))}`;
+  return `Turn opened with: ${stateValue(prompt).slice(0, TURN_SCORE_PROMPT_MAX)}\n\n` +
+    `Worker answered: ${stateValue(answer).slice(0, TURN_SCORE_ANSWER_MAX)}\n\n` +
+    `Goal objective: ${stateValue(objective)}\n\n` +
+    `Tools: ${stateValue(turnScoreToolsLine(tools))}`;
 }
 
 // --- The override layer ---
@@ -432,8 +443,9 @@ export type CatalogHost = Pick<PluginHost, "getHome" | "readFile" | "fileExists"
 // resolves as readily as POSIX. Kept here because those two are local to
 // hooks/index.ts. The ground is not that a helper cannot cross an import,
 // which it can: only the injected host object cannot. This is a copy, kept
-// because the helper is three lines and this module imports no runtime value
-// from its siblings. The cost of the copy is that a path join drifting in one
+// because the helper is three lines and this module imports runtime values
+// from two siblings only, decision-seam.ts for the Score level bounds and
+// agent-state.ts for the text guard, and neither carries it. The cost of the copy is that a path join drifting in one
 // of them changes where one module reads and another writes.
 function joined(root: string, ...parts: string[]): string {
   return [root.replace(/[/\\]+$/, ""), ...parts].join("/");

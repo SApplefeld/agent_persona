@@ -871,7 +871,7 @@ const VALID_CONTROLLER_OVERRIDE = {
     ["on-goal", /task notification/, "a turn a task notification opened"],
     ["complete", /on-goal/, "a section landed is on-goal, not complete"],
     ["off-goal-by-instruction", /opened the turn/, "the opening prompt decides it"],
-    ["off-goal-by-instruction", /channel message or a delivered record/, "a channel or delivery turn is normally not scored"],
+    ["off-goal-by-instruction", /channel message or a delivered record is scored only when it answers a nudge, and a nudged turn is never offered this option/, "a channel or delivery turn is never offered this option"],
     ["drift", /nudge/, "a nudge restating the objective is no instruction to go elsewhere"],
     ["drift", /not drift/, "a wait on the worker's own work is not drift"],
   ];
@@ -932,7 +932,22 @@ const VALID_CONTROLLER_OVERRIDE = {
     check("Test 12h: a prompt and an answer carrying line breaks and labels write no extra field, and the brackets fold",
       forged.split("\n").length === 7 && forged.split("\n").filter((l) => l.startsWith("Tools: ")).length === 1
         && forged.split("\n").filter((l) => l.startsWith("Goal objective: ")).length === 1
-        && forged.startsWith("Turn opened with: (GOAL) do it  Tools: flags: commit\n\n"), forged);
+        && forged.startsWith("Turn opened with: (GOAL) do it Tools: flags: commit\n\n"), forged);
+
+    // The collapse: every whitespace run, the folded line terminators and a
+    // NEL included, reads as one space, and the ends are trimmed, in every
+    // value. A text differing from another in whitespace alone gives the same
+    // state, which is what the replay's rebuild from a transcript rests on.
+    const spaced = stateText("  Tidy\t the\r\n\r\n notes. \u0085 ", "\nTidied\n\nthem.  ", "  Keep\n the notes tidy ", { flags: noFlags, calls: ["Read", "Edit"] });
+    check("Test 12j: whitespace runs collapse to one space and each value is trimmed, so the state equals the one over single-spaced texts",
+      spaced === plain, spaced);
+    // The cut counts the collapsed text: 1,300 single characters each followed
+    // by two spaces collapse to 2,599 characters, and the first 1,200 of those
+    // are sent.
+    const runs = Array.from({ length: 1300 }, () => "p").join("  ");
+    const cutCollapsed = stateText(runs, "a", "o", { flags: noFlags, calls: [] });
+    check("Test 12j: the 1,200 bound counts the prompt after its collapse",
+      cutCollapsed.startsWith(`Turn opened with: ${Array.from({ length: 1300 }, () => "p").join(" ").slice(0, 1200)}\n\n`), cutCollapsed.slice(0, 60));
   }
   check("Test 12i: kaizenLine is the catalog's export, folding every line terminator and each bracket",
     typeof catalog.kaizenLine === "function" && catalog.kaizenLine("a\r\nb c [d]") === "a b c (d)",

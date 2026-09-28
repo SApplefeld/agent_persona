@@ -21,7 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fnv1aHash } from "../../hooks/cost-ledger.ts";
-import { PLAN_PATH_PATTERN } from "../../hooks/agent-state.ts";
+import { PLAN_PATH_PATTERN, bracketSafeText, oneLine } from "../../hooks/agent-state.ts";
 
 // Each question this sampler draws: the journal site that asks it, and the
 // oversample section 5's floor needs. The ids are the catalog's own, pinned
@@ -214,6 +214,22 @@ export function opensTurn(entry) {
 // plugin's own view of the prompt does not carry.
 const PLUGIN_MESSAGE_WRAPPER = /^The [\w-]+ plugin sent a message:\s*/;
 
+// The paragraph the engine puts after a message a plugin submits between
+// turns, which the plugin's own view of the prompt does not carry either. It
+// is written with its dash as an escape, the engine's own text being the
+// thing matched.
+const HARNESS_TRAILER = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
+
+// A turn's opening text with the engine's trailer paragraph removed from its
+// end, and the whitespace before it. A text not ending in the trailer is
+// returned as it came. turnsOf applies it to every prompt it reads, and
+// .kit/jev-gold/replay.mjs applies it again to a sampled record's prompt, so a
+// sample drawn before the reader removed it replays the same.
+export function withoutHarnessTrailer(text) {
+  const trimmed = text.trimEnd();
+  return trimmed.endsWith(HARNESS_TRAILER) ? trimmed.slice(0, -HARNESS_TRAILER.length).trimEnd() : text;
+}
+
 function isReplyTool(name) {
   return typeof name === "string" && (name.includes("__reply") || name.endsWith("_reply"));
 }
@@ -291,7 +307,7 @@ export function turnsOf(file) {
       promptAt: entries[s].timestamp,
       endMs,
       sidechainReply: replyTimes.some((ms) => ms >= startMs && ms <= endMs),
-      prompt: textOf(entries[s].message.content).trim().replace(PLUGIN_MESSAGE_WRAPPER, ""),
+      prompt: withoutHarnessTrailer(textOf(entries[s].message.content).trim().replace(PLUGIN_MESSAGE_WRAPPER, "")),
       final,
       tools,
     });
@@ -365,13 +381,14 @@ export function toolActivityText(tools, offThreadReply = false) {
 // --- Admission and the joins ---
 
 // The answer text a call's own state carries, where its site puts one there,
-// or null. The scorer's state is "User asked: <prompt>", a blank line,
-// "Worker answered: <answer>", a blank line, "Goal objective: ...", with the
-// answer cut at 1,000 characters;
-// the plan-health state is the JSON of `{ closingText, recentClosingTexts }`,
-// with the closing text cut at 1,000. Both cuts are plain slices of the
-// turn's answer, with no other folding (hooks/index.ts, scoreState and the
-// plan-health closingText). The controller's state carries no answer.
+// or null. The scorer's state carries its answer between "Worker answered: "
+// and "Goal objective: ", each after a blank line, in both of its shapes: v1
+// ("User asked: " first, the answer a plain slice of 1,000 characters) and v2
+// ("Turn opened with: " first, the answer folded to one line with its
+// brackets rewritten and its whitespace collapsed, then cut at 3,000, by
+// turnScoreStateText in hooks/question-catalog.ts). The plan-health state is
+// the JSON of `{ closingText, recentClosingTexts }`, with the closing text a
+// plain slice of 1,000. The controller's state carries no answer.
 const ANSWER_OPEN = "\n\nWorker answered: ";
 const ANSWER_CLOSE = "\n\nGoal objective: ";
 export function stateAnswerText(site, state) {
@@ -392,15 +409,19 @@ export function stateAnswerText(site, state) {
 }
 
 // Whether a transcript turn is the one whose answer a call's state carries:
-// the state's text, whitespace removed, opens the turn's final message,
-// whitespace removed. The state's text is a prefix because of its cut, and
-// whitespace is set aside because the transcript reader joins a message's
-// text blocks with one line break where the hook's answer may join them
-// otherwise. An empty answer never matches, since the hook scores none.
+// the state's text opens the turn's final message, both folded to one line
+// with their brackets rewritten and their whitespace removed. The state's
+// text is a prefix because of its cut. Whitespace is set aside because the
+// transcript reader joins a message's text blocks with one line break where
+// the hook's answer may join them otherwise, and because v2 collapses it; the
+// fold is applied to both sides because v2 folds the answer it carries and
+// v1 does not, and folding is idempotent. An empty answer never matches,
+// since the hook scores none.
 const NO_SPACE = /\s+/g;
+const comparableAnswer = (text) => bracketSafeText(oneLine(text)).replace(NO_SPACE, "");
 export function turnProducedAnswer(turn, answerText) {
-  const want = answerText.replace(NO_SPACE, "");
-  return want.length > 0 && turn.final.replace(NO_SPACE, "").startsWith(want);
+  const want = comparableAnswer(answerText);
+  return want.length > 0 && comparableAnswer(turn.final).startsWith(want);
 }
 
 // Every call in the journal, admitted into a candidate record for `question`

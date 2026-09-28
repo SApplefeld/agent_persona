@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import "./tick-harness.mjs";
 import {
   QUESTIONS, DROP_REASONS, readJournal, indexCalls, resolveState, indexTranscripts, turnsOf, turnBefore,
-  opensTurn, toolActivityText, buildCandidates, stratify, personaKey, PERSONA_ALIASES,
+  opensTurn, toolActivityText, buildCandidates, stratify, personaKey, PERSONA_ALIASES, stateAnswerText, turnProducedAnswer,
 } from "./jev-gold/sample.mjs";
 import {
   CLI_FLAGS, rubricText, rubricLabels, labellerView, checkBatch, cohensKappa, kappaLine,
@@ -905,7 +905,7 @@ try {
     const TS_NUDGED = { "on-goal": 0.3, drift: 0.3, complete: 0.4 };
     const tsRecord = (id, overrides = {}) => ({
       id, stampId: `s-${id}`, haikuValue: null,
-      state: v1TurnScoreState("the v1 prompt, cut at 500", "the v1 answer, cut at 1,000", "Keep the notes tidy"),
+      state: v1TurnScoreState(`Tidy the notes for ${id}.`, `Tidied them for ${id}.`, "Keep the notes tidy"),
       jev: { probabilities: TS_FULL },
       transcript: {
         prompt: `Tidy the notes for ${id}.`,
@@ -915,12 +915,14 @@ try {
       ...overrides,
     });
     const parseToolActivity = replayModule.parseToolActivity;
-    const objectiveOfV1State = replayModule.objectiveOfV1State;
+    const scoreStateParts = replayModule.scoreStateParts;
     const turnScoreV2State = replayModule.turnScoreV2State;
-    check("replay.mjs exports the turn-score v2 assembly: the activity parse, the objective read and the state builder",
-      typeof parseToolActivity === "function" && typeof objectiveOfV1State === "function" && typeof turnScoreV2State === "function",
-      [typeof parseToolActivity, typeof objectiveOfV1State, typeof turnScoreV2State]);
-    if (typeof parseToolActivity === "function" && typeof objectiveOfV1State === "function" && typeof turnScoreV2State === "function") {
+    // The state a record replays over, or the refusal's reason.
+    const v2StateOf = (record) => { const built = turnScoreV2State(record); return built.ok ? built.state : `refused: ${built.reason}`; };
+    check("replay.mjs exports the turn-score v2 assembly: the activity parse, the state-parts read and the state builder",
+      typeof parseToolActivity === "function" && typeof scoreStateParts === "function" && typeof turnScoreV2State === "function",
+      [typeof parseToolActivity, typeof scoreStateParts, typeof turnScoreV2State]);
+    if (typeof parseToolActivity === "function" && typeof scoreStateParts === "function" && typeof turnScoreV2State === "function") {
       // The round trip: every flag sample.mjs's writer can set, and the ring
       // in call order, read back onto the catalog's flag names.
       const everyFlag = toolActivityText([
@@ -956,18 +958,109 @@ try {
         check(`the activity parse refuses a line with ${what}`, parseToolActivity(line) === null, line);
       }
 
-      check("the objective is read off a v1 state's Goal objective part, line breaks kept",
-        objectiveOfV1State(v1TurnScoreState("p", "a", "line one\nline two")) === "line one\nline two");
-      check("the objective read refuses a state that does not end in the v1 question",
-        objectiveOfV1State("User asked: p\n\nWorker answered: a\n\nGoal objective: o") === null);
+      // Both journaled shapes: v1, and v2 as turnScoreStateText writes it.
+      const noFlags = Object.fromEntries(catalog.TURN_SCORE_TOOL_FLAGS.map((f) => [f, false]));
+      const v1Parts = scoreStateParts(v1TurnScoreState("p", "a", "line one\nline two"));
+      check("the state parts read a v1 state's opening text and objective, line breaks kept",
+        v1Parts !== null && v1Parts.opening === "p" && v1Parts.objective === "line one\nline two", v1Parts);
+      const v2Parts = scoreStateParts(catalog.turnScoreStateText("Tidy [it].", "Done.", "Keep it tidy", { flags: noFlags, calls: ["Read"] }));
+      check("the state parts read a v2 state's opening text and objective, the objective ending at the Tools part",
+        v2Parts !== null && v2Parts.opening === "Tidy (it)." && v2Parts.objective === "Keep it tidy", v2Parts);
+      // An objective that itself carries the label is read whole in both
+      // shapes, since the anchor is the first label after the answer's.
+      const embedded = "Ship it.\n\nGoal objective: the second half";
+      const v1Embedded = scoreStateParts(v1TurnScoreState("p", "a", embedded));
+      check("a v1 objective carrying its own Goal objective label is read whole",
+        v1Embedded !== null && v1Embedded.objective === embedded, v1Embedded);
+      const v2Embedded = scoreStateParts(catalog.turnScoreStateText("p", "a", embedded, { flags: noFlags, calls: [] }));
+      check("a v2 objective carrying its own Goal objective label is read whole, folded as v2 sends it",
+        v2Embedded !== null && v2Embedded.objective === "Ship it. Goal objective: the second half", v2Embedded);
+      for (const [what, state] of [
+        ["a v1 state with no closing question", "User asked: p\n\nWorker answered: a\n\nGoal objective: o"],
+        ["a v2 state with no Tools part", "Turn opened with: p\n\nWorker answered: a\n\nGoal objective: o"],
+        ["a state in neither shape", "Something else: p\n\nWorker answered: a\n\nGoal objective: o"],
+      ]) check(`the state parts refuse ${what}`, scoreStateParts(state) === null, state);
 
       // The v2 state is the catalog's builder over the record's transcript
-      // fields and its v1 objective, not the v1 state's own cut texts.
+      // fields and its journaled objective, not the v1 state's own cut texts.
       const rec = tsRecord("t-v2");
+      const tsFlags = { ...noFlags, plan_read: true, commit: true };
       check("a record's v2 state is turnScoreStateText over its transcript prompt, final message, v1 objective and parsed activity",
-        turnScoreV2State(rec) === catalog.turnScoreStateText("Tidy the notes for t-v2.", "Tidied them for t-v2.", "Keep the notes tidy",
-          { flags: { plan_read: true, plan_edited: false, commit: true, push: false, agent_dispatched: false, goal_done: false, reply: false }, calls: ["Read", "Bash"] }),
-        turnScoreV2State(rec));
+        v2StateOf(rec) === catalog.turnScoreStateText("Tidy the notes for t-v2.", "Tidied them for t-v2.", "Keep the notes tidy",
+          { flags: tsFlags, calls: ["Read", "Bash"] }),
+        v2StateOf(rec));
+      // A record journaled under v2 replays too: the objective and the opening
+      // text are read off the v2 shape.
+      const v2Journaled = tsRecord("t-v2j", { state: catalog.turnScoreStateText("Tidy the notes for t-v2j.", "x", "Keep the notes tidy", { flags: noFlags, calls: [] }) });
+      check("a record whose journaled state is v2 replays over the same state a v1-journaled record gets",
+        v2StateOf(v2Journaled) === catalog.turnScoreStateText("Tidy the notes for t-v2j.", "Tidied them for t-v2j.", "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }),
+        v2StateOf(v2Journaled));
+
+      // The prompt cross-check. A transcript prompt differing from the scored
+      // text in whitespace alone, or carrying the engine's trailer, is the
+      // scored text and builds; one whose opening message is another text is
+      // refused as prompt_mismatch, which replayRecord writes as a failure
+      // row with no request sent.
+      const trailer = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
+      const trailed = tsRecord("t-trail", { transcript: { ...rec.transcript, prompt: "Tidy the  notes\nfor t-trail.\n\n" + trailer } });
+      check("a transcript prompt carrying the engine's trailer and different whitespace passes the cross-check, and the trailer is not sent",
+        v2StateOf(trailed).startsWith("Turn opened with: Tidy the notes for t-trail.\n\n"), v2StateOf(trailed));
+      const other = tsRecord("t-other", { transcript: { ...rec.transcript, prompt: "[SUPERVISOR-PRIMING] a different message" } });
+      check("a transcript prompt that is not the scored text is refused as prompt_mismatch",
+        v2StateOf(other) === "refused: prompt_mismatch", v2StateOf(other));
+      let sentOnMismatch = 0;
+      const mismatchRow = await replayRecord(stubHost(async (url, init) => { sentOnMismatch += 1; return choiceReply()(url, init); }), "turn-score", "v2", other);
+      check("replayRecord writes a prompt_mismatch record as a failure row carrying the reason, and sends no request",
+        mismatchRow.ok === false && mismatchRow.reason === "prompt_mismatch" && mismatchRow.id === "t-other" && !("value" in mismatchRow) && sentOnMismatch === 0,
+        { mismatchRow, sentOnMismatch });
+      check("score.mjs's withReplay excludes a prompt_mismatch row from every figure",
+        withReplay([{ id: "t-other", label: "on-goal", value: "on-goal", probabilities: {}, haikuValue: null, outcomes: [] }], [mismatchRow]).records.length === 0);
+
+      // The sampler's answer match on a v2 line: the state carries the answer
+      // folded, its brackets rewritten and its whitespace collapsed, and the
+      // match folds the transcript's final message the same way before the
+      // prefix compare. A final message that is another text is the withheld
+      // control, and the v1 shape with brackets left raw still matches.
+      const bracketed = "Fixed the [flaky]   test\n\nand pushed [main].";
+      const v2Answer = stateAnswerText("turn-score", catalog.turnScoreStateText("p", bracketed, "o", { flags: noFlags, calls: [] }));
+      check("the sampler reads a v2 state's answer as the folded text v2 sent",
+        v2Answer === "Fixed the (flaky) test and pushed (main).", v2Answer);
+      check("the sampler matches a v2 answer holding brackets to the raw final message that produced it",
+        v2Answer !== null && turnProducedAnswer({ final: bracketed }, v2Answer) === true);
+      check("the sampler's v2 match refuses a final message that is another text (control)",
+        v2Answer !== null && turnProducedAnswer({ final: "Fixed the flaky test, then stopped." }, v2Answer) === false);
+      check("the sampler still matches a v1 answer holding raw brackets",
+        turnProducedAnswer({ final: bracketed }, stateAnswerText("turn-score", v1TurnScoreState("p", bracketed, "o"))) === true);
+
+      // The byte pin through sample.mjs's own transcript reader. The fixture
+      // turn opens with surrounding whitespace, the plugin wrapper line and the
+      // engine's trailer, and ends on an assistant entry of two text blocks,
+      // which the reader trims and joins with one line break. The plugin holds
+      // the nudge text as it submitted it and the answer with its own
+      // whitespace; the replay's state from what turnsOf returns must equal
+      // the builder over those raw strings.
+      const fixtureTurns = turnsOf(path.join(FIXTURE, "turn-score-v2", "s-ts-v2.jsonl"));
+      const fixtureTurn = fixtureTurns.length === 1 ? fixtureTurns[0] : null;
+      const pluginPrompt = "[GOAL] Tidy the [notes].\n\nKeep going.";
+      const pluginAnswer = "  WORKING: tidied the [three] notes.  \n\nCommitted them.\n";
+      const rawOpening = JSON.parse(fs.readFileSync(path.join(FIXTURE, "turn-score-v2", "s-ts-v2.jsonl"), "utf8").split("\n")[0]).message.content[0].text;
+      check("the fixture control: the transcript's raw opening text carries whitespace, the wrapper and the trailer, and the reader's final message differs from the plugin's answer, so the pin has each to reconcile",
+        fixtureTurn !== null && rawOpening !== pluginPrompt && rawOpening.includes(trailer) && /^\s/.test(rawOpening)
+          && fixtureTurn.final !== pluginAnswer && fixtureTurn.final.includes("\n"),
+        fixtureTurn && { final: fixtureTurn.final });
+      check("sample.mjs's reader removes the wrapper, the trailer and the surrounding whitespace, leaving the text the plugin submitted",
+        fixtureTurn !== null && fixtureTurn.prompt === pluginPrompt, fixtureTurn && fixtureTurn.prompt);
+      if (fixtureTurn !== null) {
+        const fixtureRecord = {
+          id: "ts-fixture", stampId: "s-fixture", haikuValue: null,
+          state: v1TurnScoreState(pluginPrompt.slice(0, 500), pluginAnswer.slice(0, 1000), "Keep the notes tidy"),
+          jev: { probabilities: TS_NUDGED },
+          transcript: { prompt: fixtureTurn.prompt, finalMessage: fixtureTurn.final, toolActivity: toolActivityText(fixtureTurn.tools, fixtureTurn.sidechainReply) },
+        };
+        check("the replay's v2 state from turnsOf's reading equals turnScoreStateText over the raw strings the plugin holds",
+          v2StateOf(fixtureRecord) === catalog.turnScoreStateText(pluginPrompt, pluginAnswer, "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }),
+          { replay: v2StateOf(fixtureRecord), plugin: catalog.turnScoreStateText(pluginPrompt, pluginAnswer, "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }) });
+      }
 
       // The refusals, one per part the state needs. Each names the record and
       // the rule that refused it: no transcript at all, no prompt, an absent or
@@ -1013,7 +1106,7 @@ try {
     check("a nudged turn's v2 replay offers only the three options its own call offered, never off-goal-by-instruction",
       same(sentTsIds, catalog.SCORER_LABELS_AFTER_NUDGE) && nudgedResult.ok === true, { sentTsIds, nudgedResult });
     check("the v2 replay sends the record's v2 state, not its v1 state, and stamps the seam's own v2",
-      typeof turnScoreV2State === "function" && sentTsState === turnScoreV2State(nudgedRecord) && sentTsState !== nudgedRecord.state
+      typeof turnScoreV2State === "function" && sentTsState === v2StateOf(nudgedRecord) && sentTsState !== nudgedRecord.state
         && nudgedResult.version === "v2",
       { sentTsState, version: nudgedResult.version });
 
