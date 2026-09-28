@@ -4069,6 +4069,7 @@ async function main() {
     await caseTurnClose_aSubagentCompletionClosesNothing(clock);
     await caseTurnClose_theCompactionRuleInBothDirections(clock);
     await caseTurnClose_theJournaledStateCarriesTheFourFields(clock);
+    await caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock);
     await caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock);
     await caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock);
 
@@ -19183,9 +19184,10 @@ async function caseR119_aMetNudgeClearsItsOwnCount(clock) {
   check("r119: the scored turns saw the nudge-aware label set",
     scoredLabels.length === 4 && scoredLabels.every((labels) => !labels.includes("off-goal-by-instruction")));
   // The prompt text was spent before the submit, so the scorer judges the answer
-  // against the nudge the worker was actually answering.
+  // against the nudge the worker was actually answering. The state folds the
+  // nudge's brackets, as it folds every bracket a value carries.
   check("r119: the scorer read the nudge text as the prompt",
-    scoredPrompts.length === 4 && scoredPrompts[0].includes("[GOAL] The active goal is"));
+    scoredPrompts.length === 4 && scoredPrompts[0].startsWith("Turn opened with: (GOAL) The active goal is"), scoredPrompts[0]?.slice(0, 80));
 }
 
 // The withheld control, varying only the first round: with no status line on
@@ -26227,6 +26229,135 @@ async function caseTurnClose_theJournaledStateCarriesTheFourFields(clock) {
   const forged = turnDispositionRequests(forging)[0]?.state;
   check("close state guard: a closing text carrying a label and a line break stays inside agent_final_message, and the state is four lines",
     typeof forged === "string" && forged.split("\n").length === 4 && forged.split("\n")[2].includes("active_goal: a goal the persona never had"), forged);
+}
+
+// Turn-score v2 (jev-question-quality section 4). One scored turn's state is
+// read three ways: the text Haiku's classify call was handed, the state the
+// Jev request carried, and the state the journal's call line records, and the
+// three are one text. .kit/jev-gold/replay.mjs then rebuilds it from a record
+// carrying the same turn in the shape sample.mjs writes one, its activity line
+// written by sample.mjs's own toolActivityText over the same tool calls, and
+// the two are byte-identical. That is the pin the replay's v2 figure rests on:
+// a drift between the plugin's state and the replay's is exactly what it
+// catches. The prompt and the answer run past both cuts, and the turn sets
+// three flags, so the cuts and the Tools line are inside the comparison. The
+// answer line carries v2. A nudged turn on a plan entry is then scored over the
+// three-label array, offered to Haiku and to Jev alike, over one text that
+// opens with the nudge the worker was answering.
+async function caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock) {
+  console.log("\n=== Turn score v2: one state for Haiku, Jev and the journal, byte-identical to the replay's, journaled as v2, and a nudged turn offered three labels ===");
+  const { turnScoreV2State } = await import("./jev-gold/replay.mjs");
+  const { toolActivityText } = await import("./jev-gold/sample.mjs");
+  const answerEveryQuestion = (url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 });
+  const scorerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("on-goal"));
+  const turnScoreBodiesOf = (h) => h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.TURN_SCORE));
+  const turnScoreCallLinesOf = (h) => journalLinesOfKind(h, "call").filter((line) => line.questionSet === Catalog.TURN_SCORE);
+
+  clock.set(T0);
+  const h = await seedSeamHarness("turn_score_v2_state", clock);
+  h.setHttpResponse(answerEveryQuestion);
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  const prompt = "Tidy the notes [today].\n" + "p".repeat(1300) + "PROMPT-TAIL";
+  const answer = "WORKING: tidied them.\n" + "a".repeat(3100) + "ANSWER-TAIL";
+  const turnId = "t-ts-v2";
+  const calls = [
+    { tool: "Read", file_path: "D:/agent_persona/docs/plans/x_v1.md" },
+    { tool: "Bash", command: "git commit -m 'x'" },
+    { tool: "Grep", pattern: "x" },
+    { tool: "mcp__plugin_relay_channel-relay__reply", message: "on it" },
+  ];
+  await submitMessage(h, prompt);
+  await recordTurnStart(h, turnId, prompt);
+  for (const call of calls) await callTool(h, { ...call, turnId }, async () => ({ result: "ok" }));
+  await recordTurnComplete(h, turnId, answer);
+  await settleJournalWrites(h);
+
+  const scorerCalls = scorerCallsOf(h);
+  const bodies = turnScoreBodiesOf(h);
+  const callLines = turnScoreCallLinesOf(h);
+  const haikuState = scorerCalls.length === 1 ? scorerCalls[0][0] : null;
+  const jevState = bodies.length === 1 ? bodies[0].state : null;
+  check("turn score v2 (control): the turn was scored once by Haiku, asked of Jev once and journaled once",
+    scorerCalls.length === 1 && bodies.length === 1 && callLines.length === 1,
+    { haiku: scorerCalls.length, jev: bodies.length, lines: callLines.length });
+  check("turn score v2: Haiku and Jev are handed the same text, and the journal records that text",
+    typeof haikuState === "string" && haikuState === jevState && callLines[0]?.state === jevState,
+    { haiku: haikuState?.slice(0, 60), jev: jevState?.slice(0, 60), journal: callLines[0]?.state?.slice(0, 60) });
+  const objective = getState(h).goals.find((g) => g.id === "g-plan")?.objective;
+  check("turn score v2: the state is the catalog's builder over this turn's prompt, answer, objective and tool activity",
+    typeof objective === "string" && jevState === Catalog.turnScoreStateText(prompt, answer, objective, {
+      flags: { plan_read: true, plan_edited: false, commit: true, push: false, agent_dispatched: false, goal_done: false, reply: true },
+      calls: ["Read", "Bash", "Grep", "mcp__plugin_relay_channel-relay__reply"],
+    }), jevState?.slice(-160));
+  check("turn score v2: the prompt is cut at 1,200 and the answer at 3,000, so both tails are gone",
+    typeof jevState === "string" && !jevState.includes("PROMPT-TAIL") && !jevState.includes("ANSWER-TAIL")
+      && jevState.includes(`Turn opened with: Tidy the notes (today). ${"p".repeat(1200 - "Tidy the notes [today].\n".length)}\n\n`),
+    jevState?.slice(0, 80));
+  check("turn score v2: the Tools line names the flags that held, then the calls in order, and nothing follows it",
+    typeof jevState === "string" && jevState.endsWith("\n\nTools: flags: plan_read, commit, reply; calls: Read, Bash, Grep, mcp__plugin_relay_channel-relay__reply"),
+    jevState?.slice(-120));
+
+  // The replay's record for the same turn, in sample.mjs's shape: a v1 state
+  // of the kind the sampled records carry, the Jev probabilities the call
+  // answered with, and the transcript fields.
+  const answerLine = journalLinesOfKind(h, "answer").find((line) => line.callStampId === callLines[0]?.stampId);
+  const record = {
+    id: "ts-fixture",
+    stampId: callLines[0]?.stampId,
+    state: `User asked: ${prompt.slice(0, 500)}\n\nWorker answered: ${answer.slice(0, 1000)}\n\nGoal objective: ${objective}\n\nDid the worker's answer advance the goal objective?`,
+    jev: { probabilities: answerLine?.probabilities },
+    transcript: {
+      prompt,
+      finalMessage: answer,
+      toolActivity: toolActivityText(calls.map(({ tool, ...input }) => ({ name: tool, input }))),
+    },
+  };
+  let replayState = null;
+  try { replayState = turnScoreV2State(record); } catch (e) { replayState = `threw: ${e.message}`; }
+  check("turn score v2: the replay's v2 state for the same turn is byte-identical to the state the plugin sent",
+    typeof jevState === "string" && replayState === jevState,
+    { plugin: jevState?.slice(-120), replay: typeof replayState === "string" ? replayState.slice(-120) : replayState });
+  check("turn score v2: the answer line carries version v2",
+    answerLine?.questionVersion === "v2", answerLine?.questionVersion);
+
+  // The nudged leg: a plan entry nudged by the idle tick, whose own turn is
+  // scored over the three labels a nudged turn is offered.
+  clock.set(T0);
+  const n = await lead3Harness("turn_score_v2_nudged");
+  n.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  n.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  n.setHttpResponse(answerEveryQuestion);
+  const idle = await lead3IdleTick(n, clock);
+  check("turn score v2 nudged (control): the idle tick nudged the entry", idle.nudged === true, idle);
+  n.setClassifyValue((prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("on-goal")) return "on-goal";
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  });
+  await openQueuedTurn(n, "t-ts-nudged");
+  await n.handlers["turn.complete"](n.fake, { turnId: "t-ts-nudged", answer: "WORKING: took the next step.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(n);
+  const nudgedScorer = scorerCallsOf(n);
+  const nudgedBodies = turnScoreBodiesOf(n);
+  check("turn score v2 nudged (control): the nudged turn was scored once and asked of Jev once",
+    nudgedScorer.length === 1 && nudgedBodies.length === 1, { haiku: nudgedScorer.length, jev: nudgedBodies.length });
+  check("turn score v2 nudged: Haiku is offered the three-label array",
+    nudgedScorer.length === 1 && JSON.stringify([...nudgedScorer[0][1]]) === JSON.stringify([...Catalog.SCORER_LABELS_AFTER_NUDGE]),
+    nudgedScorer[0]?.[1]);
+  check("turn score v2 nudged: Jev is offered the same three ids, and never off-goal-by-instruction",
+    nudgedBodies.length === 1 && JSON.stringify(Object.keys(nudgedBodies[0].questions[Catalog.TURN_SCORE].criteria)) === JSON.stringify([...Catalog.SCORER_LABELS_AFTER_NUDGE]),
+    nudgedBodies[0] && Object.keys(nudgedBodies[0].questions[Catalog.TURN_SCORE].criteria));
+  check("turn score v2 nudged: the one text both are handed opens with the nudge the worker was answering, its label folded",
+    nudgedScorer.length === 1 && nudgedBodies.length === 1 && nudgedScorer[0][0] === nudgedBodies[0].state
+      && nudgedBodies[0].state.startsWith("Turn opened with: (GOAL) The active goal is"),
+    nudgedBodies[0]?.state?.slice(0, 80));
 }
 
 // next_prompt_kind is written once against every disposition stamp pending on

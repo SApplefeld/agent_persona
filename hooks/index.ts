@@ -153,6 +153,9 @@ import {
   TURN_DISPOSITION_OPTIONS,
   TURN_DELIVERED_THRESHOLD,
   RECORD_OUTCOME_TURNS,
+  kaizenLine,
+  turnScoreStateText,
+  type TurnScoreTools,
   resolverOf,
 } from "./question-catalog";
 // The decision seam, which puts the same closed question to Jev that the four
@@ -826,6 +829,19 @@ function turnToolActivityText(flags: TurnToolFlags, ring: readonly string[], wor
   return `plan_read=${yn(flags.planRead)} plan_edited=${yn(flags.planEdited)} commit=${yn(flags.committed)} push=${yn(flags.pushed)} ` +
     `agent_dispatched=${yn(flags.agentDispatched)} goal_done=${yn(flags.goalDoneCalled)} reply=${yn(replyCalled)} ` +
     `work_tools=${workToolCount} tools=${ring.join(",")}`;
+}
+
+// The turn's tool activity as the turn-score state reads it: the seven flags
+// under the names turnToolActivityText gives them, and a copy of the ring, so
+// a call landing after this read cannot change what the scorer is handed.
+function turnScoreToolsOf(flags: TurnToolFlags, ring: readonly string[], replyCalled: boolean): TurnScoreTools {
+  return {
+    flags: {
+      plan_read: flags.planRead, plan_edited: flags.planEdited, commit: flags.committed, push: flags.pushed,
+      agent_dispatched: flags.agentDispatched, goal_done: flags.goalDoneCalled, reply: replyCalled,
+    },
+    calls: [...ring],
+  };
 }
 
 // The turn-disposition question's state, as the one text the seam's `ask`
@@ -1617,15 +1633,6 @@ export const PROPOSAL_EVERY_MS = 24 * 3_600_000;
 // A record read back as skipped once its entry has spent this many resends is
 // announced on the persona's own thread instead of being sent again.
 export const PLAN_RECORD_MAX_RESENDS = 3;
-
-// One line of the [KAIZEN] thread message. The text comes out of the
-// persona's store, so its line breaks are folded and it passes through
-// bracketSafeText, which turns '[' and ']' into '(' and ')' so the text
-// cannot forge a delivery label. The fleet report and the fleet prompt apply
-// the same helper to the text they carry.
-function kaizenLine(text: string): string {
-  return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
-}
 
 // The [PROPOSE] frame's plan-and-ask and plan-and-start instructions: write
 // the plan document and queue it, which sends the coordinator its own
@@ -9202,6 +9209,12 @@ export const register: Register = async (on, options) => {
     // lands during those awaits is not read as the nudged turn's.
     if (completesGateTurn) currentTurnNudged = false;
     const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
+    // The turn-score state's own facts, read here for the same reason: the
+    // prompt this turn opened with and the turn's tool activity are rewritten
+    // by the next prompt and the next turn.start, and the scorer reads them
+    // after the awaits below.
+    const scorePromptAtDelete = currentPrompt;
+    const scoreToolsAtDelete = turnScoreToolsOf(turnToolFlags, turnToolRing, replyCalledThisTurn);
     // Section 6 (goal-every-turn): route one's own fact, read here for the same
     // reason. The plan documents this turn edited are rewritten by the next
     // turn.start too, and route one reads them after an await of its own. The
@@ -9625,10 +9638,9 @@ export const register: Register = async (on, options) => {
             : SCORER_LABELS;
           try {
             // Bound to a name so the same bytes reach Haiku and the shadow call
-            // below it.
-            const scoreState =
-              `User asked: ${currentPrompt.slice(0, 500)}\n\nWorker answered: ${e.answer.slice(0, 1000)}\n\nGoal objective: ${g.objective}\n\n` +
-              `Did the worker's answer advance the goal objective?`;
+            // below it. The catalog builds it, so .kit/jev-gold/replay.mjs
+            // builds the same state from a sampled turn.
+            const scoreState = turnScoreStateText(scorePromptAtDelete, e.answer, g.objective, scoreToolsAtDelete);
             const result = await $.model.classify(
               scoreState,
               labels,

@@ -39,6 +39,7 @@ import {
   BARS, TOP_PROBABILITY_FLOOR, COVERAGE_FLOOR, BLOCK_OWNER_OPERATOR_COUNT_FLOOR, DEFAULT_RECALL_COUNT_FLOOR,
   coverageOf, evalBar, report,
 } from "./jev-gold/score.mjs";
+import * as replayModule from "./jev-gold/replay.mjs";
 import {
   offeredOptionIds, REPLAYABLE_VERSIONS, replayRecord, replayAll, buildHost, main as replayMain,
 } from "./jev-gold/replay.mjs";
@@ -892,17 +893,129 @@ try {
     check("a record whose own call offered switch is replayed with switch offered too, recovered from its probability keys alone",
       same(sentIdsSwitch, catalog.CONTROLLER_LABELS_WITH_SWITCH) && cdResultSwitch.ok === true, { sentIdsSwitch, cdResultSwitch });
 
+    // --- turn-score v2: the state a sampled record is replayed over ---
+    //
+    // A turn-score record as sample.mjs writes one: its v1 state, its Jev
+    // probabilities, and the transcript fields the v2 state is built from.
+    // Its toolActivity is written by sample.mjs's own toolActivityText, the
+    // writer the parse below reads back.
+    const v1TurnScoreState = (prompt, answer, objective) =>
+      `User asked: ${prompt}\n\nWorker answered: ${answer}\n\nGoal objective: ${objective}\n\nDid the worker's answer advance the goal objective?`;
+    const TS_FULL = { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 };
+    const TS_NUDGED = { "on-goal": 0.3, drift: 0.3, complete: 0.4 };
+    const tsRecord = (id, overrides = {}) => ({
+      id, stampId: `s-${id}`, haikuValue: null,
+      state: v1TurnScoreState("the v1 prompt, cut at 500", "the v1 answer, cut at 1,000", "Keep the notes tidy"),
+      jev: { probabilities: TS_FULL },
+      transcript: {
+        prompt: `Tidy the notes for ${id}.`,
+        finalMessage: `Tidied them for ${id}.`,
+        toolActivity: toolActivityText([{ name: "Read", input: { file_path: "docs/plans/x_v1.md" } }, { name: "Bash", input: { command: "git commit -m x" } }]),
+      },
+      ...overrides,
+    });
+    const parseToolActivity = replayModule.parseToolActivity;
+    const objectiveOfV1State = replayModule.objectiveOfV1State;
+    const turnScoreV2State = replayModule.turnScoreV2State;
+    check("replay.mjs exports the turn-score v2 assembly: the activity parse, the objective read and the state builder",
+      typeof parseToolActivity === "function" && typeof objectiveOfV1State === "function" && typeof turnScoreV2State === "function",
+      [typeof parseToolActivity, typeof objectiveOfV1State, typeof turnScoreV2State]);
+    if (typeof parseToolActivity === "function" && typeof objectiveOfV1State === "function" && typeof turnScoreV2State === "function") {
+      // The round trip: every flag sample.mjs's writer can set, and the ring
+      // in call order, read back onto the catalog's flag names.
+      const everyFlag = toolActivityText([
+        { name: "Read", input: { file_path: "D:/w/docs/plans/x_v1.md" } },
+        { name: "Edit", input: { file_path: "docs\\plans\\x_v1.md" } },
+        { name: "Bash", input: { command: "git commit -m x" } },
+        { name: "Bash", input: { command: "git push origin main" } },
+        { name: "Agent", input: {} },
+        { name: "mcp__agentic-plugin__goal_done", input: {} },
+        { name: "mcp__plugin_relay_channel-relay__reply", input: {} },
+      ]);
+      const parsedEvery = parseToolActivity(everyFlag);
+      check("the activity parse reads every flag sample.mjs's writer sets back as held, on the catalog's names",
+        parsedEvery !== null && catalog.TURN_SCORE_TOOL_FLAGS.every((name) => parsedEvery.flags[name] === true), { everyFlag, parsedEvery });
+      check("the activity parse reads the ring back as the tool names in call order, repeats kept",
+        parsedEvery !== null && same(parsedEvery.calls, ["Read", "Edit", "Bash", "Bash", "Agent", "mcp__agentic-plugin__goal_done", "mcp__plugin_relay_channel-relay__reply"]), parsedEvery);
+      const parsedNone = parseToolActivity(toolActivityText([{ name: "Grep", input: {} }, { name: "Read", input: { file_path: "README.md" } }]));
+      check("the activity parse reads a flag-free turn as no flag held, with its calls kept",
+        parsedNone !== null && catalog.TURN_SCORE_TOOL_FLAGS.every((name) => parsedNone.flags[name] === false) && same(parsedNone.calls, ["Grep", "Read"]), parsedNone);
+      const parsedEmpty = parseToolActivity(toolActivityText([]));
+      check("the activity parse reads a turn with no tool calls as an empty call list, not one empty name",
+        parsedEmpty !== null && same(parsedEmpty.calls, []), parsedEmpty);
+      // Refused shapes, each off the writer's shape by one part. The accepted
+      // lines above are the withheld control.
+      const offShape = [
+        ["a flag out of order", "plan_edited=no plan_read=no commit=no push=no agent_dispatched=no goal_done=no reply=no work_tools=0 tools="],
+        ["a flag value other than yes or no", "plan_read=maybe plan_edited=no commit=no push=no agent_dispatched=no goal_done=no reply=no work_tools=0 tools="],
+        ["no work_tools field", "plan_read=no plan_edited=no commit=no push=no agent_dispatched=no goal_done=no reply=no tools=Read"],
+        ["a missing flag", "plan_read=no commit=no push=no agent_dispatched=no goal_done=no reply=no work_tools=0 tools=Read"],
+        ["not a string", null],
+      ];
+      for (const [what, line] of offShape) {
+        check(`the activity parse refuses a line with ${what}`, parseToolActivity(line) === null, line);
+      }
+
+      check("the objective is read off a v1 state's Goal objective part, line breaks kept",
+        objectiveOfV1State(v1TurnScoreState("p", "a", "line one\nline two")) === "line one\nline two");
+      check("the objective read refuses a state that does not end in the v1 question",
+        objectiveOfV1State("User asked: p\n\nWorker answered: a\n\nGoal objective: o") === null);
+
+      // The v2 state is the catalog's builder over the record's transcript
+      // fields and its v1 objective, not the v1 state's own cut texts.
+      const rec = tsRecord("t-v2");
+      check("a record's v2 state is turnScoreStateText over its transcript prompt, final message, v1 objective and parsed activity",
+        turnScoreV2State(rec) === catalog.turnScoreStateText("Tidy the notes for t-v2.", "Tidied them for t-v2.", "Keep the notes tidy",
+          { flags: { plan_read: true, plan_edited: false, commit: true, push: false, agent_dispatched: false, goal_done: false, reply: false }, calls: ["Read", "Bash"] }),
+        turnScoreV2State(rec));
+
+      // The refusals, one per part the state needs. Each names the record and
+      // the rule that refused it: no transcript at all, no prompt, an absent or
+      // empty final message, an activity line off the writer's shape, and a v1
+      // state with no objective. The record above, carrying all four, is the
+      // withheld control.
+      const refusals = [
+        ["no transcript", { transcript: undefined }, "carries no transcript"],
+        ["no prompt", { transcript: { ...rec.transcript, prompt: undefined } }, "carries no prompt"],
+        ["no final message", { transcript: { ...rec.transcript, finalMessage: undefined } }, "carries no final message"],
+        ["an empty final message", { transcript: { ...rec.transcript, finalMessage: "" } }, "carries no final message"],
+        ["an activity line off shape", { transcript: { ...rec.transcript, toolActivity: "tools=Read" } }, "not a turn_tool_activity line"],
+        ["no activity line", { transcript: { ...rec.transcript, toolActivity: undefined } }, "not a turn_tool_activity line"],
+        ["a v1 state with no objective", { state: "User asked: p" }, "carries no goal objective"],
+      ];
+      for (const [what, overrides, rule] of refusals) {
+        let err = null;
+        try { turnScoreV2State(tsRecord("t-refused", overrides)); } catch (e) { err = e.message; }
+        check(`a record with ${what} is refused by name, as "${rule}"`,
+          err !== null && err.includes("t-refused") && err.includes(rule), err);
+      }
+      // The refusal reaches replayRecord before any request goes out.
+      let sentOnRefusal = 0;
+      let replayRefusal = null;
+      try {
+        await replayRecord(stubHost(async (url, init) => { sentOnRefusal += 1; return choiceReply()(url, init); }), "turn-score", "v2",
+          tsRecord("t-no-send", { transcript: undefined }));
+      } catch (e) { replayRefusal = e.message; }
+      check("replayRecord refuses a record it cannot build the v2 state for, and sends no request",
+        replayRefusal !== null && replayRefusal.includes("t-no-send") && sentOnRefusal === 0, { replayRefusal, sentOnRefusal });
+    }
+
     let sentTsIds = null;
+    let sentTsState = null;
     const captureTsIds = (url, init) => {
-      sentTsIds = Object.keys(JSON.parse(init.body).questions["turn-score"].criteria);
+      const body = JSON.parse(init.body);
+      sentTsIds = Object.keys(body.questions["turn-score"].criteria);
+      sentTsState = body.state;
       return choiceReply()(url, init);
     };
-    const nudgedResult = await replayRecord(stubHost(captureTsIds), "turn-score", "v1", {
-      id: "t0", stampId: "s0", state: "User asked: x", haikuValue: null,
-      jev: { probabilities: { "on-goal": 0.3, drift: 0.3, complete: 0.4 } },
-    });
-    check("a nudged turn's replay offers only the three options its own call offered, never off-goal-by-instruction",
+    const nudgedRecord = tsRecord("t0", { jev: { probabilities: TS_NUDGED } });
+    const nudgedResult = await replayRecord(stubHost(captureTsIds), "turn-score", "v2", nudgedRecord);
+    check("a nudged turn's v2 replay offers only the three options its own call offered, never off-goal-by-instruction",
       same(sentTsIds, catalog.SCORER_LABELS_AFTER_NUDGE) && nudgedResult.ok === true, { sentTsIds, nudgedResult });
+    check("the v2 replay sends the record's v2 state, not its v1 state, and stamps the seam's own v2",
+      typeof turnScoreV2State === "function" && sentTsState === turnScoreV2State(nudgedRecord) && sentTsState !== nudgedRecord.state
+        && nudgedResult.version === "v2",
+      { sentTsState, version: nudgedResult.version });
 
     const boState = JSON.stringify({ closingText: "WAITING: a background suite is running", recentClosingTexts: ["a", "b"] });
     let sentQuestionIds = null;
@@ -923,10 +1036,7 @@ try {
     // A failed call is written with its failure reason and is not scored:
     // the seam's own closed reason rides straight through, with no answer.
     const failHost = stubHost(async () => ({ status: 429, ok: false, headers: {}, text: "" }));
-    const failResult = await replayRecord(failHost, "turn-score", "v1", {
-      id: "t1", stampId: "s4", state: "User asked: x", haikuValue: null,
-      jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } },
-    });
+    const failResult = await replayRecord(failHost, "turn-score", "v2", tsRecord("t1"));
     check("a failed call carries the seam's reason and no answer",
       failResult.ok === false && failResult.reason === "http_429" && !("value" in failResult), failResult);
     check("score.mjs's withReplay excludes a failed replay record from every figure",
@@ -934,12 +1044,10 @@ try {
 
     let order = [];
     const seqHost = stubHost(async (url, init) => { order.push(JSON.parse(init.body).state); return choiceReply()(url, init); });
-    const seqResults = await replayAll(seqHost, "turn-score", "v1", [
-      { id: "t1", stampId: "s5", state: "User asked: one", haikuValue: null, jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } } },
-      { id: "t2", stampId: "s6", state: "User asked: two", haikuValue: null, jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } } },
-    ]);
+    const seqResults = await replayAll(seqHost, "turn-score", "v2", [tsRecord("t1"), tsRecord("t2")]);
     check("replayAll replays every record in order and carries each id through",
-      seqResults.length === 2 && seqResults[0].id === "t1" && seqResults[1].id === "t2" && order[0] === "User asked: one" && order[1] === "User asked: two",
+      seqResults.length === 2 && seqResults[0].id === "t1" && seqResults[1].id === "t2"
+        && order.length === 2 && order[0].includes("Tidy the notes for t1.") && order[1].includes("Tidy the notes for t2."),
       seqResults.map((r) => r.id));
 
     // A throw partway through a batch, such as block-owner's non-JSON state
@@ -962,8 +1070,11 @@ try {
       (await buildHost({}).getApiKey()) === undefined);
 
     // --- Version validation and stamping ---
-    check("REPLAYABLE_VERSIONS names only v1, since sections 3 to 5 each add their own",
-      same(REPLAYABLE_VERSIONS, ["v1"]));
+    check("REPLAYABLE_VERSIONS names, per question, the one version the catalog ships: turn-score at v2, the other two at v1",
+      same(REPLAYABLE_VERSIONS, { "controller-decision": ["v1"], "turn-score": ["v2"], "block-owner": ["v1"] }), REPLAYABLE_VERSIONS);
+    check("each replayable version is the version the catalog ships for that question",
+      Object.entries(REPLAYABLE_VERSIONS).every(([q, versions]) => versions.length === 1 && versions[0] === catalog.SHIPPED_QUESTIONS[q]?.version),
+      Object.keys(REPLAYABLE_VERSIONS).map((q) => [q, catalog.SHIPPED_QUESTIONS[q]?.version]));
 
     const stateFile = path.join(TMP, "replay-state.jsonl");
     fs.writeFileSync(stateFile, JSON.stringify({ id: "x1", stampId: "s1" }) + "\n");
@@ -971,11 +1082,15 @@ try {
     try { await replayMain(["--question", "controller-decision", "--version", "v2", "--state-from", stateFile], {}); } catch (e) { versionErr = e.message; }
     check("replay.mjs refuses a --version it cannot assemble, before touching the network",
       versionErr !== null && versionErr.includes("v1"), versionErr);
+    let tsV1Err = null;
+    try { await replayMain(["--question", "turn-score", "--version", "v1", "--state-from", stateFile], {}); } catch (e) { tsV1Err = e.message; }
+    check("replay.mjs refuses turn-score v1, whose wording the catalog does not ship, naming v2",
+      tsV1Err !== null && tsV1Err.includes("turn-score") && tsV1Err.includes("v2"), tsV1Err);
 
     const existingOut = path.join(TMP, "replay-out-exists.jsonl");
     fs.writeFileSync(existingOut, "");
     let overwriteErr = null;
-    try { await replayMain(["--question", "turn-score", "--version", "v1", "--state-from", stateFile, "--out", existingOut], {}); } catch (e) { overwriteErr = e.message; }
+    try { await replayMain(["--question", "turn-score", "--version", "v2", "--state-from", stateFile, "--out", existingOut], {}); } catch (e) { overwriteErr = e.message; }
     check("replay.mjs refuses to overwrite an existing --out unless --force is given",
       overwriteErr !== null && overwriteErr.includes("--force"), overwriteErr);
 

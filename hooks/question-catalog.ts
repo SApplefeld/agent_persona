@@ -29,6 +29,7 @@
 
 import type { PluginHost } from "./host";
 import { SCORE_MIN_LEVELS, SCORE_MAX_LEVELS, type ChoiceQuestion, type ResolvedQuestion, type QuestionResolver } from "./decision-seam";
+import { bracketSafeText, LINE_TERMINATOR } from "./agent-state";
 
 // --- The label arrays the three classify sites pass to Haiku ---
 //
@@ -155,8 +156,8 @@ export const QUESTION_SET_IDS: readonly string[] = Object.freeze([
 // request carries them.
 export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES]);
 
-// The version label a shipped default carries into the journal. An override
-// carries its own label instead.
+// The version label a shipped default carries into the journal, where its
+// entry names no later one. An override carries its own label instead.
 export const SHIPPED_VERSION = "v1";
 
 // A Choice takes up to 255 options (https://docs.typesafe.ai/primitives/choice.md).
@@ -218,17 +219,21 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
       [PLAN_SWITCH_NO_MATCH]: "None of the pending plans fits.",
     },
   },
+  // v2: asked over turnScoreStateText's state, the opening prompt, the answer,
+  // the objective and the Tools line, with no question sentence in the state.
+  // Each description carries the nearest cases that are still this option or
+  // that belong to a neighbour, since those are where the answer is decided.
   [TURN_SCORE]: {
     id: TURN_SCORE,
-    version: SHIPPED_VERSION,
+    version: "v2",
     overrideRefused: null,
     primitive: "choice",
-    instructions: "Given the goal objective, what did the worker's answer do about it?",
+    instructions: "Given the goal objective, what did this turn's answer do about it?",
     options: {
-      "on-goal": "The answer advanced the stated objective.",
-      "off-goal-by-instruction": "The answer went elsewhere because the user asked it to.",
-      "drift": "The answer went elsewhere with no instruction to do so.",
-      "complete": "The answer finished the objective.",
+      "on-goal": "The answer moved the objective forward or kept it correctly in hand. That includes a step taken, a commit, a dispatch, or a section or review round landed while the objective still has work left. It includes a WAITING or BLOCKED turn whose wait is on the worker's own work for the objective, such as its implementer, reviewers, test run or QA check, even where the turn only checked that this work is still alive, and a hold that names what blocks the objective. A turn opened by a task notification or a channel message is still on-goal when what it did was work on the objective, and a side note or a short reply beside that work does not change it.",
+      "off-goal-by-instruction": "The prompt that opened the turn asked for something outside the objective, and the answer spent the turn doing it: answering an operator's question, following a coordinator's or another session's steer about a different plan, or relaying a notice, even where that took commits and pushes. What decides it is what the opening prompt asked for, not who sent it or how much work it took. A turn opened by a channel message or a delivered record is normally skipped rather than scored; where one is scored and it asked for other work, this is the answer.",
+      "drift": "The answer went elsewhere, or did nothing toward the objective, with no instruction in the opening prompt to do so: it declined or set aside the objective, spent the turn on an unrelated fix or chore, or waited on work that serves a different plan. A nudge restating the objective, and a task notification, are not instructions to go elsewhere, so declining the nudge or following a notification into other work is drift. Waiting on the worker's own work for this objective is not drift.",
+      "complete": "The objective itself is finished in this turn, all of what it names, such as the plan reaching Complete and archived where that is the objective. A section landed, a review round passed, a commit pushed or a pull request opened that leaves the objective with steps still to do is on-goal, not complete.",
     },
   },
   [MEMORY_KIND]: {
@@ -329,6 +334,67 @@ export const UNKNOWN_QUESTION: ChoiceQuestion = {
   instructions: "",
   options: {},
 };
+
+// --- One line of text inside a composed message ---
+
+// One line of text the plugin splices into a message or a state it composes:
+// its line breaks are folded, and it passes through bracketSafeText, which
+// turns '[' and ']' into '(' and ')', so the text cannot forge a delivery
+// label or write a field of its own into a state the plugin is the only
+// author of. hooks/index.ts calls it wherever stored or external text reaches
+// such a message, and turnScoreStateText below calls it for every value. It
+// lives here rather than in hooks/index.ts because .kit/jev-gold/replay.mjs
+// builds the turn-score state offline through this module and cannot load
+// hooks/index.ts.
+export function kaizenLine(text: string): string {
+  return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
+}
+
+// --- The turn-score state ---
+//
+// The state turn-score v2 is asked over, built by this one function for the
+// plugin's scorer and for .kit/jev-gold/replay.mjs alike, so the replay's
+// figure is read on the bytes the plugin sends. Haiku and Jev are handed the
+// same text. Four parts, a blank line between each, and no question sentence:
+// the options are the question.
+
+// The most characters of the turn's opening prompt and of its answer the
+// state carries.
+export const TURN_SCORE_PROMPT_MAX = 1200;
+export const TURN_SCORE_ANSWER_MAX = 3000;
+
+// The flags the Tools line can name, in the order it names them: the seven
+// yes-or-no readings of hooks/index.ts's turn_tool_activity line, under that
+// line's own names, so the replay reads a sampled record's activity line back
+// onto these keys.
+export const TURN_SCORE_TOOL_FLAGS: readonly string[] = Object.freeze([
+  "plan_read", "plan_edited", "commit", "push", "agent_dispatched", "goal_done", "reply",
+]);
+
+// The turn's tool activity: which of TURN_SCORE_TOOL_FLAGS held, and the tool
+// names the turn called, in call order.
+export type TurnScoreTools = {
+  flags: Readonly<Record<string, boolean>>;
+  calls: readonly string[];
+};
+
+// The Tools line: the flags that held, by name, then the tool names in call
+// order, each list reading `none` where it is empty.
+function turnScoreToolsLine(tools: TurnScoreTools): string {
+  const held = TURN_SCORE_TOOL_FLAGS.filter((name) => tools.flags[name] === true);
+  return `flags: ${held.length > 0 ? held.join(", ") : "none"}; calls: ${tools.calls.length > 0 ? tools.calls.join(", ") : "none"}`;
+}
+
+// The two cuts are applied before kaizenLine, so each bound counts the text as
+// it arrived. Every value goes through kaizenLine, the prompt and the answer
+// being external and model text and the objective stored text, so no value can
+// write a fifth part.
+export function turnScoreStateText(prompt: string, answer: string, objective: string, tools: TurnScoreTools): string {
+  return `Turn opened with: ${kaizenLine(prompt.slice(0, TURN_SCORE_PROMPT_MAX))}\n\n` +
+    `Worker answered: ${kaizenLine(answer.slice(0, TURN_SCORE_ANSWER_MAX))}\n\n` +
+    `Goal objective: ${kaizenLine(objective)}\n\n` +
+    `Tools: ${kaizenLine(turnScoreToolsLine(tools))}`;
+}
 
 // --- The override layer ---
 //

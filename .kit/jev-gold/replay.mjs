@@ -12,20 +12,23 @@
 // answer, or the reason the call failed where it did; a failed call carries
 // no answer and score.mjs excludes it from every figure.
 //
-// This section ships the v1 path alone: v1's own catalog wording, read
-// through the same resolver and the same seam function the plugin calls.
-// controller-decision and turn-score each offer more than one v1 option set
-// (switch only where a pending plan exists; the fourth turn-score option only
-// off a nudge), and the set a record's own call offered is read back off
-// `record.jev.probabilities`'s own keys, which decision-seam.ts's answer
-// validator refuses to carry any id outside the ones the caller offered.
-// Sections 3 to 5 add each question's v2 state assembly and a byte-identity
-// pin against the plugin's own summary text; nothing here builds a v2 state.
+// Each question replays the one version the catalog ships for it, read
+// through the same resolver and the same seam function the plugin calls:
+// controller-decision and block-owner at v1, over the record's own v1 state,
+// and turn-score at v2, over the state turnScoreStateText in
+// hooks/question-catalog.ts builds from the record's transcript fields. The
+// plugin's scorer calls that same function, so the two send the same bytes
+// for the same turn. controller-decision and turn-score each offer more than
+// one option set (switch only where a pending plan exists; the fourth
+// turn-score option only off a nudge), and the set a record's own call
+// offered is read back off `record.jev.probabilities`'s own keys, which
+// decision-seam.ts's answer validator refuses to carry any id outside the
+// ones the caller offered.
 //
 // The request goes out through hooks/decision-seam.ts's `ask` and `askAll`,
 // the one path a closed question takes to Jev, so nothing here builds a
 // request body by hand. `--version` is refused unless this tool can actually
-// assemble that wording (v1 alone, today), and every row is stamped with the
+// assemble that question's wording, and every row is stamped with the
 // seam's own returned `questionVersion` rather than the flag: an active
 // override changes the wording the seam sends without changing `--version`,
 // and a mismatch fails the run rather than mislabelling the row. This file
@@ -53,7 +56,7 @@ registerHooks({ resolve: resolveHook });
 const { ask, askAll } = await import("../../hooks/decision-seam.ts");
 const {
   CONTROLLER_DECISION, CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH,
-  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE,
+  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText,
   BLOCK_OWNER, BLOCK_OWNER_OPTIONS, WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES,
   PLAN_HEALTH_STATE_CLOSING, PLAN_HEALTH_STATE_RECENT,
   resolverOf,
@@ -62,10 +65,16 @@ const { QUESTIONS, homeDir } = await import("./sample.mjs");
 
 const MODE = "shadow";
 
-// The versions this tool can actually assemble a v1 request for. Only v1
-// today; sections 3 to 5 each add their question's v2 assembly and extend
-// this list alongside it.
-export const REPLAYABLE_VERSIONS = Object.freeze(["v1"]);
+// The versions this tool can assemble a request for, per question: the one
+// version the catalog ships for each. The catalog holds one wording per
+// question, so turn-score's v1 is not replayable while v2 ships; its v1
+// figures are Jev's own journaled answers, which score.mjs reads from the
+// sample.
+export const REPLAYABLE_VERSIONS = Object.freeze({
+  "controller-decision": Object.freeze(["v1"]),
+  "turn-score": Object.freeze(["v2"]),
+  "block-owner": Object.freeze(["v1"]),
+});
 
 // --- The host ---
 
@@ -89,10 +98,10 @@ export function buildHost(env = process.env) {
   };
 }
 
-// --- Which options v1 offers, per record ---
+// --- Which options a record's call offered ---
 
-// The known v1 option sets per question, in the order a request should carry
-// them. controller-decision drops or keeps switch; turn-score drops or keeps
+// The known option sets per question, in the order a request should carry
+// them. turn-score's v2 offers the same two sets its v1 did. controller-decision drops or keeps switch; turn-score drops or keeps
 // off-goal-by-instruction on a nudged turn (hooks/index.ts:9613, 9623-9625).
 const OFFERED_OPTION_SETS = Object.freeze({
   "controller-decision": [CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH],
@@ -105,11 +114,11 @@ function sameIdSet(a, b) {
   return b.every((id) => set.has(id));
 }
 
-// The option ids a sampled record's own v1 call actually offered, recovered
+// The option ids a sampled record's own call actually offered, recovered
 // from its Jev probabilities rather than guessed from the state text:
 // decision-seam.ts's choiceAnswerOf refuses any probability key outside the
 // ids the caller sent (decision-seam.ts:437), so the key set the sample
-// carries is exactly what was offered. Checked against the known v1 sets for
+// carries is exactly what was offered. Checked against the known sets for
 // the question, since more than one exists; a record whose keys match
 // neither is a sampler or journal defect this tool refuses to guess past.
 export function offeredOptionIds(question, record) {
@@ -117,9 +126,58 @@ export function offeredOptionIds(question, record) {
   const sets = OFFERED_OPTION_SETS[question];
   const match = sets.find((set) => sameIdSet(set, keys));
   if (!match) {
-    throw new Error(`record ${record.id}: its Jev probabilities carry [${keys.slice().sort().join(", ")}], which matches no known v1 option set for ${question}`);
+    throw new Error(`record ${record.id}: its Jev probabilities carry [${keys.slice().sort().join(", ")}], which matches no known option set for ${question}`);
   }
   return match;
+}
+
+// --- The turn-score v2 state, from a sampled record ---
+
+// A record's `transcript.toolActivity` line, in the shape .kit/jev-gold/sample.mjs
+// writes and hooks/index.ts's turnToolActivityText defines: the seven flags as
+// name=yes or name=no in TURN_SCORE_TOOL_FLAGS's order, the work-tool count,
+// then the ring as comma-joined tool names. Returns the flags and the tool
+// names in the shape turnScoreStateText takes, or null for a line off that
+// shape, which the caller refuses rather than guessing past.
+const TOOL_ACTIVITY_LINE = new RegExp(`^${TURN_SCORE_TOOL_FLAGS.map((name) => `${name}=(yes|no)`).join(" ")} work_tools=\\d+ tools=([^ ]*)$`);
+export function parseToolActivity(line) {
+  if (typeof line !== "string") return null;
+  const m = TOOL_ACTIVITY_LINE.exec(line);
+  if (!m) return null;
+  const flags = Object.fromEntries(TURN_SCORE_TOOL_FLAGS.map((name, i) => [name, m[i + 1] === "yes"]));
+  const ring = m[TURN_SCORE_TOOL_FLAGS.length + 1];
+  return { flags, calls: ring === "" ? [] : ring.split(",") };
+}
+
+// The goal objective a v1 turn-score state carries: the text after its last
+// "Goal objective: " part and before the question sentence the v1 state ends
+// with, or null where the state is not in that shape.
+const V1_OBJECTIVE_OPEN = "\n\nGoal objective: ";
+const V1_QUESTION = "\n\nDid the worker's answer advance the goal objective?";
+export function objectiveOfV1State(state) {
+  if (typeof state !== "string" || !state.endsWith(V1_QUESTION)) return null;
+  const body = state.slice(0, -V1_QUESTION.length);
+  const at = body.lastIndexOf(V1_OBJECTIVE_OPEN);
+  return at < 0 ? null : body.slice(at + V1_OBJECTIVE_OPEN.length);
+}
+
+// The v2 state for one sampled record: the opening prompt and the final
+// message from its transcript turn, the objective from its v1 state, and the
+// Tools line from its activity line. A record missing any of the four is
+// refused, naming the record and the part, so no request goes out over a
+// partial state. An empty final message is refused too, since the plugin
+// scores no turn without an answer.
+export function turnScoreV2State(record) {
+  const refuse = (part) => new Error(`record ${record.id}: ${part}, so its turn-score v2 state cannot be built`);
+  const t = record.transcript;
+  if (!t || typeof t !== "object") throw refuse("it carries no transcript");
+  if (typeof t.prompt !== "string") throw refuse("its transcript carries no prompt");
+  if (typeof t.finalMessage !== "string" || t.finalMessage.length === 0) throw refuse("its transcript carries no final message");
+  const tools = parseToolActivity(t.toolActivity);
+  if (tools === null) throw refuse("its transcript's toolActivity is not a turn_tool_activity line");
+  const objective = objectiveOfV1State(record.state);
+  if (objective === null) throw refuse("its v1 state carries no goal objective");
+  return turnScoreStateText(t.prompt, t.finalMessage, objective, tools);
 }
 
 // --- One record's replay ---
@@ -147,9 +205,10 @@ function answerLine(record, requestedVersion, result) {
   };
 }
 
-// Re-sends one sampled record under `version`'s v1 wording. controller-decision
-// and turn-score go through `ask`, one Choice question over the record's own
-// v1 state string and the option ids its own call offered. block-owner goes
+// Re-sends one sampled record under `version`'s wording. controller-decision
+// goes through `ask`, one Choice question over the record's own v1 state
+// string and the option ids its own call offered, and turn-score the same way
+// over the v2 state turnScoreV2State builds from the record. block-owner goes
 // through `askAll`, the same four plan-health questions one turn's closing
 // text asks in production, since that is the request the plugin actually
 // sends and block-owner's answer among the four is the one this tool keeps;
@@ -166,7 +225,8 @@ export async function replayRecord(host, question, version, record) {
   }
   if (question === "turn-score") {
     const optionIds = offeredOptionIds(question, record);
-    const result = await ask(host, TURN_SCORE, optionIds, record.state, MODE, record.haikuValue, resolverOf(host));
+    const state = turnScoreV2State(record);
+    const result = await ask(host, TURN_SCORE, optionIds, state, MODE, record.haikuValue, resolverOf(host));
     return answerLine(record, version, result);
   }
   if (question === "block-owner") {
@@ -243,8 +303,9 @@ function parseArgs(argv) {
   }
   if (!flags.question || !QUESTIONS[flags.question]) throw new Error(`--question must be one of ${Object.keys(QUESTIONS).join(", ")}`);
   if (!flags.version) throw new Error("--version is required");
-  if (!REPLAYABLE_VERSIONS.includes(flags.version)) {
-    throw new Error(`--version must be one of ${REPLAYABLE_VERSIONS.join(", ")}; this section assembles no other wording`);
+  const replayable = REPLAYABLE_VERSIONS[flags.question];
+  if (!replayable.includes(flags.version)) {
+    throw new Error(`--version for ${flags.question} must be one of ${replayable.join(", ")}; this tool assembles no other wording for it`);
   }
   if (!flags.stateFrom) throw new Error("--state-from is required");
   return flags;
