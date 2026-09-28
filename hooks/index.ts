@@ -2166,8 +2166,9 @@ const sess: {
   // supervisor that launched this session reads, or "" where no such option
   // was set. heartbeatPathOf reads it.
   heartbeatPath: string;
-  // The time before which kitMemq's read path spawns nothing, set five
-  // minutes ahead by a read that ran past its bound, and 0 until one does.
+  // The time before which kitMemq's read path spawns nothing, set
+  // MEMQ_STAND_DOWN_MS, one minute, ahead by a read that ran past its bound,
+  // and 0 until one does.
   // Session memory rather than persisted state: a restart probes the host
   // afresh.
   memqStandDownUntil: number;
@@ -2178,8 +2179,10 @@ const sess: {
   // The launch directory kitMemq runs memq from: the first non-empty
   // directory a session.start captured, "" until one has. A later
   // session.start leaves it, because its cwd is wherever the session stands
-  // then. It lives in this module, so a reload that rebuilds the module starts
-  // it empty and the next session.start captures afresh.
+  // then. This field is the module's copy. A reload of the plugin's code
+  // starts a fresh module with it empty, so session.start also writes it to
+  // $.state, which the host keeps across that reload, and a later start
+  // copies it back from there.
   memqLaunchDir: string;
   // How many records the distiller and memory_add wrote to the kit's memory
   // store in this session, each a memq put that exited 0. The one-time
@@ -2705,7 +2708,10 @@ export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: s
 // node <installPath>/scripts/memq.js ...argv, in the launch directory the
 // first session.start captured rather than wherever $.session.cwd() stands
 // now, so memq resolves the launch directory's store even after a bare cd in
-// a tool call and a plugin reload after it. The child takes the session id in
+// a tool call and a plugin reload after it, a reload of the plugin's code
+// included, since session.start keeps that directory in $.state as well as
+// in sess. Where $.state could not be read, a reload of the code captures
+// the session's cwd at that start instead. The child takes the session id in
 // its environment. Resolves the child's result, a non-zero exit included, for
 // the caller to read, or null where the command did not run to an exit.
 // Nothing throws.
@@ -4750,6 +4756,134 @@ export function filterJevLive(raw: unknown): { kept: readonly string[]; dropped:
   return { kept, dropped };
 }
 
+// The names shown under any of `goalIds`, each once, in the list's order.
+function shownNamesUnder(goalIds: string[]): string[] {
+  return [...new Set(sess.state.shownMemories.filter((m) => m.goalId !== null && goalIds.includes(m.goalId)).map((m) => m.name))];
+}
+
+// Drops every shown-list entry under any of `goalIds`.
+function clearShownUnder(goalIds: string[]): void {
+  sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId === null || !goalIds.includes(m.goalId));
+}
+
+// Asks the worker which of the records shown while it worked goal `goalId`
+// changed what it did, where the shown list holds any for that goal or for
+// another of `goalIds`, the goals the close completed with it: one
+// [MEMORY CHECK] turn, queued behind whatever the plugin already queued,
+// naming each record once in the list's order. Nothing is queued where the
+// list holds none. The goal title is text the worker wrote and the names
+// are store text, so both are folded to one line and pass through
+// bracketSafeText, the title cut at the 80 characters a title is stored
+// at. The entry goes into the expected-turn list before the submit, which
+// is not awaited: $.prompt.submit resolves only once the session is next
+// idle, and two of the four close sites run inside the turn itself. A
+// refused submit leaves the list through submitExpectedTurn, logs
+// memory_check_refused and clears the goals' entries, since no answer is
+// coming. Only the owner asks, since only the owner stamps: a reader
+// session clears the goals' entries and queues nothing. Top level because it
+// takes `dp`; `expectedTurns` is register's expected-turn list.
+function queueMemoryCheck(dp: any, expectedTurns: ExpectedTurn[], goalId: string, title: string, goalIds: string[] = [goalId]): void {
+  const names = shownNamesUnder(goalIds);
+  if (names.length === 0) return;
+  if (!sess.isOwner) {
+    clearShownUnder(goalIds);
+    return;
+  }
+  const safeTitle = bracketSafeText(oneLine(String(title).slice(0, 80)));
+  const nameLines = names.map((name) => bracketSafeText(oneLine(name))).join("\n");
+  const memoryCheckText =
+    `[MEMORY CHECK] These records were shown while you worked ${safeTitle}:\n` +
+    nameLines +
+    `\nReply with the names of the ones that changed what you did, one per line, or NONE.`;
+  const memoryCheckEntry: ExpectedTurn = { kind: "memoryCheck", goalId, goalIds, text: memoryCheckText };
+  expectedTurns.push(memoryCheckEntry);
+  const submitted = submitExpectedTurn(dp, expectedTurns, memoryCheckEntry);
+  void submitted.then((outcome) => {
+    if (outcome.ok) return;
+    clearShownUnder(goalIds);
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "memory",
+      action: "memory_check_refused",
+      detail: `${goalId}: submit ${outcome.how}: ${outcome.reason}`.slice(0, 200),
+    });
+  });
+}
+
+// Reads a [MEMORY CHECK] turn's answer for goal `goalId` and stamps what it
+// names. The answer's whitespace-separated tokens, each trimmed at both
+// ends of every character outside [A-Za-z0-9_-], are matched without
+// regard to case against the names shown under any of `goalIds`, so a name
+// never shown under them is never stamped, whatever the answer says. Each
+// match is stamped once, in the list's order, through memq touch --applied,
+// awaited one at a time: exit 0 logs memory_applied naming the record; any
+// other outcome logs one memory_stamp_failed for the whole check, carrying
+// the first stderr line or the cause. A non-zero exit moves on to the next
+// name, and a spawn that never ran to an exit ends the check, so a store
+// host that is down costs one bound per check. An answer matching nothing
+// (NONE, an empty answer, names not on the list) logs memory_applied_none;
+// NONE beside a shown name stamps the name. A turn that ended with no
+// answer to read (`answer` null) stamps nothing and logs
+// memory_check_unanswered. The goals' entries leave the list in every case.
+// A reader session stamps nothing and still clears them. Nothing throws.
+// Top level because it takes `dp`.
+async function answerMemoryCheck(dp: any, goalId: string, goalIds: string[], answer: string | null): Promise<void> {
+  const shown = shownNamesUnder(goalIds);
+  clearShownUnder(goalIds);
+  if (!sess.isOwner) return;
+  if (answer === null) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "memory",
+      action: "memory_check_unanswered",
+      detail: `${goalId}: the check turn ended with no answer, ${shown.length} cleared`,
+    });
+    return;
+  }
+  const tokens = new Set(
+    answer.split(/\s+/)
+      .map((token) => token.replace(/^[^A-Za-z0-9_-]+|[^A-Za-z0-9_-]+$/g, "").toLowerCase())
+      .filter((token) => token !== ""),
+  );
+  const named = shown.filter((name) => tokens.has(name.toLowerCase()));
+  if (named.length === 0) {
+    sess.state.decisions.push({
+      timestamp: Date.now(),
+      loop: "memory",
+      action: "memory_applied_none",
+      detail: `${goalId}: no shown record named, ${shown.length} cleared`,
+    });
+    return;
+  }
+  let failureLogged = false;
+  for (const name of named) {
+    const res = await kitMemq(dp, ["touch", name, "--applied"], { timeoutMs: MEMQ_WRITE_TIMEOUT_MS });
+    if (res !== null && res.exitCode === 0) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "memory",
+        action: "memory_applied",
+        detail: `${goalId}: ${name}`,
+      });
+      continue;
+    }
+    if (!failureLogged) {
+      failureLogged = true;
+      const reason = res === null
+        ? "memq did not run to an exit"
+        : (res.stderr.split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150) ||
+          `memq exited ${res.exitCode === null ? "unknown" : res.exitCode}`;
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "memory",
+        action: "memory_stamp_failed",
+        detail: `${goalId}: ${name}: ${reason}`,
+      });
+    }
+    if (res === null) break;
+  }
+}
+
 export const register: Register = async (on, options) => {
   // --- Identity: a durable persona is the key, not the session. ---
   // Session vars live in the module-scope `sess` object so persist() and
@@ -4830,125 +4964,6 @@ export const register: Register = async (on, options) => {
   // memory only: a restart between the ask and the answer loses the check,
   // and the goal's shown entries stay until the list's cap drops them.
   const memoryCheckTurns = new Map<string, { goalId: string; goalIds: string[] }>();
-  // The names shown under any of `goalIds`, each once, in the list's order.
-  const shownNamesUnder = (goalIds: string[]): string[] =>
-    [...new Set(sess.state.shownMemories.filter((m) => m.goalId !== null && goalIds.includes(m.goalId)).map((m) => m.name))];
-  const clearShownUnder = (goalIds: string[]): void => {
-    sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId === null || !goalIds.includes(m.goalId));
-  };
-  // Asks the worker which of the records shown while it worked goal `goalId`
-  // changed what it did, where the shown list holds any for that goal or for
-  // another of `goalIds`, the goals the close completed with it: one
-  // [MEMORY CHECK] turn, queued behind whatever the plugin already queued,
-  // naming each record once in the list's order. Nothing is queued where the
-  // list holds none. The goal title is text the worker wrote and the names
-  // are store text, so both are folded to one line and pass through
-  // bracketSafeText, the title cut at the 80 characters a title is stored
-  // at. The entry goes into the expected-turn list before the submit, which
-  // is not awaited: $.prompt.submit resolves only once the session is next
-  // idle, and two of the four close sites run inside the turn itself. A
-  // refused submit leaves the list through submitExpectedTurn, logs
-  // memory_check_refused and clears the goals' entries, since no answer is
-  // coming. Only the owner asks, since only the owner stamps: a reader
-  // session clears the goals' entries and queues nothing.
-  const queueMemoryCheck = (dp: any, goalId: string, title: string, goalIds: string[] = [goalId]): void => {
-    const names = shownNamesUnder(goalIds);
-    if (names.length === 0) return;
-    if (!sess.isOwner) {
-      clearShownUnder(goalIds);
-      return;
-    }
-    const safeTitle = bracketSafeText(oneLine(String(title).slice(0, 80)));
-    const nameLines = names.map((name) => bracketSafeText(oneLine(name))).join("\n");
-    const memoryCheckText =
-      `[MEMORY CHECK] These records were shown while you worked ${safeTitle}:\n` +
-      nameLines +
-      `\nReply with the names of the ones that changed what you did, one per line, or NONE.`;
-    const memoryCheckEntry = expectTurn({ kind: "memoryCheck", goalId, goalIds, text: memoryCheckText });
-    const submitted = submitExpectedTurn(dp, expectedTurns, memoryCheckEntry);
-    void submitted.then((outcome) => {
-      if (outcome.ok) return;
-      clearShownUnder(goalIds);
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "memory",
-        action: "memory_check_refused",
-        detail: `${goalId}: submit ${outcome.how}: ${outcome.reason}`.slice(0, 200),
-      });
-    });
-  };
-  // Reads a [MEMORY CHECK] turn's answer for goal `goalId` and stamps what it
-  // names. The answer's whitespace-separated tokens, each trimmed at both
-  // ends of every character outside [A-Za-z0-9_-], are matched without
-  // regard to case against the names shown under any of `goalIds`, so a name
-  // never shown under them is never stamped, whatever the answer says. Each
-  // match is stamped once, in the list's order, through memq touch --applied,
-  // awaited one at a time: exit 0 logs memory_applied naming the record; any
-  // other outcome logs one memory_stamp_failed for the whole check, carrying
-  // the first stderr line or the cause. A non-zero exit moves on to the next
-  // name, and a spawn that never ran to an exit ends the check, so a store
-  // host that is down costs one bound per check. An answer matching nothing
-  // (NONE, an empty answer, names not on the list) logs memory_applied_none;
-  // NONE beside a shown name stamps the name. A turn that ended with no
-  // answer to read (`answer` null) stamps nothing and logs
-  // memory_check_unanswered. The goals' entries leave the list in every case.
-  // A reader session stamps nothing and still clears them. Nothing throws.
-  const answerMemoryCheck = async (dp: any, goalId: string, goalIds: string[], answer: string | null): Promise<void> => {
-    const shown = shownNamesUnder(goalIds);
-    clearShownUnder(goalIds);
-    if (!sess.isOwner) return;
-    if (answer === null) {
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "memory",
-        action: "memory_check_unanswered",
-        detail: `${goalId}: the check turn ended with no answer, ${shown.length} cleared`,
-      });
-      return;
-    }
-    const tokens = new Set(
-      answer.split(/\s+/)
-        .map((token) => token.replace(/^[^A-Za-z0-9_-]+|[^A-Za-z0-9_-]+$/g, "").toLowerCase())
-        .filter((token) => token !== ""),
-    );
-    const named = shown.filter((name) => tokens.has(name.toLowerCase()));
-    if (named.length === 0) {
-      sess.state.decisions.push({
-        timestamp: Date.now(),
-        loop: "memory",
-        action: "memory_applied_none",
-        detail: `${goalId}: no shown record named, ${shown.length} cleared`,
-      });
-      return;
-    }
-    let failureLogged = false;
-    for (const name of named) {
-      const res = await kitMemq(dp, ["touch", name, "--applied"], { timeoutMs: MEMQ_WRITE_TIMEOUT_MS });
-      if (res !== null && res.exitCode === 0) {
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "memory",
-          action: "memory_applied",
-          detail: `${goalId}: ${name}`,
-        });
-        continue;
-      }
-      if (!failureLogged) {
-        failureLogged = true;
-        const reason = res === null
-          ? "memq did not run to an exit"
-          : (res.stderr.split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150) ||
-            `memq exited ${res.exitCode === null ? "unknown" : res.exitCode}`;
-        sess.state.decisions.push({
-          timestamp: Date.now(),
-          loop: "memory",
-          action: "memory_stamp_failed",
-          detail: `${goalId}: ${name}: ${reason}`,
-        });
-      }
-      if (res === null) break;
-    }
-  };
   // A delivery whose $.prompt.submit rejected or was dropped: its entry has
   // left the list and the refusal is recorded, and nothing else. The record
   // stays as the delivery wrote it and ages out under the TTL; no delivery
@@ -5404,9 +5419,9 @@ export const register: Register = async (on, options) => {
       $.ui.log(`Agentic: arming off, no persona tools or claims in this session${suffix}`);
       return next(e);
     }
-    // session.start fires again on a plugin reload, and sess outlives the
-    // register that holds the nudged reading, so a count carried from before
-    // the reload is dropped with the state this start loads afresh.
+    // session.start fires again on a reload of the plugin's code, which
+    // rebuilds sess and the register that holds the nudged reading. The count
+    // is reset here so this start opens at zero with the state it loads.
     sess.nudgedAnswersWithoutStatus = 0;
     countResetSinceNudgeOpened = false;
     try {
@@ -5425,8 +5440,33 @@ export const register: Register = async (on, options) => {
     } catch {
       // cwd unavailable; the commons entry publishes "" for it
     }
-    if (sess.memqLaunchDir === "" && typeof sess.workdir === "string" && sess.workdir.length > 0) {
-      sess.memqLaunchDir = sess.workdir;
+    // The launch directory memq runs from. A value $.state holds wins, since a
+    // start after a reload of the plugin's code has a fresh sess and a cwd
+    // that may have moved. Otherwise the first start with a workdir captures
+    // it and writes it there once. A $.state read that fails leaves the
+    // capture to sess alone and writes nothing, so it cannot replace a value
+    // it never saw.
+    let heldLaunchDir: unknown;
+    let stateRead = false;
+    try {
+      heldLaunchDir = (await $.state.get({ plugin: "agentic-plugin", key: "memqLaunchDir" })).value;
+      stateRead = true;
+    } catch {
+      // $.state unavailable; sess alone carries the launch directory
+    }
+    if (typeof heldLaunchDir === "string" && heldLaunchDir.length > 0) {
+      sess.memqLaunchDir = heldLaunchDir;
+    } else {
+      if (sess.memqLaunchDir === "" && typeof sess.workdir === "string" && sess.workdir.length > 0) {
+        sess.memqLaunchDir = sess.workdir;
+      }
+      if (stateRead && sess.memqLaunchDir !== "") {
+        try {
+          await $.state.set({ plugin: "agentic-plugin", key: "memqLaunchDir" }, sess.memqLaunchDir);
+        } catch {
+          // $.state unavailable; sess alone carries the launch directory
+        }
+      }
     }
     // Anchor the two remaining workdir files now that the launch directory is
     // known, so every later sess.storePath and sess.yieldLogPath read resolves
@@ -9322,7 +9362,7 @@ export const register: Register = async (on, options) => {
               action: "completed_by_controller",
               detail: `${completedId}: ${finalReason || "controller complete"}`,
             });
-            queueMemoryCheck($, completedId, g.title);
+            queueMemoryCheck($, expectedTurns, completedId, g.title);
             // R3: activate next.
             const nextId = activateNext(sess.state, completedId);
             activate($, nextId, `${completedId} complete`);
@@ -10141,7 +10181,7 @@ export const register: Register = async (on, options) => {
                 action: "complete",
                 detail: `${completedId}: Goal completed in ${g.completedRounds} rounds`,
               });
-              queueMemoryCheck($, completedId, g.title);
+              queueMemoryCheck($, expectedTurns, completedId, g.title);
               const nextId = activateNext(sess.state, completedId);
               activate($, nextId, `${completedId} complete`);
               // L11: plan completion is a log line, not a speech.
@@ -10347,7 +10387,7 @@ export const register: Register = async (on, options) => {
               action: "complete",
               detail: `${completedId}: ${cause}`,
             });
-            queueMemoryCheck($, completedId, holder.title, closedHere);
+            queueMemoryCheck($, expectedTurns, completedId, holder.title, closedHere);
             const nextId = activateNext(sess.state, completedId);
             activate($, nextId, `${completedId} complete`);
             try { $.ui.log(`Agentic: ${completedId} plan complete (${cause})`); } catch { /* non-fatal */ }
@@ -11840,7 +11880,7 @@ export const register: Register = async (on, options) => {
         action: "done",
         detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${byNameId ? " by name" : ""}${note ? `: ${note.slice(0, 80)}` : ""}`,
       });
-      queueMemoryCheck($, completedId, completedTitle);
+      queueMemoryCheck($, expectedTurns, completedId, completedTitle);
       // An open ask on an entry this call completed closes the way
       // goal_resume closes one. Those entries are the one named and any plan
       // completeLeaf's walk took to complete. An ask on any other entry stays

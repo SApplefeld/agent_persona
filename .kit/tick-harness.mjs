@@ -122,6 +122,19 @@ function createFake$(opts = {}) {
   const fsMapSet = fsMap.set.bind(fsMap);
   fsMap.set = (p, text) => { recordStoredGoalTrees(p, text); return fsMapSet(p, text); };
   const storeMap = new Map();
+  // $.state's values, keyed `${plugin}/${key}` as { value, version }. A case
+  // models a reload of the plugin's code by handing this map to a second
+  // harness as opts.stateMap, since the host keeps $.state across one.
+  const stateMap = opts.stateMap instanceof Map ? opts.stateMap : new Map();
+  // Every $.state.get and $.state.set call, in order, as the ref and for a
+  // set the value, and the error every later call rejects with, null while
+  // they resolve. A call that rejects is still recorded, so a case can tell a
+  // write never attempted from one attempted and refused.
+  const stateGets = [];
+  const stateSets = [];
+  let stateFailure = null;
+  // The error $.state.set alone rejects with, null while it resolves.
+  let stateSetFailure = null;
   let classifyValue = opts.classifyValue || "nudge";
   const classifyCalls = [];
   const completeCalls = [];
@@ -424,6 +437,27 @@ function createFake$(opts = {}) {
       delete(key) { storeMap.delete(key); return Promise.resolve(); },
       keys() { return Promise.resolve([...storeMap.keys()]); },
     },
+    // A value never written reads undefined at version 0, and each set bumps
+    // the version, as the host's does.
+    state: {
+      get(ref) {
+        stateGets.push(ref);
+        if (stateFailure !== null) return Promise.reject(stateFailure);
+        const held = stateMap.get(`${ref.plugin}/${ref.key}`);
+        return Promise.resolve(held
+          ? { value: structuredClone(held.value), version: held.version }
+          : { value: undefined, version: 0 });
+      },
+      set(ref, value) {
+        stateSets.push({ ref, value });
+        if (stateFailure !== null) return Promise.reject(stateFailure);
+        if (stateSetFailure !== null) return Promise.reject(stateSetFailure);
+        const name = `${ref.plugin}/${ref.key}`;
+        const version = (stateMap.get(name)?.version ?? 0) + 1;
+        stateMap.set(name, { value: structuredClone(value), version });
+        return Promise.resolve({ isSet: true, version });
+      },
+    },
     process: {
       run(argv, init) {
         processRuns.push({
@@ -448,6 +482,7 @@ function createFake$(opts = {}) {
   // Attach maps to fake for convenient access (h.fake.fsMap === h.fsMap).
   fake.fsMap = fsMap;
   fake.storeMap = storeMap;
+  fake.stateMap = stateMap;
   fake.classifyCalls = classifyCalls;
   fake.completeCalls = completeCalls;
   fake.promptSubmits = promptSubmits;
@@ -467,6 +502,13 @@ function createFake$(opts = {}) {
     fsMap,
     fsWrites,
     storeMap,
+    stateMap,
+    stateGets,
+    stateSets,
+    // Make every subsequent $.state.get and $.state.set reject with `err`.
+    failState(err) { stateFailure = err; },
+    // Make every subsequent $.state.set reject with `err`, reads resolving.
+    failStateSet(err) { stateSetFailure = err; },
     classifyCalls,
     completeCalls,
     uiLogs,

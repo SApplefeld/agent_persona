@@ -33080,6 +33080,69 @@ async function caseMemq1_theSpawnRunsFromTheLaunchDirectory(clock) {
   const trailingRun = t.processRuns[t.processRuns.length - 1] || {};
   check("memq1 spawn: an install path with a trailing separator names the script once-separated",
     Array.isArray(trailingRun.argv) && trailingRun.argv[1] === MEMQ1_SCRIPT, trailingRun.argv);
+
+  // The launch directory reaches $.state once: the first start writes it, and
+  // the second start above, which read it back, writes nothing.
+  check("memq1 spawn state: two session.starts wrote the launch directory to $.state once",
+    h.stateSets.length === 1 && h.stateSets[0].value === HARNESS_CWD
+      && h.stateSets[0].ref.plugin === "agentic-plugin" && h.stateSets[0].ref.key === "memqLaunchDir", h.stateSets);
+
+  // A reload of the plugin's code is a fresh module, whose own session memory
+  // starts empty, while the host keeps $.state across it. The fresh module's
+  // session.start sees the moved cwd() and memq keeps the first launch
+  // directory all the same.
+  clock.set(T0);
+  const fresh = await createTickHarness({ ...OPTS, caseName: "memq1_spawn_code_reload", skipSessionStart: true, stateMap: h.stateMap });
+  await bank2SeedInstalled(fresh, bank2Installed());
+  fresh.fake.session.cwd = () => Promise.resolve(MEMQ1_MOVED_CWD);
+  await fireSessionStart(fresh);
+  fresh.mod = await loadModule("memq1_spawn_code_reload");
+  check("memq1 spawn code reload setup: a separate module instance sharing the first one's $.state",
+    fresh.mod !== h.mod && fresh.stateMap === h.stateMap);
+  fresh.setProcessRun(MEMQ1_OK);
+  const freshBefore = fresh.processRuns.length;
+  await fresh.mod.kitMemq(fresh.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const freshRun = fresh.processRuns[freshBefore] || {};
+  check("memq1 spawn code reload: a fresh module whose session.start sees a moved cwd() still runs memq in the first launch directory",
+    freshRun.init && freshRun.init.cwd === HARNESS_CWD, freshRun.init);
+  check("memq1 spawn code reload: the fresh module's start wrote nothing over the value it read",
+    fresh.stateSets.length === 0, fresh.stateSets);
+
+  // A $.state read that rejects costs the start nothing: the launch
+  // directory is captured from the session's cwd as before, and the start
+  // writes nothing over a value it never saw.
+  clock.set(T0);
+  const noState = await memq1Harness("memq1_spawn_state_rejects", { skipSessionStart: true });
+  noState.failState(new Error("state unavailable"));
+  await fireSessionStart(noState);
+  check("memq1 spawn state rejects setup: session.start attempted the $.state read, with every read failing",
+    noState.stateGets.length > 0, noState.stateGets);
+  check("memq1 spawn state rejects: no $.state.set followed the rejected read",
+    noState.stateSets.length === 0, noState.stateSets);
+  noState.setProcessRun(MEMQ1_OK);
+  const noStateBefore = noState.processRuns.length;
+  await noState.mod.kitMemq(noState.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const noStateRun = noState.processRuns[noStateBefore] || {};
+  check("memq1 spawn state rejects: memq runs in the launch directory captured from the session's cwd",
+    noStateRun.init && noStateRun.init.cwd === HARNESS_CWD, noStateRun.init);
+
+  // A $.state write that rejects after a read that resolved costs the start
+  // nothing either: the start completes and memq runs in the launch directory
+  // captured from the session's cwd.
+  clock.set(T0);
+  const noWrite = await memq1Harness("memq1_spawn_state_write_rejects", { skipSessionStart: true });
+  noWrite.failStateSet(new Error("state write unavailable"));
+  let noWriteThrew = null;
+  try { await fireSessionStart(noWrite); } catch (err) { noWriteThrew = err; }
+  check("memq1 spawn state write rejects setup: session.start read $.state and attempted one write",
+    noWrite.stateGets.length > 0 && noWrite.stateSets.length === 1, { gets: noWrite.stateGets, sets: noWrite.stateSets });
+  check("memq1 spawn state write rejects: session.start completes", noWriteThrew === null, noWriteThrew && String(noWriteThrew));
+  noWrite.setProcessRun(MEMQ1_OK);
+  const noWriteBefore = noWrite.processRuns.length;
+  await noWrite.mod.kitMemq(noWrite.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const noWriteRun = noWrite.processRuns[noWriteBefore] || {};
+  check("memq1 spawn state write rejects: memq runs in the launch directory captured from the session's cwd",
+    noWriteRun.init && noWriteRun.init.cwd === HARNESS_CWD, noWriteRun.init);
 }
 
 async function caseMemq2_aFailureLogsOncePerCausePerDay(clock) {
