@@ -1579,9 +1579,10 @@ function targetPersonaOf(arg: unknown, own: string): { persona: string } | { den
 // handler ledger the proposal the persona sends inside it.
 //
 // A memoryCheck entry is the [MEMORY CHECK] turn a goal's close queues. It
-// carries the closed goal's id, so the turn's answer is read against the
-// records shown under that goal and no other.
-type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string; ground: string; seatLead: boolean } | { kind: "nudge" } | { kind: "plugin" } | { kind: "proposal" } | { kind: "memoryCheck"; goalId: string });
+// carries the closed goal's id and the ids of every goal the close completed
+// with it, so the turn's answer is read against the records shown under those
+// goals and no other.
+type ExpectedTurn = { text: string; settledText?: string } & ({ kind: "delivery"; recordId: string; ground: string; seatLead: boolean } | { kind: "nudge" } | { kind: "plugin" } | { kind: "proposal" } | { kind: "memoryCheck"; goalId: string; goalIds: string[] });
 
 // Whether a turn's opening text is the text an entry was submitted with, on
 // either of the entry's two keys. An empty turn text (a continuation) and an
@@ -4828,60 +4829,89 @@ export const register: Register = async (on, options) => {
   // records. A check whose turn opened with no id is never answered. Session
   // memory only: a restart between the ask and the answer loses the check,
   // and the goal's shown entries stay until the list's cap drops them.
-  const memoryCheckTurns = new Map<string, string>();
+  const memoryCheckTurns = new Map<string, { goalId: string; goalIds: string[] }>();
+  // The names shown under any of `goalIds`, each once, in the list's order.
+  const shownNamesUnder = (goalIds: string[]): string[] =>
+    [...new Set(sess.state.shownMemories.filter((m) => m.goalId !== null && goalIds.includes(m.goalId)).map((m) => m.name))];
+  const clearShownUnder = (goalIds: string[]): void => {
+    sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId === null || !goalIds.includes(m.goalId));
+  };
   // Asks the worker which of the records shown while it worked goal `goalId`
-  // changed what it did, where the shown list holds any for that goal: one
+  // changed what it did, where the shown list holds any for that goal or for
+  // another of `goalIds`, the goals the close completed with it: one
   // [MEMORY CHECK] turn, queued behind whatever the plugin already queued,
   // naming each record once in the list's order. Nothing is queued where the
   // list holds none. The goal title is text the worker wrote and the names
-  // are store text, so both pass through bracketSafeText, the title folded
-  // to one line and cut at the 80 characters a title is stored at. The entry
-  // goes into the expected-turn list before the submit, which is not awaited:
-  // $.prompt.submit resolves only once the session is next idle, and two of
-  // the four close sites run inside the turn itself. A refused submit leaves
-  // the list through submitExpectedTurn and the goal's entries stay. Only
-  // the owner asks, since only the owner stamps: a reader session clears the
-  // goal's entries and queues nothing.
-  const queueMemoryCheck = (dp: any, goalId: string, title: string): void => {
-    const names = [...new Set(sess.state.shownMemories.filter((m) => m.goalId === goalId).map((m) => m.name))];
+  // are store text, so both are folded to one line and pass through
+  // bracketSafeText, the title cut at the 80 characters a title is stored
+  // at. The entry goes into the expected-turn list before the submit, which
+  // is not awaited: $.prompt.submit resolves only once the session is next
+  // idle, and two of the four close sites run inside the turn itself. A
+  // refused submit leaves the list through submitExpectedTurn, logs
+  // memory_check_refused and clears the goals' entries, since no answer is
+  // coming. Only the owner asks, since only the owner stamps: a reader
+  // session clears the goals' entries and queues nothing.
+  const queueMemoryCheck = (dp: any, goalId: string, title: string, goalIds: string[] = [goalId]): void => {
+    const names = shownNamesUnder(goalIds);
     if (names.length === 0) return;
     if (!sess.isOwner) {
-      sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId !== goalId);
+      clearShownUnder(goalIds);
       return;
     }
     const safeTitle = bracketSafeText(oneLine(String(title).slice(0, 80)));
-    const nameLines = names.map(bracketSafeText).join("\n");
+    const nameLines = names.map((name) => bracketSafeText(oneLine(name))).join("\n");
     const memoryCheckText =
       `[MEMORY CHECK] These records were shown while you worked ${safeTitle}:\n` +
       nameLines +
       `\nReply with the names of the ones that changed what you did, one per line, or NONE.`;
-    const memoryCheckEntry = expectTurn({ kind: "memoryCheck", goalId, text: memoryCheckText });
-    void submitExpectedTurn(dp, expectedTurns, memoryCheckEntry);
+    const memoryCheckEntry = expectTurn({ kind: "memoryCheck", goalId, goalIds, text: memoryCheckText });
+    const submitted = submitExpectedTurn(dp, expectedTurns, memoryCheckEntry);
+    void submitted.then((outcome) => {
+      if (outcome.ok) return;
+      clearShownUnder(goalIds);
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "memory",
+        action: "memory_check_refused",
+        detail: `${goalId}: submit ${outcome.how}: ${outcome.reason}`.slice(0, 200),
+      });
+    });
   };
   // Reads a [MEMORY CHECK] turn's answer for goal `goalId` and stamps what it
   // names. The answer's whitespace-separated tokens, each trimmed at both
-  // ends of every character outside [A-Za-z0-9_-], are matched exactly
-  // against the names shown under that goal, so a name never shown under it
-  // is never stamped, whatever the answer says. Each match is stamped once,
-  // in the list's order, through memq touch --applied, awaited one at a time:
-  // exit 0 logs memory_applied naming the record; any other outcome logs one
-  // memory_stamp_failed for the whole check, carrying the first stderr line
-  // or the cause. A non-zero exit moves on to the next name, and a spawn that
-  // never ran to an exit ends the check, so a store host that is down costs
-  // one bound per check. An answer matching nothing (NONE, an empty answer,
-  // names not on the list) logs memory_applied_none; NONE beside a shown
-  // name stamps the name. The goal's entries leave the list in every case. A
-  // reader session stamps nothing and still clears them. Nothing throws.
-  const answerMemoryCheck = async (dp: any, goalId: string, answer: string): Promise<void> => {
-    const shown = [...new Set(sess.state.shownMemories.filter((m) => m.goalId === goalId).map((m) => m.name))];
-    sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId !== goalId);
+  // ends of every character outside [A-Za-z0-9_-], are matched without
+  // regard to case against the names shown under any of `goalIds`, so a name
+  // never shown under them is never stamped, whatever the answer says. Each
+  // match is stamped once, in the list's order, through memq touch --applied,
+  // awaited one at a time: exit 0 logs memory_applied naming the record; any
+  // other outcome logs one memory_stamp_failed for the whole check, carrying
+  // the first stderr line or the cause. A non-zero exit moves on to the next
+  // name, and a spawn that never ran to an exit ends the check, so a store
+  // host that is down costs one bound per check. An answer matching nothing
+  // (NONE, an empty answer, names not on the list) logs memory_applied_none;
+  // NONE beside a shown name stamps the name. A turn that ended with no
+  // answer to read (`answer` null) stamps nothing and logs
+  // memory_check_unanswered. The goals' entries leave the list in every case.
+  // A reader session stamps nothing and still clears them. Nothing throws.
+  const answerMemoryCheck = async (dp: any, goalId: string, goalIds: string[], answer: string | null): Promise<void> => {
+    const shown = shownNamesUnder(goalIds);
+    clearShownUnder(goalIds);
     if (!sess.isOwner) return;
+    if (answer === null) {
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "memory",
+        action: "memory_check_unanswered",
+        detail: `${goalId}: the check turn ended with no answer, ${shown.length} cleared`,
+      });
+      return;
+    }
     const tokens = new Set(
-      (typeof answer === "string" ? answer : "").split(/\s+/)
-        .map((token) => token.replace(/^[^A-Za-z0-9_-]+|[^A-Za-z0-9_-]+$/g, ""))
+      answer.split(/\s+/)
+        .map((token) => token.replace(/^[^A-Za-z0-9_-]+|[^A-Za-z0-9_-]+$/g, "").toLowerCase())
         .filter((token) => token !== ""),
     );
-    const named = shown.filter((name) => tokens.has(name));
+    const named = shown.filter((name) => tokens.has(name.toLowerCase()));
     if (named.length === 0) {
       sess.state.decisions.push({
         timestamp: Date.now(),
@@ -9483,7 +9513,7 @@ export const register: Register = async (on, options) => {
         nudgedTurnId = e.turnId ? e.turnId : null;
         countResetSinceNudgeOpened = false;
       }
-      if (matched.kind === "memoryCheck" && e.turnId) memoryCheckTurns.set(e.turnId, matched.goalId);
+      if (matched.kind === "memoryCheck" && e.turnId) memoryCheckTurns.set(e.turnId, { goalId: matched.goalId, goalIds: matched.goalIds });
     } else {
       currentTurnKind = "unaccounted";
       // A delivery entry outlives its record when no turn opens with a
@@ -9699,14 +9729,17 @@ export const register: Register = async (on, options) => {
     // is read once.
     const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
-    // The goal a [MEMORY CHECK] turn asked about, where this completion is
+    // The goals a [MEMORY CHECK] turn asked about, where this completion is
     // that turn's own: read by the id its turn.start carried and spent here,
     // before any await. A subagent's completion inside the turn is not the
     // worker's answer, whatever id it carries.
-    const memoryCheckGoalId = typeof e.turnId === "string" && !(typeof e.agentId === "string" && e.agentId.length > 0)
+    const memoryCheck = typeof e.turnId === "string" && !(typeof e.agentId === "string" && e.agentId.length > 0)
       ? memoryCheckTurns.get(e.turnId)
       : undefined;
-    if (memoryCheckGoalId !== undefined) memoryCheckTurns.delete(e.turnId);
+    if (memoryCheck !== undefined) memoryCheckTurns.delete(e.turnId);
+    // A [MEMORY CHECK] turn's answer names records rather than work on the
+    // active entry, so plan health and memory curation below leave it unread.
+    const isMemoryCheckTurn = wasMemoryCheck || memoryCheck !== undefined;
     currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId && !(typeof e.agentId === "string" && e.agentId.length > 0)) {
       currentTurnOriginKind = "unclassified";
@@ -10310,7 +10343,7 @@ export const register: Register = async (on, options) => {
               action: "complete",
               detail: `${completedId}: ${cause}`,
             });
-            queueMemoryCheck($, completedId, holder.title);
+            queueMemoryCheck($, completedId, holder.title, subtree);
             const nextId = activateNext(sess.state, completedId);
             activate($, nextId, `${completedId} complete`);
             try { $.ui.log(`Agentic: ${completedId} plan complete (${cause})`); } catch { /* non-fatal */ }
@@ -10388,7 +10421,7 @@ export const register: Register = async (on, options) => {
           }
           held.chapterWithin = stillWaiting;
         }
-        if (!skipped && sess.isOwner && !entryOver) {
+        if (!skipped && !isMemoryCheckTurn && sess.isOwner && !entryOver) {
           let record = held;
           if (record === undefined) {
             record = { closingTexts: [], chapterWithin: [] };
@@ -10417,7 +10450,9 @@ export const register: Register = async (on, options) => {
     // is not a user preference and must not be distilled into a memory.
     // The turn's start recorded whether a nudge opened it, so a subagent
     // completing inside the turn does not make its end read as un-nudged.
-    if (!skipped && !turnNudgedAtDelete) {
+    // A [MEMORY CHECK] turn is skipped too: its prompt and answer are the
+    // plugin's question and a list of record names.
+    if (!skipped && !turnNudgedAtDelete && !isMemoryCheckTurn) {
       try {
         if (askedTextAtDelete.trimStart().startsWith("<task-notification>")) {
           // A turn opened by the harness's notification block for a finished
@@ -10802,8 +10837,11 @@ export const register: Register = async (on, options) => {
     }
 
     // A [MEMORY CHECK] turn's answer stamps the records it names, before the
-    // save below carries the cleared list.
-    if (memoryCheckGoalId !== undefined) await answerMemoryCheck($, memoryCheckGoalId, e.answer);
+    // save below carries the cleared list. An aborted, errored, refused or
+    // empty turn has no answer to read, which is not the same as NONE.
+    if (memoryCheck !== undefined) {
+      await answerMemoryCheck($, memoryCheck.goalId, memoryCheck.goalIds, skipped || typeof e.answer !== "string" ? null : e.answer);
+    }
 
     // M7: single guarded-write path (shared helper).
     // Attempted rather than depended on. A throw from here would skip the
@@ -10854,17 +10892,16 @@ export const register: Register = async (on, options) => {
   // summary the worker resumes from still carries what the goal's
   // [MEMORY CHECK] will ask about. The sentence is the instructions where
   // none arrived, and follows the instructions that did after one space.
-  // The names are store text, so each passes through bracketSafeText. A
-  // subagent's own compaction, and one with no records shown under the
-  // active goal, passes on unchanged. The shown list is only read here.
+  // The names are store text, so each is folded to one line and passes
+  // through bracketSafeText. A subagent's own compaction, and one with no
+  // records shown under the active goal, passes on unchanged. The shown list
+  // is only read here.
   on("session.compact", async ($, e, next) => {
     const goalId = sess.state.activeGoalId ?? null;
     const subagent = typeof e.agentId === "string" && e.agentId.length > 0;
-    const names = goalId === null || subagent
-      ? []
-      : [...new Set(sess.state.shownMemories.filter((m) => m.goalId === goalId).map((m) => m.name))];
+    const names = goalId === null || subagent ? [] : shownNamesUnder([goalId]);
     if (names.length === 0) return next(e);
-    const sentence = `Records shown during the current goal, to be asked about at its close: ${names.map(bracketSafeText).join(", ")}.`;
+    const sentence = `Records shown during the current goal, to be asked about at its close: ${names.map((name) => bracketSafeText(oneLine(name))).join(", ")}.`;
     const instructions = typeof e.instructions === "string" && e.instructions !== "" ? `${e.instructions} ${sentence}` : sentence;
     return next({ ...e, instructions });
   });

@@ -4173,6 +4173,9 @@ async function main() {
     await caseMemq25_twoPendingChecksAnswerTheirOwnGoals(clock);
     await caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock);
     await caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock);
+    await caseMemq28_anUnansweredCheckStampsNothing(clock);
+    await caseMemq29_aRefusedCheckSubmitClears(clock);
+    await caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock);
   } finally {
     clock.restore();
   }
@@ -34432,6 +34435,33 @@ async function caseMemq20_eachCloseSiteQueuesOneCheck(clock) {
     check(`memq20 ${site.label} none: a goal with no shown record of its own queues no check`,
       memq20Checks(n).length === 0 && !n.queuedTurnTexts.some((t) => t.startsWith("[MEMORY CHECK]")), n.promptSubmits);
   }
+
+  // The plan document completes the plan's whole subtree, so its check names
+  // the records shown under a task active beneath the plan as well as the
+  // plan's own, and the answer stamps and clears across both.
+  const [n0, n1] = MEMQ13_NAMES;
+  const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 0 });
+  tree.goals.find((g) => g.id === "plan-1").title = MEMQ20_TITLE;
+  const shown = [
+    { name: n0, goalId: "plan-1", shownAt: T0 - 3000 },
+    { name: MEMQ20_OTHER, goalId: "plan-2", shownAt: T0 - 2000 },
+    { name: n1, goalId: "task-1", shownAt: T0 - 1000 },
+  ];
+  const s = await memq20Harness(clock, "memq20_subtree", tree, shown);
+  s.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  s.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1 - 2026-09-21"]));
+  await plan2ScoredTurn(s, "t-memq20-subtree", "on-goal");
+  check("memq20 subtree setup: the document completed the plan and the task under it",
+    getDecisions(s).some((d) => d.action === "complete" && d.detail.startsWith("plan-1: plan document"))
+      && getState(s).goals.find((g) => g.id === "task-1").status === "complete", getDecisions(s).slice(-8));
+  const subtreeChecks = memq20Checks(s);
+  check("memq20 subtree: one check, naming the plan's record and the task's, in list order, and not the other plan's",
+    subtreeChecks.length === 1 && subtreeChecks[0] === memq20CheckText(MEMQ20_TITLE, MEMQ13_NAMES), subtreeChecks);
+  await memq20Answer(s, "t-memq20-subtree-answer", n1);
+  check("memq20 subtree: the task's record, named in the answer, is stamped",
+    JSON.stringify(memq20Touches(s).map((r) => r.argv[3])) === JSON.stringify([n1]), memq20Touches(s).map((r) => r.argv));
+  check("memq20 subtree: the plan's and the task's entries left the list and the other plan's stayed",
+    JSON.stringify(getState(s).shownMemories) === JSON.stringify([shown[1]]), getState(s).shownMemories);
 }
 
 async function caseMemq21_theAnswerStampsOnlyShownNames(clock) {
@@ -34441,11 +34471,11 @@ async function caseMemq21_theAnswerStampsOnlyShownNames(clock) {
     { label: "one named, in list punctuation", answer: `The first shaped the release plan:\n- \`${n0}\`,`, stamped: [n0] },
     { label: "NONE", answer: "NONE", stamped: [] },
     { label: "none in lower case with a period", answer: "none.", stamped: [] },
-    { label: "an empty answer", answer: "", stamped: [] },
+    { label: "a shown name in upper case", answer: n0.toUpperCase(), stamped: [n0] },
     // The refusals: MEMQ20_OTHER is on the list under another goal, the
     // second name was never shown, and the third holds a shown name only as a
-    // prefix. Each is refused by the exact match against the closed goal's
-    // entries.
+    // prefix. Each is refused by the whole-token match against the closed
+    // goal's entries.
     { label: "names never shown under this goal", answer: `${MEMQ20_OTHER}\nfact-default-000000\n${n0}x`, stamped: [] },
     { label: "NONE beside a shown name", answer: `NONE\n${n1}`, stamped: [n1] },
     { label: "both named, one twice, out of order", answer: `${n1}\n${n0}\n${n1}`, stamped: [n0, n1] },
@@ -34515,25 +34545,41 @@ async function caseMemq22_aFailedStampLogsOnceAndClears(clock) {
   }
 }
 
+// Whether `instructions` is `prefix` followed by one sentence naming `names`
+// in order and nothing else of the shown list: the sentence's wording is free,
+// so the pin reads its tokens rather than its text. `absent` are names that
+// must not appear.
+function memq23Carries(instructions, prefix, names, absent = []) {
+  if (typeof instructions !== "string" || !instructions.startsWith(prefix)) return false;
+  const sentence = instructions.slice(prefix.length);
+  if (/\n/.test(sentence) || sentence.startsWith(" ") || !sentence.endsWith(".") || sentence.slice(0, -1).includes(". ")) return false;
+  let at = -1;
+  for (const name of names) {
+    const next = sentence.indexOf(name, at + 1);
+    if (next <= at) return false;
+    at = next;
+  }
+  return absent.every((name) => !sentence.includes(name));
+}
+
 async function caseMemq23_theCompactionCarriesTheShownNames(clock) {
   console.log("\n=== Persona memory 23: a compaction's instructions carry the active goal's shown names, and the shown list is unchanged ===");
-  const [n0, n1] = MEMQ13_NAMES;
-  const sentence = `Records shown during the current goal, to be asked about at its close: ${n0}, ${n1}.`;
   const shown = memq20Shown("task-1", "task-2");
   const h = await memq20Harness(clock, "memq23_fold", memq20TaskTree(), shown);
   h.mod = await loadModule("memq23_fold");
   const messages = [{ role: "user", content: "hello" }];
 
   const bare = await fireSessionCompact(h, { messages });
-  check("memq23 no instructions: next receives the one sentence as the instructions",
-    bare.received && bare.received.instructions === sentence, bare.received && bare.received.instructions);
+  check("memq23 no instructions: next receives one sentence naming the goal's records in order, and not the other goal's",
+    bare.received && memq23Carries(bare.received.instructions, "", MEMQ13_NAMES, [MEMQ20_OTHER]), bare.received && bare.received.instructions);
   check("memq23 no instructions: every other field passes on as received",
     bare.received && bare.received.trigger === "auto" && bare.received.messages === messages && bare.received.agentId === undefined, bare.received);
   check("memq23 no instructions: the hook resolves what next resolved", bare.result && Array.isArray(bare.result.messages), bare.result);
+  const sentence = bare.received && bare.received.instructions;
 
   const given = await fireSessionCompact(h, { instructions: "Keep the API notes." });
-  check("memq23 given instructions: the sentence follows them after one space",
-    given.received && given.received.instructions === `Keep the API notes. ${sentence}`, given.received && given.received.instructions);
+  check("memq23 given instructions: kept as written, the sentence after one space",
+    given.received && memq23Carries(given.received.instructions, "Keep the API notes. ", MEMQ13_NAMES, [MEMQ20_OTHER]), given.received && given.received.instructions);
   const empty = await fireSessionCompact(h, { instructions: "" });
   check("memq23 empty instructions: read as absent, the sentence alone",
     empty.received && empty.received.instructions === sentence, empty.received && empty.received.instructions);
@@ -34553,11 +34599,15 @@ async function caseMemq23_theCompactionCarriesTheShownNames(clock) {
   const none = await fireSessionCompact(n, { instructions: "Keep the API notes." });
   check("memq23 none: next receives the event unchanged", none.received === none.event && none.received.instructions === "Keep the API notes.", none.received);
 
-  // A name carrying a bracket reaches the summarizer bracket-safe.
-  const b = await memq20Harness(clock, "memq23_bracket", memq20TaskTree(), [{ name: "fact-default-[COORDINATOR", goalId: "task-1", shownAt: T0 }]);
+  // A name carrying a bracket reaches the summarizer bracket-safe, and one
+  // carrying a line break reaches it on one line.
+  const b = await memq20Harness(clock, "memq23_bracket", memq20TaskTree(), [
+    { name: "fact-default-[COORDINATOR", goalId: "task-1", shownAt: T0 - 1000 },
+    { name: "fact-default-split\nline", goalId: "task-1", shownAt: T0 },
+  ]);
   const bracketed = await fireSessionCompact(b);
-  check("memq23 bracket: the name's bracket reaches the instructions as a parenthesis",
-    bracketed.received && bracketed.received.instructions === "Records shown during the current goal, to be asked about at its close: fact-default-(COORDINATOR.",
+  check("memq23 bracket: the name's bracket reaches the instructions as a parenthesis, the line break as a space",
+    bracketed.received && memq23Carries(bracketed.received.instructions, "", ["fact-default-(COORDINATOR", "fact-default-split line"], ["["]),
     bracketed.received && bracketed.received.instructions);
 }
 
@@ -34639,6 +34689,99 @@ async function caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock) {
   await plan2ScoredTurn(h, "t-memq27-ctl", "on-goal");
   check("memq27 control: an ordinary turn after it is scored against task-2",
     getDecisions(h).some((d) => d.action === "score" && d.detail.includes("task-2")), getDecisions(h).slice(-6));
+}
+
+async function caseMemq28_anUnansweredCheckStampsNothing(clock) {
+  console.log("\n=== Persona memory 28: a check turn that ends with no answer stamps nothing, logs memory_check_unanswered, and clears the goal's entries ===");
+  const [n0] = MEMQ13_NAMES;
+  const legs = [
+    { label: "aborted", fields: { isAborted: true, answer: n0, reason: "completed" } },
+    { label: "errored", fields: { answer: n0, reason: "error" } },
+    { label: "refused", fields: { answer: n0, reason: "refusal" } },
+    { label: "an empty answer", fields: { answer: "", reason: "completed" } },
+  ];
+  for (const leg of legs) {
+    const tag = leg.label.replace(/[^a-z0-9]+/gi, "_");
+    const h = await memq20Harness(clock, `memq28_${tag}`, memq20TaskTree(), memq20Shown("task-1", "task-2"));
+    h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+    await MEMQ20_SITES[3].close(h, clock);
+    const turnId = `t-memq28-${tag}`;
+    h.setClassifyValue("discard");
+    await openQueuedTurn(h, turnId);
+    await h.handlers["turn.complete"](h.fake, { turnId, ...leg.fields }, async () => ({ result: "ok" }));
+    const decisions = getDecisions(h);
+    check(`memq28 ${leg.label}: no touch spawned`, memq20Touches(h).length === 0, memq20Touches(h).map((r) => r.argv));
+    check(`memq28 ${leg.label}: one memory_check_unanswered on the memory loop naming task-1, and no memory_applied_none`,
+      decisions.filter((d) => d.action === "memory_check_unanswered" && d.loop === "memory" && d.detail.startsWith("task-1:")).length === 1
+        && countAction(decisions, "memory_applied_none") === 0, decisions.filter((d) => d.action.startsWith("memory_")));
+    check(`memq28 ${leg.label}: the goal's entries left the list and the other goal's stayed`,
+      JSON.stringify(getState(h).shownMemories) === JSON.stringify([{ name: MEMQ20_OTHER, goalId: "task-2", shownAt: T0 - 2000 }]), getState(h).shownMemories);
+  }
+
+  // A shown name carrying a line break is asked about on one line.
+  const s = await memq20Harness(clock, "memq28_split", memq20TaskTree(), [{ name: "fact-default-split\nline", goalId: "task-1", shownAt: T0 }]);
+  await MEMQ20_SITES[3].close(s, clock);
+  check("memq28 split: the check names the record on one line",
+    JSON.stringify(memq20Checks(s)) === JSON.stringify([memq20CheckText(MEMQ20_TITLE, ["fact-default-split line"])]), memq20Checks(s));
+}
+
+async function caseMemq29_aRefusedCheckSubmitClears(clock) {
+  console.log("\n=== Persona memory 29: a check whose submit is dropped or rejected logs memory_check_refused and clears the goals' entries ===");
+  const legs = [
+    { label: "dropped", arm: (h) => h.dropNextPromptSubmit("held by a hook"), how: "dropped", reason: "held by a hook" },
+    { label: "rejected", arm: (h) => h.failPromptSubmits(new Error("host gone")), how: "failed", reason: "host gone" },
+  ];
+  for (const leg of legs) {
+    const r = await memq20Harness(clock, `memq29_${leg.label}`, memq20TaskTree(), memq20Shown("task-1", "task-2"));
+    leg.arm(r);
+    check(`memq29 ${leg.label} setup: goal_done closed task-1`, await MEMQ20_SITES[3].close(r, clock), getDecisions(r).slice(-6));
+    await new Promise((res) => setTimeout(res, 10));
+    const decisions = getDecisions(r);
+    const refused = decisions.filter((d) => d.action === "memory_check_refused");
+    check(`memq29 ${leg.label}: the check was attempted`, memq20Checks(r).length === 1, r.promptSubmits);
+    check(`memq29 ${leg.label}: one memory_check_refused on the memory loop naming task-1 and the refusal`,
+      refused.length === 1 && refused[0].loop === "memory" && refused[0].detail.startsWith("task-1:") && refused[0].detail.includes(leg.how) && refused[0].detail.includes(leg.reason), refused);
+    check(`memq29 ${leg.label}: the check left the queue`, !r.queuedTurnTexts.some((t) => t.startsWith("[MEMORY CHECK]")), r.queuedTurnTexts);
+    check(`memq29 ${leg.label}: the goal's entries left the list and the other goal's stayed`,
+      JSON.stringify(getState(r).shownMemories) === JSON.stringify([{ name: MEMQ20_OTHER, goalId: "task-2", shownAt: T0 - 2000 }]), getState(r).shownMemories);
+  }
+}
+
+async function caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock) {
+  console.log("\n=== Persona memory 30: the [MEMORY CHECK] turn is read by neither the plan-health ask nor the memory curator ===");
+  clock.set(T0);
+  const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 1 });
+  tree.goals.push(makeGoalNode({ id: "task-2", parentId: "plan-1", kind: "task", status: "pending", maxRounds: 10, createdAt: T0 - 4000 }));
+  const h = await createTickHarness({
+    ...OPTS, jevMode: "shadow", caseName: "memq30",
+    stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId, shownMemories: [{ name: MEMQ13_NAMES[0], goalId: "task-1", shownAt: T0 - 1000 }] },
+  });
+  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
+  h.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }] });
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setHttpResponse(jevPicking());
+  await bank2SeedInstalled(h, bank2Installed());
+  h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  const done = await callTool(h, { tool: "mcp__agentic-plugin__goal_done", note: "done" });
+  check("memq30 setup: task-1 closed, task-2 under the plan is active, and the check is queued",
+    !!done && getState(h).activeGoalId === "task-2" && memq20Checks(h).length === 1, { active: getState(h).activeGoalId, checks: memq20Checks(h), done });
+  const curatorCalls = () => h.classifyCalls.filter((args) => Array.isArray(args[1]) && args[1].includes("preference")).length;
+
+  const curatedBefore = curatorCalls();
+  h.setClassifyValue("discard");
+  await openQueuedTurn(h, "t-memq30-check");
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-memq30-check" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-memq30-check", answer: MEMQ13_NAMES[0], reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  check("memq30: the check turn made no plan-health call", planHealthLines(h).calls.length === 0, planHealthLines(h).calls);
+  check("memq30: the check turn made no memory curator call", curatorCalls() === curatedBefore, h.classifyCalls.slice(-3));
+  check("memq30: the check's answer still stamped its record", countAction(getDecisions(h), "memory_applied") === 1, getDecisions(h).filter((d) => d.action.startsWith("memory_")));
+
+  // The control: an ordinary turn on the same entry is read by both, so the
+  // silence above is the skip and not a harness that never asks.
+  await planHealthTurn(h, "t-memq30-ctl", "Working on it.");
+  check("memq30 control: an ordinary turn makes one plan-health call", planHealthLines(h).calls.length === 1, planHealthLines(h).calls);
+  check("memq30 control: an ordinary turn makes a memory curator call", curatorCalls() > curatedBefore, h.classifyCalls.slice(-3));
 }
 
 async function caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock) {
