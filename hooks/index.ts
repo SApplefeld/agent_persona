@@ -4650,6 +4650,12 @@ export const register: Register = async (on, options) => {
   // this_turn_was_asked. Set at turn.start from the event's own text and read
   // at turn.complete with the other boundary facts, before any await.
   let currentTurnAskedText = "";
+  // Whether the plugin's own goal nudge opened the current turn. Set at
+  // turn.start from the matched entry and read at turn.complete with the
+  // other boundary facts. currentTurnKind cannot answer this at completion,
+  // because every completion resets it, a subagent's included, so a nudged
+  // turn that dispatched a subagent would read as not nudged at its own end.
+  let currentTurnNudged = false;
   // The turns open right now, each id against the clock at its turn.start, so
   // the controller tick can skip while the worker is inside one.
   // Keyed by id rather than held as a boolean because turn events are not
@@ -9000,6 +9006,7 @@ export const register: Register = async (on, options) => {
     // the text this turn opened with is held for the disposition state.
     resetTurnToolActivity();
     currentTurnAskedText = typeof e.text === "string" ? e.text.slice(0, TURN_DISPOSITION_ASKED_MAX) : "";
+    currentTurnNudged = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
       sess.state.monitor.cost.consecutiveSkips = 0;
@@ -9065,6 +9072,7 @@ export const register: Register = async (on, options) => {
       currentTurnKind = matched.kind;
       if (matched.kind === "delivery") stampRecordId = matched.recordId;
       if (matched.kind === "nudge") {
+        currentTurnNudged = true;
         nudgedTurnId = e.turnId ? e.turnId : null;
         countResetSinceNudgeOpened = false;
       }
@@ -9187,6 +9195,7 @@ export const register: Register = async (on, options) => {
     // the same reason. The text this turn opened with, and the tool activity
     // the turn's own calls wrote, are both rewritten by the next turn.start.
     const askedTextAtDelete = currentTurnAskedText;
+    const turnNudgedAtDelete = currentTurnNudged;
     const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
     // Section 6 (goal-every-turn): route one's own fact, read here for the same
     // reason. The plan documents this turn edited are rewritten by the next
@@ -9981,7 +9990,9 @@ export const register: Register = async (on, options) => {
     // Memory curation: distill, don't snapshot.
     // Skip curation on nudged turns: the controller's own instruction
     // is not a user preference and must not be distilled into a memory.
-    if (!skipped && !wasNudged) {
+    // The turn's start recorded whether a nudge opened it, so a subagent
+    // completing inside the turn does not make its end read as un-nudged.
+    if (!skipped && !turnNudgedAtDelete) {
       try {
         if (askedTextAtDelete.trimStart().startsWith("<task-notification>")) {
           // A turn opened by the harness's notification block for a finished

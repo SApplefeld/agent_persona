@@ -46,6 +46,7 @@ Provenance: the operator's channel messages on 2026-09-25, the ARCHITECT's count
 
 - Section 2 acceptance: `JEV_PROMOTABLE_SET_IDS` in `bin/agentic-common.sh` names `memory-kind` beside `turn-open` and `turn-disposition`, so a roster `jevLive` naming `memory-kind` is carried to the plugin rather than refused at launch, and the parity pin in `.kit/settings-plugin-key-test.sh` against `PROMOTABLE_SET_IDS` passes.
 - Section 2 acceptance: a run directory that already holds a settings file gains `memoryGateDiscardPercent` under both plugin ids from the roster field on every launch where the field is set, and is left byte for byte where it is not, so the roster floor reaches a persona that has launched before.
+- Goal, operator ruling 2026-09-27 on the scope adjudicator's ask: a turn the plugin's goal nudge opened makes no memory call at its own completion, a subagent having completed inside it included, with `memory-kind` live or not. This waives the Goal's sentence that nothing changes with `memory-kind` absent, for that one turn shape only.
 
 ## Sections of Work
 
@@ -261,3 +262,7 @@ Advisory dispositions:
 - Minor recorded as a trade: a continuation after a notification turn is classified. It opens with empty text, so it was not "opened by" a notification, which is the ruling's letter; its answer may still be the persona's report, which is the ruling's reason. The classified state quotes the notification as "User asked:", the population Haiku discarded 2,991 times in 3,035. The backlog's "User asked:" entry is where a turn-scoped state would change this.
 
 **Next action.** The operator's answer on the nudge guard: with a yes, fix it with a per-turn nudge flag and a red-first tick case, then an adversarial round over that delta; with a no, the backlog entry carries it. Then the documentation curator, the final Chapter and the pull request.
+
+**Nudge guard, 2026-09-27.** The operator answered fix it here. `turn.start` now records whether a nudge entry matched the turn, and the memory step reads that flag at completion in place of `wasNudged`, so a subagent's completion no longer makes a nudged turn read as un-nudged. Red first: the new tick case failed on both legs, `memory-kind` live and not live, with its controls passing; after the fix the tick suite reads 5766 OK / 0, up from 5760 by the case's six checks, and tsc exits 0. The goal-nudge backlog entry drops the fixed cause, and the scoring-path entry notes the memory step is outside it.
+
+**Next action.** Round 4, the adversarial lens over the nudge fix; then the documentation curator, the final Chapter and the pull request.

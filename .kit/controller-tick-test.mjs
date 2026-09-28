@@ -4029,6 +4029,7 @@ async function main() {
     await caseMemoryGate_theQuestionNotLiveLeavesTheSiteAsToday(clock);
     await caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock);
     await caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(clock);
+    await caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentCompletes(clock);
     await caseSeamEachSiteWritesItsCallAndAnswerLines(clock);
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
@@ -23812,6 +23813,47 @@ async function caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(cl
     memoryGateDecisions(c).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(c));
   check("memory gate continuation after notification: the continuation was classified by Haiku once",
     memorySiteCalls(c).classify.length === 1, { classify: memorySiteCalls(c).classify.length });
+}
+
+// A nudged turn is read as nudged at its own completion even after a subagent
+// it dispatched completes inside it. Each completion resets the turn's kind,
+// so the skip reads a flag the turn's start recorded, the way the
+// task-notification skip reads the turn's opening text. Run with memory-kind
+// live and not live, since the skip guards both paths.
+async function caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentCompletes(clock) {
+  console.log("\n=== Memory gate: a nudged turn makes no memory call, a subagent completing inside it included ===");
+  for (const live of [true, false]) {
+    const label = `memory gate nudged turn (${live ? "memory-kind live" : "memory-kind not live"})`;
+    clock.set(T0);
+    const h = await lead3Harness(`memgate_nudged_${live ? "live" : "notlive"}`, {}, { jevLive: live ? [Catalog.MEMORY_KIND] : [] });
+    h.storeMap.set(`commons:${SESSION_ID}`, {
+      sessionId: SESSION_ID,
+      lastSeen: T0,
+      claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+    });
+    h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+    h.setHttpResponse(jevMemoryAnswer(0.5));
+    h.setCompleteValue(MEMORY_GATE_DISTILLED);
+    // The control: an ordinary turn reaches the memory site and Haiku classifies it.
+    await lead3Turn(h, "t-mgn-1", "Working on it.", { workTool: true });
+    await new Promise((r) => setTimeout(r, 60));
+    check(`${label} control: an ordinary turn was classified at the memory site`,
+      memorySiteCalls(h).classify.length === 1, { classify: memorySiteCalls(h).classify.length });
+    const idle = await lead3IdleTick(h, clock);
+    check(`${label} control: the idle tick nudged the entry`, idle.nudged === true, idle);
+    const before = memorySiteCalls(h);
+    await openQueuedTurn(h, "t-mgn-nudged");
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-nudged", agentId: "sub-mgn", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-nudged", answer: "Still working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    const after = memorySiteCalls(h);
+    check(`${label}: neither the subagent's completion nor the nudged turn's own made a classify, a distill, a memory-kind request or a call line`,
+      after.classify.length === before.classify.length && after.complete.length === before.complete.length
+        && after.requests.length === before.requests.length && after.calls.length === before.calls.length,
+      { classify: [before.classify.length, after.classify.length], complete: [before.complete.length, after.complete.length],
+        requests: [before.requests.length, after.requests.length], calls: [before.calls.length, after.calls.length] });
+  }
 }
 
 async function caseSeamEachSiteWritesItsCallAndAnswerLines(clock) {
