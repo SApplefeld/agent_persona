@@ -301,3 +301,10 @@ Delta: measured 2026-09-28 on D:/agent_persona-memory-port at 48edcdc plus the c
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-09-28
+Section 4 stage: review round 2 adjudicated, fix round 2 opening inline in the main session. Round 1 (adversarial, blind, security, performance at fable, Agent tool) returned one Major reported by three lenses, the [MEMORY CHECK] turn scored against the next goal, fixed in a6f99f5 with case memq27 (red 3 FAIL on the pre-fix code, green after). Round 2 (adversarial at opus, Workflow high) returned two Majors: the plan-document close site asks only about the holder's own records, not those shown under a child task it completes (confirmed at hooks/index.ts 10279-10298); and memq23 pins the compaction sentence word for word. Fix round 2 takes both, plus the Minors that hold: an interrupted check, a refused submit, the distiller and plan-health reading the check turn, one-line names, a case-insensitive match, and the Intent's stale 2.5 s line. It owes review round 3, one adversarial lens at opus through Workflow at high.
+Live dispatches: none.
+Gate baseline: targeted lane measured 2026-09-28 on the worktree D:/agent_persona-memory-port at a6f99f5, clean: `node .kit/controller-tick-test.mjs` 6094 OK / 0 FAIL, exit 0; injection duplicate, task store and typecheck each exit 0.
+Rulings since the last boundary: the operator raised the read's bound to 5 s and cut the stand-down to one minute (Intent and the ninth Standing Brief Amendment); the injection ledger files folded into section 4's Files in scope.
+Next action: fix round 2 inline, the targeted lane, commit, then review round 3; add-decision lines and the Minor list are under `.kit/scratch/memory-port/`.
