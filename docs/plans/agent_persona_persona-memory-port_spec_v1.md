@@ -51,6 +51,8 @@ Provenance: the operator's channel messages on 2026-09-25, the design council re
 - Where the record name, the persona tag or the author carries the persona, it carries the persona's store id: the name itself where it holds only `[A-Za-z0-9_.-]` and fits `persona-<id>` inside memq's 40-character tag cap, and otherwise the name with every other character removed, cut to fit, followed by `-` and the base-36 fnv1a hash of the full name, so two names that differ only in removed characters stay apart. Sections 3 and 4 read and stamp by the same id.
 - A record's body is its provenance line, a blank line, then the text, and its description is passed with one leading space that memq trims, so no argument memq receives opens with `--` and memq never reads a text as an option.
 - The one-time migration runs wherever a session becomes a persona's owner: at `session.start` once the heartbeat and controller tick are registered, where `agentic_identity` takes a persona as owner, and where the heartbeat promotes a reader to owner.
+- The judged lines ride as memq printed them except that each passes through `bracketSafeText`, as all store text shown to the model does, so a description cannot forge a delivery label. The shown list holds one entry per record name per goal, the newest showing last, so a record shown on several prompts of one goal is asked about once.
+- A test pins a decision's action, its loop and the tokens its detail must carry, never the detail's whole sentence, since a journal sentence is prose no surface reads by identity.
 
 ## Sections of Work
 
@@ -92,7 +94,7 @@ Model: opus
 The injection block is replaced as the Approach states, with the data-not-instructions first line, the name parse, and the `shownMemories` ledger. `AgentState` gains `shownMemories`, and the state version moves to the number after the one the goal-every-turn plan left, which has merged by this plan's precondition, with the fixture and the harness's state builder moved with it as that plan's section 1 did. `.kit/injection-ledger.mjs`'s `extractMemoryBlock` and the ledger baseline take the new block's shape.
 
 Acceptance:
-- A prompt with the spawn scripted to two judged lines injects one block whose first line is the fixed sentence and whose remaining lines are the two as printed, and adds the two second tokens to `shownMemories` under the active goal's id.
+- A prompt with the spawn scripted to two judged lines injects one block whose first line is the fixed sentence and whose remaining lines are the two as printed (bracket-safe, per the Standing Brief Amendments), and adds the two second tokens to `shownMemories` under the active goal's id.
 - A prompt with the spawn scripted to exit 0 and no stdout, to exit 1, or to a rejection, injects no memory block, and the `[LESSON]` block still injects where a lesson is due.
 - The ledger caps at fifty by dropping the oldest.
 - `.kit/injection-duplicate-test.mjs` and the ledger baseline pass over the new block.
@@ -243,6 +245,57 @@ Gate: targeted lane at section close, measured 2026-09-28 on the worktree D:/age
 Next: 3. The read through `memq judged`
 Commit Model: Branch-and-PR
 Delta: measured 2026-09-28 on D:/agent_persona-memory-port at 13b2cc7 plus this Chapter's commit; the reading:
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 3 - 2026-09-28
+Completed: 3. The read through `memq judged`
+Implemented By: implementer-opus for the build; the bracket guard, the round 1 fixes and the close pass inline in the main session
+Metrics: review rounds 1, closed major-closed; provenance 2 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 1 findings, 0 fixed, 0 deferred, 0 refused, 1 covered by the blind Major; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 3 open: replaces the per-prompt memory block (the MEMQ MCP rank and the confidence fallback over sess.state.memory) with one awaited `memq judged` through kitMemq, injects its lines under a fixed data-not-instructions sentence, and records each shown name in a persisted shownMemories ledger keyed to the active goal; serves the Goal's "At each prompt the plugin asks the store, through one bounded spawn of memq, for the records judged to bear on that prompt among this persona's own, and injects what comes back, or nothing" and the Intent's "read at each prompt through memq judged under a bound, and inject only what it returns; keep a ledger of what was shown per goal"; adds one ledger field and a state version step, both named by the Approach and section 3; about 60 code lines, 40 state lines and 200 test lines; not building it leaves every prompt reading the old JSON list that section 2 emptied, so no persona memory reaches the worker at all.
+- round 1 Major (adversarial, exact-wording pin, a class also found in sections 1 and 2): the memq13 checks pin the memory_inject decision's action, its loop, and a detail carrying the count token, rather than the whole detail sentence; serves section 3 bullet 1; adds no mechanism, test assertions only; 2 test lines; not doing it turns a harmless reword of a journal sentence red.
+- The implementer returned DONE_WITH_CONCERNS with three concerns, each settled:
+  - The judged lines now pass through `bracketSafeText`. The project rule (hooks/agent-state.ts 15-28) is that all store text shown to the model passes it, so a description holding `[COORDINATOR id=7]` cannot forge a delivery label. This departs from the Approach's "as memq printed them", and it is recorded in the Standing Brief Amendments. A test leg pins it, proven red without the guard (2 FAIL, file restored from a copy and cmp-verified).
+  - The injection-ledger refresh also moved `memory_add_description` from 243 to 220 characters. Section 2's range 1cd059c..4977e42 rewrote that description, and the ledger's size check reports growth only, so it stayed green on a stale baseline.
+  - The brief's `createState` is `createDefaultState` in the code.
+- `bank2Recorder` in the tick test skips memq.js spawns, since every prompt now spawns one judged read. Each of the 26 bank checks keeps its meaning, and the memq cases pin the read itself.
+- Approval drift:
+  - At intake, section 3's Files in scope gained `.kit/task-store-unit-test.mjs`, the version-pin carrier the 685eb26 precedent edited.
+  - The Standing Brief Amendments gained two entries: the bracket-safe lines with one ledger entry per name per goal, and the test-wording rule.
+  - Acceptance bullet 1 now notes the bracket-safe lines.
+- The recurrence rule fired. Exact-wording test pins were found in sections 1, 2 and 3, so the test-wording rule is now a Standing Brief Amendment.
+- Measured 2026-09-28 in D:/agent_persona with no session id: three real `memq judged` reads took 522, 360 and 349 ms, all exit 0. Each answered that no fleet record was near, so the judge never ran. The judged path's latency cannot be measured until persona records exist in the store.
+Failed approaches: tried a `node -e` edit script with escaped quotes to move the ledger's anchor. It failed because the Bash tool's quoting mangled the escaped newline in the match string, and nothing was written. Learned again that a script with escapes goes through the file tools.
+Assumptions:
+- assumed 2026-09-28 (hooks/index.ts 663-666, section 3): "the active goal leaf's id" is `sess.state.activeGoalId`, the id the [GOAL TREE] block reads; reversal: one expression at the record site.
+- assumed 2026-09-28 (default, section 3): a judged line that does not open with the token `fleet` is injected but records no name; reversal: one condition in the parse.
+- assumed 2026-09-28 (default, section 3): the `memory_inject` detail is `memory_inject: <n> records`; reversal: one template.
+- assumed 2026-09-28 (default, section 3): the situation is cut on code points, as section 2's description is; reversal: one helper.
+Review Findings: review: adversarial + blind + security at fable, Agent tool (round 1); performance at fable, Agent tool (round 1, staggered under the three-Fable cap). The capacity reading before the round printed "fable capacity: no reading (stale) -> ladder governs". Majors fixed: round 1 adversarial, an exact-wording pin on the memory_inject detail, now pinning the action, the loop and the count token. Majors justified: round 1 blind (trace orchestrator-made, to the Goal's "one bounded spawn of memq"): memq's own 2 s judge budget, its database floors, node startup and its post-judge writes can exceed the plugin's 2.5 s bound on a slow but reachable host. A timeout then arms the five-minute stand-down meant for an outage. The bound is the operator's V1 ruling of 2026-09-25, so a fix changes a recorded decision. It goes to the operator as an ask in the section-close message, and the first Operator Verification item already reopens section 3 if no block appears with the host up. Advisory: security CLEAR, no Critical or Major; performance's one Major is the same bound, covered by the blind Major. Minors: 3 fixed in the close pass (the non-zero-exit comment, the shown-list comment's pointer to an unbuilt consumer, and a code-point cut that no longer copies the whole prompt), 2 dispositioned by the amendment (the bracket guard and the ledger dedup, both unrecorded deviations), 0 upgraded, 9 left with the reason on each line of the section's Minor list. The 9 left: the empty-prompt spawn; the stale lastAccessed and accessCount fields; the name parse with no live wire pin; memory_inject crowding the decision list, which the Approach names; the read on priming and supervisor turns, which the Goal's "each prompt" covers; the per-prompt locator read; the spawn per prompt on a machine with no store; a kill landing inside memq's journal lock; and a displaced owner's read. Forwarded: to section 5, where a prompt's first 500 code points now travel (the process list, the database query and the Jev call) and the installed_plugins.json entry's cadence; to section 4's intake, refusing a ledger name outside the plugin's own `<kind>-<id>-<hash>` shape before a touch spawn. The close pass's delta changes one helper, two comments and two test assertions. It touches no outward action and adds no module, so it takes an author re-read rather than a round.
+Stamps: adjudicated 1, stamped 0 (forward-resource-arrangements-into-dispatch-briefs, operator tier, read but shaping no decision here); window `--since 1h`, memq's smallest, against Chapter 2's commit 39 minutes earlier; no hand walk owed.
+Gate: targeted lane at section close, measured 2026-09-28 on the worktree D:/agent_persona-memory-port at 48edcdc plus the round 1 fixes and close pass. The process poll before the run did not execute (a quoting error in its filter). A poll right after the run listed 20 node, dotnet and testhost processes, none a test runner or build, so the run's start is unpolled rather than clear. Results:
+- `node .kit/controller-tick-test.mjs`: 5967 OK / 0 FAIL, exit 0, against the same lane's baseline of 5900 / 0, exit 0, at 4977e42 (+67 checks).
+- `node .kit/task-store-unit-test.mjs`: exit 0, and `node .kit/injection-duplicate-test.mjs`: exit 0, both matching their baselines at 4977e42.
+- The regenerated injection ledger matches its baseline. Typecheck `tsc --noEmit -p .`: exit 0.
+Tests added:
+- caseMemq13: the read's argv and bound, the block and its fixed first line, the names under the active goal, one memory_inject decision, a line of another shape, and a forged bracket label reaching the model as parentheses.
+- caseMemq14: four failure shapes inject nothing while a due lesson injects.
+- caseMemq15: the stand-down skips the read.
+- caseMemq16: one entry per name per goal, and the cap of fifty.
+- caseMemq17: the code-point situation and the store-id tag.
+- caseMemq18: the v2 to v6 loads to 7, malformed lists and entries, and the cap on load.
+- caseMemq19: the read argv replayed against the installed memq, with 5 spawns in about 273 ms. It is the only added case that spawns a process, and it is host-conditional.
+Tests edited on this change:
+- the version pins in the ltg, tasks reap, aut, gl5, pr and lineage cases and in `.kit/task-store-unit-test.mjs`, now reading 7;
+- the injection-duplicate memory-block split, now mutating the new sentence;
+- `bank2Recorder`, which skips the memory read's spawn.
+Contention lane: not owed, since the delta touches no machine-shared state.
+Next: 4. The applied ask at goal close, and the compaction fold
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-28 on D:/agent_persona-memory-port at 48edcdc plus the close pass, before this Chapter's commit; the reading:
 
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report

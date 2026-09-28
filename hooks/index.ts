@@ -2775,6 +2775,19 @@ const MEMQ_READ_TIMEOUT_MS = 2_500;
 // The most code points of a prompt the read passes memq as its situation.
 const MEMQ_SITUATION_MAX = 500;
 
+// The first max code points of text, read without copying the rest, so a
+// surrogate pair is never split and a very long prompt costs max steps.
+function firstCodePoints(text: string, max: number): string {
+  let out = "";
+  let n = 0;
+  for (const ch of text) {
+    if (n === max) break;
+    out += ch;
+    n += 1;
+  }
+  return out;
+}
+
 // The memory kind a record is written under: fact, preference or lesson as
 // given, and fact for anything else.
 function memqKindOf(kind: unknown): "fact" | "preference" | "lesson" {
@@ -12953,15 +12966,17 @@ export const register: Register = async (on, options) => {
     // prompt. One awaited, bounded memq judged over the prompt's first
     // MEMQ_SITUATION_MAX code points, so a surrogate pair is never split,
     // among the records tagged with the persona's store id. A null, a
-    // non-zero exit or no non-blank line injects nothing, and kitMemq has
-    // already logged whatever failed. Otherwise the lines ride as memq printed
-    // them, which sanitizes every fragment, under a first line that frames
-    // them as data, each passed through bracketSafeText as all store text
-    // shown to the model is, so a description cannot forge a delivery label. A line opening with the token `fleet` names its record
-    // second, and each such name joins the shown list under the active goal.
+    // non-zero exit or no non-blank line injects nothing and logs nothing
+    // here; kitMemq logs a spawn that failed to start or timed out. Otherwise
+    // the lines ride as memq printed them, which sanitizes every fragment,
+    // under a first line that frames them as data. Each passes through
+    // bracketSafeText, as all store text shown to the model does, so a
+    // description cannot forge a delivery label. A line opening with the
+    // token `fleet` names its record second, and each such name joins the
+    // shown list under the active goal.
     const judged = await kitMemq($, [
       "judged",
-      "--situation", Array.from(e.text).slice(0, MEMQ_SITUATION_MAX).join(""),
+      "--situation", firstCodePoints(e.text, MEMQ_SITUATION_MAX),
       "--tag", "persona-" + personaStoreId(sess.persona),
       "--limit", "10",
     ], { timeoutMs: MEMQ_READ_TIMEOUT_MS });

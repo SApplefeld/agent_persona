@@ -582,7 +582,7 @@ export interface FleetHealthMemo {
 // One record the per-prompt read showed the worker, from the kit's memory
 // store. name is the record's name there, goalId the goal entry active when it
 // was shown or null where none was, and shownAt the clock it was last shown
-// at. The list is what a goal's close asks the worker about.
+// at. The list holds one entry per name per goal, newest last.
 export interface ShownMemory {
   name: string;
   goalId: string | null;

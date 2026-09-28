@@ -34000,7 +34000,7 @@ async function caseMemq13_theReadInjectsWhatMemqJudged(clock) {
     JSON.stringify(stored.shownMemories) === JSON.stringify(MEMQ13_NAMES.map((name) => ({ name, goalId: "g-plan", shownAt: T0 }))), stored.shownMemories);
   const injects = stored.decisions.filter((d) => d.action === "memory_inject");
   check("memq13: one memory_inject decision on the monitor loop naming 2 records",
-    injects.length === 1 && injects[0].loop === "monitor" && injects[0].detail === "memory_inject: 2 records", injects);
+    injects.length === 1 && injects[0].loop === "monitor" && /\b2\b/.test(injects[0].detail), injects);
 
   // A line of any other shape rides the block and records no name.
   const o = await memq13Harness(clock, "memq13_other_shape");
@@ -34013,7 +34013,7 @@ async function caseMemq13_theReadInjectsWhatMemqJudged(clock) {
   check("memq13 other shape: only the fleet line records a name",
     JSON.stringify((oddStored.shownMemories || []).map((m) => m.name)) === JSON.stringify([MEMQ13_NAMES[0]]), oddStored.shownMemories);
   check("memq13 other shape: the count is the injected line count",
-    oddStored.decisions.some((d) => d.action === "memory_inject" && d.detail === "memory_inject: 2 records"), oddStored.decisions.filter((d) => d.action === "memory_inject"));
+    oddStored.decisions.some((d) => d.action === "memory_inject" && /\b2\b/.test(d.detail)), oddStored.decisions.filter((d) => d.action === "memory_inject"));
 
   // A description carrying a delivery label reaches the model with its
   // brackets turned to parentheses, as all store text shown to it is, and the
