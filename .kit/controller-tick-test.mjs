@@ -34152,6 +34152,43 @@ async function caseMemq15_aStandDownSkipsTheRead(clock) {
   const after = await memq13Submit(h, "A prompt after the window.");
   check("memq15 control: the first prompt after the window spawns and injects",
     memq13Reads(h).length === 2 && memq13Block(after) === [MEMQ13_HEAD, ...MEMQ13_LINES].join("\n"), { reads: memq13Reads(h).length, after });
+
+  // memq reports a store it could not reach by exiting 0 with nothing on
+  // stdout and this line on stderr, well inside the bound, and that arms the
+  // same stand-down.
+  const downLine = "memq: the judged block did not run (the memory database did not answer: connect ECONNREFUSED)";
+  const down = await memq13Harness(clock, "memq15_unavailable");
+  down.setProcessRun({ exitCode: 0, stdout: "", stderr: `${downLine}\n` });
+  const downFirst = await memq13Submit(down);
+  check("memq15 unavailable setup: the first prompt's read ran and injected nothing",
+    memq13Reads(down).length === 1 && memq13Block(downFirst) === undefined, memq13Reads(down).length);
+  down.setProcessRun(MEMQ13_OK);
+  clock.advance(30_000);
+  const downInWindow = await memq13Submit(down, "A second prompt inside the window.");
+  check("memq15 unavailable: a prompt inside the window spawns no judged and injects no memory block",
+    memq13Reads(down).length === 1 && memq13Block(downInWindow) === undefined, { reads: memq13Reads(down).length, downInWindow });
+  const downFailures = (await memq13Stored(down)).decisions.filter((d) => d.action === "memq_spawn_failed");
+  check("memq15 unavailable: one memq_spawn_failed with cause unavailable, carrying memq's line",
+    downFailures.length === 1 && downFailures[0].detail.includes("cause unavailable") && downFailures[0].detail.includes(downLine) && downFailures[0].detail.includes("verb judged"), downFailures);
+  clock.advance(60_000);
+  down.setProcessRun({ exitCode: 0, stdout: "", stderr: `${downLine}\n` });
+  await memq13Submit(down, "A prompt after the window, the store still down.");
+  const downAgain = (await memq13Stored(down)).decisions.filter((d) => d.action === "memq_spawn_failed");
+  check("memq15 unavailable: the first prompt after the window spawns, and a second outage the same day logs nothing more",
+    memq13Reads(down).length === 2 && downAgain.length === 1, { reads: memq13Reads(down).length, downAgain });
+
+  // Any other stderr line beside an empty answer is a normal empty read and
+  // arms nothing.
+  const quiet = await memq13Harness(clock, "memq15_other_stderr");
+  quiet.setProcessRun({ exitCode: 0, stdout: "", stderr: "memq: the fleet judge did not answer, so no line is printed\n" });
+  await memq13Submit(quiet);
+  quiet.setProcessRun(MEMQ13_OK);
+  clock.advance(30_000);
+  const quietNext = await memq13Submit(quiet, "A second prompt thirty seconds later.");
+  check("memq15 other stderr: the next prompt spawns and injects",
+    memq13Reads(quiet).length === 2 && memq13Block(quietNext) === [MEMQ13_HEAD, ...MEMQ13_LINES].join("\n"), { reads: memq13Reads(quiet).length, quietNext });
+  const quietFailures = (await memq13Stored(quiet)).decisions.filter((d) => d.action === "memq_spawn_failed");
+  check("memq15 other stderr: no memq_spawn_failed", quietFailures.length === 0, quietFailures);
 }
 
 async function caseMemq16_theShownListKeepsOneEntryPerNamePerGoal(clock) {
@@ -34529,6 +34566,31 @@ async function caseMemq20_eachCloseSiteQueuesOneCheck(clock) {
     JSON.stringify(memq20Touches(s).map((r) => r.argv[3])) === JSON.stringify([n1]), memq20Touches(s).map((r) => r.argv));
   check("memq20 subtree: the plan's and the task's entries left the list, and the other plan's and the already complete task's stayed",
     JSON.stringify(getState(s).shownMemories) === JSON.stringify([shown[1], shown[2]]), getState(s).shownMemories);
+
+  // goal_done on the last task under a plan completes the plan through
+  // completeLeaf's walk up, so the check names the records shown while the
+  // plan was the active entry as well as the task's, and the answer stamps
+  // and clears across both.
+  const cascadeTree = plan2Goals({ taskUnderPlan: true });
+  cascadeTree.goals.find((g) => g.id === "task-1").title = MEMQ20_TITLE;
+  const cascadeShown = [
+    { name: n0, goalId: "plan-1", shownAt: T0 - 3000 },
+    { name: MEMQ20_OTHER, goalId: "plan-2", shownAt: T0 - 2000 },
+    { name: n1, goalId: "task-1", shownAt: T0 - 1000 },
+  ];
+  const c = await memq20Harness(clock, "memq20_cascade", cascadeTree, cascadeShown);
+  c.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  const cascadeClosed = await MEMQ20_SITES[3].close(c, clock);
+  check("memq20 cascade setup: goal_done closed the task and the walk up completed the plan above it",
+    cascadeClosed && getState(c).goals.find((g) => g.id === "plan-1").status === "complete", getState(c).goals.map((g) => [g.id, g.status]));
+  const cascadeChecks = memq20Checks(c);
+  check("memq20 cascade: one check, naming the plan's record and the task's, in list order, and not the other plan's",
+    cascadeChecks.length === 1 && cascadeChecks[0] === memq20CheckText(MEMQ20_TITLE, MEMQ13_NAMES), cascadeChecks);
+  await memq20Answer(c, "t-memq20-cascade-answer", n0);
+  check("memq20 cascade: the plan's record, named in the answer, is stamped",
+    JSON.stringify(memq20Touches(c).map((r) => r.argv[3])) === JSON.stringify([n0]), memq20Touches(c).map((r) => r.argv));
+  check("memq20 cascade: the plan's and the task's entries left the list, and the other plan's stayed",
+    JSON.stringify(getState(c).shownMemories) === JSON.stringify([cascadeShown[1]]), getState(c).shownMemories);
 }
 
 async function caseMemq21_theAnswerStampsOnlyShownNames(clock) {

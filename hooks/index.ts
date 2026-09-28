@@ -2167,15 +2167,16 @@ const sess: {
   // was set. heartbeatPathOf reads it.
   heartbeatPath: string;
   // The time before which kitMemq's read path spawns nothing, set
-  // MEMQ_STAND_DOWN_MS, one minute, ahead by a read that ran past its bound,
-  // and 0 until one does.
+  // MEMQ_STAND_DOWN_MS, one minute, ahead by a read that ran past its bound
+  // or that memq answered with its store-unavailable line, and 0 until one
+  // does.
   // Session memory rather than persisted state: a restart probes the host
   // afresh.
   memqStandDownUntil: number;
   // The UTC day, as YYYY-MM-DD, on which kitMemq last logged a
   // memq_spawn_failed decision for each cause, "" until it has. Session
   // memory, so a restart logs its first failure of the day again.
-  memqFailedDay: { start: string; timeout: string };
+  memqFailedDay: { start: string; timeout: string; unavailable: string };
   // The launch directory kitMemq runs memq from: the first non-empty
   // directory a session.start captured, "" until one has. A later
   // session.start leaves it, because its cwd is wherever the session stands
@@ -2218,7 +2219,7 @@ const sess: {
   untrackedWorkCount: 0,
   heartbeatPath: "",
   memqStandDownUntil: 0,
-  memqFailedDay: { start: "", timeout: "" },
+  memqFailedDay: { start: "", timeout: "", unavailable: "" },
   memqLaunchDir: "",
   memqWrittenThisSession: 0,
 };
@@ -2692,15 +2693,21 @@ async function bankCompactionBoundary(dp: any, turnKind: string): Promise<void> 
   }
 }
 
-// How long a read that ran past its bound keeps later reads from spawning
-// memq. Every read in the window would otherwise pay its whole bound against
-// a store host that is down.
+// How long a read that ran past its bound, or that memq answered with its
+// store-unavailable line, keeps later reads from spawning memq. Every read in
+// the window would otherwise pay its bound, or memq's own seconds of failed
+// probing, against a store host that is down.
 const MEMQ_STAND_DOWN_MS = 60_000;
 
 // How far short of its bound a rejection may land and still read as a
 // timeout. A host timer can fire a little early against Date.now(), and a
 // command that cannot start fails within milliseconds, far below any bound.
 const MEMQ_TIMEOUT_SLACK_MS = 100;
+
+// The opening of the stderr line memq judged prints, exiting 0 with nothing
+// on stdout, when it could not reach the store: a database or embedding leg
+// that did not answer, or a store root that is not the machine's own.
+const MEMQ_UNAVAILABLE_LINE = "memq: the judged block did not run (";
 
 export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: string };
 
@@ -2721,14 +2728,19 @@ export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: s
 // $.process.run's contract gives no cause for a rejection, so a start that
 // itself takes that long also reads as a timeout. `start` is every other
 // rejection, and also no session id, no launch directory or no located kit
-// install, which spawn nothing. Each cause
+// install, which spawn nothing. A third cause, `unavailable`, is a read that
+// ran to exit 0 with an empty stdout and a stderr line opening
+// MEMQ_UNAVAILABLE_LINE, which memq prints when it could not reach the store
+// host; that result still resolves for the caller. Each cause
 // logs one memq_spawn_failed decision per UTC day, carrying the first line of
-// the reason. The verb decides read or write, so no caller can mislabel one: a
-// `judged` call is a read, and a read that times out stands later reads down
-// for MEMQ_STAND_DOWN_MS, a read inside that window resolving null with no
-// spawn and no decision. Every other verb is a write, which neither honours nor
-// arms the stand-down, because a write skipped is a fact lost and a write
-// costs the prompt nothing.
+// the reason, memq's own line for `unavailable`. The verb decides read or
+// write, so no caller can mislabel one: a `judged` call is a read, and a read
+// that times out or is unavailable stands later reads down for
+// MEMQ_STAND_DOWN_MS, a read inside that window resolving null with no spawn
+// and no decision. No other stderr line arms it, since an empty judged answer
+// is normal. Every other verb is a write, which neither honours nor arms the
+// stand-down, because a write skipped is a fact lost and a write costs the
+// prompt nothing.
 export async function kitMemq(
   dp: any,
   argv: string[],
@@ -2737,7 +2749,7 @@ export async function kitMemq(
   const verb = typeof argv[0] === "string" ? argv[0] : "none";
   const purpose: "read" | "write" = verb === "judged" ? "read" : "write";
   if (purpose === "read" && sess.memqStandDownUntil > Date.now()) return null;
-  const failed = (cause: "start" | "timeout", reason: string): null => {
+  const failed = (cause: "start" | "timeout" | "unavailable", reason: string): null => {
     const day = new Date(Date.now()).toISOString().slice(0, 10);
     if (sess.memqFailedDay[cause] !== day) {
       sess.memqFailedDay[cause] = day;
@@ -2748,7 +2760,7 @@ export async function kitMemq(
         detail: `cause ${cause}; ${reason.slice(0, 150)}; verb ${verb}`,
       });
     }
-    if (cause === "timeout" && purpose === "read") sess.memqStandDownUntil = Date.now() + MEMQ_STAND_DOWN_MS;
+    if (cause !== "start" && purpose === "read") sess.memqStandDownUntil = Date.now() + MEMQ_STAND_DOWN_MS;
     return null;
   };
   const sessionId = sess.mySessionId;
@@ -2769,11 +2781,16 @@ export async function kitMemq(
     const reason = (String(err).split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim();
     return failed(Date.now() - startedAt >= timeoutMs - MEMQ_TIMEOUT_SLACK_MS ? "timeout" : "start", reason);
   }
-  return {
+  const result: KitMemqResult = {
     exitCode: res && typeof res.exitCode === "number" ? res.exitCode : null,
     stdout: res && typeof res.stdout === "string" ? res.stdout : "",
     stderr: res && typeof res.stderr === "string" ? res.stderr : "",
   };
+  if (purpose === "read" && result.exitCode === 0 && result.stdout === "") {
+    const unavailable = result.stderr.split(LINE_TERMINATOR).find((line: string) => line.startsWith(MEMQ_UNAVAILABLE_LINE));
+    if (unavailable !== undefined) failed("unavailable", unavailable.trim());
+  }
+  return result;
 }
 
 // How long one memq put may run. A put takes the tier's lock, and a write
@@ -4764,6 +4781,19 @@ function shownNamesUnder(goalIds: string[]): string[] {
 // Drops every shown-list entry under any of `goalIds`.
 function clearShownUnder(goalIds: string[]): void {
   sess.state.shownMemories = sess.state.shownMemories.filter((m) => m.goalId === null || !goalIds.includes(m.goalId));
+}
+
+// Completes goal `id` through completeLeaf and returns `id` followed by every
+// other goal whose status turned complete in that call, the plan parents its
+// walk up completed, so a close site's [MEMORY CHECK] asks about the records
+// shown under each goal the close completed.
+function completeLeafReturningClosed(id: string, note: string): string[] {
+  const statusBefore = new Map(sess.state.goals.map((g) => [g.id, g.status]));
+  completeLeaf(sess.state, id, note);
+  const turned = sess.state.goals
+    .filter((g) => g.id !== id && g.status === "complete" && statusBefore.get(g.id) !== "complete")
+    .map((g) => g.id);
+  return [id, ...turned];
 }
 
 // Asks the worker which of the records shown while it worked goal `goalId`
@@ -9353,7 +9383,7 @@ export const register: Register = async (on, options) => {
           } else if (finalDecision === "complete" && g.status === "active") {
             // R3: use completeLeaf + activateNext.
             const completedId = g.id;
-            completeLeaf(sess.state, completedId, finalReason || "controller complete");
+            const closedIds = completeLeafReturningClosed(completedId, finalReason || "controller complete");
             // E2: health run at completeLeaf site (controller complete).
             await runHealth($, completedId);
             sess.state.decisions.push({
@@ -9362,7 +9392,7 @@ export const register: Register = async (on, options) => {
               action: "completed_by_controller",
               detail: `${completedId}: ${finalReason || "controller complete"}`,
             });
-            queueMemoryCheck($, expectedTurns, completedId, g.title);
+            queueMemoryCheck($, expectedTurns, completedId, g.title, closedIds);
             // R3: activate next.
             const nextId = activateNext(sess.state, completedId);
             activate($, nextId, `${completedId} complete`);
@@ -10172,7 +10202,7 @@ export const register: Register = async (on, options) => {
               // entry: done is read from the plan document (Section 2),
               // not from this classifier's label.
               const completedId = g.id;
-              completeLeaf(sess.state, completedId, "scorer complete");
+              const closedIds = completeLeafReturningClosed(completedId, "scorer complete");
               // E2: health run at completeLeaf site (scorer complete).
               await runHealth($, completedId);
               sess.state.decisions.push({
@@ -10181,7 +10211,7 @@ export const register: Register = async (on, options) => {
                 action: "complete",
                 detail: `${completedId}: Goal completed in ${g.completedRounds} rounds`,
               });
-              queueMemoryCheck($, expectedTurns, completedId, g.title);
+              queueMemoryCheck($, expectedTurns, completedId, g.title, closedIds);
               const nextId = activateNext(sess.state, completedId);
               activate($, nextId, `${completedId} complete`);
               // L11: plan completion is a log line, not a speech.
@@ -10356,7 +10386,8 @@ export const register: Register = async (on, options) => {
               }
             }
             // The goals this close completes, the holder and each live
-            // descendant, which its [MEMORY CHECK] asks about.
+            // descendant, which its [MEMORY CHECK] asks about with any plan
+            // parent completeLeaf's walk up completes.
             const closedHere: string[] = [holder.id];
             for (const id of subtree.slice(1)) {
               const descendant = sess.state.goals.find((g) => g.id === id);
@@ -10374,7 +10405,9 @@ export const register: Register = async (on, options) => {
                 detail: `${descendant.id}: completed under ${completedId}, ${cause}`,
               });
             }
-            completeLeaf(sess.state, completedId, "plan document complete");
+            for (const id of completeLeafReturningClosed(completedId, "plan document complete")) {
+              if (!closedHere.includes(id)) closedHere.push(id);
+            }
             planCompletedByDocument = true;
             // A holder blocked over a child ("Child task blocked") ends
             // complete with no live reason and no lead left on it.
@@ -11854,7 +11887,7 @@ export const register: Register = async (on, options) => {
       const completedId = target.id;
       const completedTitle = target.title;
       const statusBefore = new Map(sess.state.goals.map((g) => [g.id, g.status]));
-      completeLeaf(sess.state, completedId, note || "goal_done");
+      const closedIds = completeLeafReturningClosed(completedId, note || "goal_done");
       if (byNameId) {
         target.blockedReason = undefined;
         target.lead = null;
@@ -11880,7 +11913,7 @@ export const register: Register = async (on, options) => {
         action: "done",
         detail: `${completedId} "${completedTitle.slice(0, 50)}" marked complete${byNameId ? " by name" : ""}${note ? `: ${note.slice(0, 80)}` : ""}`,
       });
-      queueMemoryCheck($, expectedTurns, completedId, completedTitle);
+      queueMemoryCheck($, expectedTurns, completedId, completedTitle, closedIds);
       // An open ask on an entry this call completed closes the way
       // goal_resume closes one. Those entries are the one named and any plan
       // completeLeaf's walk took to complete. An ask on any other entry stays
