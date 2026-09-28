@@ -27,6 +27,10 @@ import * as AgentState from "../hooks/agent-state.ts";
 // reads as undefined in a check rather than refusing the whole suite.
 const Catalog = await import("../hooks/question-catalog.ts");
 const Seam = await import("../hooks/decision-seam.ts");
+// The same module instance hooks/index.ts imports, since the resolve hook maps
+// its extensionless import to this URL. The memory gate cases read the real
+// stamp id counter and the real split through it.
+const Journal = await import("../hooks/decision-journal.ts");
 import { FINDING_COOLOFF_MS } from "../hooks/self-review.ts";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -4016,6 +4020,16 @@ async function main() {
     await caseLiveAsk_bothTurnQuestionsAreInvariantWithNoLiveList(clock);
     await caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock);
     await caseLiveAsk_theAnswerReturnsBeforeItsJournalLinesLand(clock);
+    // The memory gate: memory-kind asked live ahead of the Haiku classify.
+    await caseMemoryGate_aConfidentDiscardOnADevStampSkipsBothHaikuCalls(clock);
+    await caseMemoryGate_aHoldoutStampRunsHaikuWhateverJevSaid(clock);
+    await caseMemoryGate_theFloorAtExactlyItsBoundary(clock);
+    await caseMemoryGate_theFloorIsARosterFieldClampedToItsRange(clock);
+    await caseMemoryGate_everyFailureFallsBackToHaikuWithNoShadowCall(clock);
+    await caseMemoryGate_theQuestionNotLiveLeavesTheSiteAsToday(clock);
+    await caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock);
+    await caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(clock);
+    await caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentCompletes(clock);
     await caseSeamEachSiteWritesItsCallAndAnswerLines(clock);
     await caseSeamJoinersFireOncePerControllerCall(clock);
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
@@ -22914,7 +22928,8 @@ async function caseSeamFailingJevChangesNothingAndStillJournals(clock) {
 // are asked in shadow and return null, so the invariance instrument above
 // holds over them exactly as over the shadow sites. With a question named
 // live the answer comes back validated, the call is awaited and bounded at
-// the live timeout, and every closed failure reason reads as null.
+// the live timeout, and every closed failure reason comes back as that reason
+// beside the call's stamp id.
 // ============================================================
 
 // The two questions' state texts. Fixed strings: what a site would build is
@@ -23023,7 +23038,7 @@ async function caseLiveAsk_bothTurnQuestionsAreInvariantWithNoLiveList(clock) {
 }
 
 async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) {
-  console.log("\n=== Live path: a question named live is awaited and answered; one not named is shadow; every failure is null ===");
+  console.log("\n=== Live path: a question named live is awaited and answered; one not named is shadow; every failure comes back as its reason ===");
 
   const h = await seedSeamHarness("liveask_switch", clock);
   const liveAsk = await liveAskOf("liveask_switch");
@@ -23050,11 +23065,12 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
       && JSON.stringify(Object.keys(sentBody.questions[Catalog.TURN_DISPOSITION].criteria)) === JSON.stringify([...Catalog.TURN_DISPOSITION_OPTIONS]),
     sentBody.questions);
   answerFetch(jevTurnAnswer(0.5)(null, h.httpCalls[0].init));
-  const answer = await pending;
-  check("live direction: the validated answer comes back with its choice and a probability per option",
-    answer !== null && answer.type === "choice" && answer.choice === "delivered"
+  const answered = await pending;
+  const answer = answered !== null && "answer" in answered ? answered.answer : null;
+  check("live direction: the validated answer comes back with its choice and a probability per option, and no reason",
+    answer !== null && answer.type === "choice" && answer.choice === "delivered" && !("reason" in answered)
       && Object.keys(answer.probabilities).length === Catalog.TURN_DISPOSITION_OPTIONS.length && answer.probabilities.delivered === 0.5,
-    answer);
+    answered);
   await new Promise((r) => setTimeout(r, 20));
   const liveCalls = journalLinesOfKind(h, "call");
   const liveAnswers = journalLinesOfKind(h, "answer");
@@ -23062,6 +23078,9 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
     liveCalls.length === 1 && liveCalls[0].mode === "live" && liveCalls[0].site === "turn-disposition" && liveCalls[0].questionSet === Catalog.TURN_DISPOSITION && liveCalls[0].result === "ok"
       && liveAnswers.length === 1 && liveAnswers[0].callStampId === liveCalls[0].stampId && liveAnswers[0].value === "delivered" && liveAnswers[0].haikuValue === null && liveAnswers[0].agrees === null,
     { calls: liveCalls, answers: liveAnswers });
+  check("live direction: the return carries the stamp id its journal lines carry",
+    answered !== null && liveCalls.length === 1 && answered.stampId === liveCalls[0].stampId,
+    { returned: answered && answered.stampId, line: liveCalls.map((c) => c.stampId) });
 
   // Not-live direction: the other question, with the fetch held open again.
   // The value comes back null before the fetch settles, which is shadowAsk's
@@ -23090,7 +23109,7 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
   h.setHttpResponse(jevTurnAnswer(0.49));
   const below = await liveAsk(host, "turn-disposition", Catalog.TURN_DISPOSITION, Catalog.TURN_DISPOSITION_OPTIONS, TURN_DISPOSITION_STATE, "shadow", live);
   check("live direction: a delivered probability below the threshold comes back whole and unaltered",
-    below !== null && below.probabilities.delivered === 0.49, below && below.probabilities);
+    below !== null && "answer" in below && below.answer.probabilities.delivered === 0.49, below);
 
   // The kill switch: under off nothing is sent whatever the live list names,
   // and the counter that stood at one above stands at zero here.
@@ -23103,9 +23122,10 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
     offNamed === null && offUnnamed === null && off.httpCalls.length === 0 && !off.envGets.includes("TYPESAFE_API_KEY") && journalLines(off).length === 0,
     { offNamed, offUnnamed, calls: off.httpCalls.length, env: off.envGets, lines: journalLines(off).length });
 
-  // Every closed failure reason, driven on the live path, reads as null, and
-  // the call line names which. The set is read from the seam, so a reason
-  // added there without a driver here fails the last check.
+  // Every closed failure reason, driven on the live path, comes back as that
+  // reason with the stamp id of the call line naming it, and no answer. The
+  // set is read from the seam, so a reason added there without a driver here
+  // fails the last check. `off` never reaches the live path, so it is null.
   const f = await seedSeamHarness("liveask_fallbacks", clock);
   const fAsk = await liveAskOf("liveask_fallbacks");
   const fHost = fakeHostOf(f);
@@ -23154,8 +23174,9 @@ async function caseLiveAsk_theLiveSwitchInBothDirectionsAndEveryFallback(clock) 
     if (reason === "off") {
       check("fallback off: null with no call line, the kill switch writing nothing", v === null && calls.length === linesBefore, { v, lines: calls.length - linesBefore });
     } else {
-      check(`fallback ${reason}: null, with the call line naming the reason under mode live`,
-        v === null && calls.length === linesBefore + 1 && last.result === reason && last.mode === "live", { v, last });
+      check(`fallback ${reason}: the reason and the call line's stamp id with no answer, the call line naming the reason under mode live`,
+        v !== null && v.reason === reason && !("answer" in v) && calls.length === linesBefore + 1 && v.stampId === last.stampId
+          && last.result === reason && last.mode === "live", { v, last });
     }
   }
   check("fallbacks: no answer line was written for any failed live call",
@@ -23201,7 +23222,8 @@ async function caseLiveAsk_theAnswerReturnsBeforeItsJournalLinesLand(clock) {
     new Promise((r) => setTimeout(() => r({ who: "timer", value: null }), 50)),
   ]);
   check("live journal held: liveAsk resolved with the answer while its call line was still unwritten",
-    winner.who === "liveAsk" && winner.value !== null && winner.value.choice === "delivered" && winner.value.probabilities.delivered === 0.7,
+    winner.who === "liveAsk" && winner.value !== null && "answer" in winner.value
+      && winner.value.answer.choice === "delivered" && winner.value.answer.probabilities.delivered === 0.7,
     winner);
   // The chain reaches the write a few promise hops after the answer returns.
   const reachedWrite = await waitUntil(() => held.length === 1);
@@ -23251,7 +23273,7 @@ async function caseLiveAsk_theAnswerReturnsBeforeItsJournalLinesLand(clock) {
     check("live journal refused control: the call and answer appends were attempted and turned away",
       r.fsWriteRefusals.length === 2 && r.fsWriteRefusals.every((p) => p.includes(JOURNAL_MARK)), r.fsWriteRefusals);
     check("live journal refused: liveAsk resolved with the answer whole",
-      answer !== null && answer.choice === "delivered" && answer.probabilities.delivered === 0.7, answer);
+      answer !== null && "answer" in answer && answer.answer.choice === "delivered" && answer.answer.probabilities.delivered === 0.7, answer);
     check("live journal refused: no line landed", journalLines(r).length === 0, journalLines(r).length);
     // The decision the failed write earns is in memory until a persist, and
     // a turn's end is one. The latch admits one a day, and the first failed
@@ -23274,6 +23296,575 @@ async function caseLiveAsk_theAnswerReturnsBeforeItsJournalLinesLand(clock) {
       unhandled.length === 1 && String(unhandled[0]).includes("control: a rejection nothing awaits"), unhandled.map(String));
   } finally {
     process.off("unhandledRejection", onUnhandled);
+  }
+}
+
+// ============================================================
+// The memory gate: memory-kind asked live ahead of the Haiku classify. With
+// the question named live, a Jev discard at or above the floor on a dev stamp
+// skips both Haiku calls; a holdout stamp, a probability under the floor and
+// every failure run Haiku as today, with no shadow call beside the live one.
+// With the question not named, or Jev off, the site is today's. A turn opened
+// by a task notification makes no memory call at all.
+// ============================================================
+
+// Haiku's label at the memory site, told from every other classify site by
+// the label array it was handed, and the text the distill completion returns.
+const memoryGateClassify = (_state, labels) => (Array.isArray(labels) && labels.includes("fact") ? "fact" : "on-goal");
+const MEMORY_GATE_DISTILLED = "The operator drinks tea.";
+
+// Whether a decision detail carries a token, read as a whole: bounded on each
+// side by the detail's start or end, whitespace or punctuation, so `p 0.9`
+// does not match inside `p 0.95` and `stamp a.b.1.1` does not match inside
+// `stamp a.b.1.12`. The gate's details have no fixed wording, so the cases
+// read the tokens a reader acts on rather than the sentence around them.
+function detailHasToken(detail, token) {
+  if (typeof detail !== "string") return false;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[\\s,;:()])${escaped}($|[\\s,;:()])`).test(detail);
+}
+
+// The memory site's own calls, each told apart from every other site's by
+// what it carries: the classify by its label array, the completion by the
+// distill prompt's opening, the seam request by the question it asks, and
+// the journal call line by its site.
+function memorySiteCalls(h) {
+  const asksMemoryKind = (c) => {
+    try { return Object.keys(JSON.parse(c.init.body).questions).includes(Catalog.MEMORY_KIND); } catch { return false; }
+  };
+  return {
+    classify: h.classifyCalls.filter((args) => Array.isArray(args[1]) && args[1].includes("fact") && args[1].includes("discard")),
+    complete: h.completeCalls.filter((args) => Array.isArray(args) && typeof args[0]?.prompt === "string" && args[0].prompt.startsWith("One durable fact about the user")),
+    requests: h.httpCalls.filter(asksMemoryKind),
+    calls: journalLinesOfKind(h, "call").filter((c) => c.site === "memory-kind"),
+  };
+}
+
+// Every decision the memory step's gate and its task-notification skip can
+// log. Matched on the action's shape rather than on a list of three names, so
+// a gate action this suite does not name still shows up here.
+function memoryGateDecisions(h) {
+  return getDecisions(h).filter((d) => d.action.startsWith("memory_gate_") || d.action === "memory_skipped_task_notification");
+}
+
+// A Jev answer to the memory-kind question choosing discard at `pDiscard`,
+// built from the request body as jevAnswering is. A request for any other
+// question is answered at its first option.
+function jevMemoryAnswer(pDiscard) {
+  return (url, init) => {
+    const body = JSON.parse(init.body);
+    const questionId = Object.keys(body.questions)[0];
+    const optionIds = Object.keys(body.questions[questionId].criteria);
+    if (questionId !== Catalog.MEMORY_KIND) return jevChoiceResponse(questionId, optionIds[0], optionIds);
+    return jevChoiceResponse(questionId, "discard", optionIds, pDiscard);
+  };
+}
+
+// A clock reading at which the next stamp id this harness's session mints
+// lands in `split`, found by asking the real splitOf of each candidate id. The
+// journal module's counter is read by minting one probe id, so the id the site
+// mints next carries the probe's count plus one. Each case reads the id the
+// site really minted back off its journal line, so a wrong prediction reds
+// that case's control rather than passing on the other split.
+function clockForNextStamp(split) {
+  const probe = Journal.newStampId("probe", "probe");
+  const next = Number(probe.slice(probe.lastIndexOf(".") + 1)) + 1;
+  for (let t = T0 + 1000; t < T0 + 11_000; t += 1) {
+    if (Journal.splitOf(`default.${SESSION_ID}.${t}.${next}`) === split) return t;
+  }
+  throw new Error(`no clock reading lands the next stamp in ${split}`);
+}
+
+// A harness with memory-kind named live, a key present, and no active entry,
+// so the worker turn reaches no scorer and no plan health request and the
+// memory site mints the turn's only stamp.
+async function memoryGateHarness(caseName, clock, options = {}) {
+  clock.set(T0);
+  const h = await createTickHarness({ ...OPTS, caseName, jevLive: [Catalog.MEMORY_KIND], stateOpts: { hasActiveLeaf: false }, ...options });
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setClassifyValue(memoryGateClassify);
+  h.setCompleteValue(MEMORY_GATE_DISTILLED);
+  return h;
+}
+
+// One worker turn over the memory site, at a clock reading that lands the
+// site's stamp in `split`.
+async function memoryGateTurn(h, clock, turnId, split) {
+  clock.set(clockForNextStamp(split));
+  await driveSeamTurn(h, clock, turnId, "Noted, tea rather than coffee.");
+}
+
+// The reads every call the gate passes to Haiku makes: the one live call line
+// on the expected split, Haiku asked and the distill run, the haiku_kind
+// outcome joined to the live stamp with Haiku's label, no shadow line at the
+// site, and one memory_gate_passed decision naming the condition.
+function checkMemoryGatePassed(label, h, split, condition, p) {
+  const site = memorySiteCalls(h);
+  const stampId = site.calls.length === 1 ? site.calls[0].stampId : null;
+  check(`${label} control: one live call line at the site, landed ok, on a ${split} stamp`,
+    site.calls.length === 1 && site.calls[0].mode === "live" && site.calls[0].result === "ok" && Journal.splitOf(stampId) === split,
+    site.calls.map((c) => [c.mode, c.result, c.stampId]));
+  check(`${label}: Haiku classified the exchange once and the distill ran once`,
+    site.classify.length === 1 && site.complete.length === 1, { classify: site.classify.length, complete: site.complete.length });
+  check(`${label}: the distilled entry was stored`,
+    getState(h).memory.some((m) => m.text === MEMORY_GATE_DISTILLED), getState(h).memory.map((m) => m.text));
+  const haikuKind = journalLinesOfKind(h, "outcome").filter((o) => o.kind === "haiku_kind");
+  check(`${label}: one haiku_kind outcome against the live stamp id, carrying Haiku's label`,
+    haikuKind.length === 1 && haikuKind[0].callStampId === stampId && haikuKind[0].value === "fact", haikuKind);
+  check(`${label}: no answer line carries a Haiku value, so no shadow answer was written`,
+    !journalLinesOfKind(h, "answer").some((a) => a.haikuValue !== null), journalLinesOfKind(h, "answer"));
+  const gate = memoryGateDecisions(h);
+  const detail = gate.length === 1 ? gate[0].detail : null;
+  // The other condition is absent, and so is any probability where the
+  // answer carried none.
+  const otherCondition = condition === "holdout" ? "below-floor" : "holdout";
+  check(`${label}: one memory_gate_passed decision carrying the stamp id, the split and ${condition}, and not ${otherCondition}`,
+    gate.length === 1 && gate[0].action === "memory_gate_passed" && gate[0].loop === "memory"
+      && detailHasToken(detail, `stamp ${stampId}`) && detailHasToken(detail, `split ${split}`) && detailHasToken(detail, condition)
+      && !detailHasToken(detail, otherCondition)
+      && (p === null ? !/(^|[\s,;:()])p \d/.test(detail) : detailHasToken(detail, `p ${p}`)),
+    gate);
+}
+
+// The reads every skipped call makes: the live call line on a dev stamp, no
+// Haiku call of either kind at the site, nothing stored, no outcome, and one
+// memory_gate_skipped decision carrying the probability.
+function checkMemoryGateSkipped(label, h, p) {
+  const site = memorySiteCalls(h);
+  const stampId = site.calls.length === 1 ? site.calls[0].stampId : null;
+  check(`${label} control: one live call line at the site, landed ok, on a dev stamp`,
+    site.calls.length === 1 && site.calls[0].mode === "live" && site.calls[0].result === "ok" && Journal.splitOf(stampId) === "dev",
+    site.calls.map((c) => [c.mode, c.result, c.stampId]));
+  check(`${label}: no classify and no completion at the memory site`,
+    site.classify.length === 0 && site.complete.length === 0, { classify: site.classify.length, complete: site.complete.length });
+  check(`${label}: the store gains no entry and no remember decision is logged`,
+    getState(h).memory.length === 0 && !getDecisions(h).some((d) => d.action === "remember"), getState(h).memory);
+  check(`${label}: no haiku_kind outcome is written`,
+    !journalLinesOfKind(h, "outcome").some((o) => o.kind === "haiku_kind"), journalLinesOfKind(h, "outcome"));
+  const gate = memoryGateDecisions(h);
+  const detail = gate.length === 1 ? gate[0].detail : null;
+  // A skip is never on a holdout stamp, so its detail never names holdout.
+  check(`${label}: one memory_gate_skipped decision carrying ${p}, the stamp id and dev, and not holdout`,
+    gate.length === 1 && gate[0].action === "memory_gate_skipped" && gate[0].loop === "memory"
+      && detailHasToken(detail, `p ${p}`) && detailHasToken(detail, `stamp ${stampId}`) && detailHasToken(detail, "split dev")
+      && !detailHasToken(detail, "holdout") && !detailHasToken(detail, "split holdout"),
+    gate);
+}
+
+async function caseMemoryGate_aConfidentDiscardOnADevStampSkipsBothHaikuCalls(clock) {
+  console.log("\n=== Memory gate: a Jev discard at 0.95 on a dev stamp skips both Haiku calls ===");
+  const h = await memoryGateHarness("memgate_skip", clock);
+  h.setHttpResponse(jevMemoryAnswer(0.95));
+  await memoryGateTurn(h, clock, "t-memgate-skip", "dev");
+  checkMemoryGateSkipped("memory gate skip", h, 0.95);
+  // Jev's own answer line is still written, joined to the live call and
+  // carrying no Haiku value, since Haiku was not asked.
+  const site = memorySiteCalls(h);
+  const answers = journalLinesOfKind(h, "answer");
+  check("memory gate skip: Jev's answer line is joined to the live call with no Haiku value",
+    site.calls.length === 1 && answers.length === 1 && answers[0].callStampId === site.calls[0].stampId
+      && answers[0].value === "discard" && answers[0].haikuValue === null, answers);
+}
+
+async function caseMemoryGate_aHoldoutStampRunsHaikuWhateverJevSaid(clock) {
+  console.log("\n=== Memory gate: a holdout stamp runs Haiku whatever Jev said, above the floor or below it ===");
+  const above = await memoryGateHarness("memgate_holdout_above", clock);
+  above.setHttpResponse(jevMemoryAnswer(0.95));
+  await memoryGateTurn(above, clock, "t-memgate-holdout-above", "holdout");
+  checkMemoryGatePassed("memory gate holdout at 0.95", above, "holdout", "holdout", 0.95);
+
+  const below = await memoryGateHarness("memgate_holdout_below", clock);
+  below.setHttpResponse(jevMemoryAnswer(0.5));
+  await memoryGateTurn(below, clock, "t-memgate-holdout-below", "holdout");
+  checkMemoryGatePassed("memory gate holdout at 0.5", below, "holdout", "holdout", 0.5);
+}
+
+async function caseMemoryGate_theFloorAtExactlyItsBoundary(clock) {
+  console.log("\n=== Memory gate: the default floor of 90 on both sides of its boundary, rounded to a whole percent ===");
+  // At and above the floor once rounded: skipped.
+  for (const [name, p] of [["090", 0.9], ["0896", 0.896]]) {
+    const h = await memoryGateHarness(`memgate_floor_${name}`, clock);
+    h.setHttpResponse(jevMemoryAnswer(p));
+    await memoryGateTurn(h, clock, `t-memgate-floor-${name}`, "dev");
+    checkMemoryGateSkipped(`memory gate floor ${p}`, h, p);
+  }
+  // Below the floor once rounded: passed to Haiku.
+  for (const [name, p] of [["0894", 0.894], ["085", 0.85]]) {
+    const h = await memoryGateHarness(`memgate_floor_${name}`, clock);
+    h.setHttpResponse(jevMemoryAnswer(p));
+    await memoryGateTurn(h, clock, `t-memgate-floor-${name}`, "dev");
+    checkMemoryGatePassed(`memory gate floor ${p}`, h, "dev", "below-floor", p);
+  }
+  // A validated answer may leave an option out of its distribution. One that
+  // carries no discard probability has nothing to clear the floor with, so it
+  // passes as below the floor, and the decision names no probability.
+  const bare = await memoryGateHarness("memgate_floor_no_discard", clock);
+  bare.setHttpResponse((url, init) => {
+    const body = JSON.parse(init.body);
+    const questionId = Object.keys(body.questions)[0];
+    return {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({
+        model: "jev-fake",
+        answers: { [questionId]: { type: "choice", choice: "fact", probabilities: { fact: 1 }, confidence: 0.9 } },
+        usage: { input_tokens: 11, output_tokens: 2 },
+      }),
+    };
+  });
+  await memoryGateTurn(bare, clock, "t-memgate-floor-bare", "dev");
+  checkMemoryGatePassed("memory gate floor with no discard probability", bare, "dev", "below-floor", null);
+}
+
+async function caseMemoryGate_theFloorIsARosterFieldClampedToItsRange(clock) {
+  console.log("\n=== Memory gate: memoryGateDiscardPercent sets the floor, and a value outside 50 to 100 is clamped to 90 ===");
+  // A configured floor of 85 moves the boundary: 0.85 is skipped where the
+  // default would pass it, and 0.84 still passes.
+  const at = await memoryGateHarness("memgate_setting_85_at", clock, { memoryGateDiscardPercent: 85 });
+  at.setHttpResponse(jevMemoryAnswer(0.85));
+  await memoryGateTurn(at, clock, "t-memgate-85-at", "dev");
+  checkMemoryGateSkipped("memory gate floor 85 at 0.85", at, 0.85);
+  const under = await memoryGateHarness("memgate_setting_85_under", clock, { memoryGateDiscardPercent: 85 });
+  under.setHttpResponse(jevMemoryAnswer(0.84));
+  await memoryGateTurn(under, clock, "t-memgate-85-under", "dev");
+  checkMemoryGatePassed("memory gate floor 85 at 0.84", under, "dev", "below-floor", 0.84);
+  // Both edges of the range are taken as given: a floor of 100 skips only a
+  // certain discard, and a floor of 50 skips an even one.
+  const top = await memoryGateHarness("memgate_setting_100", clock, { memoryGateDiscardPercent: 100 });
+  top.setHttpResponse(jevMemoryAnswer(0.99));
+  await memoryGateTurn(top, clock, "t-memgate-100", "dev");
+  checkMemoryGatePassed("memory gate floor 100 at 0.99", top, "dev", "below-floor", 0.99);
+  const floor50 = await memoryGateHarness("memgate_setting_50", clock, { memoryGateDiscardPercent: 50 });
+  floor50.setHttpResponse(jevMemoryAnswer(0.5));
+  await memoryGateTurn(floor50, clock, "t-memgate-50", "dev");
+  checkMemoryGateSkipped("memory gate floor 50 at 0.5", floor50, 0.5);
+  check("memory gate setting in range: no setting_clamped decision at either edge",
+    ![top, floor50, at].some((h) => getDecisions(h).some((d) => d.action === "setting_clamped")),
+    [top, floor50, at].map((h) => getDecisions(h).filter((d) => d.action === "setting_clamped")));
+
+  // A value that rounds into the range is taken rounded, with no decision.
+  const rounded = await memoryGateHarness("memgate_setting_49_6", clock, { memoryGateDiscardPercent: 49.6 });
+  rounded.setHttpResponse(jevMemoryAnswer(0.5));
+  await memoryGateTurn(rounded, clock, "t-memgate-49-6", "dev");
+  checkMemoryGateSkipped("memory gate floor 49.6 rounded to 50, at 0.5", rounded, 0.5);
+  check("memory gate setting 49.6: no setting_clamped decision",
+    !getDecisions(rounded).some((d) => d.action === "setting_clamped"), getDecisions(rounded).map((d) => d.action));
+
+  // Outside the range on either side: one setting_clamped decision at the
+  // start, and the floor is 90, so 0.85 passes where the raw value would
+  // have skipped it (49) and 0.95 skips where the raw value would have passed
+  // it (101).
+  for (const [value, p, skips] of [[49, 0.85, false], [101, 0.95, true]]) {
+    const h = await memoryGateHarness(`memgate_setting_clamped_${value}`, clock, { memoryGateDiscardPercent: value });
+    const clamped = getDecisions(h).filter((d) => d.action === "setting_clamped");
+    check(`memory gate setting ${value}: one setting_clamped decision naming the setting, the value received and 90`,
+      clamped.length === 1 && clamped[0].loop === "monitor"
+        && detailHasToken(clamped[0].detail, "memoryGateDiscardPercent") && detailHasToken(clamped[0].detail, String(value))
+        && detailHasToken(clamped[0].detail, "90"),
+      clamped);
+    h.setHttpResponse(jevMemoryAnswer(p));
+    await memoryGateTurn(h, clock, `t-memgate-clamped-${value}`, "dev");
+    if (skips) checkMemoryGateSkipped(`memory gate setting ${value} clamped to 90, at ${p}`, h, p);
+    else checkMemoryGatePassed(`memory gate setting ${value} clamped to 90, at ${p}`, h, "dev", "below-floor", p);
+    // A plugin reload fires session.start again on the same closure. The
+    // clamp was read once at registration, so it is logged once.
+    h.storeMap.delete(`commons:${SESSION_ID}`);
+    await h.handlers["session.start"](h.fake, {}, async () => ({}));
+    check(`memory gate setting ${value}: a second session.start logs no second setting_clamped`,
+      getDecisions(h).filter((d) => d.action === "setting_clamped").length === 1,
+      getDecisions(h).filter((d) => d.action === "setting_clamped"));
+  }
+
+  // A value that is not a number is the default, silently, as an absent one is.
+  for (const [name, value] of [["text", "85"], ["absent", undefined]]) {
+    const h = await memoryGateHarness(`memgate_setting_${name}`, clock, value === undefined ? {} : { memoryGateDiscardPercent: value });
+    check(`memory gate setting ${name}: no setting_clamped decision`,
+      !getDecisions(h).some((d) => d.action === "setting_clamped"), getDecisions(h).map((d) => d.action));
+    h.setHttpResponse(jevMemoryAnswer(0.85));
+    await memoryGateTurn(h, clock, `t-memgate-setting-${name}`, "dev");
+    checkMemoryGatePassed(`memory gate setting ${name}: the floor is 90, so 0.85`, h, "dev", "below-floor", 0.85);
+  }
+}
+
+async function caseMemoryGate_everyFailureFallsBackToHaikuWithNoShadowCall(clock) {
+  console.log("\n=== Memory gate: a hanging or failing Jev falls back to Haiku, with no shadow line and the reason named ===");
+  // The reasons a live call at this site can end on. `off` cannot: the site
+  // asks live only under jevMode shadow. `no_question` cannot either: the
+  // site's question is the shipped memory-kind, which always resolves. The
+  // wrapper drives both on liveAsk directly above. A reason the seam adds
+  // lands in neither list and fails the first check.
+  const notAtThisSite = ["off", "no_question"];
+  const drivers = {
+    no_key: (h) => { h.setEnv("TYPESAFE_API_KEY", undefined); },
+    timeout: (h) => { h.setHttpResponse(() => new Promise(() => {})); },
+    network: (h) => { h.setHttpResponse(() => Promise.reject(new Error("down"))); },
+    http_401: (h) => { h.setHttpResponse({ status: 401, ok: false, headers: {}, text: "" }); },
+    http_422: (h) => { h.setHttpResponse({ status: 422, ok: false, headers: {}, text: "" }); },
+    http_429: (h) => { h.setHttpResponse({ status: 429, ok: false, headers: {}, text: "" }); },
+    http_529: (h) => { h.setHttpResponse({ status: 529, ok: false, headers: {}, text: "" }); },
+    http_other: (h) => { h.setHttpResponse({ status: 500, ok: false, headers: {}, text: "" }); },
+    parse: (h) => { h.setHttpResponse({ status: 200, ok: true, headers: {}, text: "nope" }); },
+  };
+  check("memory gate fallbacks: every reason in the seam's closed set is driven here or named as unreachable at the site",
+    Seam.SEAM_FAILURE_REASONS.length === Object.keys(drivers).length + notAtThisSite.length
+      && Seam.SEAM_FAILURE_REASONS.every((r) => Object.hasOwn(drivers, r) || notAtThisSite.includes(r)),
+    Object.keys(drivers));
+
+  for (const [reason, arrange] of Object.entries(drivers)) {
+    const h = await memoryGateHarness(`memgate_fallback_${reason}`, clock);
+    arrange(h);
+    const label = `memory gate fallback ${reason}`;
+    clock.set(clockForNextStamp("dev"));
+    if (reason === "timeout") {
+      // The hook is started and not awaited, so a turn end that waits on the
+      // hung request reads as unsettled until the live timer fires, and no
+      // later: nothing advances the fake clock but this case.
+      h.sleeps.length = 0;
+      const turnId = "t-memgate-fallback-timeout";
+      await h.handlers["turn.start"](h.fake, { turnId, text: "the operator asked for something" }, async () => ({ result: "ok" }));
+      let settled = false;
+      const before = clock.get();
+      const pending = h.handlers["turn.complete"](h.fake, { turnId, answer: "Noted, tea rather than coffee.", reason: "completed" }, async () => ({ result: "ok" }))
+        .then(() => { settled = true; });
+      const reached = await waitUntil(() => h.sleeps.some((s) => s.ms === Seam.LIVE_TIMEOUT_MS));
+      const timers = h.sleeps.filter((s) => s.ms === Seam.LIVE_TIMEOUT_MS);
+      check(`${label} control: the turn end is held on one live timer, with Haiku not yet asked`,
+        reached && timers.length === 1 && settled === false && memorySiteCalls(h).classify.length === 0,
+        { timers: h.sleeps.map((s) => s.ms), settled, classify: memorySiteCalls(h).classify.length });
+      clock.advance(Seam.LIVE_TIMEOUT_MS);
+      if (timers.length === 1) timers[0].resolve();
+      // Bounded, so a turn end held on something other than the live timer
+      // reads as the red below rather than a hung suite.
+      await Promise.race([pending, new Promise((r) => setTimeout(r, 500))]);
+      await new Promise((r) => setTimeout(r, 60));
+      check(`${label}: the turn end settled once the live timer fired, delayed by LIVE_TIMEOUT_MS and no more`,
+        settled === true && clock.get() - before === Seam.LIVE_TIMEOUT_MS, { settled, delayed: clock.get() - before });
+    } else {
+      await driveSeamTurn(h, clock, `t-memgate-fallback-${reason}`, "Noted, tea rather than coffee.");
+    }
+    const site = memorySiteCalls(h);
+    // The request count reaches a shadow call whose own request is still
+    // hung, which writes no line to count. With no key nothing is sent.
+    check(`${label}: one call line at the site, mode live, naming the reason, and no shadow call`,
+      site.calls.length === 1 && site.calls[0].mode === "live" && site.calls[0].result === reason
+        && site.requests.length === (reason === "no_key" ? 0 : 1),
+      { calls: site.calls.map((c) => [c.mode, c.result]), requests: site.requests.length });
+    check(`${label}: Haiku classified the exchange once and the distill ran once, as today`,
+      site.classify.length === 1 && site.complete.length === 1 && getState(h).memory.some((m) => m.text === MEMORY_GATE_DISTILLED),
+      { classify: site.classify.length, complete: site.complete.length, memory: getState(h).memory.map((m) => m.text) });
+    check(`${label}: no haiku_kind outcome, since no answer came back to pair it with`,
+      !journalLinesOfKind(h, "outcome").some((o) => o.kind === "haiku_kind"), journalLinesOfKind(h, "outcome"));
+    const stampId = site.calls.length === 1 ? site.calls[0].stampId : null;
+    const gate = memoryGateDecisions(h);
+    check(`${label}: one memory_gate_fallback decision naming the reason, the stamp id and the split`,
+      gate.length === 1 && gate[0].action === "memory_gate_fallback" && gate[0].loop === "memory"
+        && detailHasToken(gate[0].detail, reason) && detailHasToken(gate[0].detail, `stamp ${stampId}`)
+        && detailHasToken(gate[0].detail, `split ${Journal.splitOf(stampId ?? "")}`),
+      gate);
+  }
+}
+
+async function caseMemoryGate_theQuestionNotLiveLeavesTheSiteAsToday(clock) {
+  console.log("\n=== Memory gate: with memory-kind not live, the site is Haiku then Jev in shadow, and no gate decision ===");
+  // jevMode off with memory-kind named: nothing is sent or journaled, Haiku
+  // runs as today, and no gate decision is logged. The key is present, so the
+  // silence is the kill switch rather than an absent key.
+  const off = await memoryGateHarness("memgate_off_named", clock, { jevMode: "off" });
+  off.setHttpResponse(jevMemoryAnswer(0.99));
+  await memoryGateTurn(off, clock, "t-memgate-off", "dev");
+  const offSite = memorySiteCalls(off);
+  check("memory gate off: no request left and no journal line was written",
+    off.httpCalls.length === 0 && journalLines(off).length === 0, { calls: off.httpCalls.length, lines: journalLines(off).length });
+  check("memory gate off: Haiku classified once and the distill ran once, storing the entry",
+    offSite.classify.length === 1 && offSite.complete.length === 1 && getState(off).memory.some((m) => m.text === MEMORY_GATE_DISTILLED),
+    { classify: offSite.classify.length, complete: offSite.complete.length });
+  check("memory gate off: no gate decision was logged",
+    memoryGateDecisions(off).length === 0, memoryGateDecisions(off));
+
+  // jevMode shadow with a live list that names another question, and a Jev
+  // that would skip at any floor. The gate is not read: Haiku runs, and Jev
+  // is asked in shadow with Haiku's value.
+  const unnamed = await memoryGateHarness("memgate_unnamed", clock, { jevLive: [Catalog.TURN_OPEN] });
+  unnamed.setHttpResponse(jevMemoryAnswer(0.99));
+  await memoryGateTurn(unnamed, clock, "t-memgate-unnamed", "dev");
+  const unnamedSite = memorySiteCalls(unnamed);
+  const shadowCall = unnamedSite.calls[0];
+  const shadowAnswer = shadowCall && journalLinesOfKind(unnamed, "answer").find((a) => a.callStampId === shadowCall.stampId);
+  check("memory gate unnamed control: the site's shadow request was answered with discard at 0.99 on a dev stamp",
+    unnamedSite.calls.length === 1 && shadowCall.mode === "shadow" && shadowCall.result === "ok" && Journal.splitOf(shadowCall.stampId) === "dev"
+      && shadowAnswer !== undefined && shadowAnswer.value === "discard" && shadowAnswer.probabilities.discard === 0.99,
+    { calls: unnamedSite.calls.map((c) => [c.mode, c.result]), answer: shadowAnswer });
+  check("memory gate unnamed: Haiku classified once and the distill ran once, storing the entry",
+    unnamedSite.classify.length === 1 && unnamedSite.complete.length === 1 && getState(unnamed).memory.some((m) => m.text === MEMORY_GATE_DISTILLED),
+    { classify: unnamedSite.classify.length, complete: unnamedSite.complete.length });
+  check("memory gate unnamed: the shadow answer carries Haiku's value, as today",
+    shadowAnswer !== undefined && shadowAnswer.haikuValue === "fact", shadowAnswer);
+  check("memory gate unnamed: no gate decision and no haiku_kind outcome",
+    memoryGateDecisions(unnamed).length === 0 && !journalLinesOfKind(unnamed, "outcome").some((o) => o.kind === "haiku_kind"),
+    { gate: memoryGateDecisions(unnamed), outcomes: journalLinesOfKind(unnamed, "outcome") });
+}
+
+async function caseMemoryGate_aTaskNotificationTurnMakesNoMemoryCall(clock) {
+  console.log("\n=== Memory gate: a turn opened by a task notification makes no memory call; one mentioning it is classified ===");
+  const NOTIFICATION = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n</task-notification>\nThe build passed.";
+  // A worker turn opened by `text` through the prompt hook, which is what sets
+  // the prompt the memory site reads.
+  const promptTurn = async (h, turnId, text) => {
+    clock.advance(1000);
+    await openPromptTurn(h, { originKind: null, text, turnId });
+    await h.handlers["turn.complete"](h.fake, { turnId, answer: "The build passed; I noted it.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+  };
+  // Whatever jevLive and jevMode say, and with the block after leading
+  // whitespace, the turn makes no memory call.
+  const configs = [
+    ["live", { }, NOTIFICATION],
+    ["unnamed", { jevLive: [] }, NOTIFICATION],
+    ["off", { jevMode: "off" }, NOTIFICATION],
+    ["leading_space", { }, `\n  ${NOTIFICATION}`],
+  ];
+  for (const [name, options, text] of configs) {
+    const h = await memoryGateHarness(`memgate_tasknote_${name}`, clock, options);
+    h.setHttpResponse(jevMemoryAnswer(0.5));
+    await promptTurn(h, `t-memgate-tasknote-${name}`, text);
+    const site = memorySiteCalls(h);
+    check(`memory gate task notification (${name}): no classify, no completion and no seam call at the memory site`,
+      site.classify.length === 0 && site.complete.length === 0 && site.requests.length === 0 && site.calls.length === 0,
+      { classify: site.classify.length, complete: site.complete.length, requests: site.requests.length, calls: site.calls.length });
+    const gate = memoryGateDecisions(h);
+    check(`memory gate task notification (${name}): one memory_skipped_task_notification decision and no gate decision`,
+      gate.length === 1 && gate[0].action === "memory_skipped_task_notification" && gate[0].loop === "memory", gate);
+    check(`memory gate task notification (${name}): nothing stored`,
+      getState(h).memory.length === 0, getState(h).memory);
+  }
+
+  // The other direction, on the same drive: a prompt that carries the block
+  // in its body rather than at its opening is an operator's message, and is
+  // classified as today. It is also the control for the absences above: the
+  // same prompt hook, turn and predicates, reading the memory site's calls.
+  for (const [name, options] of [["live", {}], ["unnamed", { jevLive: [] }]]) {
+    const h = await memoryGateHarness(`memgate_tasknote_body_${name}`, clock, options);
+    h.setHttpResponse(jevMemoryAnswer(0.5));
+    await promptTurn(h, `t-memgate-tasknote-body-${name}`, `Please remember I prefer tea. Here is what I saw:\n${NOTIFICATION}`);
+    const site = memorySiteCalls(h);
+    check(`memory gate task notification in the body (${name}): Haiku classified once, the distill ran and Jev was asked once at the site`,
+      site.classify.length === 1 && site.complete.length === 1 && site.requests.length === 1 && site.calls.length === 1,
+      { classify: site.classify.length, complete: site.complete.length, requests: site.requests.length, calls: site.calls.length });
+    check(`memory gate task notification in the body (${name}): no memory_skipped_task_notification decision`,
+      !getDecisions(h).some((d) => d.action === "memory_skipped_task_notification"), memoryGateDecisions(h));
+    check(`memory gate task notification in the body (${name}): the entry was stored`,
+      getState(h).memory.some((m) => m.text === MEMORY_GATE_DISTILLED), getState(h).memory.map((m) => m.text));
+  }
+}
+
+// The task-notification skip reads the text the turn opened with, recorded at
+// turn.start, not the last prompt the hook saw. A delivery turn the plugin
+// submits fires no prompt hook, so the prompt it would read is the
+// notification turn's before it. A subagent completing inside that turn resets
+// the turn's kind, so a kind test cannot stand in for the opening text either.
+async function caseMemoryGate_aDeliveryTurnAfterANotificationTurnIsClassified(clock) {
+  console.log("\n=== Memory gate: a delivery turn after a task notification turn is classified, not skipped ===");
+  clock.set(T0);
+  const now = T0;
+  const { h, key, id } = await seedOwnerWithPendingRecord("memgate_tasknote_then_delivery", now, "writer-mgtn",
+    { jevLive: [Catalog.MEMORY_KIND], stateOpts: { hasActiveLeaf: false } });
+  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  h.setClassifyValue(memoryGateClassify);
+  h.setCompleteValue(MEMORY_GATE_DISTILLED);
+  h.setHttpResponse(jevMemoryAnswer(0.5));
+  const NOTIFICATION = "<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>\n</task-notification>\nThe build passed.";
+  await openPromptTurn(h, { originKind: null, text: NOTIFICATION, turnId: "t-mgtn-note" });
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-mgtn-note", answer: "The build passed; I noted it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  check("memory gate delivery after notification: the notification turn itself was skipped (setup sanity)",
+    memoryGateDecisions(h).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(h));
+
+  const tick = fireTick(h);
+  const queued = await waitUntil(() => (h.promptSubmits || []).some((p) => p.startsWith(readerLabel(id))));
+  check("memory gate delivery after notification: the delivery was submitted (setup sanity)", queued, h.promptSubmits);
+  await h.handlers["turn.start"](h.fake, { turnId: "t-mgtn-delivery" }, async () => ({ result: "ok" }));
+  check("memory gate delivery after notification: the delivery's own turn took the stamp (setup sanity)",
+    readStoreRecord(h, key)?.turnId === "t-mgtn-delivery", readStoreRecord(h, key));
+  // A subagent the delivery turn dispatched completes inside it first.
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-mgtn-delivery", agentId: "sub-mgtn", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  const classifyBefore = memorySiteCalls(h).classify.length;
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-mgtn-delivery", answer: "Noted, you prefer tea.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  await tick;
+  check("memory gate delivery after notification: no memory_skipped_task_notification beyond the notification turn's, the subagent's completion included",
+    memoryGateDecisions(h).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(h));
+  check("memory gate delivery after notification: the delivery turn's own completion was classified by Haiku",
+    memorySiteCalls(h).classify.length === classifyBefore + 1,
+    { before: classifyBefore, after: memorySiteCalls(h).classify.length });
+
+  // A continuation after a notification turn opens with empty text, so it
+  // was not opened by a notification and is classified.
+  const c = await memoryGateHarness("memgate_tasknote_then_continuation", clock);
+  c.setHttpResponse(jevMemoryAnswer(0.5));
+  await openPromptTurn(c, { originKind: null, text: NOTIFICATION, turnId: "t-mgtn-c-note" });
+  await c.handlers["turn.complete"](c.fake, { turnId: "t-mgtn-c-note", answer: "The build passed; I noted it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  await c.handlers["turn.start"](c.fake, { turnId: "t-mgtn-c-cont", text: "" }, () => {});
+  await c.handlers["turn.complete"](c.fake, { turnId: "t-mgtn-c-cont", answer: "And the tests passed too.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  check("memory gate continuation after notification: only the notification turn was skipped",
+    memoryGateDecisions(c).filter((d) => d.action === "memory_skipped_task_notification").length === 1, memoryGateDecisions(c));
+  check("memory gate continuation after notification: the continuation was classified by Haiku once",
+    memorySiteCalls(c).classify.length === 1, { classify: memorySiteCalls(c).classify.length });
+}
+
+// A nudged turn is read as nudged at its own completion even after a subagent
+// it dispatched completes inside it. Each completion resets the turn's kind,
+// so the skip reads a flag the turn's start recorded, the way the
+// task-notification skip reads the turn's opening text. Run with memory-kind
+// live and not live, since the skip guards both paths. The subagent completes
+// once under its own id, the shape the harness sends, and once under the
+// parent's. A completion arriving after the nudged turn's own end is
+// classified, so the skip ends with the turn.
+async function caseMemoryGate_aNudgedTurnMakesNoMemoryCallAfterASubagentCompletes(clock) {
+  console.log("\n=== Memory gate: a nudged turn makes no memory call, a subagent completing inside it included ===");
+  for (const live of [true, false]) {
+    const label = `memory gate nudged turn (${live ? "memory-kind live" : "memory-kind not live"})`;
+    clock.set(T0);
+    const h = await lead3Harness(`memgate_nudged_${live ? "live" : "notlive"}`, {}, { jevLive: live ? [Catalog.MEMORY_KIND] : [] });
+    h.storeMap.set(`commons:${SESSION_ID}`, {
+      sessionId: SESSION_ID,
+      lastSeen: T0,
+      claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+    });
+    h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+    h.setHttpResponse(jevMemoryAnswer(0.5));
+    h.setCompleteValue(MEMORY_GATE_DISTILLED);
+    // The control: an ordinary turn reaches the memory site and Haiku classifies it.
+    await lead3Turn(h, "t-mgn-1", "Working on it.", { workTool: true });
+    await new Promise((r) => setTimeout(r, 60));
+    check(`${label} control: an ordinary turn was classified at the memory site`,
+      memorySiteCalls(h).classify.length === 1, { classify: memorySiteCalls(h).classify.length });
+    const idle = await lead3IdleTick(h, clock);
+    check(`${label} control: the idle tick nudged the entry`, idle.nudged === true, idle);
+    const before = memorySiteCalls(h);
+    await openQueuedTurn(h, "t-mgn-nudged");
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-sub-mgn-own", agentId: "sub-mgn-own", answer: "The subagent's own report.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-nudged", agentId: "sub-mgn", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-nudged", answer: "Still working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    const after = memorySiteCalls(h);
+    check(`${label}: neither the subagent's completion nor the nudged turn's own made a classify, a distill, a memory-kind request or a call line`,
+      after.classify.length === before.classify.length && after.complete.length === before.complete.length
+        && after.requests.length === before.requests.length && after.calls.length === before.calls.length,
+      { classify: [before.classify.length, after.classify.length], complete: [before.complete.length, after.complete.length],
+        requests: [before.requests.length, after.requests.length], calls: [before.calls.length, after.calls.length] });
+    // A completion after the nudged turn ended, for a turn this session never
+    // saw start, is not the nudged turn's and is classified.
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-mgn-unseen", answer: "Another report, later.", reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    check(`${label}: a completion after the nudged turn's end was classified at the memory site`,
+      memorySiteCalls(h).classify.length === after.classify.length + 1,
+      { before: after.classify.length, after: memorySiteCalls(h).classify.length });
   }
 }
 

@@ -61,6 +61,10 @@ console.log("ROSTER_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.fleetRoster !==
 console.log("ROSTER_DEV=" + (dev && dev.fleetRoster !== undefined ? dev.fleetRoster : "") + ";");
 console.log("ROSTER_INSTALLED=" + (inst && inst.fleetRoster !== undefined ? inst.fleetRoster : "") + ";");
 console.log("TICK_DEV=" + (dev ? dev.controllerTickMs : "") + ";");
+// The floor prints through JSON.stringify so its type shows: the plugin reads
+// only a number, and a string "85" would print quoted and match no leg.
+console.log("MGDP_DEV=" + (dev ? JSON.stringify(dev.memoryGateDiscardPercent) : "") + ";");
+console.log("MGDP_INSTALLED=" + (inst ? JSON.stringify(inst.memoryGateDiscardPercent) : "") + ";");
 // jevMode has no emitter default either, so it takes the same three-state
 // reading: an absent key and a key written empty are different states, and
 // an empty one is a present non-shadow value that would disable the seam on
@@ -210,6 +214,12 @@ check "emit_settings_json exits 0 with JEV_LIVE=turn-disposition" "$?"
 R=$(inspect "$TMP/jevliveemit.json")
 case "$R" in *'JEVLIVE_DEV="turn-disposition";'*'JEVLIVE_INSTALLED="turn-disposition";'*) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as the string turn-disposition under both ids" 0 ;; *) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as the string turn-disposition under both ids (out=$R)" 1 ;; esac
 
+# --- Section 2: emit_settings_json writes JEV_LIVE=memory-kind as a comma-separated string under both ids ---
+run_lib PERSONA="keyprobe" JEV_LIVE="memory-kind" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivememoryemit.json"
+check "emit_settings_json exits 0 with JEV_LIVE=memory-kind" "$?"
+R=$(inspect "$TMP/jevlivememoryemit.json")
+case "$R" in *'JEVLIVE_DEV="memory-kind";'*'JEVLIVE_INSTALLED="memory-kind";'*) check "emitted: JEV_LIVE=memory-kind reaches jevLive as the string memory-kind under both ids" 0 ;; *) check "emitted: JEV_LIVE=memory-kind reaches jevLive as the string memory-kind under both ids (out=$R)" 1 ;; esac
+
 # --- Section 2: surrounding whitespace on a JEV_LIVE member is trimmed ---
 run_lib PERSONA="keyprobe" JEV_LIVE=" turn-disposition " bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivespace.json"
 check "emit_settings_json exits 0 with a padded JEV_LIVE" "$?"
@@ -320,10 +330,44 @@ RC=$?
 case "$RC:$ERR" in 0:*) check "ensure_settings_jev_live refuses a JEV_LIVE carrying a newline" 1 ;; *"must not hold a control character"*) check "ensure_settings_jev_live refuses a JEV_LIVE carrying a newline, naming the control-character guard" 0 ;; *) check "ensure_settings_jev_live refuses a JEV_LIVE carrying a newline (rc=$RC, err=$ERR)" 1 ;; esac
 [ "$BEFORE" = "$(cat "$TMP/liverefusednewline.json")" ]; check "a JEV_LIVE carrying a newline leaves the provided file unchanged" "$?"
 
+# --- Section 2: ensure_settings_memory_gate_discard_percent carries the floor onto a provided file ---
+# bin/supervise.sh runs emit_settings_json only where the run directory holds
+# no settings file. Every persona that has ever launched holds one, so
+# without this leg a roster tuning the floor reaches nothing on any live
+# machine. $TMP/jevliveemit.json already carries memoryGateDiscardPercent=90,
+# the emitter's own default, so the case below proves an overwrite rather
+# than a fill.
+cp "$TMP/jevliveemit.json" "$TMP/mgdpprovided.json"
+run_lib memoryGateDiscardPercent=85 bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_memory_gate_discard_percent "$2"' _ "$ROOT" "$TMP/mgdpprovided.json"
+check "ensure_settings_memory_gate_discard_percent exits 0" "$?"
+R=$(inspect "$TMP/mgdpprovided.json")
+case "$R" in *"MGDP_DEV=85;"*"MGDP_INSTALLED=85;"*) check "provided: ensure_settings_memory_gate_discard_percent overwrites 90 with 85 under both ids, as a number" 0 ;; *) check "provided: ensure_settings_memory_gate_discard_percent overwrites 90 with 85 under both ids, as a number (out=$R)" 1 ;; esac
+
+# --- Section 2: an unset memoryGateDiscardPercent leaves a provided file exactly as it was ---
+# A launch that says nothing about the floor must not clear a hand-edited one.
+cp "$TMP/jevliveemit.json" "$TMP/mgdpuntouched.json"
+BEFORE=$(cat "$TMP/mgdpuntouched.json")
+run_lib bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_memory_gate_discard_percent "$2"' _ "$ROOT" "$TMP/mgdpuntouched.json"
+check "ensure_settings_memory_gate_discard_percent exits 0 with memoryGateDiscardPercent unset" "$?"
+[ "$BEFORE" = "$(cat "$TMP/mgdpuntouched.json")" ]; check "provided: an unset memoryGateDiscardPercent leaves the file byte-identical" "$?"
+
+# --- Section 2: ensure_settings_memory_gate_discard_percent refuses a non-digit value ---
+# The two branches must agree about what a bad value means, or an operator
+# gets a refusal on a fresh run directory and a silent write on an old one.
+# bin/supervise.sh's own startup check already refuses this before the
+# provided branch runs, so this is the helper's own defensive guard, mirrored
+# on ensure_settings_jev_mode's off|shadow check.
+cp "$TMP/jevliveemit.json" "$TMP/mgdprefused.json"
+BEFORE=$(cat "$TMP/mgdprefused.json")
+ERR=$(run_lib memoryGateDiscardPercent=abc bash -c 'source "$1/bin/agentic-common.sh" && ensure_settings_memory_gate_discard_percent "$2"' _ "$ROOT" "$TMP/mgdprefused.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "ensure_settings_memory_gate_discard_percent refuses memoryGateDiscardPercent=abc" 1 ;; *"must be digits only"*) check "ensure_settings_memory_gate_discard_percent refuses memoryGateDiscardPercent=abc" 0 ;; *) check "ensure_settings_memory_gate_discard_percent refuses memoryGateDiscardPercent=abc (rc=$RC, err=$ERR)" 1 ;; esac
+[ "$BEFORE" = "$(cat "$TMP/mgdprefused.json")" ]; check "a refused memoryGateDiscardPercent leaves the provided file unchanged" "$?"
+
 # --- Section 2: the bash promotable list cannot drift from the catalog ---
-# PROMOTABLE_SET_IDS names its two ids by constant (TURN_OPEN, TURN_DISPOSITION),
-# not by string literal on its own line, so this resolves the constants the
-# array names rather than grepping for "turn-open" and "turn-disposition",
+# PROMOTABLE_SET_IDS names its ids by constant (TURN_OPEN, TURN_DISPOSITION,
+# MEMORY_KIND), not by string literal on its own line, so this resolves the
+# constants the array names rather than grepping for their string values,
 # which do not appear next to PROMOTABLE_SET_IDS in the source at all.
 catalog_ids() {
   node -e '
@@ -354,25 +398,26 @@ case "$RESULT" in MATCH) check "the bash promotable list matches PROMOTABLE_SET_
 # Control: withhold the drift from the pattern's own literals by editing a
 # scratch copy of the catalog under $TMP rather than the real file, and
 # confirm the same comparison actually reddens when the two lists disagree.
-# Run against the same BASH_PROMOTABLE_LIST (still just the two real ids), so
+# Run against the same BASH_PROMOTABLE_LIST (still just the real ids), so
 # a bash list that silently matched anything would report MATCH here too.
 node -e '
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
 // Read the array the same relaxed way catalog_ids() above does, rather than
 // matching the whole declaration line verbatim, so this fixture survives a
-// reformat of that line or a real third id added for its own reason.
+// reformat of that line or a real id added for its own reason. Appends one
+// id beyond whatever the array already holds, whatever its length.
 const re = /export const PROMOTABLE_SET_IDS[\s\S]*?Object\.freeze\(\[([^\]]*)\]\)/;
 const m = src.match(re);
 if (!m) { console.error("control fixture: the PROMOTABLE_SET_IDS array did not match, so no drift was injected"); process.exit(1); }
-const injected = m[0].replace(m[1], m[1] + ", THIRD_ID");
-const out = src.slice(0, m.index) + "export const THIRD_ID = \"third-id\";\n" + injected + src.slice(m.index + m[0].length);
+const injected = m[0].replace(m[1], m[1] + ", EXTRA_ID");
+const out = src.slice(0, m.index) + "export const EXTRA_ID = \"extra-id\";\n" + injected + src.slice(m.index + m[0].length);
 if (out === src) { console.error("control fixture: the PROMOTABLE_SET_IDS array did not change, so no drift was injected"); process.exit(1); }
 fs.writeFileSync(process.argv[2], out);
 ' "$ROOT/hooks/question-catalog.ts" "$TMP/question-catalog-drift.ts"
-check "control fixture: a third id was injected into a scratch copy of the catalog" "$?"
+check "control fixture: an extra id was injected into a scratch copy of the catalog" "$?"
 DRIFT_RESULT=$(catalog_ids "$TMP/question-catalog-drift.ts" "$BASH_PROMOTABLE_LIST")
-case "$DRIFT_RESULT" in MISMATCH:*) check "control: the pin reddens when the catalog names a third id the bash list lacks ($DRIFT_RESULT)" 0 ;; *) check "control: the pin reddens when the catalog names a third id the bash list lacks ($DRIFT_RESULT)" 1 ;; esac
+case "$DRIFT_RESULT" in MISMATCH:*) check "control: the pin reddens when the catalog names an id beyond the bash list ($DRIFT_RESULT)" 0 ;; *) check "control: the pin reddens when the catalog names an id beyond the bash list ($DRIFT_RESULT)" 1 ;; esac
 
 # --- emit_settings_json writes architectPersona under both ids ---
 # The name vellum is withheld from every literal the emitter carries, so the
@@ -741,6 +786,25 @@ RC=$?
 [ "$RC" -eq 2 ]; check "driven supervise.sh with controllerTickMs=60000 stops at the gate (rc=$RC)" "$?"
 R=$(inspect "$TMP/rd-tick/settings.json")
 case "$R" in *"TICK_DEV=60000;"*) check "supervise.sh emits controllerTickMs into the settings file (out=$R)" 0 ;; *) check "supervise.sh emits controllerTickMs into the settings file (out=$R)" 1 ;; esac
+
+# --- memoryGateDiscardPercent reaches the emitted settings file, default and override ---
+# A fresh rundir with no settings.json and no memoryGateDiscardPercent in the
+# environment takes the emit branch's own default of 90, the floor an absent
+# roster field leaves in force.
+mkdir -p "$TMP/rd-mgdp-default"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-mgdp-default" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "driven supervise.sh with no memoryGateDiscardPercent stops at the gate (rc=$RC)" "$?"
+R=$(inspect "$TMP/rd-mgdp-default/settings.json")
+case "$R" in *"MGDP_DEV=90;"*"MGDP_INSTALLED=90;"*) check "supervise.sh emits the memoryGateDiscardPercent default of 90 under both ids (out=$R)" 0 ;; *) check "supervise.sh emits the memoryGateDiscardPercent default of 90 under both ids (out=$R)" 1 ;; esac
+mkdir -p "$TMP/rd-mgdp"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" memoryGateDiscardPercent=85 \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-mgdp" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "driven supervise.sh with memoryGateDiscardPercent=85 stops at the gate (rc=$RC)" "$?"
+R=$(inspect "$TMP/rd-mgdp/settings.json")
+case "$R" in *"MGDP_DEV=85;"*"MGDP_INSTALLED=85;"*) check "supervise.sh emits memoryGateDiscardPercent=85 into the settings file under both ids (out=$R)" 0 ;; *) check "supervise.sh emits memoryGateDiscardPercent=85 into the settings file under both ids (out=$R)" 1 ;; esac
 # That same emitted file is a launch with no ARCHITECT_PERSONA in its
 # environment, so it carries no architect setting for the plugin or for a
 # later launch to read back.

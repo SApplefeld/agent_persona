@@ -354,8 +354,10 @@ function createFake$(opts = {}) {
         const v = typeof classifyValue === "function" ? classifyValue(...args) : classifyValue;
         return Promise.resolve(v);
       },
-      complete() {
-        completeCalls.push(1);
+      // Records the call's own arguments, as classify does, so a case can tell
+      // which site made a completion by the prompt it carried.
+      complete(...args) {
+        completeCalls.push(args);
         return Promise.resolve(completeValue);
       },
     },
@@ -597,12 +599,13 @@ function journalLinesOfKind(h, lineKind) {
 }
 
 // An HttpResponse-shaped answer to one Choice question, the shape the seam
-// validates. `choice` is the option id Jev picked; the distribution puts the
-// whole mass on it, which is a well-formed answer and not a claim about what
-// Jev would really return.
-function jevChoiceResponse(questionId, choice, optionIds) {
+// validates. `choice` is the option id Jev picked and `pOnChoice` the
+// probability it carries, the whole mass by default; the rest is spread
+// evenly over the other ids. That is a well-formed answer and not a claim
+// about what Jev would really return.
+function jevChoiceResponse(questionId, choice, optionIds, pOnChoice = 1) {
   const probabilities = {};
-  for (const id of optionIds) probabilities[id] = id === choice ? 1 : 0;
+  for (const id of optionIds) probabilities[id] = id === choice ? pOnChoice : (1 - pOnChoice) / (optionIds.length - 1);
   return {
     status: 200,
     ok: true,

@@ -4,6 +4,7 @@
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
 #           ensure_settings_plugin_ids, ensure_settings_arming,
 #           ensure_settings_jev_mode, ensure_settings_jev_live,
+#           ensure_settings_memory_gate_discard_percent,
 #           jev_live_to_csv, settings_path_json,
 #           read_settings_coordinator_persona,
 #           read_settings_architect_persona,
@@ -84,12 +85,12 @@ settings_path_json() {
 }
 
 # --- JEV_PROMOTABLE_SET_IDS ---
-# The two question-set ids a JEV_LIVE value may name, typed once here so the
+# The three question-set ids a JEV_LIVE value may name, typed once here so the
 # two callers of jev_live_to_csv below cannot disagree about which ids
 # are promotable, and so .kit/settings-plugin-key-test.sh can pin this list
 # against hooks/question-catalog.ts's PROMOTABLE_SET_IDS, the plugin's own
-# copy of the same two ids.
-JEV_PROMOTABLE_SET_IDS=(turn-open turn-disposition)
+# copy of the same three ids.
+JEV_PROMOTABLE_SET_IDS=(turn-open turn-disposition memory-kind)
 
 # --- jev_live_to_csv ---
 # Usage: jev_live_to_csv <caller-name> <comma-separated ids>
@@ -113,7 +114,7 @@ JEV_PROMOTABLE_SET_IDS=(turn-open turn-disposition)
 # where a trimmed member is not one of JEV_PROMOTABLE_SET_IDS. A quote always
 # misses that fixed set, so this membership check is also the
 # hostile-boundary guard: no member printed by this function can ever be
-# anything but one of the two literal ids, so nothing it prints can break out
+# anything but one of the literal ids in JEV_PROMOTABLE_SET_IDS, so nothing it prints can break out
 # of the JSON string emit_settings_json splices it into. On success prints
 # the surviving members joined by commas with no padding and no quotes, the
 # shape the manifest declares for jevLive (e.g. turn-open,turn-disposition),
@@ -151,7 +152,8 @@ jev_live_to_csv() {
 # Usage: emit_settings_json <output-file>
 # Emits the settings.json JSON for the --settings flag.
 # Carries: controllerTickMs, nudgeIdleMs, nudgeFloorMs, gitProbeMs, heartbeatMs,
-#          staleAfterMs, arming (always "owner": every supervisor launch is an owner),
+#          staleAfterMs, memoryGateDiscardPercent (default 90),
+#          arming (always "owner": every supervisor launch is an owner),
 #          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator")
 #          and architectPersona (from ARCHITECT_PERSONA, which has no default:
 #          the key is omitted where the variable is unset or empty),
@@ -222,7 +224,7 @@ emit_settings_json() {
     esac
     recap_opts=",\"restartRecap\":\"$RESTART_RECAP\""
   fi
-  # jevLive names, by id, which of the two questions PROMOTABLE_SET_IDS ships
+  # jevLive names, by id, which questions PROMOTABLE_SET_IDS ships
   # may read Jev's live answer; empty by default, so a fresh install promotes
   # nothing. An unset or empty JEV_LIVE omits the key, the same "leave it out"
   # state jevMode's own check above uses, rather than writing an empty string
@@ -248,6 +250,7 @@ emit_settings_json() {
   # way).
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
+    MEMORY_GATE_DISCARD_PERCENT \
     SELF_REVIEW_EVERY_TURNS COST_SUMMARY_EVERY_N_TICKS \
     COST_MAX_NUDGES_PER_HOUR COST_MAX_PLUGIN_CALLS_PER_HOUR COST_BACKOFF_AFTER_TICKS COST_BACKOFF_MAX_MS; do
     case "${!var:-0}" in
@@ -354,7 +357,7 @@ emit_settings_json() {
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$jev_opts$recap_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt$supervisor_opts}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000},\"memoryGateDiscardPercent\":${MEMORY_GATE_DISCARD_PERCENT:-90}$self_review_opts$cost_opts$jev_opts$recap_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt$supervisor_opts}"
   # autoContinue is the harness's own setting, at the top level rather than
   # under a plugin id. Off, a child that trips a usage limit ends its turn and
   # sits idle rather than parking until the limit resets, and the supervisor's
@@ -606,6 +609,65 @@ try {
 }
 ' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "$ids_csv"
 }
+# --- ensure_settings_memory_gate_discard_percent ---
+# Usage: ensure_settings_memory_gate_discard_percent <settings-file>
+# Sibling to ensure_settings_jev_mode for the memory gate's confidence floor.
+# Keyed on the raw roster variable, memoryGateDiscardPercent, and not on
+# MEMORY_GATE_DISCARD_PERCENT, the defaulted 90 bin/supervise.sh reads for
+# itself: that defaulted variable is always set, so keying on it would
+# overwrite a value the operator wrote into the file by hand with the default
+# on every launch that names none in the roster. Where memoryGateDiscardPercent
+# is unset or empty the file is left alone, so a hand-edited floor survives a
+# launch that says nothing about it. Where it is set, bin/supervise.sh has
+# already checked it is a whole number in 50 to 100 before this runs, but the
+# value is still held to digits here, the same defensive posture
+# ensure_settings_jev_mode's own off|shadow check takes on JEV_MODE, since it
+# is spliced into the file as a JSON number rather than a quoted string. The
+# file is replaced by rename, same as its siblings, so an interrupted write
+# never leaves it truncated.
+ensure_settings_memory_gate_discard_percent() {
+  if [ -z "${memoryGateDiscardPercent:-}" ]; then
+    return 0
+  fi
+  case "$memoryGateDiscardPercent" in
+    ''|*[!0-9]*)
+      echo "ERROR: ensure_settings_memory_gate_discard_percent: memoryGateDiscardPercent '$memoryGateDiscardPercent' must be digits only" >&2
+      return 1
+      ;;
+  esac
+  node -e '
+const fs = require("fs");
+const [file, devId, installedId, value] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: ensure_settings_memory_gate_discard_percent: " + file + " " + msg); process.exit(1); };
+const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+let s;
+try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
+if (!plain(s)) fail("is not a JSON object");
+let changed = false;
+const n = Number(value);
+if (s.pluginConfigs === undefined) { s.pluginConfigs = {}; changed = true; }
+const pc = s.pluginConfigs;
+if (!plain(pc)) fail("has a pluginConfigs value that is not an object");
+for (const id of [devId, installedId]) {
+  if (pc[id] === undefined) { pc[id] = {}; changed = true; }
+  if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
+  if (pc[id].options === undefined) { pc[id].options = {}; changed = true; }
+  const opts = pc[id].options;
+  if (!plain(opts)) fail("has " + id + " options that are not an object");
+  if (opts.memoryGateDiscardPercent !== n) { opts.memoryGateDiscardPercent = n; changed = true; }
+}
+if (!changed) process.exit(0);
+const tmp = file + ".tmp-" + process.pid;
+try {
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, file);
+} catch (e) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  fail("could not be rewritten: " + e.message);
+}
+' "$1" "$AGENTIC_PLUGIN_DEV_ID" "$AGENTIC_PLUGIN_INSTALLED_ID" "$memoryGateDiscardPercent"
+}
+
 # --- read_settings_coordinator_persona ---
 # Usage: read_settings_coordinator_persona <settings-file> <dev_mode: 0|1>
 # For a settings file the caller already provided: prints the coordinator

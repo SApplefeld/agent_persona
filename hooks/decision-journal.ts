@@ -126,14 +126,19 @@ export const SEGMENT_MAX = 64;
 // includes every call while the question is not live and every call that failed;
 // or `none` where the record expired first.
 //
+// The last belongs to the memory-kind question asked live. A `haiku_kind` is
+// the label Haiku gave the same exchange on a call the gate passed through to
+// Haiku, so the journal holds Jev's answer and Haiku's for one input, as a
+// shadow answer line's `haikuValue` does.
+//
 // The union and the array carry the same members in the same order: a member
 // in the union alone compiles and is refused by writeOutcome at runtime.
 export type OutcomeKind =
   | "next_score" | "ask_marker" | "lead_blocked" | "chapter_within" | "next_speaker" | "continued_unprompted"
-  | "record_delivered_within" | "next_prompt_kind";
+  | "record_delivered_within" | "next_prompt_kind" | "haiku_kind";
 export const OUTCOME_KINDS: readonly OutcomeKind[] = [
   "next_score", "ask_marker", "lead_blocked", "chapter_within", "next_speaker", "continued_unprompted",
-  "record_delivered_within", "next_prompt_kind",
+  "record_delivered_within", "next_prompt_kind", "haiku_kind",
 ];
 
 // The value every `ask_marker` outcome line carries, whatever the caller passes.
