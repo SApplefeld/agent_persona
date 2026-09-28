@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import "./tick-harness.mjs";
 import {
   QUESTIONS, DROP_REASONS, readJournal, indexCalls, resolveState, indexTranscripts, turnsOf, turnBefore,
-  opensTurn, toolActivityText, buildCandidates, stratify,
+  opensTurn, toolActivityText, buildCandidates, stratify, personaKey, PERSONA_ALIASES,
 } from "./jev-gold/sample.mjs";
 import {
   CLI_FLAGS, rubricText, rubricLabels, labellerView, checkBatch, cohensKappa, kappaLine,
@@ -119,6 +119,8 @@ try {
     check("a tool result does not", !opensTurn(u({}, [{ type: "tool_result", content: "x" }])));
     check("a skill's loaded body does not", !opensTurn(u({}, "Base directory for this skill: C:/x")));
     check("a local command echo does not", !opensTurn(u({}, "<local-command-stdout>x</local-command-stdout>")));
+    check("an interruption notice does not", !opensTurn(u({}, [{ type: "text", text: "[Request interrupted by user]" }])) &&
+      !opensTurn(u({}, "[Request interrupted by user for tool use]")));
 
     const turns = turnsOf(path.join(PROJECTS, "D--work-alpha", "s-alpha.jsonl"));
     check("the alpha fixture splits into three turns", turns.length === 3, turns.map((t) => t.promptAt));
@@ -185,7 +187,7 @@ try {
       ts.admitted + Object.values(ts.dropped).reduce((s, v) => s + v, 0) === journal.calls.length, ts);
     check("the drop reasons are the closed set", same(Object.keys(ts.dropped), DROP_REASONS), Object.keys(ts.dropped));
     check("turn-score admits three and drops by reason as the fixture is built",
-      ts.admitted === 3 && same(ts.dropped, { other_site: 3, split: 1, no_answer: 1, state_unresolved: 1, no_transcript_turn: 3 }), ts.dropped);
+      ts.admitted === 3 && same(ts.dropped, { other_site: 3, split: 1, no_answer: 1, state_unresolved: 1, no_transcript_turn: 2, answer_mismatch: 1 }), ts.dropped);
     const byAt = new Map(ts.candidates.map((c) => [c.at, c]));
     const a1 = byAt.get("2026-01-01T10:00:05.000Z");
     const a2 = byAt.get("2026-01-01T10:00:30.000Z");
@@ -214,9 +216,25 @@ try {
     const bo = buildCandidates(journal, transcripts, "block-owner", "dev");
     check("the plan-health call joins its block-owner answer rather than the other two",
       bo.admitted === 1 && bo.candidates[0].jev.value === "operator" && bo.candidates[0].haikuValue === null, bo.candidates[0] && bo.candidates[0].jev);
-    check("a plan-health call whose closing text is not the joined turn's is counted as its turn missing",
-      bo.dropped.no_transcript_turn === 1 && bo.candidates[0].at === "2026-01-01T10:00:06.000Z", bo.dropped);
+    check("a plan-health call whose closing text is not the joined turn's is counted as an answer mismatch, not a lost transcript",
+      bo.dropped.answer_mismatch === 1 && bo.dropped.no_transcript_turn === 0 && bo.candidates[0].at === "2026-01-01T10:00:06.000Z", bo.dropped);
     check("the last call of a persona at a site has no hindsight", bo.candidates[0].hindsight === null, bo.candidates[0].hindsight);
+
+    // Persona identity: one persona spelt in two cases, or under the alias
+    // the sampler names, is one persona for the joins, the strata and the cap.
+    check("a persona name folds to lower case", personaKey("DEV-DISCORD") === "dev-discord" && personaKey("dev-discord") === "dev-discord");
+    check("the named alias folds dev into dev-persona", personaKey("dev") === "dev-persona" && personaKey("DEV-PERSONA") === "dev-persona" && PERSONA_ALIASES.dev === "dev-persona");
+    check("control: a persona with no alias keeps its folded name", personaKey("Steward") === "steward");
+    const mixed = { ...journal, calls: journal.calls.map((c) => (c.at === "2026-01-01T10:00:30.000Z" ? { ...c, persona: "ALPHA" } : c)) };
+    const tm = buildCandidates(mixed, transcripts, "turn-score", "dev");
+    const m1 = tm.candidates.find((c) => c.at === "2026-01-01T10:00:05.000Z");
+    const m2 = tm.candidates.find((c) => c.at === "2026-01-01T10:00:30.000Z");
+    check("the hindsight join crosses a case-only spelling of the persona",
+      m1 && m1.hindsight && m1.hindsight.at === "2026-01-01T10:00:30.000Z", m1 && m1.hindsight);
+    check("a case-only spelling lands in the same persona and stratum, with its own spelling kept",
+      m2 && m2.persona === "alpha" && m2.stratum === "alpha|drift" && m2.personaRaw === "ALPHA", m2 && [m2.persona, m2.stratum, m2.personaRaw]);
+    check("the cap counts both spellings as one persona",
+      stratify(Array.from({ length: 10 }, (_, i) => ({ stampId: `c${i}`, at: `t${i}`, persona: personaKey(i % 2 ? "P" : "p"), stratum: `${personaKey(i % 2 ? "P" : "p")}|x`, jev: { value: "x", version: "v1" } })), 10, 7).records.length === 4);
 
     const out = path.join(TMP, "sample-ts");
     const r = run(SAMPLE, ["--question", "turn-score", "--journal", JOURNAL, "--projects", PROJECTS, "--out", out]);
@@ -282,9 +300,19 @@ try {
   // --- What a labeller sees and what it must return ---
   console.log("\nlabeller input and reply checks");
   {
-    const rec = { id: "x1", state: "S", transcript: { prompt: "P", finalMessage: "F", toolActivity: "T" }, outcomes: [{ kind: "next_score", value: "drift", at: "t" }], hindsight: { at: "t", state: "N" }, jev: { value: "nudge" }, haikuValue: "nudge" };
+    // A controller record whose next state records the conversion the
+    // controller makes only on Haiku's ask-operator or pause.
+    const nowState = "Objective: O\nIdle time: 4min\nDecisions tail: goal:score, monitor:nudge_sent\nMemory: 1 entries (self-review lessons: 0)\n";
+    const nextState = "Objective: O\nIdle time: 1min\nDecisions tail: monitor:controller_tick, monitor:ask_idle_gap_converted\nMemory: 1 entries (self-review lessons: 0)\n";
+    const rec = { id: "x1", question: "controller-decision", site: "controller", state: nowState, transcript: { prompt: "P", finalMessage: "F", toolActivity: "T" }, outcomes: [{ kind: "next_score", value: "drift", at: "t" }], hindsight: { at: "t", state: nextState }, jev: { value: "JEV-VALUE" }, haikuValue: "HAIKU-VALUE" };
     const view = labellerView(rec);
-    check("a labeller sees neither Jev's answer nor Haiku's", !JSON.stringify(view).includes("nudge") && !("jev" in view) && !("haikuValue" in view), view);
+    check("the controller's hindsight carries no decisions tail, so no Haiku-driven conversion reaches a labeller",
+      !view.next_state.includes("Decisions tail") && !view.next_state.includes("ask_idle_gap_converted") &&
+      view.next_state === "Objective: O\nIdle time: 1min\nMemory: 1 entries (self-review lessons: 0)\n", view.next_state);
+    check("the current state reaches the labeller as Jev saw it, tail included", view.state === nowState, view.state);
+    const tsRec = { ...rec, question: "turn-score", site: "turn-score", state: "User asked: p\n\nWorker answered: a\n\nGoal objective: o", hindsight: { at: "t", state: "User asked: q\n\nWorker answered: Decisions tail: b\n\nGoal objective: o" } };
+    check("control: a turn-score hindsight is passed whole", labellerView(tsRec).next_state === tsRec.hindsight.state, labellerView(tsRec).next_state);
+    check("a labeller sees neither Jev's answer nor Haiku's", !JSON.stringify(view).includes("-VALUE") && !("jev" in view) && !("haikuValue" in view), view);
     check("a labeller sees the state, the transcript fields and the hindsight, and no outcome",
       same(Object.keys(view), ["id", "state", "opening_prompt", "final_message", "tool_activity", "next_state"]) && !JSON.stringify(view).includes("next_score"),
       Object.keys(view));
@@ -303,6 +331,11 @@ try {
     try { checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "drift" }, { id: "r9", label: "drift" }], allowed); } catch (e) { err = e.message; }
     check("a reply naming a record outside the batch is refused", err !== null && err.includes("r9"), err);
     check("control: a whole reply passes", checkBatch(recs, [{ id: "r2", label: "drift" }, { id: "r1", label: "on-goal" }], allowed).map((l) => l.id).join() === "r1,r2");
+    err = null;
+    try { checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "drift" }, { id: "r1", label: "drift" }], allowed); } catch (e) { err = e.message; }
+    check("a reply giving one record two different labels is refused, naming it", err !== null && err.includes("r1") && err.includes("drift"), err);
+    check("a reply repeating a record with the same label passes",
+      checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "drift" }, { id: "r1", label: "on-goal" }], allowed).map((l) => l.label).join() === "on-goal,drift");
   }
 
   // --- Kappa ---

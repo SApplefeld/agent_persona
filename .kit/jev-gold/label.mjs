@@ -85,19 +85,33 @@ export function rubricLabels(text) {
 
 // --- What a labeller sees ---
 
+// The controller state's line naming its last five decision records
+// (hooks/index.ts, the controller's `summary`). In the next call's state it
+// records what the controller did with Haiku's answer to this one:
+// `ask_idle_gap_converted` is written only on Haiku's ask-operator or pause,
+// `complete_ignored` and `completed_by_controller` only on its complete, and
+// the switch records only on its switch.
+const DECISIONS_TAIL_LINE = /^Decisions tail: .*(?:\r?\n|$)/m;
+
 // A sample record cut to the fields a labeller reads. Jev's answer, Haiku's
-// value and every probability are left out, so neither labeller sees what
-// the judges being graded said. The outcome lines are left out too: a later
-// section scores its questions against them, and gold labelled from them
-// would copy the measure it is read against.
+// value and every probability are left out. The outcome lines are left out:
+// a later section scores its questions against them, and gold labelled from
+// them would copy the measure it is read against. The controller's hindsight
+// loses its decisions tail, which carries what the controller did with
+// Haiku's answer; the current state keeps it, as Jev saw it. What stays can
+// still reflect Haiku's answer indirectly: a next state on another goal
+// follows a complete or a switch as well as a worker's own goal_done, and the
+// turn-score and block-owner hindsight is passed whole.
 export function labellerView(record) {
+  let nextState = record.hindsight ? record.hindsight.state : null;
+  if (typeof nextState === "string" && record.question === "controller-decision") nextState = nextState.replace(DECISIONS_TAIL_LINE, "");
   return {
     id: record.id,
     state: record.state,
     opening_prompt: record.transcript.prompt,
     final_message: record.transcript.finalMessage,
     tool_activity: record.transcript.toolActivity,
-    next_state: record.hindsight ? record.hindsight.state : null,
+    next_state: nextState,
   };
 }
 
@@ -178,7 +192,8 @@ export function parseReply(stdout) {
 }
 
 // One batch's labels, checked against its records: every id present, no id
-// outside the batch, every label one the rubric offers. A failure throws,
+// outside the batch, no id given two different labels, every label one the
+// rubric offers. A failure throws,
 // and the caller names the batch.
 export function checkBatch(records, labels, allowed) {
   const want = new Set(records.map((r) => r.id));
@@ -187,7 +202,11 @@ export function checkBatch(records, labels, allowed) {
     if (!l || typeof l.id !== "string") continue;
     if (!want.has(l.id)) throw new Error(`the reply names a record outside the batch: ${l.id}`);
     if (!allowed.includes(l.label)) throw new Error(`record ${l.id} carries a label the rubric does not offer: ${String(l.label)}`);
-    if (!got.has(l.id)) got.set(l.id, l);
+    // A record labelled twice alike is one label; labelled twice apart, the
+    // reply names no label for it, which is a missing record.
+    const prior = got.get(l.id);
+    if (prior && prior.label !== l.label) throw new Error(`the reply gives record ${l.id} two labels: ${prior.label} and ${l.label}`);
+    if (!prior) got.set(l.id, l);
   }
   const missing = records.filter((r) => !got.has(r.id)).map((r) => r.id);
   if (missing.length > 0) throw new Error(`the reply is missing ${missing.length} record(s): ${missing.join(", ")}`);

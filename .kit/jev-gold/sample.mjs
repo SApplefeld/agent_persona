@@ -44,8 +44,29 @@ export const PROMPT_MAX = 3000;
 export const FINAL_MAX = 4000;
 
 // The reasons a call is not admitted, in the order they are tested. A call
-// is counted under the first that applies.
-export const DROP_REASONS = Object.freeze(["other_site", "split", "no_answer", "state_unresolved", "no_transcript_turn"]);
+// is counted under the first that applies. `no_transcript_turn` is a call
+// with no transcript turn ended before it; `answer_mismatch` is one whose
+// state's answer text is not the final message of the turn that did end
+// before it, so its own turn is not the one on disk.
+export const DROP_REASONS = Object.freeze(["other_site", "split", "no_answer", "state_unresolved", "no_transcript_turn", "answer_mismatch"]);
+
+// --- Persona identity ---
+
+// One persona under another name. The journal's `dev/` folder holds 8 files,
+// all dated 2026-09-21, with 236 calls under the persona `dev`, and the
+// `DEV-PERSONA/` folder starts on 2026-09-21; both persona's transcripts sit
+// under the one project folder D--agent-persona. So `dev` is the dev persona
+// before it was renamed. Keys and values are folded names.
+export const PERSONA_ALIASES = Object.freeze({ dev: "dev-persona" });
+
+// The identity the sampler keys a persona on: its name folded to lower case,
+// then through PERSONA_ALIASES. The journal spells one persona in two cases
+// within one folder (`dev-discord/` holds both DEV-DISCORD and dev-discord),
+// so the raw name would split one persona's calls across two identities.
+export function personaKey(name) {
+  const folded = String(name).toLowerCase();
+  return Object.hasOwn(PERSONA_ALIASES, folded) ? PERSONA_ALIASES[folded] : folded;
+}
 
 // --- Seeded randomness ---
 
@@ -173,16 +194,19 @@ const TURN_OPENING_META_ORIGINS = new Set(["channel", "peer"]);
 
 // Whether a transcript entry opens a main-thread turn: a user entry off the
 // sidechain that is not a tool result, not a compaction summary, not a local
-// command echo or a skill's loaded body, and not meta unless its origin is one
-// of the two above. Every other meta entry (a skill body, stop hook feedback,
-// a re-invocation notice) lands inside a turn already open.
+// command echo, a skill's loaded body or an interruption notice, and not
+// meta unless its origin is one of the two above. Every other meta entry (a
+// skill body, stop hook feedback, a re-invocation notice) lands inside a turn
+// already open. An interruption notice ("[Request interrupted ...") records
+// that the running turn was stopped, and the next prompt opens the next turn.
 export function opensTurn(entry) {
   if (!entry || entry.type !== "user" || entry.isSidechain || entry.isCompactSummary) return false;
   const content = entry.message && entry.message.content;
   if (hasToolResult(content)) return false;
   if (entry.isMeta && !(entry.origin && TURN_OPENING_META_ORIGINS.has(entry.origin.kind))) return false;
   const t = textOf(content).trim();
-  if (!t || t.startsWith("<local-command") || t.startsWith("<command-name>") || t.slice(0, 200).includes("Base directory for this skill")) return false;
+  if (!t || t.startsWith("<local-command") || t.startsWith("<command-name>") || t.startsWith("[Request interrupted") ||
+    t.slice(0, 200).includes("Base directory for this skill")) return false;
   return true;
 }
 
@@ -390,7 +414,7 @@ export function buildCandidates(journal, transcripts, question, split) {
   // over every file, in `at` order.
   const nextOf = new Map();
   const bySitePersona = new Map();
-  for (const c of journal.calls) push(bySitePersona, `${c.site}\u0000${c.persona}`, c);
+  for (const c of journal.calls) push(bySitePersona, `${c.site}\u0000${personaKey(c.persona)}`, c);
   for (const list of bySitePersona.values()) {
     list.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0));
     for (let i = 0; i + 1 < list.length; i++) nextOf.set(list[i], list[i + 1]);
@@ -416,14 +440,19 @@ export function buildCandidates(journal, transcripts, question, split) {
     // to whichever turn ended before it. The controller's state carries no
     // answer text, so its join rests on timing alone.
     const answerText = stateAnswerText(call.site, resolved.state);
-    if (!turn || (answerText !== null && !turnProducedAnswer(turn, answerText))) { dropped.no_transcript_turn += 1; continue; }
+    if (!turn) { dropped.no_transcript_turn += 1; continue; }
+    if (answerText !== null && !turnProducedAnswer(turn, answerText)) { dropped.answer_mismatch += 1; continue; }
     const next = nextOf.get(call) || null;
     const nextResolved = next ? resolveState(next, byFileAndStamp) : null;
     const haikuValue = typeof answer.haikuValue === "string" ? answer.haikuValue : null;
+    const persona = personaKey(call.persona);
     candidates.push({
       stampId: call.stampId,
       question,
-      persona: call.persona,
+      // The persona's identity, which the strata, the cap and the counts key
+      // on, and the spelling the journal line carried.
+      persona,
+      personaRaw: call.persona,
       session: call.session,
       site: call.site,
       split: call.split,
@@ -446,7 +475,7 @@ export function buildCandidates(journal, transcripts, question, split) {
         finalMessage: turn.final.slice(0, FINAL_MAX),
         toolActivity: toolActivityText(turn.tools, turn.sidechainReply),
       },
-      stratum: `${call.persona}|${haikuValue ?? answer.value}`,
+      stratum: `${persona}|${haikuValue ?? answer.value}`,
     });
   }
   return { candidates, dropped, admitted: candidates.length };
