@@ -2685,20 +2685,24 @@ export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: s
 //
 // A null has one of two causes. `timeout` is a run that rejected at or after
 // `timeoutMs` had passed since the spawn, since $.process.run rejects without
-// saying why. `start` is every other rejection, and also no session id, no
+// saying why, so a start that itself takes longer than the bound also reads as
+// a timeout. `start` is every other rejection, and also no session id, no
 // launch directory or no located kit install, which spawn nothing. Each cause
-// logs one memq_spawn_failed decision per UTC day. A read (`purpose` "read")
-// that times out stands later reads down for MEMQ_STAND_DOWN_MS, and a read
-// inside that window resolves null with no spawn and no decision. A write
-// neither honours nor arms the stand-down, because a write skipped is a fact
-// lost and a write costs the prompt nothing.
+// logs one memq_spawn_failed decision per UTC day, carrying the first line of
+// the reason. The verb decides read or write, so no caller can mislabel one: a
+// `judged` call is a read, and a read that times out stands later reads down
+// for MEMQ_STAND_DOWN_MS, a read inside that window resolving null with no
+// spawn and no decision. Every other verb is a write, which neither honours nor
+// arms the stand-down, because a write skipped is a fact lost and a write
+// costs the prompt nothing.
 export async function kitMemq(
   dp: any,
   argv: string[],
-  { timeoutMs, purpose }: { timeoutMs: number; purpose: "read" | "write" },
+  { timeoutMs }: { timeoutMs: number },
 ): Promise<KitMemqResult | null> {
-  if (purpose === "read" && sess.memqStandDownUntil > Date.now()) return null;
   const verb = typeof argv[0] === "string" ? argv[0] : "none";
+  const purpose: "read" | "write" = verb === "judged" ? "read" : "write";
+  if (purpose === "read" && sess.memqStandDownUntil > Date.now()) return null;
   const failed = (cause: "start" | "timeout", reason: string): null => {
     const day = new Date(Date.now()).toISOString().slice(0, 10);
     if (sess.memqFailedDay[cause] !== day) {
@@ -2728,7 +2732,8 @@ export async function kitMemq(
       timeoutMs,
     });
   } catch (err) {
-    return failed(Date.now() - startedAt >= timeoutMs ? "timeout" : "start", String(err));
+    const reason = (String(err).split(LINE_TERMINATOR).find((line: string) => line.trim() !== "") ?? "").trim();
+    return failed(Date.now() - startedAt >= timeoutMs ? "timeout" : "start", reason);
   }
   return {
     exitCode: res && typeof res.exitCode === "number" ? res.exitCode : null,

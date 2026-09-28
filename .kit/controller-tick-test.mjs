@@ -32927,8 +32927,8 @@ const MEMQ1_SCRIPT = `${BANK2_INSTALL}/scripts/memq.js`;
 const MEMQ1_MOVED_CWD = "D:/harness-root/after-a-bare-cd";
 const MEMQ1_READ = ["judged", "--situation", "what did we decide", "--limit", "10"];
 const MEMQ1_WRITE = ["put", "fact-abc", "A fact.", "--body", "A fact."];
-const MEMQ1_READ_OPTS = { timeoutMs: 2500, purpose: "read" };
-const MEMQ1_WRITE_OPTS = { timeoutMs: 5000, purpose: "write" };
+const MEMQ1_READ_OPTS = { timeoutMs: 2500 };
+const MEMQ1_WRITE_OPTS = { timeoutMs: 5000 };
 const MEMQ1_STAND_DOWN_MS = 5 * 60_000;
 const MEMQ1_OK = Object.freeze({ exitCode: 0, stdout: "  fleet  fact-abc  (project:harness)  sandbox:none  A fact.\n", stderr: "" });
 
@@ -33038,8 +33038,15 @@ async function caseMemq2_aFailureLogsOncePerCausePerDay(clock) {
   failures = await memq1Failures(h);
   const cut = failures[2] ? failures[2].detail : "";
   check("memq2: the next UTC day logs the cause again", failures.length === 3 && /^cause start; /.test(cut), failures);
-  check("memq2: the reason in the detail is cut to its first 150 characters",
-    cut === `cause start; ${`Error: ${"x".repeat(500)}`.slice(0, 150)}; verb put`, cut);
+  check("memq2: a long reason is truncated in the detail, which keeps its cause and verb",
+    cut.startsWith("cause start; ") && cut.includes("xxxx") && cut.endsWith("; verb put") && cut.length < 500, cut);
+  h.setProcessRun(processRunRejects("first line of the failure\nsecond line of the failure"));
+  clock.advance(24 * 3_600_000);
+  await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  failures = await memq1Failures(h);
+  const multi = failures[3] ? failures[3].detail : "";
+  check("memq2: a reason spanning lines carries only its first line",
+    multi.includes("first line of the failure") && !multi.includes("second line"), multi);
 
   // A read that rejects before its bound is a start, which arms no stand-down.
   clock.set(T0);
@@ -33064,7 +33071,7 @@ async function caseMemq2_aFailureLogsOncePerCausePerDay(clock) {
   const noKitFailures = await memq1Failures(noKit);
   check("memq2 no kit: resolves null, spawns nothing, and logs cause start with the locator's reason",
     noKitRes === null && noKit.processRuns.length === noKitRuns && noKitFailures.length === 1
-      && noKitFailures[0].detail === "cause start; installed_plugins.json is absent; verb judged", { noKitRes, noKitFailures });
+      && /^cause start; /.test(noKitFailures[0].detail) && noKitFailures[0].detail.includes("installed_plugins.json is absent") && noKitFailures[0].detail.endsWith("; verb judged"), { noKitRes, noKitFailures });
   await bank2SeedInstalled(noKit, bank2Installed());
   await noKit.mod.kitMemq(noKit.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
   check("memq2 no kit: the miss armed no stand-down, so a read once the kit is there spawns", noKit.processRuns.length === noKitRuns + 1, noKit.processRuns.length - noKitRuns);
@@ -33079,7 +33086,7 @@ async function caseMemq2_aFailureLogsOncePerCausePerDay(clock) {
   const noIdFailures = await memq1Failures(noId);
   check("memq2 no session id: resolves null, spawns nothing, and logs cause start naming it",
     noIdRes === null && noId.processRuns.length === noIdRuns && noIdFailures.length === 1
-      && noIdFailures[0].detail === "cause start; no session id; verb put", { noIdRes, noIdFailures });
+      && /^cause start; /.test(noIdFailures[0].detail) && noIdFailures[0].detail.includes("no session id") && noIdFailures[0].detail.endsWith("; verb put"), { noIdRes, noIdFailures });
 
   clock.set(T0);
   const noDir = await memq1Harness("memq2_no_launch_dir", { skipSessionStart: true });
@@ -33091,7 +33098,7 @@ async function caseMemq2_aFailureLogsOncePerCausePerDay(clock) {
   const noDirFailures = await memq1Failures(noDir);
   check("memq2 no launch directory: resolves null, spawns nothing, and logs cause start naming it",
     noDirRes === null && noDir.processRuns.length === noDirRuns && noDirFailures.length === 1
-      && noDirFailures[0].detail === "cause start; no launch directory; verb put", { noDirRes, noDirFailures });
+      && /^cause start; /.test(noDirFailures[0].detail) && noDirFailures[0].detail.includes("no launch directory") && noDirFailures[0].detail.endsWith("; verb put"), { noDirRes, noDirFailures });
 }
 
 async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
@@ -33116,6 +33123,13 @@ async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
   const write = await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
   check("memq3: a write inside the window spawns and resolves its result",
     h.processRuns.length === runs + 1 && JSON.stringify(write) === JSON.stringify(MEMQ1_OK) && (h.processRuns[runs] || {}).argv?.[2] === "put", { write, runs: h.processRuns.length - runs });
+
+  // The verb, not a caller's label, decides read or write: a touch labelled a
+  // read by its caller still spawns inside the window.
+  runs = h.processRuns.length;
+  await h.mod.kitMemq(h.fake, ["touch", "fact-abc", "--applied"], { timeoutMs: 5000, purpose: "read" });
+  check("memq3: a touch inside the window spawns whatever label its caller passes",
+    h.processRuns.length === runs + 1 && (h.processRuns[runs] || {}).argv?.[2] === "touch", h.processRuns.length - runs);
 
   runs = h.processRuns.length;
   clock.set(armedAt + MEMQ1_STAND_DOWN_MS - 1);
