@@ -405,10 +405,14 @@ export function turnOpeningText(text: string): string {
 }
 
 // One value of the state: kaizenLine's fold, then every run of whitespace
-// collapsed to one space and the ends trimmed. The collapse is what lets the
-// replay rebuild the plugin's bytes from a transcript, whose reader trims a
-// message and joins its text blocks with a line break where the hook's own
-// text may not, so two texts differing in whitespace alone read the same.
+// collapsed to one space and the ends trimmed. Two texts that differ only in
+// the length or kind of a whitespace run, or in whitespace at their ends,
+// give the same value, which is what lets .kit/jev-gold/replay.mjs rebuild
+// the plugin's state from a transcript whose reader trims a message. Whitespace
+// present in one text and absent in the other is not reconciled: text blocks
+// the transcript reader joins with a line break and the hook's answer joined
+// with none give two values, one space apart, and replay.mjs refuses such a
+// record where the journal lets it see the difference.
 function stateValue(text: string): string {
   return kaizenLine(text).replace(/\s+/g, " ").trim();
 }

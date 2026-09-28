@@ -17,8 +17,10 @@
 // controller-decision and block-owner at v1, over the record's own v1 state,
 // and turn-score at v2, over the state turnScoreStateText in
 // hooks/question-catalog.ts builds from the record's transcript fields. The
-// plugin's scorer calls that same function, so the two send the same bytes
-// for the same turn. controller-decision and turn-score each offer more than
+// plugin's scorer calls that same function, so the two build one state from
+// the same inputs; whether a transcript's fields are the plugin's inputs is
+// checked only where the journal holds the plugin's own v2 state, which a
+// v2 replay must equal byte for byte (turnScoreV2State). controller-decision and turn-score each offer more than
 // one option set (switch only where a pending plan exists; the fourth
 // turn-score option only off a nudge), and the set a record's own call
 // offered is read back off `record.jev.probabilities`'s own keys, which
@@ -160,17 +162,27 @@ export { scoreStateParts };
 //   under the plugin's bound once collapsed. The plugin collapses the whole
 //   text before its cut, so its part would have run on to the bound, and the
 //   replay's is shorter than what the plugin sent.
-// - prompt_mismatch and tools_mismatch: checked only where the journal holds
-//   the plugin's own reading, which is a record journaled under v2. There the
-//   rebuilt opening part, or the rebuilt Tools part, is refused where it is
-//   not the journaled one. A v1 state's "User asked:" text is the last prompt
-//   the plugin saw submitted, which a message queued mid-turn replaces, so it
-//   can differ from the opening message on a turn scored correctly and proves
-//   nothing either way; a v1 state carries no Tools part at all. So a
-//   v1-journaled record's opening text and Tools line, rebuilt from the
-//   transcript by sample.mjs's toolActivityText, are not checked.
+// - prompt_mismatch, tools_mismatch and state_mismatch: checked only where the
+//   journal holds the plugin's own state, which is a record journaled under
+//   v2. There the built state must equal the journaled state byte for byte.
+//   A differing opening part is refused as prompt_mismatch, a differing Tools
+//   part as tools_mismatch, and any other difference, which is the answer
+//   part since the objective is read off the journaled state, as
+//   state_mismatch. The equality is the check; the two part names only say
+//   where it failed. A transcript final message whose text blocks the
+//   transcript reader joins with a line break where the plugin's answer
+//   joined them with none is one such answer difference.
+// - A v1-journaled record is not compared. Its "User asked:" text is the
+//   last prompt the plugin saw submitted, which a message queued mid-turn
+//   replaces, so it can differ from the opening message on a turn scored
+//   correctly and proves nothing either way; its answer is a raw 1,000
+//   character slice; and it carries no Tools part. So a v1-journaled record's
+//   opening text, answer and Tools line, rebuilt from the transcript, are not
+//   checked against the plugin's inputs, beyond the sampler's own answer
+//   match at admission.
 export const PROMPT_MISMATCH = "prompt_mismatch";
 export const TOOLS_MISMATCH = "tools_mismatch";
+export const STATE_MISMATCH = "state_mismatch";
 export const CUT_SHORT = "cut_short";
 export function turnScoreV2State(record) {
   const refuse = (part) => new Error(`record ${record.id}: ${part}, so its turn-score v2 state cannot be built`);
@@ -193,6 +205,9 @@ export function turnScoreV2State(record) {
   }
   if (parts.shape === "v2" && built.tools !== parts.tools) {
     return { ok: false, reason: TOOLS_MISMATCH, detail: "the transcript's tool activity is not the activity the plugin read" };
+  }
+  if (parts.shape === "v2" && state !== record.state) {
+    return { ok: false, reason: STATE_MISMATCH, detail: "the built state is not the state the plugin journaled" };
   }
   return { ok: true, state };
 }
@@ -343,7 +358,7 @@ export async function main(argv, env = process.env) {
     log: (i, total) => process.stdout.write(`replayed ${i + 1}/${total}\n`),
   });
   const failed = rows.filter((r) => !r.ok).length;
-  const refused = [CUT_SHORT, PROMPT_MISMATCH, TOOLS_MISMATCH].map((reason) => `${rows.filter((r) => r.reason === reason).length} refused as ${reason}`);
+  const refused = [CUT_SHORT, PROMPT_MISMATCH, TOOLS_MISMATCH, STATE_MISMATCH].map((reason) => `${rows.filter((r) => r.reason === reason).length} refused as ${reason}`);
   process.stdout.write(`${rows.length} record(s) replayed, ${failed} failed (${refused.join(", ")}), written to ${out}\n`);
   return 0;
 }

@@ -1055,7 +1055,7 @@ try {
         v2StateOf(rec));
       // A record journaled under v2 replays too: the objective and the opening
       // text are read off the v2 shape.
-      const v2Journaled = tsRecord("t-v2j", { state: catalog.turnScoreStateText("Tidy the notes for t-v2j.", "x", "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }) });
+      const v2Journaled = tsRecord("t-v2j", { state: catalog.turnScoreStateText("Tidy the notes for t-v2j.", "Tidied them for t-v2j.", "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }) });
       check("a record whose journaled state is v2 replays over the same state a v1-journaled record gets",
         v2StateOf(v2Journaled) === catalog.turnScoreStateText("Tidy the notes for t-v2j.", "Tidied them for t-v2j.", "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }),
         v2StateOf(v2Journaled));
@@ -1076,8 +1076,8 @@ try {
       const v1Other = tsRecord("t-v1-other", { transcript: { ...rec.transcript, prompt: "<task-notification> a different message" } });
       check("a v1-journaled record whose transcript opens on another text than User asked is built, since the v1 text proves nothing",
         v2StateOf(v1Other).startsWith("Turn opened with: <task-notification> a different message\n\n"), v2StateOf(v1Other));
-      const v2State = (opening, tools = { flags: tsFlags, calls: ["Read", "Bash"] }) => catalog.turnScoreStateText(opening, "x", "Keep the notes tidy", tools);
-      const v2Same = tsRecord("t-v2-same", { state: v2State("The agentic-plugin plugin sent a message:\nTidy the notes for t-v2-same.\n\n" + trailer),
+      const v2State = (opening, tools = { flags: tsFlags, calls: ["Read", "Bash"] }, answer = "x") => catalog.turnScoreStateText(opening, answer, "Keep the notes tidy", tools);
+      const v2Same = tsRecord("t-v2-same", { state: v2State("The agentic-plugin plugin sent a message:\nTidy the notes for t-v2-same.\n\n" + trailer, undefined, rec.transcript.finalMessage),
         transcript: { ...rec.transcript, prompt: "Tidy the notes  for t-v2-same." } });
       check("a v2-journaled record whose transcript opening builds the journaled opening part passes the cross-check",
         v2StateOf(v2Same).startsWith("Turn opened with: Tidy the notes for t-v2-same.\n\n"), v2StateOf(v2Same));
@@ -1098,10 +1098,32 @@ try {
       // a push the transcript's activity does not carry, so it is refused.
       const toolsOther = tsRecord("t-tools", { state: v2State("Tidy the notes for t-tools.", { flags: { ...tsFlags, push: true }, calls: ["Read", "Bash"] }) });
       check("a v2-journaled record whose rebuilt Tools part matches the journaled one builds (control)",
-        v2StateOf(tsRecord("t-tools-same", { state: v2State("Tidy the notes for t-tools-same.") })).startsWith("Turn opened with: "),
-        v2StateOf(tsRecord("t-tools-same", { state: v2State("Tidy the notes for t-tools-same.") })));
+        v2StateOf(tsRecord("t-tools-same", { state: v2State("Tidy the notes for t-tools-same.", undefined, "Tidied them for t-tools-same.") })).startsWith("Turn opened with: "),
+        v2StateOf(tsRecord("t-tools-same", { state: v2State("Tidy the notes for t-tools-same.", undefined, "Tidied them for t-tools-same.") })));
       check("a v2-journaled record whose rebuilt Tools part is not the journaled one is refused as tools_mismatch",
         v2StateOf(toolsOther) === "refused: tools_mismatch", v2StateOf(toolsOther));
+
+      // The whole-state check, on a v2-journaled record. The plugin's answer
+      // joined its two text blocks with nothing between them, and the
+      // transcript reader joined them with a line break. The sampler's
+      // answer match sets whitespace aside, so the record is admitted, and
+      // its opening and Tools parts match; the answer part differs by one
+      // space, so the built state is not the journaled one and it is refused
+      // as state_mismatch. The control is the same record journaled over the
+      // answer the transcript carries, which builds the journaled state
+      // exactly.
+      const probeState = v2State("Tidy the notes for t-probe.", undefined, "Part one.Part two.");
+      const probe = tsRecord("t-probe", { state: probeState, transcript: { ...rec.transcript, prompt: "Tidy the notes for t-probe.", finalMessage: "Part one.\nPart two." } });
+      check("the probe control: the sampler admits the probe's answer, whitespace set aside",
+        turnProducedAnswer({ final: "Part one.\nPart two." }, stateAnswerText("turn-score", probeState)) === true);
+      check("a v2-journaled record whose built state differs from the journaled state in its answer alone is refused as state_mismatch",
+        v2StateOf(probe) === "refused: state_mismatch", v2StateOf(probe).slice(0, 60));
+      const matching = tsRecord("t-match", {
+        state: v2State("Tidy the notes for t-match.", undefined, "Part one. Part two."),
+        transcript: { ...rec.transcript, prompt: "Tidy the notes for t-match.", finalMessage: "Part one.\nPart two." },
+      });
+      check("a v2-journaled record whose built state equals the journaled state builds, over exactly those bytes (control)",
+        v2StateOf(matching) === matching.state, v2StateOf(matching).slice(0, 60));
 
       // The sampler's raw cut against the plugin's collapse. A final message
       // that reached FINAL_MAX raw characters and collapses under 3,000 was
