@@ -181,3 +181,28 @@ Next actions:
 - On the item 0 answer: label and adjudicate controller-decision.
 - On the block-owner answer: re-sample, re-label and adjudicate block-owner, or adjudicate as is.
 - Then write the section 1 Chapter and start section 2.
+
+### Interim board 2 - 2026-09-28
+
+Sections 1 and 2 are code-complete and reviewed. Both are held open for data that waits on the operator. Section 4 is next, since neither open question blocks it.
+
+Section 1: two review rounds (round 1 at Fable across four lenses, round 2 at Opus adversarial) and two fix rounds, at a930dac and 822c494. The last fix touched no outward action, so it took an author re-read. Gate at 822c494: 120 OK / 0 FAIL, exit 0.
+
+Gold on disk under .kit/jev-gold/out/ (gitignored; the journal held 6,699 calls when re-sampled on 2026-09-28):
+- turn-score: 175 admitted, 13 dropped as answer_mismatch, 144 sampled. Kappa 0.885, 141 agreeing. Gold is 144 records: 3 adjudicated, 0 splits, 1 unclear. One earlier run failed on a missing record and was re-run, as designed.
+- block-owner: 1,005 admitted, 99 answer_mismatch, 150 sampled. Kappa 0.811, 140 agreeing. Gold is 150 records: 10 adjudicated, 0 splits. It holds 35 records labelled operator, against section 5's floor of 40.
+- controller-decision: 281 admitted, 150 sampled, not labelled.
+
+Section 2: two review rounds (round 1 at Opus across four lenses, round 2 at Sonnet adversarial) and one fix round, at 22105d3. Gate: 185 OK / 0 FAIL, exit 0. One Minor, the README suite entry, is fixed in this commit.
+
+v1 baseline so far, from score.mjs over dev gold:
+- turn-score: Jev 0.476 (68/143), Haiku 0.268 (38/142). Haiku calls drift or off-goal on 93 of 129 on-goal turns; Jev calls drift on 69.
+- block-owner: Jev 0.567 (85/150). Operator precision 0.508 and recall 0.939, over 33 at top probability 0.6 or above.
+
+Found work routed: the plugin scores a subagent's completion as a turn at the scorer and plan-health sites (hooks/index.ts 9311-9313, 9582, 9970; confirmed at code level, and the round-2 reviewer's tally found all 112 dropped texts subagent-authored). It goes to section 4's brief and to docs/backlog.md at section close.
+
+Open with the operator, asked on the relay thread on 2026-09-28:
+- Item 0's four-answer correction, which holds the controller labelling, the section 1 close and the section 2 baseline.
+- The block-owner sample: add every dev v1-operator answer and keep the floor at 40, lowering it to 30 only if still short. This holds the block-owner re-sample.
+
+Next actions: dispatch section 4 at Opus. On item 0, label and adjudicate the controller, then close sections 1 and 2. On the block-owner answer, re-sample, re-label and adjudicate.
