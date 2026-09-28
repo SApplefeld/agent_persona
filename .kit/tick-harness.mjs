@@ -664,6 +664,36 @@ function jevResponseFor(init, pick) {
   };
 }
 
+// --- Scripted $.process.run answers, for setProcessRun ---
+
+// Answers each run by the first entry whose prefix opens its argv, element
+// for element, and by `fallback` where none does. An entry's answer is a
+// result object or a function of (argv, init), as setProcessRun takes, so an
+// entry can itself reject.
+function processRunByPrefix(entries, fallback = { exitCode: 128 }) {
+  return (argv, init) => {
+    const entry = entries.find(([prefix]) => Array.isArray(argv) && prefix.every((token, i) => argv[i] === token));
+    const answer = entry ? entry[1] : fallback;
+    return typeof answer === "function" ? answer(argv, init) : answer;
+  };
+}
+
+// A run that rejects straight away, the shape of a command that could not
+// start.
+function processRunRejects(message = "spawn node ENOENT") {
+  return () => { throw new Error(message); };
+}
+
+// A run that rejects once its timeoutMs has passed on the stubbed clock, the
+// shape of a command still running at its bound. `clock` is stubDateNow's.
+function processRunTimesOut(clock) {
+  return (argv, init) => {
+    const bound = init && typeof init.timeoutMs === "number" ? init.timeoutMs : 0;
+    clock.advance(bound);
+    throw new Error(`process timed out after ${bound} ms`);
+  };
+}
+
 // --- Date.now stub ---
 
 function stubDateNow() {
@@ -944,6 +974,9 @@ export {
   journalLinesOfKind,
   jevChoiceResponse,
   jevResponseFor,
+  processRunByPrefix,
+  processRunRejects,
+  processRunTimesOut,
   SESSION_ID,
   HARNESS_CWD,
   HARNESS_PLUGIN_ROOT,

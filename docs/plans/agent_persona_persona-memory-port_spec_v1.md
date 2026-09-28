@@ -1,6 +1,6 @@
 # The persona plugin keeps its distilled memory in the kit's shared store, so a persona's memories are embedded, judged, decayed and validated like every other record
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-25
 

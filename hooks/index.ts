@@ -2160,6 +2160,15 @@ const sess: {
   // supervisor that launched this session reads, or "" where no such option
   // was set. heartbeatPathOf reads it.
   heartbeatPath: string;
+  // The time before which kitMemq's read path spawns nothing, set five
+  // minutes ahead by a read that ran past its bound, and 0 until one does.
+  // Session memory rather than persisted state: a restart probes the host
+  // afresh.
+  memqStandDownUntil: number;
+  // The UTC day, as YYYY-MM-DD, on which kitMemq last logged a
+  // memq_spawn_failed decision for each cause, "" until it has. Session
+  // memory, so a restart logs its first failure of the day again.
+  memqFailedDay: { start: string; timeout: string };
 } = {
   persona: "default",
   mySessionId: "pending",
@@ -2186,6 +2195,8 @@ const sess: {
   untrackedWorkAt: null,
   untrackedWorkCount: 0,
   heartbeatPath: "",
+  memqStandDownUntil: 0,
+  memqFailedDay: { start: "", timeout: "" },
 };
 
 // The store cause sess.stateNotLoaded takes where session.start's store read
@@ -2655,6 +2666,75 @@ async function bankCompactionBoundary(dp: any, turnKind: string): Promise<void> 
       detail: `run failed: ${String(err).slice(0, 150)}; turn ${turnKind}; ${script.slice(0, 150)}`,
     });
   }
+}
+
+// How long a read that ran past its bound keeps later reads from spawning
+// memq. Every read in the window would otherwise pay its whole bound against
+// a store host that is down.
+const MEMQ_STAND_DOWN_MS = 5 * 60_000;
+
+export type KitMemqResult = { exitCode: number | null; stdout: string; stderr: string };
+
+// Runs the kit's memq command with `argv` for this session, as
+// node <installPath>/scripts/memq.js ...argv, in the launch directory
+// session.start captured rather than wherever $.session.cwd() stands now, so
+// memq resolves the launch directory's store even after a bare cd in a tool
+// call. The child takes the session id in its environment. Resolves the
+// child's result, a non-zero exit included, for the caller to read, or null
+// where the command did not run to an exit. Nothing throws.
+//
+// A null has one of two causes. `timeout` is a run that rejected at or after
+// `timeoutMs` had passed since the spawn, since $.process.run rejects without
+// saying why. `start` is every other rejection, and also no session id, no
+// launch directory or no located kit install, which spawn nothing. Each cause
+// logs one memq_spawn_failed decision per UTC day. A read (`purpose` "read")
+// that times out stands later reads down for MEMQ_STAND_DOWN_MS, and a read
+// inside that window resolves null with no spawn and no decision. A write
+// neither honours nor arms the stand-down, because a write skipped is a fact
+// lost and a write costs the prompt nothing.
+export async function kitMemq(
+  dp: any,
+  argv: string[],
+  { timeoutMs, purpose }: { timeoutMs: number; purpose: "read" | "write" },
+): Promise<KitMemqResult | null> {
+  if (purpose === "read" && sess.memqStandDownUntil > Date.now()) return null;
+  const verb = typeof argv[0] === "string" ? argv[0] : "none";
+  const failed = (cause: "start" | "timeout", reason: string): null => {
+    const day = new Date(Date.now()).toISOString().slice(0, 10);
+    if (sess.memqFailedDay[cause] !== day) {
+      sess.memqFailedDay[cause] = day;
+      sess.state.decisions.push({
+        timestamp: Date.now(),
+        loop: "monitor",
+        action: "memq_spawn_failed",
+        detail: `cause ${cause}; ${reason.slice(0, 150)}; verb ${verb}`,
+      });
+    }
+    if (cause === "timeout" && purpose === "read") sess.memqStandDownUntil = Date.now() + MEMQ_STAND_DOWN_MS;
+    return null;
+  };
+  const sessionId = sess.mySessionId;
+  if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId === "pending") return failed("start", "no session id");
+  if (typeof sess.workdir !== "string" || sess.workdir.length === 0) return failed("start", "no launch directory");
+  const located = await kitInstallPathOf(dp);
+  if ("skip" in located) return failed("start", located.skip);
+  const script = `${located.installPath.replace(/[/\\]+$/, "")}/scripts/memq.js`;
+  const startedAt = Date.now();
+  let res: any;
+  try {
+    res = await dp.process.run(["node", script, ...argv], {
+      cwd: sess.workdir,
+      env: { CLAUDE_CODE_SESSION_ID: sessionId },
+      timeoutMs,
+    });
+  } catch (err) {
+    return failed(Date.now() - startedAt >= timeoutMs ? "timeout" : "start", String(err));
+  }
+  return {
+    exitCode: res && typeof res.exitCode === "number" ? res.exitCode : null,
+    stdout: res && typeof res.stdout === "string" ? res.stdout : "",
+    stderr: res && typeof res.stderr === "string" ? res.stderr : "",
+  };
 }
 
 // How long bin/restart-recap.mjs may run before $.process.run kills it and

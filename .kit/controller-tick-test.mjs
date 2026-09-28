@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, processRunByPrefix, processRunRejects, processRunTimesOut, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
 // Loaded after the harness, whose resolve hook maps the extensionless
@@ -4131,6 +4131,12 @@ async function main() {
     await caseRecap_aFailedScriptInjectsNothing(clock);
     await caseRecap_onlyAnOwnersPrimingTurnRunsTheScript(clock);
     await caseRecap_theBlockGuardsWhatItSplices(clock);
+
+    // The persona memory port's memq spawn helper: where it runs from, the
+    // once-a-day failure decision per cause, and the read-only stand-down.
+    await caseMemq1_theSpawnRunsFromTheLaunchDirectory(clock);
+    await caseMemq2_aFailureLogsOncePerCausePerDay(clock);
+    await caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock);
   } finally {
     clock.restore();
   }
@@ -32909,4 +32915,228 @@ async function caseRecap_theBlockGuardsWhatItSplices(clock) {
   const rb = await recapSubmit(breaks);
   const bodyLines = (rb.recap || "").split("\n").slice(1);
   check("recap breaks: a line separator in the digest cannot open a bracketed line", typeof rb.recap === "string" && !bodyLines.some((l) => l.startsWith("[")) && !(rb.recap || "").includes(" "), bodyLines);
+}
+
+// --- Persona memory port Section 1: the memq spawn helper and the read stand-down ---
+
+// The memq script under the install bank2Installed names, and a directory the
+// session's cwd() answers once session.start has captured the launch
+// directory, so a helper that reads cwd() at the call rather than the
+// captured directory runs from somewhere else and is caught.
+const MEMQ1_SCRIPT = `${BANK2_INSTALL}/scripts/memq.js`;
+const MEMQ1_MOVED_CWD = "D:/harness-root/after-a-bare-cd";
+const MEMQ1_READ = ["judged", "--situation", "what did we decide", "--limit", "10"];
+const MEMQ1_WRITE = ["put", "fact-abc", "A fact.", "--body", "A fact."];
+const MEMQ1_READ_OPTS = { timeoutMs: 2500, purpose: "read" };
+const MEMQ1_WRITE_OPTS = { timeoutMs: 5000, purpose: "write" };
+const MEMQ1_STAND_DOWN_MS = 5 * 60_000;
+const MEMQ1_OK = Object.freeze({ exitCode: 0, stdout: "  fleet  fact-abc  (project:harness)  sandbox:none  A fact.\n", stderr: "" });
+
+// An owner session with the kit install seeded unless `seedKit` is false,
+// whose cwd() has moved off the launch directory, holding its own module
+// instance as h.mod so a case calls the helper on the session it started.
+async function memq1Harness(caseName, { seedKit = true, skipSessionStart = false } = {}) {
+  const h = await createTickHarness({ ...OPTS, caseName, skipSessionStart });
+  if (seedKit) await bank2SeedInstalled(h, bank2Installed());
+  if (!skipSessionStart) h.fake.session.cwd = () => Promise.resolve(MEMQ1_MOVED_CWD);
+  h.mod = await loadModule(caseName);
+  return h;
+}
+
+// The memq_spawn_failed decisions, read from the persona store the session
+// last wrote after a persist, wherever the session anchored that store.
+async function memq1Failures(h) {
+  await h.mod.persist(h.fake);
+  const write = [...h.fsWrites].reverse().find(w => w.path.endsWith(".agentic-personas.json"));
+  const state = write ? JSON.parse(write.content).default : null;
+  return state ? state.decisions.filter(d => d.action === "memq_spawn_failed") : [];
+}
+
+async function caseMemq1_theSpawnRunsFromTheLaunchDirectory(clock) {
+  console.log("\n=== Persona memory 1: kitMemq runs node <kit>/scripts/memq.js in the launch directory with the session id ===");
+  clock.set(T0);
+  const h = await memq1Harness("memq1_spawn");
+  h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "judged"], MEMQ1_OK]]));
+  check("memq1 spawn setup: the session's cwd() now answers a directory other than the launch directory",
+    (await h.fake.session.cwd()) === MEMQ1_MOVED_CWD && MEMQ1_MOVED_CWD !== HARNESS_CWD);
+  const runsBefore = h.processRuns.length;
+  const res = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const runs = h.processRuns.slice(runsBefore);
+  check("memq1 spawn: exactly one child ran", runs.length === 1, runs);
+  const run = runs[0] || {};
+  check("memq1 spawn: argv is node, the located kit's scripts/memq.js, then the caller's argv",
+    JSON.stringify(run.argv) === JSON.stringify(["node", MEMQ1_SCRIPT, ...MEMQ1_READ]), run.argv);
+  check("memq1 spawn: cwd is the launch directory session.start captured, not the session's cwd() at the call",
+    run.init && run.init.cwd === HARNESS_CWD, run.init);
+  check("memq1 spawn: env carries the session id and nothing else",
+    run.init && JSON.stringify(run.init.env) === JSON.stringify({ CLAUDE_CODE_SESSION_ID: SESSION_ID }), run.init);
+  check("memq1 spawn: the caller's bound is the run's timeout", run.init && run.init.timeoutMs === 2500, run.init);
+  check("memq1 spawn: the child's result comes back as it ran", JSON.stringify(res) === JSON.stringify(MEMQ1_OK), res);
+
+  // A non-zero exit is the caller's to read, not a failure cause.
+  const refusal = { exitCode: 1, stdout: "", stderr: "memq: 'fact-abc' already exists\n" };
+  h.setProcessRun(refusal);
+  const refused = await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  check("memq1 spawn: a non-zero exit resolves the result as returned", JSON.stringify(refused) === JSON.stringify(refusal), refused);
+
+  // A result missing a field, or carrying one of the wrong type, reads as
+  // an unknown exit code and empty text rather than reaching the caller raw.
+  h.setProcessRun(() => undefined);
+  const nothing = await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  check("memq1 spawn: a run that resolves nothing reads as an unknown exit with empty text",
+    JSON.stringify(nothing) === JSON.stringify({ exitCode: null, stdout: "", stderr: "" }), nothing);
+  h.setProcessRun({ exitCode: "0", stdout: 5, stderr: ["x"] });
+  const wrongTypes = await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  check("memq1 spawn: fields of the wrong type read as an unknown exit with empty text",
+    JSON.stringify(wrongTypes) === JSON.stringify({ exitCode: null, stdout: "", stderr: "" }), wrongTypes);
+  const failures = await memq1Failures(h);
+  check("memq1 spawn: none of these logged a memq_spawn_failed decision", failures.length === 0, failures);
+
+  // An install path carrying a trailing separator names the same script.
+  clock.set(T0);
+  const t = await memq1Harness("memq1_spawn_trailing");
+  await bank2SeedInstalled(t, bank2Installed(`${BANK2_INSTALL}\\`));
+  t.setProcessRun(MEMQ1_OK);
+  await t.mod.kitMemq(t.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const trailingRun = t.processRuns[t.processRuns.length - 1] || {};
+  check("memq1 spawn: an install path with a trailing separator names the script once-separated",
+    Array.isArray(trailingRun.argv) && trailingRun.argv[1] === MEMQ1_SCRIPT, trailingRun.argv);
+}
+
+async function caseMemq2_aFailureLogsOncePerCausePerDay(clock) {
+  console.log("\n=== Persona memory 2: a failed spawn resolves null and logs one memq_spawn_failed per cause per UTC day ===");
+  clock.set(T0);
+  const h = await memq1Harness("memq2_once_a_day");
+
+  // Writes throughout, so no stand-down comes into play.
+  h.setProcessRun(processRunTimesOut(clock));
+  const timedOut = await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  let failures = await memq1Failures(h);
+  check("memq2: a run past its bound resolves null", timedOut === null, timedOut);
+  check("memq2: it logs one memq_spawn_failed with cause timeout, the reason and the verb",
+    failures.length === 1 && /^cause timeout; /.test(failures[0].detail) && failures[0].detail.includes("timed out after 5000 ms") && failures[0].detail.endsWith("; verb put"), failures);
+  await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  failures = await memq1Failures(h);
+  check("memq2: a second timeout the same UTC day logs none", failures.length === 1, failures);
+
+  h.setProcessRun(processRunRejects("spawn node ENOENT"));
+  const runsBefore = h.processRuns.length;
+  const rejected = await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  failures = await memq1Failures(h);
+  check("memq2: a rejection resolves null", rejected === null && h.processRuns.length === runsBefore + 1, { rejected, runs: h.processRuns.length - runsBefore });
+  check("memq2: a start after a timeout the same day logs its own decision, with cause start",
+    failures.length === 2 && /^cause start; /.test(failures[1].detail) && failures[1].detail.includes("spawn node ENOENT") && failures[1].detail.endsWith("; verb put"), failures);
+  const again = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  failures = await memq1Failures(h);
+  check("memq2: a second rejection the same UTC day with the same cause resolves null and logs none",
+    again === null && failures.length === 2 && h.processRuns.length === runsBefore + 2, { again, failures, runs: h.processRuns.length - runsBefore });
+
+  // The next UTC day logs the cause again, with the reason cut to 150 characters.
+  clock.advance(24 * 3_600_000);
+  h.setProcessRun(processRunRejects("x".repeat(500)));
+  await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  failures = await memq1Failures(h);
+  const cut = failures[2] ? failures[2].detail : "";
+  check("memq2: the next UTC day logs the cause again", failures.length === 3 && /^cause start; /.test(cut), failures);
+  check("memq2: the reason in the detail is cut to its first 150 characters",
+    cut === `cause start; ${`Error: ${"x".repeat(500)}`.slice(0, 150)}; verb put`, cut);
+
+  // A read that rejects before its bound is a start, which arms no stand-down.
+  clock.set(T0);
+  const r = await memq1Harness("memq2_read_start");
+  r.setProcessRun(processRunRejects("spawn node ENOENT"));
+  const readRejected = await r.mod.kitMemq(r.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  r.setProcessRun(MEMQ1_OK);
+  const readRuns = r.processRuns.length;
+  const readAfter = await r.mod.kitMemq(r.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const readFailures = await memq1Failures(r);
+  check("memq2: a read's quick rejection is cause start", readRejected === null && readFailures.length === 1 && /^cause start; /.test(readFailures[0].detail), readFailures);
+  check("memq2: a read's quick rejection arms no stand-down, so the next read spawns",
+    r.processRuns.length === readRuns + 1 && JSON.stringify(readAfter) === JSON.stringify(MEMQ1_OK), { runs: r.processRuns.length - readRuns, readAfter });
+
+  // No located kit, no session id and no launch directory spawn nothing and
+  // count as cause start, naming why. A read that stops there arms nothing.
+  clock.set(T0);
+  const noKit = await memq1Harness("memq2_no_kit", { seedKit: false });
+  noKit.setProcessRun(MEMQ1_OK);
+  const noKitRuns = noKit.processRuns.length;
+  const noKitRes = await noKit.mod.kitMemq(noKit.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const noKitFailures = await memq1Failures(noKit);
+  check("memq2 no kit: resolves null, spawns nothing, and logs cause start with the locator's reason",
+    noKitRes === null && noKit.processRuns.length === noKitRuns && noKitFailures.length === 1
+      && noKitFailures[0].detail === "cause start; installed_plugins.json is absent; verb judged", { noKitRes, noKitFailures });
+  await bank2SeedInstalled(noKit, bank2Installed());
+  await noKit.mod.kitMemq(noKit.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  check("memq2 no kit: the miss armed no stand-down, so a read once the kit is there spawns", noKit.processRuns.length === noKitRuns + 1, noKit.processRuns.length - noKitRuns);
+
+  clock.set(T0);
+  const noId = await memq1Harness("memq2_no_session_id", { skipSessionStart: true });
+  noId.fake.session.id = () => Promise.reject(new Error("no session id"));
+  await fireSessionStart(noId);
+  noId.setProcessRun(MEMQ1_OK);
+  const noIdRuns = noId.processRuns.length;
+  const noIdRes = await noId.mod.kitMemq(noId.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  const noIdFailures = await memq1Failures(noId);
+  check("memq2 no session id: resolves null, spawns nothing, and logs cause start naming it",
+    noIdRes === null && noId.processRuns.length === noIdRuns && noIdFailures.length === 1
+      && noIdFailures[0].detail === "cause start; no session id; verb put", { noIdRes, noIdFailures });
+
+  clock.set(T0);
+  const noDir = await memq1Harness("memq2_no_launch_dir", { skipSessionStart: true });
+  noDir.fake.session.cwd = () => Promise.resolve("");
+  await fireSessionStart(noDir);
+  noDir.setProcessRun(MEMQ1_OK);
+  const noDirRuns = noDir.processRuns.length;
+  const noDirRes = await noDir.mod.kitMemq(noDir.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  const noDirFailures = await memq1Failures(noDir);
+  check("memq2 no launch directory: resolves null, spawns nothing, and logs cause start naming it",
+    noDirRes === null && noDir.processRuns.length === noDirRuns && noDirFailures.length === 1
+      && noDirFailures[0].detail === "cause start; no launch directory; verb put", { noDirRes, noDirFailures });
+}
+
+async function caseMemq3_aReadTimeoutStandsReadsDownAndWritesGoThrough(clock) {
+  console.log("\n=== Persona memory 3: a read's timeout stands reads down for five minutes, and writes still spawn ===");
+  clock.set(T0);
+  const h = await memq1Harness("memq3_stand_down");
+  h.setProcessRun(processRunTimesOut(clock));
+  const timedOut = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  const armedAt = Date.now();
+  let failures = await memq1Failures(h);
+  check("memq3: the read past its bound resolves null and logs cause timeout",
+    timedOut === null && failures.length === 1 && /^cause timeout; /.test(failures[0].detail) && failures[0].detail.endsWith("; verb judged"), { timedOut, failures });
+
+  h.setProcessRun(MEMQ1_OK);
+  let runs = h.processRuns.length;
+  clock.set(armedAt + 4 * 60_000);
+  const inWindow = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  failures = await memq1Failures(h);
+  check("memq3: a read inside the window resolves null with no spawn and no decision",
+    inWindow === null && h.processRuns.length === runs && failures.length === 1, { inWindow, runs: h.processRuns.length - runs, failures });
+
+  const write = await h.mod.kitMemq(h.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  check("memq3: a write inside the window spawns and resolves its result",
+    h.processRuns.length === runs + 1 && JSON.stringify(write) === JSON.stringify(MEMQ1_OK) && (h.processRuns[runs] || {}).argv?.[2] === "put", { write, runs: h.processRuns.length - runs });
+
+  runs = h.processRuns.length;
+  clock.set(armedAt + MEMQ1_STAND_DOWN_MS - 1);
+  const lastMs = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  check("memq3: a read in the window's last millisecond still spawns nothing", lastMs === null && h.processRuns.length === runs, h.processRuns.length - runs);
+  clock.set(armedAt + MEMQ1_STAND_DOWN_MS);
+  const after = await h.mod.kitMemq(h.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  check("memq3: the first read after the window spawns again and resolves its result",
+    h.processRuns.length === runs + 1 && JSON.stringify(after) === JSON.stringify(MEMQ1_OK) && (h.processRuns[runs] || {}).argv?.[2] === "judged", { after, runs: h.processRuns.length - runs });
+
+  // A write's timeout arms nothing, so a read straight after it spawns.
+  clock.set(T0);
+  const w = await memq1Harness("memq3_write_timeout");
+  w.setProcessRun(processRunTimesOut(clock));
+  const writeTimedOut = await w.mod.kitMemq(w.fake, MEMQ1_WRITE, MEMQ1_WRITE_OPTS);
+  const writeFailures = await memq1Failures(w);
+  w.setProcessRun(MEMQ1_OK);
+  const wRuns = w.processRuns.length;
+  const readAfterWrite = await w.mod.kitMemq(w.fake, MEMQ1_READ, MEMQ1_READ_OPTS);
+  check("memq3: a write past its bound resolves null and logs cause timeout",
+    writeTimedOut === null && writeFailures.length === 1 && /^cause timeout; /.test(writeFailures[0].detail), writeFailures);
+  check("memq3: a write's timeout arms no stand-down, so the next read spawns",
+    w.processRuns.length === wRuns + 1 && JSON.stringify(readAfterWrite) === JSON.stringify(MEMQ1_OK), { runs: w.processRuns.length - wRuns, readAfterWrite });
 }
