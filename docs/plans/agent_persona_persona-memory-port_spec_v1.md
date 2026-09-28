@@ -49,6 +49,7 @@ Provenance: the operator's channel messages on 2026-09-25, the design council re
 - A record the plugin writes is named `<kind>-<persona>-<hash>`, the hash being fnv1a over the text lowercased and trimmed, in base 36, so two personas in one launch directory writing the same text write two records. Its author is `persona-<persona>`, since memq's author grammar is the record-name charset and refuses a colon.
 - Only the session that owns a persona writes that persona's records. A passive reader session's distiller writes nothing to the store, as its `memory_add` is refused.
 - Where the record name, the persona tag or the author carries the persona, it carries the persona's store id: the name itself where it holds only `[A-Za-z0-9_.-]` and fits `persona-<id>` inside memq's 40-character tag cap, and otherwise the name with every other character removed, cut to fit, followed by `-` and the base-36 fnv1a hash of the full name, so two names that differ only in removed characters stay apart. Sections 3 and 4 read and stamp by the same id.
+- A record's body is its provenance line, a blank line, then the text, and its description is passed with one leading space that memq trims, so no argument memq receives opens with `--` and memq never reads a text as an option.
 
 ## Sections of Work
 

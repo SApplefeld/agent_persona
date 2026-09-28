@@ -2177,8 +2177,10 @@ const sess: {
   memqLaunchDir: string;
   // How many records the distiller and memory_add wrote to the kit's memory
   // store in this session, each a memq put that exited 0. The one-time
-  // migration's writes are not counted. Session memory, never reset by a
-  // later session.start, and read by the tick summary's Memory: line.
+  // migration's writes are not counted. It counts this module's session
+  // across persona switches, never reset by a later session.start, and a
+  // reload of the plugin's code rebuilds it at 0. Read by the tick summary's
+  // Memory: line.
   memqWrittenThisSession: number;
 } = {
   persona: "default",
@@ -2774,12 +2776,13 @@ function memqKindOf(kind: unknown): "fact" | "preference" | "lesson" {
 
 // What one memq put came to. `written` is exit 0. `duplicate` is exit 1 with
 // memq's refusal of a name the store already holds, which is the dedupe: the
-// same text always derives the same name. `failed` is anything else, with the
-// first non-empty stderr line as its reason, and `ran` false where memq never
-// ran to an exit.
+// same text always derives the same name. Its `retired` is true where that
+// refusal says the store holds the name retired under archive/. `failed` is
+// anything else, with the first non-empty stderr line as its reason, and
+// `ran` false where memq never ran to an exit.
 type MemoryWriteOutcome =
   | { outcome: "written"; name: string }
-  | { outcome: "duplicate"; name: string }
+  | { outcome: "duplicate"; name: string; retired: boolean }
   | { outcome: "failed"; name: string; reason: string; ran: boolean };
 
 // The characters memq takes in a record name, a tag and an author, and the
@@ -2813,11 +2816,13 @@ export function personaStoreId(persona: string): string {
 // The description is the text's first line with each control character a
 // space, since memq refuses one there, then each double quote a single quote
 // and each backslash a slash, since memq has no quoted form for a
-// description holding a single quote beside either, cut to 120 characters.
-// The body is the text, a blank line, and one provenance line
-// naming the persona, the source, this session and the UTC date of
-// `createdAt`. Logs nothing itself: kitMemq logs a spawn that failed, and
-// each caller logs the outcome its own way.
+// description holding a single quote beside either, cut to 120 code points
+// so a surrogate pair is never split. It is passed behind one leading space,
+// which memq trims. The body is one provenance line naming the persona, the
+// source, this session and the UTC date of `createdAt`, a blank line, then
+// the text. So neither opens with `--`, which memq reads as an option
+// whatever the text. Logs nothing itself: kitMemq logs a spawn that failed,
+// and each caller logs the outcome its own way.
 async function writeMemoryRecord(
   dp: any,
   text: string,
@@ -2826,13 +2831,13 @@ async function writeMemoryRecord(
   const heldKind = memqKindOf(kind);
   const storeId = personaStoreId(sess.persona);
   const name = `${heldKind}-${storeId}-${fnv1aHash(text.toLowerCase().trim()).toString(36)}`;
-  const description = text.split(LINE_TERMINATOR)[0]
+  const firstLine = text.split(LINE_TERMINATOR)[0]
     .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ")
     .replace(/"/g, "'")
-    .replace(/\\/g, "/")
-    .slice(0, 120);
+    .replace(/\\/g, "/");
+  const description = " " + Array.from(firstLine).slice(0, 120).join("");
   const date = new Date(Number.isFinite(createdAt) ? createdAt : Date.now()).toISOString().slice(0, 10);
-  const body = `${text}\n\nWritten by persona ${sess.persona} from source ${source} in session ${sess.mySessionId} on ${date}.`;
+  const body = `Written by persona ${sess.persona} from source ${source} in session ${sess.mySessionId} on ${date}.\n\n${text}`;
   const res = await kitMemq(dp, [
     "put", name, description,
     "--body", body,
@@ -2844,11 +2849,12 @@ async function writeMemoryRecord(
   if (res === null) return { outcome: "failed", name, reason: "memq did not run to an exit", ran: false };
   if (res.exitCode === 0) return { outcome: "written", name };
   const lines = res.stderr.split(LINE_TERMINATOR);
-  if (res.exitCode === 1 && lines.some((line: string) => line.startsWith(`memq: '${name}' already exists`))) {
-    return { outcome: "duplicate", name };
+  const refusal = res.exitCode === 1 ? lines.find((line: string) => line.startsWith(`memq: '${name}' already exists`)) : undefined;
+  if (refusal !== undefined) {
+    return { outcome: "duplicate", name, retired: refusal.includes("retired under archive/") };
   }
-  const firstLine = (lines.find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150);
-  return { outcome: "failed", name, reason: firstLine || `memq exited ${res.exitCode === null ? "unknown" : res.exitCode}`, ran: true };
+  const reasonLine = (lines.find((line: string) => line.trim() !== "") ?? "").trim().slice(0, 150);
+  return { outcome: "failed", name, reason: reasonLine || `memq exited ${res.exitCode === null ? "unknown" : res.exitCode}`, ran: true };
 }
 
 // Logs what the distiller's or memory_add's write came to, and counts a
@@ -2867,7 +2873,9 @@ function noteMemoryWrite(written: MemoryWriteOutcome, text: string): void {
 }
 
 // Moves the distillates a persona's JSON still holds into the kit's memory
-// store, once, at an owner's start. Every entry whose source is worker,
+// store, once, wherever this session becomes the persona's owner: the
+// session.start claim, agentic_identity and the heartbeat tick's reader
+// promotion. Every entry whose source is worker,
 // distilled or user is written in order through writeMemoryRecord under its
 // own source, and leaves the JSON on a write or on the store already holding
 // its name. Any other outcome leaves it for the next start. A write that
@@ -6350,6 +6358,11 @@ export const register: Register = async (on, options) => {
             // the subsequent persist() call finds the new holder, not the dead one.
             await writeClaimDirect($);
             $.ui.log(`Agentic: promoted to owner of '${sess.persona}' (previous holder stale)`);
+            // The promoted owner moves the distillates this persona's JSON
+            // still holds, as the start's claim does.
+            try {
+              await migrateLegacyMemories($);
+            } catch { /* non-fatal */ }
           }
         }
     });
@@ -10893,6 +10906,11 @@ export const register: Register = async (on, options) => {
       // The claimant is the commons winner (activeSessionId = self), so the write
       // must not go through persist's yield check.
       await writeClaimDirect($);
+      // The new owner moves the distillates this persona's JSON still holds,
+      // as the start's claim does.
+      try {
+        await migrateLegacyMemories($);
+      } catch { /* non-fatal */ }
       return {
         result: `persona '${sess.persona}' active (epoch ${sess.myEpoch}, owner). ${selfReviewLessonCount()} self-review lessons. ${previousSessionsText(sess.state)}`,
       };
@@ -12096,6 +12114,9 @@ export const register: Register = async (on, options) => {
       await persist($);
       if (written.outcome === "written") {
         return { result: `Wrote memory record ${written.name} to the shared memory store.` };
+      }
+      if (written.outcome === "duplicate" && written.retired) {
+        return { result: `The shared memory store holds this text as record ${written.name}, retired under archive/; nothing new was written.` };
       }
       if (written.outcome === "duplicate") {
         return { result: `The shared memory store already holds this text as record ${written.name}; nothing new was written.` };
