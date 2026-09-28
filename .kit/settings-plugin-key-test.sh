@@ -61,6 +61,8 @@ console.log("ROSTER_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.fleetRoster !==
 console.log("ROSTER_DEV=" + (dev && dev.fleetRoster !== undefined ? dev.fleetRoster : "") + ";");
 console.log("ROSTER_INSTALLED=" + (inst && inst.fleetRoster !== undefined ? inst.fleetRoster : "") + ";");
 console.log("TICK_DEV=" + (dev ? dev.controllerTickMs : "") + ";");
+console.log("MGDP_DEV=" + (dev ? dev.memoryGateDiscardPercent : "") + ";");
+console.log("MGDP_INSTALLED=" + (inst ? inst.memoryGateDiscardPercent : "") + ";");
 // jevMode has no emitter default either, so it takes the same three-state
 // reading: an absent key and a key written empty are different states, and
 // an empty one is a present non-shadow value that would disable the seam on
@@ -209,6 +211,12 @@ run_lib PERSONA="keyprobe" JEV_LIVE="turn-disposition" bash -c 'source "$1/bin/a
 check "emit_settings_json exits 0 with JEV_LIVE=turn-disposition" "$?"
 R=$(inspect "$TMP/jevliveemit.json")
 case "$R" in *'JEVLIVE_DEV="turn-disposition";'*'JEVLIVE_INSTALLED="turn-disposition";'*) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as the string turn-disposition under both ids" 0 ;; *) check "emitted: JEV_LIVE=turn-disposition reaches jevLive as the string turn-disposition under both ids (out=$R)" 1 ;; esac
+
+# --- Section 2: emit_settings_json writes JEV_LIVE=memory-kind as a comma-separated string under both ids ---
+run_lib PERSONA="keyprobe" JEV_LIVE="memory-kind" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivememoryemit.json"
+check "emit_settings_json exits 0 with JEV_LIVE=memory-kind" "$?"
+R=$(inspect "$TMP/jevlivememoryemit.json")
+case "$R" in *'JEVLIVE_DEV="memory-kind";'*'JEVLIVE_INSTALLED="memory-kind";'*) check "emitted: JEV_LIVE=memory-kind reaches jevLive as the string memory-kind under both ids" 0 ;; *) check "emitted: JEV_LIVE=memory-kind reaches jevLive as the string memory-kind under both ids (out=$R)" 1 ;; esac
 
 # --- Section 2: surrounding whitespace on a JEV_LIVE member is trimmed ---
 run_lib PERSONA="keyprobe" JEV_LIVE=" turn-disposition " bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/jevlivespace.json"
@@ -741,6 +749,25 @@ RC=$?
 [ "$RC" -eq 2 ]; check "driven supervise.sh with controllerTickMs=60000 stops at the gate (rc=$RC)" "$?"
 R=$(inspect "$TMP/rd-tick/settings.json")
 case "$R" in *"TICK_DEV=60000;"*) check "supervise.sh emits controllerTickMs into the settings file (out=$R)" 0 ;; *) check "supervise.sh emits controllerTickMs into the settings file (out=$R)" 1 ;; esac
+
+# --- memoryGateDiscardPercent reaches the emitted settings file, default and override ---
+# A fresh rundir with no settings.json and no memoryGateDiscardPercent in the
+# environment takes the emit branch's own default of 90, the floor an absent
+# roster field leaves in force.
+mkdir -p "$TMP/rd-mgdp-default"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-mgdp-default" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "driven supervise.sh with no memoryGateDiscardPercent stops at the gate (rc=$RC)" "$?"
+R=$(inspect "$TMP/rd-mgdp-default/settings.json")
+case "$R" in *"MGDP_DEV=90;"*"MGDP_INSTALLED=90;"*) check "supervise.sh emits the memoryGateDiscardPercent default of 90 under both ids (out=$R)" 0 ;; *) check "supervise.sh emits the memoryGateDiscardPercent default of 90 under both ids (out=$R)" 1 ;; esac
+mkdir -p "$TMP/rd-mgdp"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" memoryGateDiscardPercent=85 \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-mgdp" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "driven supervise.sh with memoryGateDiscardPercent=85 stops at the gate (rc=$RC)" "$?"
+R=$(inspect "$TMP/rd-mgdp/settings.json")
+case "$R" in *"MGDP_DEV=85;"*"MGDP_INSTALLED=85;"*) check "supervise.sh emits memoryGateDiscardPercent=85 into the settings file under both ids (out=$R)" 0 ;; *) check "supervise.sh emits memoryGateDiscardPercent=85 into the settings file under both ids (out=$R)" 1 ;; esac
 # That same emitted file is a launch with no ARCHITECT_PERSONA in its
 # environment, so it carries no architect setting for the plugin or for a
 # later launch to read back.

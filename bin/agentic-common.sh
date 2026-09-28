@@ -84,12 +84,12 @@ settings_path_json() {
 }
 
 # --- JEV_PROMOTABLE_SET_IDS ---
-# The two question-set ids a JEV_LIVE value may name, typed once here so the
+# The three question-set ids a JEV_LIVE value may name, typed once here so the
 # two callers of jev_live_to_csv below cannot disagree about which ids
 # are promotable, and so .kit/settings-plugin-key-test.sh can pin this list
 # against hooks/question-catalog.ts's PROMOTABLE_SET_IDS, the plugin's own
-# copy of the same two ids.
-JEV_PROMOTABLE_SET_IDS=(turn-open turn-disposition)
+# copy of the same three ids.
+JEV_PROMOTABLE_SET_IDS=(turn-open turn-disposition memory-kind)
 
 # --- jev_live_to_csv ---
 # Usage: jev_live_to_csv <caller-name> <comma-separated ids>
@@ -151,7 +151,8 @@ jev_live_to_csv() {
 # Usage: emit_settings_json <output-file>
 # Emits the settings.json JSON for the --settings flag.
 # Carries: controllerTickMs, nudgeIdleMs, nudgeFloorMs, gitProbeMs, heartbeatMs,
-#          staleAfterMs, arming (always "owner": every supervisor launch is an owner),
+#          staleAfterMs, memoryGateDiscardPercent (default 90),
+#          arming (always "owner": every supervisor launch is an owner),
 #          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator")
 #          and architectPersona (from ARCHITECT_PERSONA, which has no default:
 #          the key is omitted where the variable is unset or empty),
@@ -248,6 +249,7 @@ emit_settings_json() {
   # way).
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
+    MEMORY_GATE_DISCARD_PERCENT \
     SELF_REVIEW_EVERY_TURNS COST_SUMMARY_EVERY_N_TICKS \
     COST_MAX_NUDGES_PER_HOUR COST_MAX_PLUGIN_CALLS_PER_HOUR COST_BACKOFF_AFTER_TICKS COST_BACKOFF_MAX_MS; do
     case "${!var:-0}" in
@@ -354,7 +356,7 @@ emit_settings_json() {
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000}$self_review_opts$cost_opts$jev_opts$recap_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt$supervisor_opts}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000},\"memoryGateDiscardPercent\":${MEMORY_GATE_DISCARD_PERCENT:-90}$self_review_opts$cost_opts$jev_opts$recap_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt$supervisor_opts}"
   # autoContinue is the harness's own setting, at the top level rather than
   # under a plugin id. Off, a child that trips a usage limit ends its turn and
   # sits idle rather than parking until the limit resets, and the supervisor's

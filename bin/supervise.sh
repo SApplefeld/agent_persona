@@ -342,6 +342,21 @@ fi
 # --- Plugin values (single-sourced, emitted to settings JSON) ---
 HEARTBEAT_MS="${heartbeatMs:-30000}"
 STALE_AFTER_MS="${staleAfterMs:-90000}"
+# The memory gate's confidence floor: a percent, checked beside the other
+# settings that end the run rather than only at the emitter's own rule, since
+# a range violation here is the same silent-failure shape staleAfterMs is
+# checked to avoid. 50 to 100: positive_number's own minimum covers the lower
+# edge, and the upper edge is checked here because positive_number has no
+# maximum of its own.
+MEMORY_GATE_DISCARD_PERCENT="${memoryGateDiscardPercent:-90}"
+if ! positive_number "$MEMORY_GATE_DISCARD_PERCENT" 50; then
+  echo "ERROR: memoryGateDiscardPercent '$MEMORY_GATE_DISCARD_PERCENT' is not a whole number in the range 50 to 100, written with digits only, no leading zero and at most 9 digits" >&2
+  exit 1
+fi
+if [ "$MEMORY_GATE_DISCARD_PERCENT" -gt 100 ]; then
+  echo "ERROR: memoryGateDiscardPercent '$MEMORY_GATE_DISCARD_PERCENT' is not a whole number in the range 50 to 100" >&2
+  exit 1
+fi
 # This one is read by the supervisor itself, not only emitted: it is the stale
 # bound the pre-launch gate hands wait_persona_free_both, and it reaches the
 # decide unit too. So it takes the same check the settings above take, rather

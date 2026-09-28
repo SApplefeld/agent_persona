@@ -171,16 +171,24 @@ refused_by "supervisorSilenceBoundMs 'abc' is refused at its own call site" "ERR
 refused_by "supervisorProbeMs '0' is refused at its own call site" "ERROR: supervisorProbeMs '0'" supervisorProbeMs=0
 refused_by "supervisorFinalAskMs '0660000' is refused at its own call site" "ERROR: supervisorFinalAskMs '0660000'" supervisorFinalAskMs=0660000
 refused_by "controllerTickMs 'abc' is refused at its own call site" "ERROR: controllerTickMs 'abc'" controllerTickMs=abc
+# The memory gate's confidence floor, refused both by positive_number's own
+# rules (non-digit, below the 50 minimum) and by the upper bound this call
+# site adds on top, since positive_number has no maximum of its own.
+refused_by "memoryGateDiscardPercent 'abc' is refused at its own call site" "ERROR: memoryGateDiscardPercent 'abc'" memoryGateDiscardPercent=abc
+refused_by "memoryGateDiscardPercent '0' is refused by the 50 minimum" "ERROR: memoryGateDiscardPercent '0'" memoryGateDiscardPercent=0
+refused_by "memoryGateDiscardPercent '49' is refused by the 50 minimum" "ERROR: memoryGateDiscardPercent '49'" memoryGateDiscardPercent=49
+refused_by "memoryGateDiscardPercent '101' is refused by the upper bound" "ERROR: memoryGateDiscardPercent '101'" memoryGateDiscardPercent=101
 # The shutdown ask's grace, read from the supervisor's own environment and
 # refused at its own call site.
 refused_by "supervisorAskGraceMs '0' is refused at its own call site" "ERROR: supervisorAskGraceMs '0'" supervisorAskGraceMs=0
 # The gate's wait bound, read from the supervisor's own environment and
 # refused at its own call site.
 refused_by "supervisorGateWaitS '0' is refused at its own call site" "ERROR: supervisorGateWaitS '0'" supervisorGateWaitS=0
-# The five defaults, read out of the assignments themselves: fifteen minutes,
-# two minutes, eleven minutes, twenty minutes and the gate's two minutes. A
-# changed default reds here rather than passing every startup check.
-for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVISOR_PROBE_MS:supervisorProbeMs:120000 SUPERVISOR_FINAL_ASK_MS:supervisorFinalAskMs:660000 SUPERVISOR_ASK_GRACE_MS:supervisorAskGraceMs:1200000 SUPERVISOR_GATE_WAIT_S:supervisorGateWaitS:120; do
+# The six defaults, read out of the assignments themselves: fifteen minutes,
+# two minutes, eleven minutes, twenty minutes, the gate's two minutes and the
+# memory gate's 90 percent floor. A changed default reds here rather than
+# passing every startup check.
+for pair in SUPERVISOR_SILENCE_BOUND_MS:supervisorSilenceBoundMs:900000 SUPERVISOR_PROBE_MS:supervisorProbeMs:120000 SUPERVISOR_FINAL_ASK_MS:supervisorFinalAskMs:660000 SUPERVISOR_ASK_GRACE_MS:supervisorAskGraceMs:1200000 SUPERVISOR_GATE_WAIT_S:supervisorGateWaitS:120 MEMORY_GATE_DISCARD_PERCENT:memoryGateDiscardPercent:90; do
   IFS=: read -r var setting want <<< "$pair"
   grep -q "^$var=\"\\\${$setting:-$want}\"" "$SCRIPT"
   check "$setting defaults to $want in its assignment to $var" "$?"
