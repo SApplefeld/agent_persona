@@ -56,6 +56,8 @@
 !/jev-gold/sample.mjs
 !/jev-gold/label.mjs
 !/jev-gold/adjudicate.mjs
+!/jev-gold/score.mjs
+!/jev-gold/replay.mjs
 !/jev-gold/rubrics/
 !/jev-gold/rubrics/*.md
 !/fixtures/jev-gold/
