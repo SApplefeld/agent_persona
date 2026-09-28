@@ -190,14 +190,57 @@ export function opensTurn(entry) {
 // plugin's own view of the prompt does not carry.
 const PLUGIN_MESSAGE_WRAPPER = /^The [\w-]+ plugin sent a message:\s*/;
 
+function isReplyTool(name) {
+  return typeof name === "string" && (name.includes("__reply") || name.endsWith("_reply"));
+}
+
+// The times of every reply-tool call made off the main thread in one session:
+// sidechain entries in the session's own transcript, and every entry of the
+// subagent transcripts under <folder>/<session>/subagents/, at any depth.
+// hooks/index.ts sets the turn's reply flag on a reply call from any loop, a
+// subagent's included, while the ring and the other flags take the main
+// loop's calls alone.
+function offThreadReplyTimes(file, entries) {
+  const times = [];
+  const note = (e) => {
+    const content = e && e.type === "assistant" && e.message && e.message.content;
+    if (!Array.isArray(content) || !content.some((b) => b && b.type === "tool_use" && isReplyTool(b.name))) return;
+    const ms = Date.parse(e.timestamp);
+    if (Number.isFinite(ms)) times.push(ms);
+  };
+  for (const e of entries) if (e.isSidechain) note(e);
+  const walk = (dir) => {
+    let names = [];
+    try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const d of names) {
+      const p = path.join(dir, d.name);
+      if (d.isDirectory()) walk(p);
+      else if (d.name.endsWith(".jsonl")) {
+        let text = "";
+        try { text = fs.readFileSync(p, "utf8"); } catch { continue; }
+        // Only a line naming a reply tool can carry one, so the rest of a
+        // subagent transcript is never parsed.
+        for (const line of text.split("\n")) {
+          if (!line.includes("_reply")) continue;
+          try { note(JSON.parse(line)); } catch { /* a torn line is skipped */ }
+        }
+      }
+    }
+  };
+  walk(path.join(file.slice(0, -".jsonl".length), "subagents"));
+  return times;
+}
+
 // The main-thread turns of one transcript, in file order. A turn runs from
 // the entry that opens it to the entry before the next opener. Its lines are
 // its main-thread user and assistant entries, its end is the latest timestamp
 // among them, its final message is the text of its last assistant entry that
 // carried text, and its tools are the tool_use blocks its assistant entries
-// made, in order.
+// made, in order. `sidechainReply` is whether a reply-tool call off the main
+// thread fell between the turn's opening line and its end.
 export function turnsOf(file) {
   const entries = readJsonLines(file);
+  const replyTimes = offThreadReplyTimes(file, entries);
   const starts = [];
   entries.forEach((e, i) => { if (opensTurn(e)) starts.push(i); });
   const turns = [];
@@ -219,9 +262,11 @@ export function turnsOf(file) {
       const t = textOf(content).trim();
       if (t) final = t;
     }
+    const startMs = Date.parse(entries[s].timestamp);
     turns.push({
       promptAt: entries[s].timestamp,
       endMs,
+      sidechainReply: replyTimes.some((ms) => ms >= startMs && ms <= endMs),
       prompt: textOf(entries[s].message.content).trim().replace(PLUGIN_MESSAGE_WRAPPER, ""),
       final,
       tools,
@@ -266,11 +311,13 @@ function isWorkTool(toolName) {
   return true;
 }
 
-export function toolActivityText(tools) {
+// `tools` is the turn's main-thread calls in order, and `offThreadReply`
+// whether a subagent or sidechain made a reply call inside the turn.
+export function toolActivityText(tools, offThreadReply = false) {
   const flags = { planRead: false, planEdited: false, committed: false, pushed: false, agentDispatched: false, goalDoneCalled: false };
   let ring = [];
   let workTools = 0;
-  let reply = false;
+  let reply = offThreadReply === true;
   for (const { name, input } of tools) {
     ring.push(name);
     if (ring.length > TURN_TOOL_RING_MAX) ring = ring.slice(ring.length - TURN_TOOL_RING_MAX);
@@ -283,7 +330,7 @@ export function toolActivityText(tools) {
     }
     if (name === "Agent") flags.agentDispatched = true;
     if (name === "mcp__agentic-plugin__goal_done") flags.goalDoneCalled = true;
-    if (name.includes("__reply") || name.endsWith("_reply")) reply = true;
+    if (isReplyTool(name)) reply = true;
   }
   const yn = (held) => (held ? "yes" : "no");
   return `plan_read=${yn(flags.planRead)} plan_edited=${yn(flags.planEdited)} commit=${yn(flags.committed)} push=${yn(flags.pushed)} ` +
@@ -292,6 +339,45 @@ export function toolActivityText(tools) {
 }
 
 // --- Admission and the joins ---
+
+// The answer text a call's own state carries, where its site puts one there,
+// or null. The scorer's state is "User asked: <prompt>", a blank line,
+// "Worker answered: <answer>", a blank line, "Goal objective: ...", with the
+// answer cut at 1,000 characters;
+// the plan-health state is the JSON of `{ closingText, recentClosingTexts }`,
+// with the closing text cut at 1,000. Both cuts are plain slices of the
+// turn's answer, with no other folding (hooks/index.ts, scoreState and the
+// plan-health closingText). The controller's state carries no answer.
+const ANSWER_OPEN = "\n\nWorker answered: ";
+const ANSWER_CLOSE = "\n\nGoal objective: ";
+export function stateAnswerText(site, state) {
+  if (site === "turn-score") {
+    const from = state.indexOf(ANSWER_OPEN);
+    const to = state.lastIndexOf(ANSWER_CLOSE);
+    return from >= 0 && to > from ? state.slice(from + ANSWER_OPEN.length, to) : null;
+  }
+  if (site === "plan-health") {
+    try {
+      const parsed = JSON.parse(state);
+      return parsed && typeof parsed.closingText === "string" ? parsed.closingText : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Whether a transcript turn is the one whose answer a call's state carries:
+// the state's text, whitespace removed, opens the turn's final message,
+// whitespace removed. The state's text is a prefix because of its cut, and
+// whitespace is set aside because the transcript reader joins a message's
+// text blocks with one line break where the hook's answer may join them
+// otherwise. An empty answer never matches, since the hook scores none.
+const NO_SPACE = /\s+/g;
+export function turnProducedAnswer(turn, answerText) {
+  const want = answerText.replace(NO_SPACE, "");
+  return want.length > 0 && turn.final.replace(NO_SPACE, "").startsWith(want);
+}
 
 // Every call in the journal, admitted into a candidate record for `question`
 // or counted under the first drop reason that applies.
@@ -324,7 +410,13 @@ export function buildCandidates(journal, transcripts, question, split) {
       if (!turnCache.has(tpath)) turnCache.set(tpath, turnsOf(tpath));
       turn = turnBefore(turnCache.get(tpath), call.at);
     }
-    if (!turn) { dropped.no_transcript_turn += 1; continue; }
+    // The latest turn ended before the call is taken as the call's own only
+    // where the state's answer text is that turn's: a scored or plan-health
+    // call whose own turn is not in the transcript would otherwise be joined
+    // to whichever turn ended before it. The controller's state carries no
+    // answer text, so its join rests on timing alone.
+    const answerText = stateAnswerText(call.site, resolved.state);
+    if (!turn || (answerText !== null && !turnProducedAnswer(turn, answerText))) { dropped.no_transcript_turn += 1; continue; }
     const next = nextOf.get(call) || null;
     const nextResolved = next ? resolveState(next, byFileAndStamp) : null;
     const haikuValue = typeof answer.haikuValue === "string" ? answer.haikuValue : null;
@@ -352,7 +444,7 @@ export function buildCandidates(journal, transcripts, question, split) {
         endAt: new Date(turn.endMs).toISOString(),
         prompt: turn.prompt.slice(0, PROMPT_MAX),
         finalMessage: turn.final.slice(0, FINAL_MAX),
-        toolActivity: toolActivityText(turn.tools),
+        toolActivity: toolActivityText(turn.tools, turn.sidechainReply),
       },
       stratum: `${call.persona}|${haikuValue ?? answer.value}`,
     });
@@ -384,50 +476,55 @@ function largestRemainder(total, weights) {
 }
 
 // Draws `n` records from `candidates`. A stratum is one persona and one Haiku
-// value, or Jev's where Haiku has none. The oversample, where the question
-// has one, is taken first: every candidate whose Jev answer is the named
-// value under the named version, up to its max, chosen by the seeded order
-// where more exist. The rest of `n` then fills by stratum: a stratum below
-// SMALL_STRATUM contributes all of it, the others fill in proportion to their
-// share, and no persona passes PERSONA_CAP_SHARE of `n`, counting what the
-// oversample took. A share a capped persona cannot take goes to the other
-// personas' strata in proportion, round by round, until `n` is met or no
-// stratum can take more. Returns the chosen records in `at` order.
+// value, or Jev's where Haiku has none. No persona passes PERSONA_CAP_SHARE of
+// `n`, the oversample included. The oversample, where the question has one,
+// is taken first: candidates whose Jev answer is the named value under the
+// named version, in the seeded order, up to its max and skipping any whose
+// persona has reached the cap. The rest of `n` then fills by stratum: a
+// stratum below SMALL_STRATUM contributes all of it where its persona has
+// room, and the others fill in proportion to their share. A share a capped
+// persona cannot take goes to the other personas' strata in proportion,
+// round by round, until `n` is met or no stratum can take more. Returns the
+// chosen records in `at` order.
 export function stratify(candidates, n, seed, oversample = null) {
   const rng = rngOf(seed);
   const cap = Math.floor(n * PERSONA_CAP_SHARE);
-  const personaOf = (key) => key.slice(0, key.lastIndexOf("|"));
   const chosen = [];
+  const personaTotal = new Map();
+  const count = (persona, m) => personaTotal.set(persona, (personaTotal.get(persona) || 0) + m);
   let pool = candidates;
   let oversampled = 0;
   if (oversample) {
     const hits = shuffled(candidates.filter((c) => c.jev.value === oversample.value && c.jev.version === oversample.version), rng);
-    const take = hits.slice(0, Math.min(oversample.max, n));
-    const taken = new Set(take);
-    chosen.push(...take);
-    oversampled = take.length;
+    const taken = new Set();
+    for (const c of hits) {
+      if (taken.size >= Math.min(oversample.max, n)) break;
+      if ((personaTotal.get(c.persona) || 0) >= cap) continue;
+      taken.add(c);
+      count(c.persona, 1);
+    }
+    chosen.push(...taken);
+    oversampled = taken.size;
     pool = candidates.filter((c) => !taken.has(c));
   }
+  // Each stratum's persona rides on its group, so no key is parsed back.
   const groups = new Map();
-  for (const c of pool) push(groups, c.stratum, c);
-  for (const [k, list] of groups) groups.set(k, shuffled(list, rng));
+  for (const c of pool) {
+    const g = groups.get(c.stratum);
+    if (g) g.list.push(c); else groups.set(c.stratum, { persona: c.persona, list: [c] });
+  }
+  for (const g of groups.values()) g.list = shuffled(g.list, rng);
   const quota = new Map([...groups.keys()].map((k) => [k, 0]));
-  const personaTotal = new Map();
-  for (const c of chosen) personaTotal.set(c.persona, (personaTotal.get(c.persona) || 0) + 1);
-  const room = (k) => {
-    const p = personaOf(k);
-    return Math.min(groups.get(k).length - quota.get(k), cap - (personaTotal.get(p) || 0));
-  };
+  const size = (k) => groups.get(k).list.length;
+  const room = (k) => Math.min(size(k) - quota.get(k), cap - (personaTotal.get(groups.get(k).persona) || 0));
   const add = (k, m) => {
     quota.set(k, quota.get(k) + m);
-    const p = personaOf(k);
-    personaTotal.set(p, (personaTotal.get(p) || 0) + m);
+    count(groups.get(k).persona, m);
   };
-  const target = Math.max(0, n - chosen.length);
-  let left = target;
+  let left = Math.max(0, n - chosen.length);
   // Small strata first, in key order, each whole where its persona has room.
   for (const k of [...groups.keys()].sort()) {
-    if (groups.get(k).length >= SMALL_STRATUM || left <= 0) continue;
+    if (size(k) >= SMALL_STRATUM || left <= 0) continue;
     const m = Math.max(0, Math.min(room(k), left));
     add(k, m);
     left -= m;
@@ -435,7 +532,7 @@ export function stratify(candidates, n, seed, oversample = null) {
   // Then the rest in proportion to share, round by round.
   while (left > 0) {
     const eligible = new Map();
-    for (const k of groups.keys()) if (groups.get(k).length >= SMALL_STRATUM && room(k) > 0) eligible.set(k, groups.get(k).length);
+    for (const k of groups.keys()) if (size(k) >= SMALL_STRATUM && room(k) > 0) eligible.set(k, size(k));
     if (eligible.size === 0) break;
     const split = largestRemainder(left, eligible);
     let placed = 0;
@@ -452,9 +549,20 @@ export function stratify(candidates, n, seed, oversample = null) {
       left -= 1;
     }
   }
-  for (const [k, list] of groups) chosen.push(...list.slice(0, quota.get(k)));
+  for (const [k, g] of groups) chosen.push(...g.list.slice(0, quota.get(k)));
   chosen.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : (x.stampId < y.stampId ? -1 : 1)));
   return { records: chosen, oversampled, cap };
+}
+
+// --- Record ids ---
+
+// A record's id: the question's initials and the FNV-1a hash of its call's
+// stamp id, as eight hex digits. It is a function of the call alone, so a
+// label file written for another sample carries ids this sample's records
+// miss, and the adjudicator's missing-label refusal catches the mix.
+export function recordId(question, stampId) {
+  const prefix = question.split("-").map((w) => w[0]).join("");
+  return `${prefix}-${fnv1aHash(stampId).toString(16).padStart(8, "0")}`;
 }
 
 // --- Counts ---
@@ -501,9 +609,12 @@ export function main(argv) {
   const transcripts = indexTranscripts(projectsRoot);
   const { candidates, dropped, admitted } = buildCandidates(journal, transcripts, flags.question, flags.split);
   const { records, oversampled, cap } = stratify(candidates, flags.n, flags.seed, QUESTIONS[flags.question].oversample);
-  const width = String(records.length).length < 3 ? 3 : String(records.length).length;
-  const prefix = flags.question.split("-").map((w) => w[0]).join("");
-  const numbered = records.map((r, i) => ({ id: `${prefix}${String(i + 1).padStart(width, "0")}`, ...r }));
+  const numbered = records.map((r) => ({ id: recordId(flags.question, r.stampId), ...r }));
+  const seen = new Set();
+  for (const r of numbered) {
+    if (seen.has(r.id)) throw new Error(`two sampled calls share the record id ${r.id}; re-run with another --seed`);
+    seen.add(r.id);
+  }
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, "sample.jsonl"), numbered.map((r) => JSON.stringify(r)).join("\n") + (numbered.length ? "\n" : ""));
   const counts = {

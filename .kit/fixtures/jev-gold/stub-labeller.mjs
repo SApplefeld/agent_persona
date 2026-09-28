@@ -8,7 +8,9 @@
 // the fallback entry. A labeller whose value is null omits that record.
 // JEV_GOLD_LABELLER_NAME is the labeller label.mjs is running.
 // JEV_GOLD_STUB_LOG, where set, gets one JSON line per call: the argument
-// array and the labeller name.
+// array, the labeller name, and which of the variables a labeller child must
+// not inherit are present in its environment.
+// JEV_GOLD_STUB_FLOOD, where set, prints past the runner's output buffer.
 // JEV_GOLD_STUB_SLEEP_MS delays the reply. With JEV_GOLD_STUB_SLEEP_ONCE set
 // to a path, only the call that finds no file there sleeps, and it creates
 // the file, so the next call answers at once.
@@ -17,7 +19,13 @@ import fs from "node:fs";
 
 const name = process.env.JEV_GOLD_LABELLER_NAME || "?";
 if (process.env.JEV_GOLD_STUB_LOG) {
-  fs.appendFileSync(process.env.JEV_GOLD_STUB_LOG, JSON.stringify({ name, argv: process.argv.slice(2) }) + "\n");
+  const envPresent = ["TYPESAFE_API_KEY", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"].filter((k) => k in process.env);
+  fs.appendFileSync(process.env.JEV_GOLD_STUB_LOG, JSON.stringify({ name, argv: process.argv.slice(2), envPresent }) + "\n");
+}
+if (process.env.JEV_GOLD_STUB_FLOOD) {
+  const chunk = "x".repeat(1024 * 1024);
+  for (let i = 0; i < 17; i++) fs.writeSync(1, chunk);
+  process.exit(0);
 }
 const input = fs.readFileSync(0, "utf8");
 const answers = JSON.parse(fs.readFileSync(process.env.JEV_GOLD_STUB_ANSWERS, "utf8"));

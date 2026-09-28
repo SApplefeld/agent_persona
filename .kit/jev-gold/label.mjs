@@ -11,14 +11,16 @@
 // kappa line and each batch's timing.
 //
 // Each batch is one `claude -p` child with the question's rubric as its
-// system prompt and the batch's records on stdin. The child runs with no
-// tools, no hooks, no MCP servers beyond an empty strict set, no slash
-// commands, no CLAUDE.md or output style, and no session file, so it neither
-// reads nor writes anything and
-// leaves no transcript in the folders sample.mjs scans. A batch whose output
-// does not carry every record id, or carries a label outside the rubric's,
-// fails the run naming the batch. A child that outlives the timeout is
-// retried once before the run fails naming the batch. Nothing is written
+// system prompt and the batch's records on stdin. The child runs no tool, no
+// hook, no MCP server, no slash command, and loads no CLAUDE.md or output
+// style. It does read the account's own CLI sign-in and any admin-managed
+// settings, which --safe-mode leaves in force. It writes no transcript, so
+// nothing it does lands in the folders sample.mjs scans. Its environment is
+// this process's, less the vendor key and the parent session's markers.
+// A batch whose output does not carry every record id, or carries a label
+// outside the rubric's, fails the run naming the batch. A child that outlives
+// the timeout is retried once before the run fails naming the batch; a child
+// ended any other way fails the run at once, naming how. Nothing is written
 // until both labellers have finished, so a failed run is re-run and nothing
 // is undone.
 //
@@ -85,7 +87,9 @@ export function rubricLabels(text) {
 
 // A sample record cut to the fields a labeller reads. Jev's answer, Haiku's
 // value and every probability are left out, so neither labeller sees what
-// the judges being graded said.
+// the judges being graded said. The outcome lines are left out too: a later
+// section scores its questions against them, and gold labelled from them
+// would copy the measure it is read against.
 export function labellerView(record) {
   return {
     id: record.id,
@@ -93,7 +97,6 @@ export function labellerView(record) {
     opening_prompt: record.transcript.prompt,
     final_message: record.transcript.finalMessage,
     tool_activity: record.transcript.toolActivity,
-    outcomes: record.outcomes.map((o) => ({ kind: o.kind, value: o.value })),
     next_state: record.hindsight ? record.hindsight.state : null,
   };
 }
@@ -117,6 +120,25 @@ export function labellerCommand(env = process.env) {
   return claude;
 }
 
+// The line a labelling run prints once before its first batch, so a stale
+// JEV_GOLD_LABELLER in the environment shows in the output.
+export function commandLine(env = process.env) {
+  const cmd = labellerCommand(env);
+  return `labeller command: ${[cmd.file, ...cmd.args].join(" ")}`;
+}
+
+// The variables a labeller child does not inherit: the vendor key the plugin's
+// own calls read, and the markers that tell a CLI it runs inside another
+// session. The rest of the environment passes through, since the CLI's own
+// sign-in reads the profile variables.
+export const CHILD_ENV_DROPPED = Object.freeze(["TYPESAFE_API_KEY", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]);
+
+export function childEnvOf(env, name) {
+  const out = { ...env, JEV_GOLD_LABELLER_NAME: name };
+  for (const k of CHILD_ENV_DROPPED) delete out[k];
+  return out;
+}
+
 function runChild(cmd, args, input, timeoutMs, env) {
   const r = spawnSync(cmd.file, [...cmd.args, ...args], {
     input,
@@ -127,10 +149,14 @@ function runChild(cmd, args, input, timeoutMs, env) {
     windowsHide: true,
     maxBuffer: OUTPUT_CAP_BYTES,
   });
-  // spawnSync reports a timeout as an ETIMEDOUT error or as a null status
-  // with the kill signal named, depending on how the kill landed.
-  const timedOut = !!(r.error && r.error.code === "ETIMEDOUT") || (r.status === null && r.signal === "SIGKILL");
-  return { status: r.status, stdout: String(r.stdout || ""), stderr: String(r.stderr || ""), timedOut, error: r.error ? String(r.error.message) : "" };
+  // Only spawnSync's own timeout reads as one. Any other end without an exit
+  // status, an output past the buffer (ENOBUFS) or a signal from elsewhere, is
+  // named by the caller and never retried.
+  const timedOut = r.error?.code === "ETIMEDOUT";
+  const killed = !timedOut && (r.error || r.status === null)
+    ? [r.error?.code, r.signal ? `signal ${r.signal}` : null, r.error?.message].filter(Boolean).join(", ")
+    : "";
+  return { status: r.status, stdout: String(r.stdout || ""), stderr: String(r.stderr || ""), timedOut, killed };
 }
 
 // The labels in a child's reply. The CLI's json output is one object whose
@@ -182,7 +208,7 @@ export function runLabeller(name, question, records, opts = {}) {
   const allowed = rubricLabels(rubric);
   const cmd = labellerCommand(env);
   const args = ["-p", ...CLI_FLAGS, "--system-prompt", rubric];
-  const childEnv = { ...env, JEV_GOLD_LABELLER_NAME: name };
+  const childEnv = childEnvOf(env, name);
   const log = opts.log || ((line) => process.stdout.write(line + "\n"));
   const labels = [];
   const timings = [];
@@ -198,7 +224,8 @@ export function runLabeller(name, question, records, opts = {}) {
       log(`${where}: timed out after ${timeoutMs} ms on attempt ${attempt}`);
     }
     if (run.timedOut) throw new Error(`${where} timed out twice`);
-    if (run.status !== 0) throw new Error(`${where} exited ${run.status}: ${(run.stderr || run.error || run.stdout).slice(0, 300)}`);
+    if (run.killed) throw new Error(`${where} ended without an exit status: ${run.killed}`);
+    if (run.status !== 0) throw new Error(`${where} exited ${run.status}: ${(run.stderr || run.stdout).slice(0, 300)}`);
     let checked;
     try {
       checked = checkBatch(batch, parseReply(run.stdout), allowed);
@@ -277,6 +304,7 @@ export function main(argv) {
   // The second labeller's order is a seeded shuffle, drawn from a stream of
   // its own so it does not move with the sampler's draws.
   const orderB = shuffled(records, rngOf(flags.seed ^ 0x9e3779b9));
+  process.stdout.write(commandLine() + "\n");
   const a = runLabeller("a", flags.question, records);
   const b = runLabeller("b", flags.question, orderB);
   const order = new Map(records.map((r, i) => [r.id, i]));

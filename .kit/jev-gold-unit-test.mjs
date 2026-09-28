@@ -27,7 +27,7 @@ import {
   opensTurn, toolActivityText, buildCandidates, stratify,
 } from "./jev-gold/sample.mjs";
 import {
-  CLI_FLAGS, BATCH_SIZE, rubricText, rubricLabels, labellerView, checkBatch, cohensKappa, kappaLine,
+  CLI_FLAGS, rubricText, rubricLabels, labellerView, checkBatch, cohensKappa, kappaLine,
 } from "./jev-gold/label.mjs";
 import { fnv1aHash } from "../hooks/cost-ledger.ts";
 
@@ -125,9 +125,16 @@ try {
     check("the engine's plugin-message line is stripped from the prompt",
       turns[0].prompt === "[GOAL] The active goal is: Write the widget guide", turns[0].prompt);
     check("the final message is the last main-thread assistant text, never a sidechain reply",
-      turns[0].final === "Section 1 of the widget guide landed.", turns[0].final);
-    check("the sidechain's calls and the meta and compaction entries stay inside the first turn",
+      turns[0].final.startsWith("Section 1 of the widget guide landed.\nThe section covers") && !turns[0].final.includes("subagent"), turns[0].final.slice(0, 80));
+    check("the sidechain's calls stay out of the tool ring, and the meta and compaction entries stay inside the first turn",
       same(turns[0].tools.map((t) => t.name), ["Read", "Edit", "Bash", "Agent"]), turns[0].tools.map((t) => t.name));
+    check("a sidechain reply call inside the turn sets the turn's reply flag, as the hook's tool.call does for any loop",
+      turns[0].sidechainReply === true && turns[2].sidechainReply === false, turns.map((t) => t.sidechainReply));
+    const betaTurns = turnsOf(path.join(PROJECTS, "D--work-beta", "s-beta.jsonl"));
+    check("a reply call in a subagent transcript inside the turn's window sets the flag",
+      betaTurns.length === 2 && betaTurns[0].sidechainReply === true, betaTurns.map((t) => t.sidechainReply));
+    check("a subagent reply call outside every turn's window sets no flag",
+      betaTurns[1] && betaTurns[1].sidechainReply === false, betaTurns.map((t) => t.sidechainReply));
     check("a turn ends at its last main-thread line, not at the system line after it",
       new Date(turns[0].endMs).toISOString() === "2026-01-01T10:00:00.000Z", new Date(turns[0].endMs).toISOString());
     check("the turn before a call is the latest one whose last line precedes it",
@@ -156,6 +163,16 @@ try {
       toolActivityText([t("Read", { file_path: "docs/notes/a.md" })]).startsWith("plan_read=no"));
     check("git log naming the word commit later is not a commit",
       toolActivityText([t("Bash", { command: "git log && echo commit" })]).includes("commit=no"));
+    // hooks/index.ts noteTurnToolCall sets both plan flags from
+    // namesPlanDocument, which reads the path's own docs/plans suffix; the
+    // working-directory match planPathUnderCwd serves route one's promotion
+    // alone. So a plan document under another checkout still sets the flags.
+    check("a plan document under another checkout still reads as a plan read and a plan edit",
+      toolActivityText([t("Read", { file_path: "D:/other/docs/plans/b_spec_v1.md" }), t("Write", { file_path: "E:\\x\\docs\\plans\\b_spec_v1.md" })])
+        .startsWith("plan_read=yes plan_edited=yes"));
+    check("a reply call off the main thread sets the reply flag without joining the ring",
+      toolActivityText([t("Read")], true) === "plan_read=no plan_edited=no commit=no push=no agent_dispatched=no goal_done=no reply=yes work_tools=0 tools=Read",
+      toolActivityText([t("Read")], true));
   }
 
   // --- Admission, the joins and the drops, on the fixture journal ---
@@ -168,21 +185,26 @@ try {
       ts.admitted + Object.values(ts.dropped).reduce((s, v) => s + v, 0) === journal.calls.length, ts);
     check("the drop reasons are the closed set", same(Object.keys(ts.dropped), DROP_REASONS), Object.keys(ts.dropped));
     check("turn-score admits three and drops by reason as the fixture is built",
-      ts.admitted === 3 && same(ts.dropped, { other_site: 2, split: 1, no_answer: 1, state_unresolved: 1, no_transcript_turn: 2 }), ts.dropped);
+      ts.admitted === 3 && same(ts.dropped, { other_site: 3, split: 1, no_answer: 1, state_unresolved: 1, no_transcript_turn: 3 }), ts.dropped);
     const byAt = new Map(ts.candidates.map((c) => [c.at, c]));
     const a1 = byAt.get("2026-01-01T10:00:05.000Z");
-    const a2 = byAt.get("2026-01-01T10:05:05.000Z");
+    const a2 = byAt.get("2026-01-01T10:00:30.000Z");
     const b2 = byAt.get("2026-01-01T11:02:00.000Z");
     check("a sampled null-state call carries the referenced text", a2 && a2.stateReconstructed && a2.state === a1.state);
     check("the hindsight is the next call at the same site and persona, skipping the controller call between",
-      a1.hindsight.at === "2026-01-01T10:05:05.000Z" && a1.hindsight.state === a1.state, a1.hindsight);
+      a1.hindsight.at === "2026-01-01T10:00:30.000Z" && a1.hindsight.state === a1.state, a1.hindsight);
     check("the hindsight takes a held-out successor too, since it is evidence rather than sample",
       a2.hindsight.at === "2026-01-01T10:06:05.000Z", a2.hindsight);
-    check("the last call of a persona at a site has no hindsight", b2.hindsight === null, b2.hindsight);
-    check("the transcript join takes the turn that ended before the call",
-      a1.transcript.finalMessage === "Section 1 of the widget guide landed." &&
-      a2.transcript.finalMessage === "Answered the operator: section 1 is in.", [a1.transcript, a2.transcript]);
+    check("the hindsight takes a successor whose own turn is not on disk, since it is evidence rather than sample",
+      b2.hindsight && b2.hindsight.at === "2026-01-01T11:10:00.000Z", b2.hindsight);
+    check("an answer cut at 1,000 characters, and joined by other whitespace than the transcript's, still joins its turn",
+      a1 && a1.transcript.finalMessage.startsWith("Section 1 of the widget guide landed.\nThe section covers") && a1.transcript.finalMessage.length > 1000,
+      a1 && a1.transcript.finalMessage.length);
     check("a channel-opened turn joins with its prompt", b2.transcript.prompt.includes("Please fix the footer"), b2.transcript);
+    check("a call whose own turn is absent, with an earlier turn ended before it, is not admitted",
+      !ts.candidates.some((c) => c.at === "2026-01-01T11:10:00.000Z"), ts.candidates.map((c) => c.at));
+    check("the tool line carries the sidechain reply of the joined turn",
+      a1.transcript.toolActivity.includes("reply=yes") && a1.transcript.toolActivity.endsWith("tools=Read,Edit,Bash,Agent"), a1.transcript.toolActivity);
     check("the stratum is persona and Haiku's value", a2.stratum === "alpha|drift", a2.stratum);
     check("the stratum falls back to Jev's value where Haiku has none", b2.stratum === "beta|off-goal-by-instruction", b2.stratum);
 
@@ -192,6 +214,9 @@ try {
     const bo = buildCandidates(journal, transcripts, "block-owner", "dev");
     check("the plan-health call joins its block-owner answer rather than the other two",
       bo.admitted === 1 && bo.candidates[0].jev.value === "operator" && bo.candidates[0].haikuValue === null, bo.candidates[0] && bo.candidates[0].jev);
+    check("a plan-health call whose closing text is not the joined turn's is counted as its turn missing",
+      bo.dropped.no_transcript_turn === 1 && bo.candidates[0].at === "2026-01-01T10:00:06.000Z", bo.dropped);
+    check("the last call of a persona at a site has no hindsight", bo.candidates[0].hindsight === null, bo.candidates[0].hindsight);
 
     const out = path.join(TMP, "sample-ts");
     const r = run(SAMPLE, ["--question", "turn-score", "--journal", JOURNAL, "--projects", PROJECTS, "--out", out]);
@@ -201,7 +226,9 @@ try {
       counts.admitted === 3 && counts.sampled === 3 && counts.reconstructedStates === 1 &&
       same(counts.sampledByPersona, { alpha: 2, beta: 1 }), counts);
     const rows = readLines(path.join(out, "sample.jsonl"));
-    check("sample.jsonl numbers its records in time order", same(rows.map((x) => x.id), ["ts001", "ts002", "ts003"]) && rows[0].at < rows[2].at, rows.map((x) => x.id));
+    check("each record id is the question prefix and an eight-digit hash of its stamp id",
+      rows.length === 3 && rows.every((x) => x.id === `ts-${fnv1aHash(x.stampId).toString(16).padStart(8, "0")}`), rows.map((x) => [x.id, x.stampId]));
+    check("sample.jsonl holds its records in time order", rows[0].at < rows[1].at && rows[1].at < rows[2].at, rows.map((x) => x.at));
     const again = path.join(TMP, "sample-ts-again");
     run(SAMPLE, ["--question", "turn-score", "--journal", JOURNAL, "--projects", PROJECTS, "--out", again]);
     check("a re-run writes the same sample byte for byte",
@@ -244,8 +271,12 @@ try {
       os2.oversampled === 8 && os2.records.filter((r) => r.jev.value === "operator").length === 8, os2.oversampled);
     check("the oversample counts toward its persona's cap",
       os2.records.filter((r) => r.persona === "q1").length <= 12, os2.records.filter((r) => r.persona === "q1").length);
-    const capped = stratify(make("q4", "operator", 70), 150, 7, { value: "operator", version: "v1", max: 60 });
+    const capped = stratify([...make("q4", "operator", 70), ...make("q5", "operator", 70)], 150, 7, { value: "operator", version: "v1", max: 60 });
     check("the oversample stops at its max", capped.oversampled === 60, capped.oversampled);
+    const small = stratify([...make("q6", "operator", 30), ...make("q7", "none", 30)], 20, 7, { value: "operator", version: "v1", max: 60 });
+    check("at a small n the oversample takes no more of one persona than the cap",
+      small.cap === 8 && small.oversampled === 8 && small.records.filter((r) => r.persona === "q6").length === 8,
+      { cap: small.cap, oversampled: small.oversampled, q6: small.records.filter((r) => r.persona === "q6").length });
   }
 
   // --- What a labeller sees and what it must return ---
@@ -254,8 +285,12 @@ try {
     const rec = { id: "x1", state: "S", transcript: { prompt: "P", finalMessage: "F", toolActivity: "T" }, outcomes: [{ kind: "next_score", value: "drift", at: "t" }], hindsight: { at: "t", state: "N" }, jev: { value: "nudge" }, haikuValue: "nudge" };
     const view = labellerView(rec);
     check("a labeller sees neither Jev's answer nor Haiku's", !JSON.stringify(view).includes("nudge") && !("jev" in view) && !("haikuValue" in view), view);
-    check("a labeller sees the state, the transcript fields, the outcomes and the hindsight",
-      same(Object.keys(view), ["id", "state", "opening_prompt", "final_message", "tool_activity", "outcomes", "next_state"]), Object.keys(view));
+    check("a labeller sees the state, the transcript fields and the hindsight, and no outcome",
+      same(Object.keys(view), ["id", "state", "opening_prompt", "final_message", "tool_activity", "next_state"]) && !JSON.stringify(view).includes("next_score"),
+      Object.keys(view));
+    check("no rubric names an outcome field to its labeller",
+      ["controller-decision", "turn-score", "block-owner"].every((q) => !/outcome|next_speaker|next_score|ask_marker/.test(rubricText(q))),
+      ["controller-decision", "turn-score", "block-owner"].filter((q) => /outcome|next_speaker|next_score|ask_marker/.test(rubricText(q))));
     const recs = [{ id: "r1" }, { id: "r2" }];
     const allowed = ["on-goal", "drift"];
     let err = null;
@@ -292,14 +327,21 @@ try {
     check("the stub run's sample is built", r0.status === 0, r0.stderr);
     const answersFile = path.join(TMP, "answers.json");
     const log = path.join(TMP, "stub.log");
-    const env = { JEV_GOLD_LABELLER: STUB, JEV_GOLD_STUB_ANSWERS: answersFile, JEV_GOLD_STUB_LOG: log };
-    // ts001 agreed, ts002 settled by the third labeller, ts003 a three-way split.
+    const env = {
+      JEV_GOLD_LABELLER: STUB, JEV_GOLD_STUB_ANSWERS: answersFile, JEV_GOLD_STUB_LOG: log,
+      TYPESAFE_API_KEY: "suite-value-0000000000", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "suite",
+    };
+    const [id1, id2, id3] = readLines(path.join(dir, "sample.jsonl")).map((x) => x.id);
+    // The first record agreed, the second settled by the third labeller, the
+    // third a three-way split.
     fs.writeFileSync(answersFile, JSON.stringify({
-      ts001: { a: "on-goal", b: "on-goal", c: "drift" },
-      ts002: { a: "on-goal", b: "drift", c: "drift" },
-      ts003: { a: "on-goal", b: "drift", c: "complete" },
+      [id1]: { a: "on-goal", b: "on-goal", c: "drift" },
+      [id2]: { a: "on-goal", b: "drift", c: "drift" },
+      [id3]: { a: "on-goal", b: "drift", c: "complete" },
     }));
     const r = run(LABEL, ["--question", "turn-score", "--in", dir], env);
+    check("the run prints the labeller command it resolved, once",
+      (r.stdout.match(/^labeller command: /gm) || []).length === 1 && r.stdout.includes(STUB), r.stdout.split("\n")[0]);
     check("label.mjs exits 0 when every record comes back", r.status === 0, r.stderr);
     const calls = readLines(log);
     check("one child per labeller for a sample under one batch", calls.length === 2 && calls[0].name === "a" && calls[1].name === "b", calls.map((c) => c.name));
@@ -308,11 +350,12 @@ try {
     check("the flags keep the child off tools, hooks, MCP servers, slash commands, CLAUDE.md files and session files",
       ["--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands", "--safe-mode"].every((f) => CLI_FLAGS.includes(f)) &&
       CLI_FLAGS[CLI_FLAGS.indexOf("--tools") + 1] === "" && CLI_FLAGS[CLI_FLAGS.indexOf("--settings") + 1] === "{\"disableAllHooks\":true}");
-    check("a batch is twenty records", BATCH_SIZE === 20);
+    check("the child's environment carries no vendor key and no parent-session markers",
+      calls.every((c) => same(c.envPresent, [])), calls.map((c) => c.envPresent));
     const la = readLines(path.join(dir, "labels-a.jsonl"));
     const lb = readLines(path.join(dir, "labels-b.jsonl"));
     check("both label files hold every sample record, in sample order",
-      same(la.map((l) => l.id), ["ts001", "ts002", "ts003"]) && same(lb.map((l) => l.id), ["ts001", "ts002", "ts003"]));
+      same(la.map((l) => l.id), [id1, id2, id3]) && same(lb.map((l) => l.id), [id1, id2, id3]));
     const kline = fs.readFileSync(path.join(dir, "kappa.txt"), "utf8").trim();
     check("the kappa line is written and printed", kline.startsWith("kappa: turn-score ") && r.stdout.includes(kline), kline);
 
@@ -323,12 +366,24 @@ try {
     check("the third labeller sees the disagreements alone", third.length === 1 && third[0].name === "c");
     const gold = readLines(path.join(dir, "gold.jsonl"));
     check("gold holds the agreed record and the settled one",
-      same(gold.map((g) => [g.id, g.label, g.adjudicated]), [["ts001", "on-goal", false], ["ts002", "drift", true]]), gold);
+      same(gold.map((g) => [g.id, g.label, g.adjudicated]), [[id1, "on-goal", false], [id2, "drift", true]]), gold);
     const splits = readLines(path.join(dir, "splits.jsonl"));
-    check("a three-way split is kept out of gold and listed", same(splits.map((s) => s.id), ["ts003"]) && !gold.some((g) => g.id === "ts003"));
+    check("a three-way split is kept out of gold and listed", same(splits.map((s) => s.id), [id3]) && !gold.some((g) => g.id === id3));
     const counts = JSON.parse(r2.stdout.trim().split("\n").pop());
     check("the adjudication counts are printed",
       counts.agreed === 1 && counts.disagreements === 2 && counts.adjudicated === 1 && counts.splits === 1 && counts.gold === 2, counts);
+
+    // A label file left from another sample: its ids miss this sample's.
+    const labelsA = path.join(dir, "labels-a.jsonl");
+    const kept = fs.readFileSync(labelsA, "utf8");
+    fs.writeFileSync(labelsA, kept.split("\n").filter((l) => l.trim() && !l.includes(id2)).join("\n") + "\n" +
+      JSON.stringify({ id: "ts-00000000", label: "on-goal" }) + "\n");
+    fs.rmSync(path.join(dir, "gold.jsonl"));
+    fs.writeFileSync(log, "");
+    const stale = run(ADJUDICATE, ["--question", "turn-score", "--in", dir], env);
+    check("adjudication fails when a labeller file lacks a sample record, naming it, and runs no labeller",
+      stale.status === 1 && stale.stderr.includes(id2) && !fs.existsSync(path.join(dir, "gold.jsonl")) && fs.readFileSync(log, "utf8") === "",
+      stale.stderr);
   }
 
   // --- A reply that drops a record fails the run ---
@@ -337,12 +392,13 @@ try {
     const dir = path.join(TMP, "label-missing");
     run(SAMPLE, ["--question", "turn-score", "--journal", JOURNAL, "--projects", PROJECTS, "--out", dir]);
     const answersFile = path.join(TMP, "answers-missing.json");
-    fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" }, ts002: { a: null } }));
+    const [, idMissing] = readLines(path.join(dir, "sample.jsonl")).map((x) => x.id);
+    fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" }, [idMissing]: { a: null } }));
     const env = { JEV_GOLD_LABELLER: STUB, JEV_GOLD_STUB_ANSWERS: answersFile };
     const r = run(LABEL, ["--question", "turn-score", "--in", dir], env);
     check("a labeller reply missing a record fails the run", r.status === 1, r.status);
     check("the failure names the labeller, the batch and the record",
-      r.stderr.includes("labeller a batch 1") && r.stderr.includes("missing 1 record(s): ts002"), r.stderr);
+      r.stderr.includes("labeller a batch 1") && r.stderr.includes(`missing 1 record(s): ${idMissing}`), r.stderr);
     check("a failed run writes no label file", !fs.existsSync(path.join(dir, "labels-a.jsonl")) && !fs.existsSync(path.join(dir, "kappa.txt")));
     check("control: the same answers with the record present pass",
       (fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" } })), run(LABEL, ["--question", "turn-score", "--in", dir], env).status === 0));
@@ -362,13 +418,19 @@ try {
     check("a batch that times out once is retried and the run completes",
       retried.status === 0 && (retried.stdout.match(/timed out after 1500 ms on attempt 1/g) || []).length === 1, [retried.stdout, retried.stderr]);
 
+    const flood = run(LABEL, ["--question", "turn-score", "--in", dir], { ...env, JEV_GOLD_STUB_FLOOD: "1" });
+    check("a child killed for another reason than the timeout fails the run at once, naming the reason",
+      flood.status === 1 && flood.stderr.includes("labeller a batch 1") && /ENOBUFS|maxBuffer/i.test(flood.stderr) && !flood.stdout.includes("timed out"),
+      [flood.stdout.slice(-300), flood.stderr.slice(0, 300)]);
+
     const dirAdj = path.join(TMP, "adjudicate-missing");
     run(SAMPLE, ["--question", "turn-score", "--journal", JOURNAL, "--projects", PROJECTS, "--out", dirAdj]);
-    fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "drift", c: "drift" }, ts003: { c: null } }));
+    const idAdj = readLines(path.join(dirAdj, "sample.jsonl"))[2].id;
+    fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "drift", c: "drift" }, [idAdj]: { c: null } }));
     run(LABEL, ["--question", "turn-score", "--in", dirAdj], env);
     const ra = run(ADJUDICATE, ["--question", "turn-score", "--in", dirAdj], env);
     check("a third labeller reply missing a record fails adjudication, naming the batch",
-      ra.status === 1 && ra.stderr.includes("labeller c batch 1") && ra.stderr.includes("ts003") && !fs.existsSync(path.join(dirAdj, "gold.jsonl")), ra.stderr);
+      ra.status === 1 && ra.stderr.includes("labeller c batch 1") && ra.stderr.includes(idAdj) && !fs.existsSync(path.join(dirAdj, "gold.jsonl")), ra.stderr);
   }
 } finally {
   fs.rmSync(TMP, { recursive: true, force: true });

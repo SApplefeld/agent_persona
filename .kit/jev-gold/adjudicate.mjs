@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { QUESTIONS } from "./sample.mjs";
-import { readSample, runLabeller, writeJsonLines } from "./label.mjs";
+import { commandLine, readSample, runLabeller, writeJsonLines } from "./label.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +55,9 @@ export function adjudicate(question, records, labelsA, labelsB, opts = {}) {
   let labelsC = [];
   let adjudicated = 0;
   if (disagreements.length > 0) {
+    // Printed once, before the third labeller's first batch, so a stale
+    // JEV_GOLD_LABELLER shows in the output.
+    (opts.log || ((line) => process.stdout.write(line + "\n")))(commandLine(opts.env || process.env));
     labelsC = runLabeller("c", question, disagreements, opts).labels;
     const cOf = new Map(labelsC.map((l) => [l.id, l.label]));
     for (const r of disagreements) {

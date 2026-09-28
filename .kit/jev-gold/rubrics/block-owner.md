@@ -9,10 +9,9 @@ Each record is the end of one turn of an autonomous worker session, a Claude Cod
 - `opening_prompt`: the message that opened the turn.
 - `final_message`: the worker's last message of the turn, longer than `closingText`. Where the two differ, `closingText` is what was asked about; use both.
 - `tool_activity`: the turn's tools: yes-or-no flags for a plan read, a plan edit, a commit, a push, an agent dispatch, a `goal_done` call and a reply, the count of work tools, and the last eight tool names in order.
-- `outcomes`: what the plugin observed afterwards. `next_speaker` is what opened the next turn: `channel` for a message from the operator's channel, `delivery` for a delivered record from another persona or the coordinator, `neither` for anything else, such as the controller's nudge or a background task finishing. `lead_blocked`, `chapter_within` and `continued_unprompted` are other observations about the same turn.
 - `next_state`: the same view at the worker's next turn end on this persona, as hindsight. It is null where there was none.
 
-Use the hindsight as evidence of what the worker was really waiting on, not as the answer. The operator speaking next does not by itself mean the operator owed anything.
+Use the hindsight as evidence of what the worker was really waiting on, not as the answer.
 
 ## What the answer is for
 

@@ -9,10 +9,9 @@ Each record is one moment when an autonomous worker session had gone idle and th
 - `opening_prompt`: the message that opened the worker's last turn before the idle gap.
 - `final_message`: the worker's last message of that turn. This is what the worker said before it went quiet, and it is usually the text that decides the label.
 - `tool_activity`: that turn's tools: yes-or-no flags for a plan read, a plan edit, a commit, a push, an agent dispatch, a `goal_done` call and a reply, the count of work tools, and the last eight tool names in order.
-- `outcomes`: what the plugin observed after the decision. `next_score` is the score the next scored turn received. `ask_marker` means the worker wrote an `ASK:` line after this decision.
 - `next_state`: the controller's view at its next decision on this persona, as hindsight. It is null where there was none.
 
-Use the hindsight as evidence of what the worker's situation really was, not as the answer. A later ask or a later completion tells you what the worker was facing; it does not tell you the controller chose right.
+Use the hindsight as evidence of what the worker's situation really was, not as the answer. What the next view shows tells you what the worker was facing. It does not tell you the controller chose right.
 
 ## What each decision does
 
