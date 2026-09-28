@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import "./tick-harness.mjs";
 import {
   QUESTIONS, DROP_REASONS, readJournal, indexCalls, resolveState, indexTranscripts, turnsOf, turnBefore,
-  opensTurn, toolActivityText, buildCandidates, stratify, personaKey, PERSONA_ALIASES, stateAnswerText, turnProducedAnswer,
+  opensTurn, toolActivityText, buildCandidates, stratify, personaKey, PERSONA_ALIASES, stateAnswerText, turnProducedAnswer, PROMPT_MAX, FINAL_MAX,
 } from "./jev-gold/sample.mjs";
 import {
   CLI_FLAGS, rubricText, rubricLabels, labellerView, checkBatch, cohensKappa, kappaLine,
@@ -39,6 +39,11 @@ import {
   BARS, TOP_PROBABILITY_FLOOR, COVERAGE_FLOOR, BLOCK_OWNER_OPERATOR_COUNT_FLOOR, DEFAULT_RECALL_COUNT_FLOOR,
   coverageOf, evalBar, report,
 } from "./jev-gold/score.mjs";
+import * as scoreModule from "./jev-gold/score.mjs";
+// Read off the namespace, so a missing export reads as a failed check.
+const onSharedRecords = typeof scoreModule.onSharedRecords === "function"
+  ? scoreModule.onSharedRecords
+  : () => ({ shared: -1, groups: new Map([["v1", []], ["v2 (replay)", []]]) });
 import * as replayModule from "./jev-gold/replay.mjs";
 import {
   offeredOptionIds, REPLAYABLE_VERSIONS, replayRecord, replayAll, buildHost, main as replayMain,
@@ -805,10 +810,31 @@ try {
     const replayCli = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl"), "--replay", path.join(scoreDir, "replay.jsonl")]);
     check("score.mjs prints a v1 replay beside the v1 baseline, under its own header, rather than replacing it",
       replayCli.status === 0 &&
-      replayCli.stdout.includes("== controller-decision v1 (n=2) ==") &&
       replayCli.stdout.includes("== controller-decision v1 (replay) (n=1) ==") &&
       replayCli.stdout.includes("note: 1 replay record(s) failed and are excluded from every figure"),
       replayCli.stdout);
+    // The same turns: the failed replay record leaves cd-2 out of the replay's
+    // group, so the baseline is read on cd-1 alone, the restriction and its
+    // count are printed, and the baseline over both of its records stays
+    // beside it, labelled.
+    check("with a replay, every version is read on the records every version scored, and the count is printed",
+      replayCli.stdout.includes("== controller-decision v1 (n=1) ==")
+        && replayCli.stdout.includes("note: every version is read on the 1 gold record(s) every present version scored"),
+      replayCli.stdout);
+    check("with a replay, the unrestricted baseline is printed beside it under its label",
+      replayCli.stdout.includes("== controller-decision v1 (all records) (n=2) =="), replayCli.stdout);
+    const shared = onSharedRecords(new Map([
+      ["v1", [{ id: "a" }, { id: "b" }, { id: "c" }]],
+      ["v2 (replay)", [{ id: "b" }, { id: "c" }, { id: "d" }]],
+    ]));
+    check("onSharedRecords keeps in every group only the ids every group carries",
+      shared.shared === 2 && same(shared.groups.get("v1").map((r) => r.id), ["b", "c"]) && same(shared.groups.get("v2 (replay)").map((r) => r.id), ["b", "c"]),
+      { shared: shared.shared, v1: shared.groups.get("v1").map((r) => r.id) });
+    // Without a replay, nothing is restricted and no note is printed.
+    const plainCli = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl")]);
+    check("without a replay, the baseline is read over all of its records and no restriction note is printed (control)",
+      plainCli.status === 0 && plainCli.stdout.includes("== controller-decision v1 (n=2) ==") && !plainCli.stdout.includes("every present version scored"),
+      plainCli.stdout);
 
     // score.mjs refuses gold whose rows mix splits rather than printing one
     // split's name over records drawn from more than one.
@@ -996,17 +1022,29 @@ try {
         v2StateOf(v2Journaled) === catalog.turnScoreStateText("Tidy the notes for t-v2j.", "Tidied them for t-v2j.", "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }),
         v2StateOf(v2Journaled));
 
-      // The prompt cross-check. A transcript prompt differing from the scored
-      // text in whitespace alone, or carrying the engine's trailer, is the
-      // scored text and builds; one whose opening message is another text is
-      // refused as prompt_mismatch, which replayRecord writes as a failure
-      // row with no request sent.
+      // The prompt cross-check, which runs only where the journal holds the
+      // plugin's own reading of the opening text: a record journaled under v2.
+      // A v1 state's "User asked:" text is the last prompt the plugin saw
+      // submitted, which a message queued mid-turn replaces, so a v1-journaled
+      // record whose transcript opens on another text is built, not refused.
+      // A v2-journaled record whose transcript opening builds another opening
+      // part is refused as prompt_mismatch, which replayRecord writes as a
+      // failure row with no request sent. A trailer and extra whitespace build
+      // the same opening part, so they pass.
       const trailer = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
       const trailed = tsRecord("t-trail", { transcript: { ...rec.transcript, prompt: "Tidy the  notes\nfor t-trail.\n\n" + trailer } });
-      check("a transcript prompt carrying the engine's trailer and different whitespace passes the cross-check, and the trailer is not sent",
+      check("the builder removes the engine's trailer and collapses whitespace in a transcript prompt",
         v2StateOf(trailed).startsWith("Turn opened with: Tidy the notes for t-trail.\n\n"), v2StateOf(trailed));
-      const other = tsRecord("t-other", { transcript: { ...rec.transcript, prompt: "[SUPERVISOR-PRIMING] a different message" } });
-      check("a transcript prompt that is not the scored text is refused as prompt_mismatch",
+      const v1Other = tsRecord("t-v1-other", { transcript: { ...rec.transcript, prompt: "<task-notification> a different message" } });
+      check("a v1-journaled record whose transcript opens on another text than User asked is built, since the v1 text proves nothing",
+        v2StateOf(v1Other).startsWith("Turn opened with: <task-notification> a different message\n\n"), v2StateOf(v1Other));
+      const v2State = (opening) => catalog.turnScoreStateText(opening, "x", "Keep the notes tidy", { flags: noFlags, calls: [] });
+      const v2Same = tsRecord("t-v2-same", { state: v2State("The agentic-plugin plugin sent a message:\nTidy the notes for t-v2-same.\n\n" + trailer),
+        transcript: { ...rec.transcript, prompt: "Tidy the notes  for t-v2-same." } });
+      check("a v2-journaled record whose transcript opening builds the journaled opening part passes the cross-check",
+        v2StateOf(v2Same).startsWith("Turn opened with: Tidy the notes for t-v2-same.\n\n"), v2StateOf(v2Same));
+      const other = tsRecord("t-other", { state: v2State("Tidy the notes for t-other."), transcript: { ...rec.transcript, prompt: "[SUPERVISOR-PRIMING] a different message" } });
+      check("a v2-journaled record whose transcript opens on another text is refused as prompt_mismatch",
         v2StateOf(other) === "refused: prompt_mismatch", v2StateOf(other));
       let sentOnMismatch = 0;
       const mismatchRow = await replayRecord(stubHost(async (url, init) => { sentOnMismatch += 1; return choiceReply()(url, init); }), "turn-score", "v2", other);
@@ -1033,33 +1071,43 @@ try {
         turnProducedAnswer({ final: bracketed }, stateAnswerText("turn-score", v1TurnScoreState("p", bracketed, "o"))) === true);
 
       // The byte pin through sample.mjs's own transcript reader. The fixture
-      // turn opens with surrounding whitespace, the plugin wrapper line and the
-      // engine's trailer, and ends on an assistant entry of two text blocks,
-      // which the reader trims and joins with one line break. The plugin holds
-      // the nudge text as it submitted it and the answer with its own
-      // whitespace; the replay's state from what turnsOf returns must equal
-      // the builder over those raw strings.
+      // turn opens with surrounding whitespace, the engine's wrapper line, a
+      // message over 1,200 characters and the engine's trailer, and ends on an
+      // assistant entry of two text blocks, which the reader trims and joins
+      // with one line break. The plugin holds the turn-start text whole, which
+      // is the transcript's opening text as the engine delivered it, and the
+      // answer with its own whitespace; the replay's state from what turnsOf
+      // returns, cut as sample.mjs cuts a record's fields, must equal the
+      // builder over those raw strings.
       const fixtureTurns = turnsOf(path.join(FIXTURE, "turn-score-v2", "s-ts-v2.jsonl"));
       const fixtureTurn = fixtureTurns.length === 1 ? fixtureTurns[0] : null;
-      const pluginPrompt = "[GOAL] Tidy the [notes].\n\nKeep going.";
-      const pluginAnswer = "  WORKING: tidied the [three] notes.  \n\nCommitted them.\n";
       const rawOpening = JSON.parse(fs.readFileSync(path.join(FIXTURE, "turn-score-v2", "s-ts-v2.jsonl"), "utf8").split("\n")[0]).message.content[0].text;
-      check("the fixture control: the transcript's raw opening text carries whitespace, the wrapper and the trailer, and the reader's final message differs from the plugin's answer, so the pin has each to reconcile",
-        fixtureTurn !== null && rawOpening !== pluginPrompt && rawOpening.includes(trailer) && /^\s/.test(rawOpening)
-          && fixtureTurn.final !== pluginAnswer && fixtureTurn.final.includes("\n"),
-        fixtureTurn && { final: fixtureTurn.final });
-      check("sample.mjs's reader removes the wrapper, the trailer and the surrounding whitespace, leaving the text the plugin submitted",
-        fixtureTurn !== null && fixtureTurn.prompt === pluginPrompt, fixtureTurn && fixtureTurn.prompt);
+      const pluginAnswer = "  WORKING: tidied the [three] notes.  \n\nCommitted them.\n";
+      check("the fixture control: the raw opening text carries surrounding whitespace, the wrapper, over 1,200 characters of message and the trailer, and the reader's final message differs from the plugin's answer",
+        fixtureTurn !== null && /^\s/.test(rawOpening) && rawOpening.includes("plugin sent a message:") && rawOpening.includes(trailer)
+          && fixtureTurn.prompt.length > 1200 && fixtureTurn.final !== pluginAnswer && fixtureTurn.final.includes("\n"),
+        fixtureTurn && { promptLength: fixtureTurn.prompt.length, final: fixtureTurn.final });
+      check("sample.mjs's reader removes the wrapper, the trailer and the surrounding whitespace through the catalog's turnOpeningText",
+        fixtureTurn !== null && fixtureTurn.prompt === catalog.turnOpeningText(rawOpening) && !fixtureTurn.prompt.includes("plugin sent a message:")
+          && !fixtureTurn.prompt.includes("This is how Claude Code") && fixtureTurn.prompt.startsWith("[GOAL] Tidy the [notes]."),
+        fixtureTurn && fixtureTurn.prompt.slice(0, 60));
       if (fixtureTurn !== null) {
         const fixtureRecord = {
           id: "ts-fixture", stampId: "s-fixture", haikuValue: null,
-          state: v1TurnScoreState(pluginPrompt.slice(0, 500), pluginAnswer.slice(0, 1000), "Keep the notes tidy"),
+          state: v1TurnScoreState(fixtureTurn.prompt.slice(0, 500), pluginAnswer.slice(0, 1000), "Keep the notes tidy"),
           jev: { probabilities: TS_NUDGED },
-          transcript: { prompt: fixtureTurn.prompt, finalMessage: fixtureTurn.final, toolActivity: toolActivityText(fixtureTurn.tools, fixtureTurn.sidechainReply) },
+          transcript: {
+            prompt: fixtureTurn.prompt.slice(0, PROMPT_MAX),
+            finalMessage: fixtureTurn.final.slice(0, FINAL_MAX),
+            toolActivity: toolActivityText(fixtureTurn.tools, fixtureTurn.sidechainReply),
+          },
         };
-        check("the replay's v2 state from turnsOf's reading equals turnScoreStateText over the raw strings the plugin holds",
-          v2StateOf(fixtureRecord) === catalog.turnScoreStateText(pluginPrompt, pluginAnswer, "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }),
-          { replay: v2StateOf(fixtureRecord), plugin: catalog.turnScoreStateText(pluginPrompt, pluginAnswer, "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] }) });
+        const pluginState = catalog.turnScoreStateText(rawOpening, pluginAnswer, "Keep the notes tidy", { flags: tsFlags, calls: ["Read", "Bash"] });
+        check("the replay's v2 state from turnsOf's reading equals turnScoreStateText over the raw turn-start text and answer the plugin holds",
+          v2StateOf(fixtureRecord) === pluginState, { replay: v2StateOf(fixtureRecord).slice(-200), plugin: pluginState.slice(-200) });
+        check("the plugin's opening part is cut at 1,200 characters after the wrapper comes off, so it opens on the message and not the wrapper",
+          pluginState.startsWith("Turn opened with: (GOAL) Tidy the (notes). Keep going 0.") && pluginState.split("\n\n")[0].length === "Turn opened with: ".length + 1200,
+          pluginState.slice(0, 80));
       }
 
       // The refusals, one per part the state needs. Each names the record and

@@ -38,30 +38,19 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { registerHooks } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// hooks/question-catalog.ts imports hooks/decision-seam.ts with no extension,
-// which only a module a resolve hook covers can load standalone; the same
-// hook .kit/tick-harness.mjs registers for the test suite, restated here in
-// full so replay.mjs, run as its own process, needs no test harness to start.
-const resolveHook = (specifier, context, nextResolve) => {
-  if (specifier.startsWith("./") && !path.extname(specifier) && context.parentURL && context.parentURL.includes("hooks")) {
-    return nextResolve(specifier + ".ts", context);
-  }
-  return nextResolve(specifier, context);
-};
-registerHooks({ resolve: resolveHook });
-
+// sample.mjs is loaded first: it registers the resolve hook that lets
+// hooks/question-catalog.ts load its extensionless imports standalone.
+const { QUESTIONS, homeDir } = await import("./sample.mjs");
 const { ask, askAll } = await import("../../hooks/decision-seam.ts");
 const {
   CONTROLLER_DECISION, CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH,
-  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText, kaizenLine,
+  TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText,
   BLOCK_OWNER, BLOCK_OWNER_OPTIONS, WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES,
   PLAN_HEALTH_STATE_CLOSING, PLAN_HEALTH_STATE_RECENT,
   resolverOf,
 } = await import("../../hooks/question-catalog.ts");
-const { QUESTIONS, homeDir, withoutHarnessTrailer } = await import("./sample.mjs");
 
 const MODE = "shadow";
 
@@ -177,27 +166,31 @@ export function scoreStateParts(state) {
   const objectiveTo = v1 ? state.length - V1_QUESTION.length : state.indexOf(V2_TOOLS_LABEL, objectiveFrom);
   if (objectiveTo < objectiveFrom) return null;
   return {
+    shape: v1 ? "v1" : "v2",
     opening: state.slice((v1 ? V1_OPENING : V2_OPENING).length, answerAt),
     objective: state.slice(objectiveFrom, objectiveTo),
   };
 }
 
-// Two texts compared the way the state's own guard and collapse would leave
-// them: folded to one line with brackets rewritten, whitespace set aside.
-const comparable = (text) => kaizenLine(text).replace(/\s+/g, "");
-
-// The v2 state for one sampled record: the opening prompt and the final
-// message from its transcript turn, the prompt with the engine's trailer
-// removed as sample.mjs's reader removes it, the objective from its journaled
-// state, and the Tools line from its activity line. A record missing any of
-// the four throws, naming the record and the part, since that is a sampler
+// The v2 state for one sampled record: the opening text and the final message
+// from its transcript turn, the objective from its journaled state, and the
+// Tools line from its activity line. The plugin's scorer builds its state
+// from the text the turn opened with, which is the transcript turn's opening
+// message, so the two meet in turnScoreStateText. A record missing any of the
+// four throws, naming the record and the part, since that is a sampler
 // defect; an empty final message throws too, since the plugin scores no turn
-// without an answer. Returns { ok: true, state } where the transcript's prompt
-// opens with the text the journaled state carries, whitespace set aside, and
-// { ok: false, reason: "prompt_mismatch" } where it does not: the transcript's
-// opening message is then not the text the plugin scored, and a state built
-// from it would not be the plugin's bytes, so the record is written as a
-// failure and excluded from every figure.
+// without an answer.
+//
+// The opening text is checked only where the journal holds the plugin's own
+// reading of it, which is a record journaled under v2: there the state is
+// built and refused as { ok: false, reason: "prompt_mismatch" } where its
+// opening part is not the journaled one, since it would not be the plugin's
+// bytes. A v1 state's "User asked:" text is the last prompt the plugin saw
+// submitted, which a message queued mid-turn replaces, so it can differ from
+// the opening message on a turn scored correctly and proves nothing either
+// way; a v1-journaled record is not checked. Otherwise returns { ok: true,
+// state }. A refused record is written as a failure and excluded from every
+// figure.
 export const PROMPT_MISMATCH = "prompt_mismatch";
 export function turnScoreV2State(record) {
   const refuse = (part) => new Error(`record ${record.id}: ${part}, so its turn-score v2 state cannot be built`);
@@ -209,11 +202,11 @@ export function turnScoreV2State(record) {
   if (tools === null) throw refuse("its transcript's toolActivity is not a turn_tool_activity line");
   const parts = scoreStateParts(record.state);
   if (parts === null) throw refuse("its journaled state carries no goal objective");
-  const prompt = withoutHarnessTrailer(t.prompt);
-  if (!comparable(prompt).startsWith(comparable(parts.opening))) {
+  const state = turnScoreStateText(t.prompt, t.finalMessage, parts.objective, tools);
+  if (parts.shape === "v2" && scoreStateParts(state)?.opening !== parts.opening) {
     return { ok: false, reason: PROMPT_MISMATCH, detail: "the transcript's opening message is not the text the plugin scored" };
   }
-  return { ok: true, state: turnScoreStateText(prompt, t.finalMessage, parts.objective, tools) };
+  return { ok: true, state };
 }
 
 // --- One record's replay ---

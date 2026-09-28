@@ -871,7 +871,7 @@ const VALID_CONTROLLER_OVERRIDE = {
     ["on-goal", /task notification/, "a turn a task notification opened"],
     ["complete", /on-goal/, "a section landed is on-goal, not complete"],
     ["off-goal-by-instruction", /opened the turn/, "the opening prompt decides it"],
-    ["off-goal-by-instruction", /channel message or a delivered record is scored only when it answers a nudge, and a nudged turn is never offered this option/, "a channel or delivery turn is never offered this option"],
+    ["off-goal-by-instruction", /answers a nudge/, "a channel or delivery turn is scored only when it answers a nudge"],
     ["drift", /nudge/, "a nudge restating the objective is no instruction to go elsewhere"],
     ["drift", /not drift/, "a wait on the worker's own work is not drift"],
   ];
@@ -948,6 +948,23 @@ const VALID_CONTROLLER_OVERRIDE = {
     const cutCollapsed = stateText(runs, "a", "o", { flags: noFlags, calls: [] });
     check("Test 12j: the 1,200 bound counts the prompt after its collapse",
       cutCollapsed.startsWith(`Turn opened with: ${Array.from({ length: 1300 }, () => "p").join(" ").slice(0, 1200)}\n\n`), cutCollapsed.slice(0, 60));
+  }
+  // The opening text: the engine's wrapper line and trailer paragraph come
+  // off before the collapse and the cut, so a nudge's own text is what the
+  // 1,200 characters hold. A text carrying neither is the withheld control.
+  const opening = catalog.turnOpeningText;
+  const trailer = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
+  check("Test 12k: turnOpeningText removes the engine's wrapper line and trailer paragraph and trims",
+    typeof opening === "function" && opening("\n The agentic-plugin plugin sent a message:\n[GOAL] Do it.\n\n" + trailer + "\n") === "[GOAL] Do it.",
+    typeof opening === "function" ? opening("\n The agentic-plugin plugin sent a message:\n[GOAL] Do it.\n\n" + trailer + "\n") : typeof opening);
+  check("Test 12k control: a text carrying neither is only trimmed",
+    typeof opening === "function" && opening("  Tidy the notes.\n") === "Tidy the notes.");
+  if (typeof stateText === "function") {
+    const noFlags = Object.fromEntries((catalog.TURN_SCORE_TOOL_FLAGS || []).map((f) => [f, false]));
+    const longNudge = "[GOAL] " + "n".repeat(1300);
+    const wrapped = stateText("The agentic-plugin plugin sent a message:\n" + longNudge + "\n\n" + trailer, "a", "o", { flags: noFlags, calls: [] });
+    check("Test 12k: the state removes the wrapper before its 1,200 cut, so a long nudge fills the bound and the trailer never reaches it",
+      wrapped.startsWith(`Turn opened with: (GOAL) ${"n".repeat(1200 - "(GOAL) ".length)}\n\n`) && !wrapped.includes("This is how"), wrapped.slice(0, 60));
   }
   check("Test 12i: kaizenLine is the catalog's export, folding every line terminator and each bracket",
     typeof catalog.kaizenLine === "function" && catalog.kaizenLine("a\r\nb c [d]") === "a b c (d)",

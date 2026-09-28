@@ -19,9 +19,26 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { registerHooks } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fnv1aHash } from "../../hooks/cost-ledger.ts";
 import { PLAN_PATH_PATTERN, bracketSafeText, oneLine } from "../../hooks/agent-state.ts";
+
+// hooks/question-catalog.ts imports its siblings with no extension, which
+// only a module a resolve hook covers can load standalone; the same hook
+// .kit/tick-harness.mjs registers for the test suite, restated here so the
+// tools under .kit/jev-gold/, each run as its own process, need no test
+// harness to start. replay.mjs loads the catalog through this registration.
+registerHooks({
+  resolve: (specifier, context, nextResolve) => {
+    if (specifier.startsWith("./") && !path.extname(specifier) && context.parentURL && context.parentURL.includes("hooks")) {
+      return nextResolve(specifier + ".ts", context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+// The one opening-text reading the plugin's turn-score state also applies.
+const { turnOpeningText } = await import("../../hooks/question-catalog.ts");
 
 // Each question this sampler draws: the journal site that asks it, and the
 // oversample section 5's floor needs. The ids are the catalog's own, pinned
@@ -210,26 +227,6 @@ export function opensTurn(entry) {
   return true;
 }
 
-// The line the engine puts ahead of a message a plugin sends, which the
-// plugin's own view of the prompt does not carry.
-const PLUGIN_MESSAGE_WRAPPER = /^The [\w-]+ plugin sent a message:\s*/;
-
-// The paragraph the engine puts after a message a plugin submits between
-// turns, which the plugin's own view of the prompt does not carry either. It
-// is written with its dash as an escape, the engine's own text being the
-// thing matched.
-const HARNESS_TRAILER = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
-
-// A turn's opening text with the engine's trailer paragraph removed from its
-// end, and the whitespace before it. A text not ending in the trailer is
-// returned as it came. turnsOf applies it to every prompt it reads, and
-// .kit/jev-gold/replay.mjs applies it again to a sampled record's prompt, so a
-// sample drawn before the reader removed it replays the same.
-export function withoutHarnessTrailer(text) {
-  const trimmed = text.trimEnd();
-  return trimmed.endsWith(HARNESS_TRAILER) ? trimmed.slice(0, -HARNESS_TRAILER.length).trimEnd() : text;
-}
-
 function isReplyTool(name) {
   return typeof name === "string" && (name.includes("__reply") || name.endsWith("_reply"));
 }
@@ -307,7 +304,7 @@ export function turnsOf(file) {
       promptAt: entries[s].timestamp,
       endMs,
       sidechainReply: replyTimes.some((ms) => ms >= startMs && ms <= endMs),
-      prompt: withoutHarnessTrailer(textOf(entries[s].message.content).trim().replace(PLUGIN_MESSAGE_WRAPPER, "")),
+      prompt: turnOpeningText(textOf(entries[s].message.content)),
       final,
       tools,
     });

@@ -9012,9 +9012,12 @@ export const register: Register = async (on, options) => {
     lastPromptWasExternal = false;
     replyCalledThisTurn = false;
     // Section 5 (goal-every-turn): the turn's tool activity starts empty, and
-    // the text this turn opened with is held for the disposition state.
+    // the text this turn opened with is held whole for the disposition and
+    // turn-score states, each of which cuts it to its own bound. The
+    // turn-score state removes the engine's wrapper and trailer before its cut,
+    // so it needs the text uncut.
     resetTurnToolActivity();
-    currentTurnAskedText = typeof e.text === "string" ? e.text.slice(0, TURN_DISPOSITION_ASKED_MAX) : "";
+    currentTurnAskedText = typeof e.text === "string" ? e.text : "";
     currentTurnNudged = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
@@ -9211,11 +9214,9 @@ export const register: Register = async (on, options) => {
     // lands during those awaits is not read as the nudged turn's.
     if (completesGateTurn) currentTurnNudged = false;
     const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
-    // The turn-score state's own facts, read here for the same reason: the
-    // prompt this turn opened with and the turn's tool activity are rewritten
-    // by the next prompt and the next turn.start, and the scorer reads them
-    // after the awaits below.
-    const scorePromptAtDelete = currentPrompt;
+    // The turn-score state's tool activity, read here for the same reason:
+    // the next turn.start rewrites it, and the scorer reads it after the
+    // awaits below. Its opening text is askedTextAtDelete above.
     const scoreToolsAtDelete = turnScoreToolsOf(turnToolFlags, turnToolRing, replyCalledThisTurn);
     // Section 6 (goal-every-turn): route one's own fact, read here for the same
     // reason. The plan documents this turn edited are rewritten by the next
@@ -9299,12 +9300,15 @@ export const register: Register = async (on, options) => {
     // node, so it is scored against none and spends no round.
     const wasProposal = currentTurnKind === "proposal";
     // Whether this completion is the nudged turn's own, read by id rather
-    // than from currentTurnKind, which the first completion to arrive resets
-    // whatever turn it belongs to. The id is spent here, so the nudged turn
-    // is read once.
-    const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
+    // than from currentTurnKind, which the first of the persona's own
+    // completions to arrive resets whatever turn it belongs to. The id is
+    // spent here, so the nudged turn is read once. A subagent's completion
+    // is never the nudged turn's own, whatever turn id it carries, and
+    // resets neither the id nor the kind, so the persona's own completion
+    // after it still reads what its turn opened as.
+    const completesNudgedTurn = !completesSubagentLoop && nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
-    currentTurnKind = "unaccounted";
+    if (!completesSubagentLoop) currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId && !(typeof e.agentId === "string" && e.agentId.length > 0)) {
       currentTurnOriginKind = "unclassified";
       currentTurnIsPriming = false;
@@ -9573,8 +9577,8 @@ export const register: Register = async (on, options) => {
     // recorded at turn.start, resets it when its closing text opens with a
     // status line and adds one when it opens with none. Every other
     // completion moves nothing: an unaccounted turn, so a nudge whose turn
-    // cannot be placed never counts toward the cap; a subagent's completion
-    // under an id other than the nudged turn's; and an aborted, errored or
+    // cannot be placed never counts toward the cap; a subagent's completion,
+    // under whatever turn id it carries; and an aborted, errored or
     // refused turn. A nudged completion with no answer
     // opens with none of the three lines, so it adds one. Where an entry was
     // activated, the tree replaced or the state loaded while the nudged turn
@@ -9646,7 +9650,7 @@ export const register: Register = async (on, options) => {
             // Bound to a name so the same bytes reach Haiku and the shadow call
             // below it. The catalog builds it, so .kit/jev-gold/replay.mjs
             // builds the same state from a sampled turn.
-            const scoreState = turnScoreStateText(scorePromptAtDelete, e.answer, g.objective, scoreToolsAtDelete);
+            const scoreState = turnScoreStateText(askedTextAtDelete, e.answer, g.objective, scoreToolsAtDelete);
             const result = await $.model.classify(
               scoreState,
               labels,

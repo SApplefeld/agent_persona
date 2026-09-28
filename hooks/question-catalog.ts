@@ -387,6 +387,23 @@ function turnScoreToolsLine(tools: TurnScoreTools): string {
   return `flags: ${held.length > 0 ? held.join(", ") : "none"}; calls: ${tools.calls.length > 0 ? tools.calls.join(", ") : "none"}`;
 }
 
+// The line the engine puts ahead of a message a plugin submits, and the
+// paragraph it puts after one submitted between turns. Neither is the
+// message's own text. The paragraph is matched as the engine writes it, its
+// dash written as an escape.
+const PLUGIN_MESSAGE_WRAPPER = /^The [\w-]+ plugin sent a message:\s*/;
+const HARNESS_TRAILER = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
+
+// The text a turn opened with, as the message its sender wrote: trimmed, with
+// the engine's wrapper line removed from its start and the engine's trailer
+// paragraph from its end, where either is present. turnScoreStateText applies
+// it to the opening text the plugin holds, and .kit/jev-gold/sample.mjs to
+// the opening text it reads from a transcript, so the two meet on one text.
+export function turnOpeningText(text: string): string {
+  const unwrapped = text.trim().replace(PLUGIN_MESSAGE_WRAPPER, "").trimEnd();
+  return unwrapped.endsWith(HARNESS_TRAILER) ? unwrapped.slice(0, -HARNESS_TRAILER.length).trimEnd() : unwrapped;
+}
+
 // One value of the state: kaizenLine's fold, then every run of whitespace
 // collapsed to one space and the ends trimmed. The collapse is what lets the
 // replay rebuild the plugin's bytes from a transcript, whose reader trims a
@@ -396,12 +413,14 @@ function stateValue(text: string): string {
   return kaizenLine(text).replace(/\s+/g, " ").trim();
 }
 
-// Each cut is applied to the collapsed value, so each bound counts the text
-// as it is sent. Every value goes through stateValue, the prompt and the
-// answer being external and model text and the objective stored text, so no
-// value can write a fifth part.
+// `prompt` is the text the turn opened with, whole: the engine's wrapper and
+// trailer come off it first, so the caller hands it uncut. Each cut is then
+// applied to the collapsed value, so each bound counts the text as it is sent.
+// Every value goes through stateValue, the prompt and the answer being
+// external and model text and the objective stored text, so no value can
+// write a fifth part.
 export function turnScoreStateText(prompt: string, answer: string, objective: string, tools: TurnScoreTools): string {
-  return `Turn opened with: ${stateValue(prompt).slice(0, TURN_SCORE_PROMPT_MAX)}\n\n` +
+  return `Turn opened with: ${stateValue(turnOpeningText(prompt)).slice(0, TURN_SCORE_PROMPT_MAX)}\n\n` +
     `Worker answered: ${stateValue(answer).slice(0, TURN_SCORE_ANSWER_MAX)}\n\n` +
     `Goal objective: ${stateValue(objective)}\n\n` +
     `Tools: ${stateValue(turnScoreToolsLine(tools))}`;

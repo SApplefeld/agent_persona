@@ -16,7 +16,10 @@
 // version --replay carries): accuracy against gold, per-option precision and
 // recall, calibration by top-probability bin, agreement with Haiku, AUC
 // against each outcome kind present, and one `bar:` line per bar this tool
-// knows about for the question.
+// knows about for the question. Where --replay is given, every version is read
+// on the gold records every present version scored, the count printed, and
+// the journal baseline over all of its own records is printed beside it under
+// "(all records)".
 //
 // Reads only. Nothing here writes anywhere.
 
@@ -551,6 +554,22 @@ export function report(question, split, versionGroups) {
   return lines.join("\n").replace(/\n+$/, "\n");
 }
 
+// Every version group restricted to the records every group carries, so each
+// figure is read on the same turns: a replay row that failed leaves its
+// record out of the replay's group, and without this the baseline would be
+// read over turns the replay never answered. Returns the restricted groups
+// and the count of records they share.
+export function onSharedRecords(versionGroups) {
+  const lists = [...versionGroups.values()];
+  const shared = new Set(lists.length === 0 ? [] : lists[0].map((r) => r.id));
+  for (const list of lists.slice(1)) {
+    const ids = new Set(list.map((r) => r.id));
+    for (const id of [...shared]) if (!ids.has(id)) shared.delete(id);
+  }
+  const restricted = new Map([...versionGroups].map(([version, list]) => [version, list.filter((r) => shared.has(r.id))]));
+  return { groups: restricted, shared: shared.size };
+}
+
 function groupByVersion(records, keyOf = (r) => r.version) {
   const out = new Map();
   for (const r of records) {
@@ -595,15 +614,23 @@ export function main(argv) {
   const sample = sampleById(dir);
   const joined = joinGoldSample(flags.question, gold, sample);
   const split = splitOf(joined);
-  const groups = groupByVersion(joined);
+  let groups = groupByVersion(joined);
   if (flags.replay) {
+    const baseline = groups;
     const { records, failed, missing } = withReplay(joined, readReplay(flags.replay));
     // Keyed apart from the journal baseline's own group, "v1" among them:
     // a replay record's version, ok or not, never overwrites the baseline
     // it is meant to sit beside.
-    for (const [version, list] of groupByVersion(records, (r) => `${r.version} (replay)`)) groups.set(version, list);
+    const all = new Map(baseline);
+    for (const [version, list] of groupByVersion(records, (r) => `${r.version} (replay)`)) all.set(version, list);
     if (failed > 0) process.stdout.write(`note: ${failed} replay record(s) failed and are excluded from every figure\n`);
     if (missing > 0) process.stdout.write(`note: ${missing} gold record(s) carry no line in the replay file at all\n`);
+    // Every version is read on the records every present version scored, and
+    // the baseline over all of its own records is kept beside it, labelled.
+    const restricted = onSharedRecords(all);
+    process.stdout.write(`note: every version is read on the ${restricted.shared} gold record(s) every present version scored; "(all records)" is the baseline over its own records\n`);
+    groups = restricted.groups;
+    for (const [version, list] of baseline) groups.set(`${version} (all records)`, list);
   }
   const text = report(flags.question, split, groups);
   process.stdout.write(text);

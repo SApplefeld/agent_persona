@@ -26326,6 +26326,23 @@ async function caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock) {
   check("turn score v2: the answer line carries version v2",
     answerLine?.questionVersion === "v2", answerLine?.questionVersion);
 
+  // The mid-turn leg: a task notification submitted while the turn is open
+  // replaces the last prompt the plugin saw, and the state still opens with
+  // the text the turn opened with.
+  clock.set(T0);
+  const m = await seedSeamHarness("turn_score_v2_midturn", clock);
+  m.setHttpResponse(answerEveryQuestion);
+  m.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  await submitMessage(m, "Tidy the notes.");
+  await recordTurnStart(m, "t-ts-midturn", "Tidy the notes.");
+  await submitMessage(m, "<task-notification>\n<task-id>b-mid</task-id>\n</task-notification>", null);
+  await recordTurnComplete(m, "t-ts-midturn", "Tidied them.");
+  await settleJournalWrites(m);
+  const midBodies = turnScoreBodiesOf(m);
+  check("turn score v2 mid-turn: a prompt submitted inside the turn does not replace the opening text the state carries",
+    midBodies.length === 1 && midBodies[0].state.startsWith("Turn opened with: Tidy the notes.\n\n") && !midBodies[0].state.includes("task-notification"),
+    midBodies[0]?.state?.slice(0, 100));
+
   // The nudged leg: a plan entry nudged by the idle tick, whose own turn is
   // scored over the three labels a nudged turn is offered.
   clock.set(T0);
@@ -26398,6 +26415,57 @@ async function caseTurnScore_aSubagentCompletionIsNotScored(clock) {
     { classify: scorerCallsOf(h).length, lines: callLinesOf(h).length, scores: scoresOf(h) });
   check("turn score subagent (control): the scored answer is the persona's own, not the subagent's report",
     callLinesOf(h)[0]?.state?.includes("Worker answered: Tidied them.") === true, callLinesOf(h)[0]?.state?.slice(0, 120));
+
+  // The nudged leg. A plan entry's nudged turn holds a subagent whose
+  // completion, under the nudged turn's own id, arrives first. The persona's
+  // own completion still reads the turn as the nudge's: it is scored once,
+  // over the three-label array, and not skipped as a plan-entry turn no
+  // nudge opened.
+  clock.set(T0);
+  const n = await lead3Harness("turn_score_subagent_nudged");
+  n.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }] });
+  n.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  n.setHttpResponse((url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 }));
+  const idle = await lead3IdleTick(n, clock);
+  check("turn score subagent nudged (control): the idle tick nudged the plan entry", idle.nudged === true, idle);
+  n.setClassifyValue((prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("on-goal")) return "on-goal";
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  });
+  await openQueuedTurn(n, "t-ts-sub-nudged");
+  await n.handlers["turn.complete"](n.fake, { turnId: "t-ts-sub-nudged", agentId: "sub-nudged", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(n);
+  await n.handlers["turn.complete"](n.fake, { turnId: "t-ts-sub-nudged", answer: "WORKING: took the next step.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(n);
+  const nudgedScorer = scorerCallsOf(n);
+  check("turn score subagent nudged: the persona's own completion is scored once, over the three-label array",
+    nudgedScorer.length === 1 && JSON.stringify([...nudgedScorer[0][1]]) === JSON.stringify([...Catalog.SCORER_LABELS_AFTER_NUDGE]),
+    nudgedScorer.map((c) => c[1]));
+  check("turn score subagent nudged: the plan entry's turn is not skipped as one no nudge opened",
+    !getDecisions(n).some((d) => d.action === "score_skipped" && d.detail.includes("not opened by a nudge")),
+    getDecisions(n).filter((d) => d.action === "score_skipped").map((d) => d.detail));
+
+  // The delivery leg. A delivered record's turn holds a subagent whose
+  // completion arrives first. The persona's own completion still reads the
+  // turn as a delivery, so it is skipped rather than scored.
+  clock.set(T0);
+  const d = await seedSeamHarness("turn_score_subagent_delivery", clock);
+  d.setHttpResponse((url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 }));
+  d.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  await openDeliveryTurn(d, "default", { text: "Pick up the next piece.", turnId: "t-ts-sub-delivery" });
+  const deliveryCallsBefore = scorerCallsOf(d).length;
+  await d.handlers["turn.complete"](d.fake, { turnId: "t-ts-sub-delivery", agentId: "sub-delivery", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(d);
+  await d.handlers["turn.complete"](d.fake, { turnId: "t-ts-sub-delivery", answer: "Picked it up.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(d);
+  check("turn score subagent delivery: the persona's own completion is skipped as a delivered record's turn",
+    getDecisions(d).some((x) => x.action === "score_skipped" && x.detail.includes("a delivered record")),
+    getDecisions(d).filter((x) => x.action === "score_skipped").map((x) => x.detail));
+  check("turn score subagent delivery: neither completion made a scorer classify or wrote a turn-score call line",
+    scorerCallsOf(d).length === deliveryCallsBefore && callLinesOf(d).length === 0,
+    { classify: scorerCallsOf(d).length - deliveryCallsBefore, lines: callLinesOf(d).length });
 }
 
 // next_prompt_kind is written once against every disposition stamp pending on
