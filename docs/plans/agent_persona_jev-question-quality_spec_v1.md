@@ -283,3 +283,33 @@ Stamps: adjudicated 0, stamped 0.
 Gate: no code change since Chapter 2's gate; score.mjs exit 0 on the controller baseline run.
 Next: 3. The controller question, version v2; then 5 on the operator's block-owner answer, and 6
 Commit Model: Branch-and-PR
+
+### Interim board 3 - 2026-09-28
+
+Section 3 is built and uncommitted in the worktree, in fix round 1. The implementer at Fable returned green: question-catalog 216, jev-gold 290, decision-journal 141, controller-tick 5840, all exit 0 on the main thread's own run, tsc and the loader rule exit 0.
+
+The first dev replay of v2 over the 150 controller records (0 refused) missed the bar: accuracy 0.840 over 144 at top probability 0.6 or above against 0.85, coverage 0.966; ask-operator recall 0.355 over 31 against 0.5. v1 reads 0.559 over 111. Of the 21 gold stalls v2 called nudge, about 12 are off the objective and about 7 are waits on another session, mostly at nudge 0.75 to 0.99. Analysis: .kit/scratch/jev-question-quality/s3-replay-miss.md.
+
+Round 1 review (adversarial, blind, security at Fable; capacity reading "no reading (stale) -> ladder governs"): security CLEAR; adversarial approved with concerns, one Major (the skip hash ignores the last answer); blind changes required, three Majors (the last answer survives a goal change, the embedded option descriptions ignore an override, the v1-record replay joins the last answer by timing alone).
+
+Consult ruling: fix the two Majors that change replay bytes (the last answer cleared on a goal change, and the replay's join), re-replay once with the option descriptions unchanged, then apply section 3's rule to that result. No description revision, since the ask-operator description already names both miss clusters. On a miss, the whole of section 3 reverts: catalog v1 with pause, the v1 summary, no last answer; the uncommitted diff is saved as a patch under .kit/scratch/jev-question-quality/ for the decomposition follow-on, which goes to the backlog. The operator's pause ruling waits with v2. On a miss, the operator is also asked whether to lower the bar for this question, recommending keeping v1.
+
+### Chapter 4 - 2026-09-28
+Completed: 3. The controller question, version v2
+Implemented By: implementer-fable, one dispatch resumed for one fix round; no escalation
+Metrics: review rounds 1, closed major-closed; provenance 4 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings; NEEDS_CONTEXT 0; escalations 0; consults 1
+Decisions / Surprises:
+- v2 missed its dev bar twice and is not committed, per this section's own rule: the v1 wording, the v1 summary and pause stay in the catalog, and nothing of section 3 lands on the branch.
+- First replay (interim board 3): accuracy 0.840 over 144 at top probability 0.6 or above, ask-operator recall 0.355 over 31.
+- Second replay, after the fix round the consult ruled (the stored last answer keyed to the goal the answering turn ran on, and the replay refusing a record whose answering turn ended on another goal): 150 records, 20 refused as answer_on_other_goal (16 where the turn called goal_done, 4 where it opened on a nudge naming another objective), 129 scored. Bar line: accuracy 0.833 over 126 against 0.85, coverage 0.977; ask-operator recall 0.367 over 30 against 0.5, precision 0.750; nudge recall 0.969. complete reads n/a, gold holding none. On the same 129 records v1 reads 0.559 over 93 on its bar line and 0.120 ask-operator recall; Haiku reads 0.504 overall. Source: score.mjs over replay-v2-fix1.jsonl, exit 0, log .kit/scratch/jev-question-quality/score-ctl-v2-fix1.log.
+- The miss sits in one place: 19 of 31 gold stalls read as a plain nudge, mostly at nudge probability 0.75 to 0.99. The two clusters are a worker working off the objective the state names (about 12 in the first replay) and a worker waiting on another session rather than its own dispatched work (about 7). The option descriptions already named both, so wording alone did not move them; the follow-on is a decomposition, in docs/backlog.md.
+- The replay's Pending plans line carries the v1 summary's titles alone, each cut at 30 characters, since the journal holds no plan ids; the plugin's line would carry ids and whole titles. 75 of the 130 built records offered switch and carry that difference. The figure above is read over it.
+- The whole uncommitted section 3 diff against 7330fd7 is kept at .kit/scratch/jev-question-quality/section-3-v2.patch (1,606 lines) for the follow-on. The six files were restored from git show 7330fd7 copies and each confirmed byte-identical to HEAD with cmp.
+- Item 0's operator ruling, drop pause and keep ask-operator, waits with v2: pause stays in v1 and the ruling applies when a controller v2 ships.
+Failed approaches: tried re-posing the controller question with the last answer, the pending plans and boundary-case option descriptions; failed because Jev still reads a stall off the objective or on another session as an ordinary next step at high confidence; learned the stall cases need a signal the state does not carry, such as whether the last answer works on the named objective, rather than more description.
+Assumptions: none new.
+Review Findings: review: adversarial + blind + security at fable, Agent tool (capacity reading "no reading (stale) -> ladder governs"). Majors: the last answer survived a goal change and the replay joined it by timing alone, both fixed in the fix round; the skip hash ignored the last answer and the embedded option descriptions ignored an admitted override, both moot with the revert. Minors: moot with the revert. Security: clear; the README egress passage belongs to section 6.
+Stamps: adjudicated 11 operator-tier records listed by memq unstamped --since 1d, stamped 0; none shaped this section.
+Gate: targeted lane on the reverted tree, worktree D:/agent_persona-question-quality at 7330fd7 with only the plan doc and backlog dirty, SCOTT-CLAUDE, 2026-09-28, no foreign runner in the poll. question-catalog 189 OK exit 0; jev-gold 256 OK exit 0; decision-journal 141 OK exit 0; controller-tick 5791 OK exit 0; tsc exit 0; check-loader-rule exit 0. Delta against the 7330fd7 baseline on the same lane: none. The built v2 had read 216 / 297 / 141 / 5846, all exit 0, before the revert. Tests added and retired: none land.
+Next: 5. The plan-health request under item 1, on the operator's block-owner answer; then 6
+Commit Model: Branch-and-PR
