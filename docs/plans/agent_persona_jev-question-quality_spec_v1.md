@@ -153,7 +153,7 @@ Acceptance: the README states each surviving question's version, state, options 
 - None. Items 0 and 1 were ruled on the relay thread on 2026-09-26.
 
 ## Related
-- `docs/plans/agent_persona_goal-every-turn_spec_v1.md`: ships `turn_tool_activity` and the two live questions; this plan reads the summary and changes neither question.
+- `docs/archive/agent_persona_goal-every-turn_spec_v1.md`: ships `turn_tool_activity` and the two live questions; this plan reads the summary and changes neither question.
 - `docs/archive/agent_persona_jev-memory-gate_spec_v1.md`: owns `memory-kind`; the task-notification rule is its amendment.
 - `docs/archive/agent_persona_decision-seam_v1.md`: the seam whose questions this plan re-poses.
 
@@ -373,4 +373,22 @@ Review Findings: round 1 at fable, Agent tool (capacity reading "fable capacity:
 Stamps: stamped quality-bars-are-iterative-targets applied; it shaped the bar ruling.
 Gate: targeted lane at section close, worktree D:/agent_persona-question-quality on SCOTT-CLAUDE, 2026-09-29, at beed05a, no foreign runner in the poll. question-catalog 206 OK exit 0; jev-gold 345 OK exit 0; decision-journal 141 OK exit 0; tsc exit 0; check-loader-rule exit 0; controller-tick 5813 OK exit 0 at aeae9b2, the last commit touching hooks/. Delta against Chapter 5's close (217 / 302 / 141 / 5854): catalog -11 and tick -41 land in c36a133, which removed the retired questions' pins (per its implementer's report), gold +43, journal 0; no failures on either side. Tests added pin: the request carrying block-owner alone, the journal line at v2, each retired id refused as no_question, each removed writer silent with a withheld control, the sampler admitting a retired id, the seam invariance over each block-owner option, the replay's v2 request byte-identical to the tick's, the supplement draw and its refusals, the weighted read by hand and its refusals, the non-text state guard, the 0.52 bar, the option order. Retired: the three retired questions' pins and their writers' cases.
 Next: 6. The documents, the bars and the read after merge
+Commit Model: Branch-and-PR
+
+### Chapter 7 - 2026-09-29
+Completed: 6. The documents, the bars and the read after merge
+Implemented By: implementer-sonnet for the documents; the main thread for the outcome-kinds paragraph and the review round's fixes; no escalation
+Metrics: review rounds 1, closed on an author re-read of the fixes; provenance 8 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- The README states each surviving question's version, state, options and bar in a new Bars subsection of the Decision seam section: controller-decision v2, turn-score v2 and block-owner v2, with the BARS figures from score.mjs. The three retired questions are named as retired on 2026-09-29 with the reason. The egress passage, the call-line questionSet row, the test-coverage bullets and docs/architecture.md's TypeSafe bullet state the one-question plan-health request, which closes the security round 1 Major.
+- The backlog carries "Read the Jev question bars on fresh turns": earliest fourteen days after merge, the holdout floors, the rate arithmetic, the commands per question with block-owner's supplement and weighted read on the holdout split, and the jevLive decision it feeds. It also carries the two follow-ons section 5 refused or deferred: an override reusing a shipped version label, and dropping recentClosingTexts at block-owner's next version.
+- The nudge-state item's work-continues check and the plan-health item's three-kind journal read moved to docs/archive/backlog-2026-Q3.md, dated 2026-09-29 with the reason; the surviving items keep their other checks.
+- The goal-every-turn plan is archived, so it is left alone and this plan's Related line now points at its archive path.
+- The rate arithmetic in Assumptions gave block-owner fifteen days to its holdout floor. Its floor counts gold records labelled operator, about half of Jev's operator answers, so the backlog item states that floor as the one most likely to wait past fourteen days. The Assumptions line stands as the approved record.
+Failed approaches: none.
+Assumptions: none new.
+Review Findings: round 1: adversarial at fable, Agent tool (capacity reading "fable capacity: no reading (stale) -> ladder governs"), changes required. Majors fixed 3: docs/architecture.md still describing the work-continues shadow question and its outcome, the README override recipe naming the retired score and noul questions, the holdout supplement command lacking --split holdout. Minors fixed 5: the block-owner rate arithmetic, this plan's Related path, the score.mjs --population invocation and the commands' working directory, the Adding a question recipe's four plan-health questions, the archive entry calling outcome kinds question sets. The main thread's own pre-review fix: the README outcome-kinds paragraph described writers section 5 removed.
+Stamps: adjudicated 0, stamped 0.
+Gate: documents only; no code changed since Chapter 6's gate at beed05a. A sweep of README.md and docs/architecture.md for the retired ids, the four-question request and continued_unprompted finds only the retirement note, the outcome-kind table and the test bullet on the retired kinds' silence. Every shipped question is a choice (hooks/question-catalog.ts 216-326) and FIXED_LEVEL_SETS is empty (line 200), as the rewritten override recipe states.
+Next: finishing
 Commit Model: Branch-and-PR

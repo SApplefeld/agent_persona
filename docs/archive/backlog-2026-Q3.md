@@ -171,3 +171,15 @@ A blind reader of the index found it while reviewing section 7 of the goal-every
 Remedy: ask the operator which of the two runs first, then state that one order in both rows. The general form is worth carrying, since this index carries one row per plan and every row states its own position: a running order written once per participant has no single place to be wrong, so the rows drift against each other rather than against a source.
 
 _Retired 2026-09-27: the coordinator set the order on 2026-09-27, the Jev memory gate ahead of the persona memory port, and `docs/README.md` now states that order once._
+
+## The nudge-state plan's fourth operator check: the work-continues bar (parked 2026-09-25)
+
+The nudge-state plan's operator-checks item carried a fourth check: "after seven days the journal's `work-continues` answers agree with `continued_unprompted` at the bar, or the question is reworded before any plan wires it."
+
+_Retired 2026-09-29: `work-continues` is retired by the Jev question quality plan (section 5). Nothing read its answers, its outcome writer `continued_unprompted` is gone, and the question resolves to `UNKNOWN_QUESTION`. The bar this check waited on will never be reached, so the check is dropped from the nudge-state plan's active operator-checks item rather than kept pending._
+
+## The plan-health plan's journal read across its three question sets (parked 2026-09-21)
+
+The plan-health plan's operator-checks item asked the operator to read the decision journal's three plan-health outcome kinds (`lead_blocked`, `chapter_within` and `next_speaker`) against their outcomes, once a week had passed, since that reading would decide whether a later plan could act on any of them.
+
+_Retired 2026-09-29: the Jev question quality plan did that reading (its Decisions section, item 1's evidence: `worker-blocked` wider than its label, `rounds-converging` a coin flip against a Chapter landing, `block-owner` an operator precision worth building on) and acted on it. `worker-blocked` and `rounds-converging` are retired, and `block-owner` is re-posed as v2 with a bar, operator precision at least 0.52 and recall at least 0.75. The plan-health plan's own operator-checks item keeps its other, unrelated check (the `Max rounds reached` read) and drops this one._
