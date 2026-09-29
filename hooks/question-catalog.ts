@@ -51,10 +51,14 @@ import { bracketSafeText, LINE_TERMINATOR } from "./agent-state";
 // set holds the superset with a description per option, and the caller names
 // the ids in force at request time.
 
-// The controller's decision on an idle worker, with no pending plan to switch to.
-export const CONTROLLER_LABELS: readonly string[] = Object.freeze(["nudge", "pause", "complete", "ask-operator"]);
+// The controller's decision on an idle worker, with no pending plan to switch
+// to: the three decisions the controller acts on, each named for the action it
+// selects. ask-operator selects the idle-gap nudge, the one that tells the
+// worker to state a real fork as an ASK: line, and is the one verdict the
+// controller converts; nothing offers pause, which selected that same nudge.
+export const CONTROLLER_LABELS: readonly string[] = Object.freeze(["nudge", "ask-operator", "complete"]);
 // The same decision where at least one pending plan exists. The superset.
-export const CONTROLLER_LABELS_WITH_SWITCH: readonly string[] = Object.freeze(["nudge", "pause", "complete", "ask-operator", "switch"]);
+export const CONTROLLER_LABELS_WITH_SWITCH: readonly string[] = Object.freeze(["nudge", "ask-operator", "complete", "switch"]);
 
 // The turn scorer on a turn the plugin nudged: a worker answering our own
 // nudge cannot be off goal by the operator's instruction.
@@ -190,18 +194,23 @@ export const FIXED_LEVEL_SETS: readonly string[] = Object.freeze([ROUNDS_CONVERG
 // what a System One model is built for, and every option carries a one-line
 // description, which is what the vendor's Choice page asks for.
 export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
+  // v2: asked over controllerStateText's state, the controller's own facts,
+  // the worker's last answer and the pending plans, with the option list
+  // embedded as the last part. Each option is the decision the controller
+  // acts on, and each description carries the nearest cases that are still
+  // this option or that belong to a neighbour, since those are where the
+  // answer is decided.
   [CONTROLLER_DECISION]: {
     id: CONTROLLER_DECISION,
-    version: SHIPPED_VERSION,
+    version: "v2",
     overrideRefused: null,
     primitive: "choice",
-    instructions: "An autonomous worker session has gone idle. Given its goal, its recent scores and how long it has been idle, which action should the controller take now?",
+    instructions: "An autonomous worker session has gone idle. Given its goal, its recent scores, how long it has been idle and its last answer, which action should the controller take now?",
     options: {
-      "nudge": "Prompt the worker to take the next concrete step toward the goal.",
-      "pause": "Repeated drift or off-goal-by-instruction suggests the operator changed direction, so stop nudging.",
-      "complete": "The objective is evidently met.",
-      "ask-operator": "The worker is blocked or the goal is ambiguous, or the round budget is nearly spent.",
-      "switch": "A different pending plan is the one to work on now.",
+      "nudge": "Send the plain nudge, which names the idle time and tells the worker to re-read the objective and take the next concrete step. The worker is on the objective and either has a next step or is honestly waiting on work of its own for it: it reported a step done and the plan holds the next one, it ended on an intermediate status, or it waits on an implementer, a reviewer, a test run or a workflow it dispatched for this objective, whether or not the last answer shows that wait ending. A plan entry whose work reads finished still takes this, since on a plan entry only a nudge acts. A wait on something that is not coming, or on a person, is ask-operator, not this.",
+      "ask-operator": "Send the idle-gap nudge, which tells the worker the controller read no real fork, to re-read the plan document, and to state any genuine fork as a line ASK: <question>? Recommend: <choice>; nobody is asked unless the worker writes that line. The worker is stalled: its last answer says it needs a decision or reports a blocker it cannot clear itself, it waits on a person or on another session rather than on work it dispatched, it repeats the same step or the same wait across nudges with no progress, or it is working on something other than the objective the state names. A first wait on the worker's own dispatched work is nudge, not this.",
+      "complete": "Mark the goal done now and activate the next one: a task entry whose objective the last answer shows finished in full. Never on a plan entry, whose done is read from the plan document and where this becomes a plain nudge. A step, a section, a review round or a commit landed with the objective still open is nudge, not this.",
+      "switch": "Set the current goal aside and activate one of the pending plans the state lists: the current goal cannot move while a pending plan can, the operator has set the current plan aside, or the worker itself says a pending plan is the one to take up. Offered only where the state lists pending plans. A current goal waiting on an approval its own order requires before the next plan is ask-operator, not this.",
     },
   },
   [PLAN_SWITCH]: {
@@ -428,6 +437,65 @@ export function turnScoreStateText(prompt: string, answer: string, objective: st
     `Worker answered: ${stateValue(answer).slice(0, TURN_SCORE_ANSWER_MAX)}\n\n` +
     `Goal objective: ${stateValue(objective)}\n\n` +
     `Tools: ${stateValue(turnScoreToolsLine(tools))}`;
+}
+
+// --- The controller state ---
+//
+// The state controller-decision v2 is asked over, built by this one function
+// for the plugin's controller tick and for .kit/jev-gold/replay.mjs alike, so
+// the replay's figure is read on the bytes the plugin sends. Haiku and Jev are
+// handed the same text. Three parts: one line per fact the tick holds, then
+// the worker's last answer and the pending plans; a blank line; then the
+// option list, one line per option id in force with its shipped description,
+// so a record's text names no option Jev was not offered.
+//
+// The facts are label and value pairs the caller names, rather than fields
+// this module names, because the replay copies them off a journaled state
+// whose labels have changed across the plugin's versions, and a replay that
+// re-derived them would read the v2 figure on facts the plugin never sent.
+
+// The most characters of the worker's last answer the state carries.
+export const CONTROLLER_LAST_ANSWER_MAX = 1500;
+export const CONTROLLER_LAST_ANSWER_LABEL = "Last answer";
+export const CONTROLLER_PENDING_PLANS_LABEL = "Pending plans";
+// What the last answer line reads where no answer is held: before the
+// persona's first turn end in this process.
+export const CONTROLLER_NO_ANSWER = "none";
+// The line between the facts and the option list.
+export const CONTROLLER_OPTIONS_LEAD = "Choose the best decision:";
+
+export type ControllerStateFact = readonly [label: string, value: string];
+// A pending plan as the state names it: its id and title where the caller
+// holds both, and its title alone where the id is not known, which is how
+// .kit/jev-gold/replay.mjs rebuilds the line from a v1 journal state that
+// carried titles only. So a replay of such a record is the plugin's bytes in
+// every part but this line, which the replay states rather than hides.
+export type ControllerPendingPlan = { id: string | null; title: string };
+
+// `lastAnswer` is the worker's most recent answer, raw, or null where none
+// is held; its cut is applied to the collapsed value, so the bound counts
+// the text as it is sent. `options` is the description per option id of the
+// question as the caller resolved it, an admitted override's or the shipped
+// entry's, so the list Haiku reads and the criteria Jev is sent carry one
+// text; an id with no description writes an empty one. Every label, value,
+// title, id and description goes through stateValue, the answer and the
+// titles being worker and stored text and the descriptions an override's,
+// so no value can write a line of its own into the state.
+export function controllerStateText(
+  facts: readonly ControllerStateFact[],
+  lastAnswer: string | null,
+  pendingPlans: readonly ControllerPendingPlan[],
+  optionIds: readonly string[],
+  options: Readonly<Record<string, string | null>>,
+): string {
+  const lines = facts.map(([label, value]) => `${stateValue(label)}: ${stateValue(value)}`);
+  lines.push(`${CONTROLLER_LAST_ANSWER_LABEL}: ${lastAnswer === null ? CONTROLLER_NO_ANSWER : stateValue(lastAnswer).slice(0, CONTROLLER_LAST_ANSWER_MAX)}`);
+  if (pendingPlans.length > 0) {
+    const named = pendingPlans.map((p) => (p.id === null ? stateValue(p.title) : `${stateValue(p.id)}: ${stateValue(p.title)}`));
+    lines.push(`${CONTROLLER_PENDING_PLANS_LABEL}: ${named.join("; ")}`);
+  }
+  const optionLines = optionIds.map((id) => `${id}: ${stateValue(options[id] ?? "")}`);
+  return `${lines.join("\n")}\n\n${CONTROLLER_OPTIONS_LEAD}\n${optionLines.join("\n")}`;
 }
 
 // --- The override layer ---

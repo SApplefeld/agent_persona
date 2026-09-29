@@ -88,9 +88,8 @@ try {
   console.log("\nquestion ids and rubric labels");
   check("the sampler's question ids are the catalog's own",
     same(Object.keys(QUESTIONS).sort(), [catalog.CONTROLLER_DECISION, catalog.TURN_SCORE, catalog.BLOCK_OWNER].sort()), Object.keys(QUESTIONS));
-  check("the controller rubric offers the four decisions without pause, plus unclear",
-    same(rubricLabels(rubricText("controller-decision")).sort(),
-      [...catalog.CONTROLLER_LABELS_WITH_SWITCH.filter((l) => l !== "pause"), "unclear"].sort()),
+  check("the controller rubric offers the catalog's four decisions plus unclear",
+    same(rubricLabels(rubricText("controller-decision")).sort(), [...catalog.CONTROLLER_LABELS_WITH_SWITCH, "unclear"].sort()),
     rubricLabels(rubricText("controller-decision")));
   check("the turn-score rubric offers the four v1 answers plus unclear",
     same(rubricLabels(rubricText("turn-score")).sort(), [...catalog.SCORER_LABELS, "unclear"].sort()),
@@ -704,6 +703,9 @@ try {
     check("only the per-option recall bars carry the conditional gate, never accuracy or block-owner's",
       BARS["controller-decision"][0].conditional === undefined &&
       BARS["controller-decision"][1].conditional === true &&
+      BARS["controller-decision"][0].threshold === 0.83 &&
+      BARS["controller-decision"].find((b) => b.key === "recall:ask-operator").threshold === 0.35 &&
+      BARS["turn-score"][0].threshold === 0.85 &&
       BARS["turn-score"].every((b) => b.key === "accuracy" ? b.conditional === undefined : b.conditional === true) &&
       BARS["block-owner"].every((b) => b.conditional === undefined));
     const completeRecord = (id, correct) => ({
@@ -961,45 +963,275 @@ try {
       return { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, model: "jev-latest", usage: {}, __sentBody: body }) };
     };
 
-    // offeredOptionIds recovers the v1 set an individual call actually
-    // offered from its own probability keys, since the seam refuses any key
-    // outside the ids it sent.
-    check("offeredOptionIds reads the controller's own set back off its probability keys, without switch",
-      same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.7 } } }), catalog.CONTROLLER_LABELS));
-    check("offeredOptionIds recovers switch the same way, with no state text to read",
-      same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.1, switch: 0.6 } } }), catalog.CONTROLLER_LABELS_WITH_SWITCH));
+    // offeredOptionIds recovers the set an individual call actually offered
+    // from its own probability keys, since the seam refuses any key outside
+    // the ids it sent, and maps a controller record's v1 set, which carried
+    // pause, onto the v2 set that keeps its switch.
+    const CD_V1 = { nudge: 0.7, pause: 0.1, complete: 0.1, "ask-operator": 0.1 };
+    const CD_V1_SWITCH = { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.1, switch: 0.6 };
+    const CD_V2 = { nudge: 0.7, "ask-operator": 0.1, complete: 0.2 };
+    const CD_V2_SWITCH = { nudge: 0.6, "ask-operator": 0.1, complete: 0.1, switch: 0.2 };
+    // The builder over the shipped descriptions, the map the replay resolves
+    // where no override is admitted.
+    const shippedControllerOptions = catalog.SHIPPED_QUESTIONS[catalog.CONTROLLER_DECISION].options;
+    const controllerText = (facts, lastAnswer, plans, ids, options = shippedControllerOptions) => catalog.controllerStateText(facts, lastAnswer, plans, ids, options);
+    check("offeredOptionIds maps a controller record's v1 keys, pause included, onto the v2 set without switch",
+      same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: CD_V1 } }), catalog.CONTROLLER_LABELS));
+    check("offeredOptionIds keeps switch the same way, with no state text to read",
+      same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: CD_V1_SWITCH } }), catalog.CONTROLLER_LABELS_WITH_SWITCH));
+    check("offeredOptionIds reads a v2-journaled controller record's own set back, with and without switch",
+      same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: CD_V2 } }), catalog.CONTROLLER_LABELS)
+        && same(offeredOptionIds("controller-decision", { id: "x", jev: { probabilities: CD_V2_SWITCH } }), catalog.CONTROLLER_LABELS_WITH_SWITCH));
     check("offeredOptionIds reads turn-score's narrower nudged set the same way",
       same(offeredOptionIds("turn-score", { id: "x", jev: { probabilities: { "on-goal": 0.3, drift: 0.3, complete: 0.4 } } }), catalog.SCORER_LABELS_AFTER_NUDGE));
     check("offeredOptionIds reads turn-score's full set off a turn that was not nudged",
       same(offeredOptionIds("turn-score", { id: "x", jev: { probabilities: { "on-goal": 0.25, "off-goal-by-instruction": 0.25, drift: 0.25, complete: 0.25 } } }), catalog.SCORER_LABELS));
     let offeredErr = null;
     try { offeredOptionIds("turn-score", { id: "bad-ids", jev: { probabilities: { foo: 1 } } }); } catch (e) { offeredErr = e.message; }
-    check("offeredOptionIds fails a record whose probability keys match no known v1 set, naming it",
+    check("offeredOptionIds fails a record whose probability keys match no known set, naming it",
       offeredErr !== null && offeredErr.includes("bad-ids"), offeredErr);
+    let offeredMixedErr = null;
+    try { offeredOptionIds("controller-decision", { id: "mixed-ids", jev: { probabilities: { nudge: 0.5, pause: 0.5 } } }); } catch (e) { offeredMixedErr = e.message; }
+    check("offeredOptionIds fails a controller record whose keys are neither the v1 set nor the v2 set, naming it",
+      offeredMixedErr !== null && offeredMixedErr.includes("mixed-ids"), offeredMixedErr);
+
+    // --- controller-decision v2: the state a sampled record is replayed over ---
+    //
+    // A controller record as sample.mjs writes one: its journaled state, its
+    // Jev probabilities, and the transcript fields. The v1 state below is the
+    // journal's own shape, fact lines then the idle sentence, the lead, the
+    // four v1 option lines and a switch line where a plan was pending. Its
+    // nudge-count label is the older of the two the journal holds, so the
+    // copy of a fact the replay never re-derives is inside the comparison.
+    const V1_TAIL = "\n\nThe session has been idle for 45s.\nChoose the best decision:\n"
+      + "nudge: prompt the worker to take the next concrete step toward the goal\n"
+      + "pause: repeated drift or off-goal-by-instruction suggests the operator changed direction\n"
+      + "complete: objective evidently met\n"
+      + "ask-operator: blocked, ambiguous, or round budget nearly spent\n";
+    const v1Facts = [
+      ["Objective", "Keep the notes tidy"], ["Node", "g-plan (plan), status active, round 0/10"], ["Last 5 scores", "none"],
+      ["On-goal count", "0 of 0"], ["Idle time", "45s"], ["Consecutive nudges sent", "0"],
+      ["Decisions tail", "goal:add, monitor:turn_start"], ["Memory", "0 entries (self-review lessons: 0)"],
+    ];
+    const v1ControllerState = (facts, titles = []) => facts.map(([label, value]) => `${label}: ${value}`).join("\n") + V1_TAIL
+      + (titles.length > 0 ? `switch: switch to a different pending plan: ${titles.map((t) => t.slice(0, 30)).join("; ")}\n` : "");
+    const cdRecord = (id, overrides = {}) => ({
+      id, stampId: `s-${id}`, haikuValue: "nudge",
+      state: v1ControllerState(v1Facts),
+      jev: { probabilities: CD_V1 },
+      transcript: { prompt: "[GOAL] Tidy the notes.", finalMessage: `Tidied them for ${id}.`, toolActivity: toolActivityText([]) },
+      ...overrides,
+    });
+    const controllerStateParts = replayModule.controllerStateParts;
+    const controllerV2State = replayModule.controllerV2State;
+    const cdStateOf = (record) => { const built = controllerV2State(record); return built.ok ? built.state : `refused: ${built.reason}`; };
+    check("replay.mjs exports the controller v2 assembly: the state-parts read and the state builder",
+      typeof controllerStateParts === "function" && typeof controllerV2State === "function", [typeof controllerStateParts, typeof controllerV2State]);
+    if (typeof controllerStateParts === "function" && typeof controllerV2State === "function") {
+      const v1Parts = controllerStateParts(v1ControllerState(v1Facts));
+      check("the state parts copy a v1 state's fact lines as journaled, older labels included, with no last answer and no pending plan",
+        v1Parts !== null && v1Parts.shape === "v1" && same(v1Parts.facts, v1Facts) && v1Parts.lastAnswer === null && same(v1Parts.pendingPlans, []), v1Parts);
+      const v1SwitchParts = controllerStateParts(v1ControllerState(v1Facts, ["Plan one", "A very long plan title the v1 summary cut short"]));
+      check("the state parts read a v1 state's pending plans off its switch line as titles alone, each as v1 cut it, with no id",
+        v1SwitchParts !== null && same(v1SwitchParts.pendingPlans, [{ id: null, title: "Plan one" }, { id: null, title: "A very long plan title the v1 " }]), v1SwitchParts?.pendingPlans);
+      const v2Journaled = controllerText(v1Facts, "Tidied them.", [{ id: "g-plan-2", title: "Plan two" }, { id: "g-plan-3", title: "Plan: three" }], catalog.CONTROLLER_LABELS_WITH_SWITCH);
+      const v2Parts = controllerStateParts(v2Journaled);
+      check("the state parts read a v2 state's facts, its last answer and its pending plans by id and title, a title's own colon kept",
+        v2Parts !== null && v2Parts.shape === "v2" && same(v2Parts.facts, v1Facts) && v2Parts.lastAnswer === "Tidied them."
+          && same(v2Parts.pendingPlans, [{ id: "g-plan-2", title: "Plan two" }, { id: "g-plan-3", title: "Plan: three" }]), v2Parts);
+      check("the state parts read a v2 state with no pending plan as none",
+        same(controllerStateParts(controllerText(v1Facts, "x", [], catalog.CONTROLLER_LABELS))?.pendingPlans, []));
+      // Refused shapes, each off both shapes by one part. The states above
+      // are the withheld control.
+      // A v1 value carrying a line break or a blank line stays inside the
+      // block: the block ends at the idle sentence's own blank line, and a
+      // line with no label continues the value before it. The LESSON below
+      // holds a paragraph break, the shape a fifth of the real sample carries,
+      // and the Environment fact after it is kept. The replay's copy then
+      // builds the bytes the plugin builds over the same raw values.
+      const brokenFacts = [["Objective", "Keep the notes\ntidy"], ["Idle time", "45s"], ["LESSON", "First lesson line.\n\nThe worker has no active goal."], ["Environment", "git: main dirty 0"]];
+      const brokenParts = controllerStateParts(v1ControllerState(brokenFacts));
+      check("the state parts keep a v1 value's line break and blank line inside its fact, and the facts after it",
+        brokenParts !== null && same(brokenParts.facts, brokenFacts), brokenParts?.facts);
+      check("a v1 record whose facts carry line breaks builds the bytes the plugin builds over the same raw values",
+        cdStateOf(cdRecord("c-broken", { state: v1ControllerState(brokenFacts) })) === controllerText(brokenFacts, "Tidied them for c-broken.", [], catalog.CONTROLLER_LABELS)
+          && cdStateOf(cdRecord("c-broken", { state: v1ControllerState(brokenFacts) })).includes("\nLESSON: First lesson line. The worker has no active goal.\nEnvironment: git: main dirty 0\nLast answer: "),
+        cdStateOf(cdRecord("c-broken", { state: v1ControllerState(brokenFacts) })).split("\n").slice(0, 5));
+      const offShape = [
+        ["no tail anchor", "Objective: x\nIdle time: 45s"],
+        ["a first line with no label", "a line with no label\nObjective: x" + V1_TAIL],
+        ["a v2 block with a line after Pending plans", `Objective: x\nLast answer: a\nPending plans: p: t\nExtra: e\n\n${catalog.CONTROLLER_OPTIONS_LEAD}\nnudge: n`],
+        ["a v2 block whose line after Last answer is not Pending plans", `Objective: x\nLast answer: a\nExtra: e\n\n${catalog.CONTROLLER_OPTIONS_LEAD}\nnudge: n`],
+        ["a v1 tail carrying a Last answer fact", "Objective: x\nLast answer: a" + V1_TAIL],
+        ["not a string", null],
+      ];
+      for (const [what, state] of offShape) {
+        check(`the state parts refuse ${what}`, controllerStateParts(state) === null, state);
+      }
+
+      // The v2 state from a v1 record: the facts copied, the last answer from
+      // the transcript, no plan, and the v2 set without switch.
+      const rec = cdRecord("c-v2");
+      check("a v1 record's v2 state is controllerStateText over its journaled facts, its transcript final message, no plan and the v2 set without switch",
+        cdStateOf(rec) === controllerText(v1Facts, "Tidied them for c-v2.", [], catalog.CONTROLLER_LABELS), cdStateOf(rec));
+      check("the v2 state carries the copied older fact label and names no pause",
+        cdStateOf(rec).includes("\nConsecutive nudges sent: 0\n") && !cdStateOf(rec).includes("pause"), cdStateOf(rec).slice(0, 200));
+      // The stated difference: a v1 record with a pending plan replays over
+      // the plugin's bytes in every line but Pending plans, which the plugin
+      // writes by id and title and the v1 journal held by title alone.
+      const recSwitch = cdRecord("c-sw", { state: v1ControllerState(v1Facts, ["Plan two"]), jev: { probabilities: CD_V1_SWITCH } });
+      const pluginState = controllerText(v1Facts, "Tidied them for c-sw.", [{ id: "g-plan-2", title: "Plan two" }], catalog.CONTROLLER_LABELS_WITH_SWITCH);
+      check("a v1 record with a pending plan replays over the plugin's bytes in every line but Pending plans, which carries the title alone",
+        cdStateOf(recSwitch) !== pluginState && cdStateOf(recSwitch) === pluginState.replace("\nPending plans: g-plan-2: Plan two\n", "\nPending plans: Plan two\n"),
+        { replay: cdStateOf(recSwitch).split("\n").find((l) => l.startsWith("Pending plans")), plugin: pluginState.split("\n").find((l) => l.startsWith("Pending plans")) });
+      check("a v1 record with a pending plan is offered the v2 set with switch, and its option list ends on switch",
+        cdStateOf(recSwitch).endsWith(`\nswitch: ${catalog.SHIPPED_QUESTIONS[catalog.CONTROLLER_DECISION].options.switch}`), cdStateOf(recSwitch).slice(-80));
+      // pending_plans_unknown, both ways: switch offered with no switch line,
+      // and a switch line with no switch offered. The record above, with
+      // both, is the withheld control.
+      check("a v1 record whose call offered switch and whose state names no pending plan is refused as pending_plans_unknown",
+        cdStateOf(cdRecord("c-nosw", { jev: { probabilities: CD_V1_SWITCH } })) === "refused: pending_plans_unknown");
+      check("a v1 record whose state names pending plans and whose call offered no switch is refused as pending_plans_unknown",
+        cdStateOf(cdRecord("c-line-nosw", { state: v1ControllerState(v1Facts, ["Plan two"]) })) === "refused: pending_plans_unknown");
+      check("a record whose journaled state is in neither shape is refused as state_unparsed",
+        cdStateOf(cdRecord("c-unp", { state: "a line with no label\nObjective: x" + V1_TAIL })) === "refused: state_unparsed");
+      const unparsedRow = await replayRecord(stubHost(async (url, init) => { throw new Error("no request expected"); }), "controller-decision", "v2", cdRecord("c-unp-row", { state: "no blank line" }));
+      check("replayRecord writes a state_unparsed record as a failure row carrying the reason, and sends no request",
+        unparsedRow.ok === false && unparsedRow.reason === "state_unparsed" && unparsedRow.id === "c-unp-row" && !("value" in unparsedRow), unparsedRow);
+      check("score.mjs's withReplay excludes a state_unparsed row from every figure",
+        withReplay([{ id: "c-unp-row", label: "nudge", value: "nudge", probabilities: {}, haikuValue: null, outcomes: [] }], [unparsedRow]).records.length === 0);
+
+      // The whole-state check, on a v2-journaled record: the built state must
+      // be the journaled one. The control is the same record journaled over
+      // the answer the transcript carries.
+      const v2Same = cdRecord("c-v2j", {
+        state: controllerText(v1Facts, "Tidied them for c-v2j.", [{ id: "g-plan-2", title: "Plan two" }], catalog.CONTROLLER_LABELS_WITH_SWITCH),
+        jev: { probabilities: CD_V2_SWITCH },
+      });
+      check("a v2-journaled record whose built state equals the journaled state builds, over exactly those bytes, its plan ids read back (control)",
+        cdStateOf(v2Same) === v2Same.state, cdStateOf(v2Same).slice(0, 60));
+      const v2Other = cdRecord("c-v2o", { state: v2Same.state, jev: { probabilities: CD_V2_SWITCH }, transcript: { ...rec.transcript, finalMessage: "Another answer." } });
+      check("a v2-journaled record whose transcript final message builds another last answer is refused as state_mismatch",
+        cdStateOf(v2Other) === "refused: state_mismatch", cdStateOf(v2Other).slice(0, 60));
+      // A v2-journaled record whose line reads none held no answer at the
+      // tick, so it is rebuilt over none, the plugin's own bytes, whatever
+      // the transcript turn before it said; the record above is the control
+      // that a held answer is still compared.
+      const v2None = cdRecord("c-v2n", { state: controllerText(v1Facts, null, [], catalog.CONTROLLER_LABELS), jev: { probabilities: CD_V2 } });
+      check("a v2-journaled record whose Last answer reads none builds over exactly the journaled bytes, not over the transcript's final message",
+        v2None.state.includes(`\nLast answer: ${catalog.CONTROLLER_NO_ANSWER}\n`) && cdStateOf(v2None) === v2None.state, cdStateOf(v2None).slice(0, 60));
+      // The descriptions are the map the caller resolved: the shipped map by
+      // default, and an override's where one is passed, which is what
+      // replayRecord passes from its one resolution.
+      const overrideOptions = { nudge: "n", "ask-operator": "a", complete: "c", switch: "s" };
+      const builtOverride = controllerV2State(rec, overrideOptions);
+      check("controllerV2State embeds the descriptions of the option map it is handed, and the shipped ones by default (control)",
+        builtOverride.ok === true && builtOverride.state.endsWith(`\n${catalog.CONTROLLER_OPTIONS_LEAD}\nnudge: n\nask-operator: a\ncomplete: c`)
+          && cdStateOf(rec).endsWith(`\ncomplete: ${shippedControllerOptions.complete}`), builtOverride.state?.slice(-60));
+
+      // The fold: a final message carrying brackets, line breaks and
+      // whitespace runs builds the Last answer line the plugin builds over its
+      // own raw answer, since both go through controllerStateText.
+      const bracketed = "Fixed the [flaky]   test\n\nand pushed [main].";
+      check("a final message holding brackets and line breaks builds the folded last answer the plugin sends",
+        cdStateOf(cdRecord("c-fold", { transcript: { ...rec.transcript, finalMessage: bracketed } })).includes("\nLast answer: Fixed the (flaky) test and pushed (main).\n"),
+        cdStateOf(cdRecord("c-fold", { transcript: { ...rec.transcript, finalMessage: bracketed } })).split("\n").find((l) => l.startsWith("Last answer")));
+      // The byte pin through sample.mjs's own transcript reader: the fixture
+      // turn ends on an assistant entry of two text blocks, which the reader
+      // trims and joins with one line break, while the plugin holds the answer
+      // with its own whitespace. The replay's state from what turnsOf returns
+      // must equal the builder over the plugin's raw answer.
+      const cdFixtureTurns = turnsOf(path.join(FIXTURE, "turn-score-v2", "s-ts-v2.jsonl"));
+      const cdFixtureTurn = cdFixtureTurns.length === 1 ? cdFixtureTurns[0] : null;
+      const cdPluginAnswer = "  WORKING: tidied the [three] notes.  \n\nCommitted them.\n";
+      check("the fixture control: the reader's final message differs from the plugin's raw answer",
+        cdFixtureTurn !== null && cdFixtureTurn.final !== cdPluginAnswer && cdFixtureTurn.final.includes("\n"), cdFixtureTurn && cdFixtureTurn.final);
+      if (cdFixtureTurn !== null) {
+        const cdFixtureRecord = cdRecord("c-fixture", { transcript: { ...rec.transcript, finalMessage: cdFixtureTurn.final.slice(0, FINAL_MAX) } });
+        check("the replay's v2 state from turnsOf's reading equals controllerStateText over the raw answer the plugin holds",
+          cdStateOf(cdFixtureRecord) === controllerText(v1Facts, cdPluginAnswer, [], catalog.CONTROLLER_LABELS),
+          cdStateOf(cdFixtureRecord).split("\n").find((l) => l.startsWith("Last answer")));
+      }
+
+      // The sampler's raw cut against the plugin's collapse: a final message
+      // that reached FINAL_MAX raw characters and collapses under 1,500 is
+      // refused as cut_short; one whose collapse still fills the bound builds.
+      const heavy = ("a" + " ".repeat(9)).repeat(FINAL_MAX / 10);
+      check("a final message cut at FINAL_MAX raw and collapsing under 1,500 is refused as cut_short",
+        heavy.length === FINAL_MAX && cdStateOf(cdRecord("c-cut", { transcript: { ...rec.transcript, finalMessage: heavy } })) === "refused: cut_short");
+      const fullCd = cdStateOf(cdRecord("c-full", { transcript: { ...rec.transcript, finalMessage: "a".repeat(FINAL_MAX) } }));
+      check("a final message cut at the raw bound whose collapse still fills 1,500 builds (control)",
+        fullCd.startsWith("Objective: ") && controllerStateParts(fullCd).lastAnswer.length === 1500, fullCd.slice(0, 40));
+
+      // The turn's place: a v1 record whose transcript turn shows its answer
+      // was given on an entry the tick's node is not. A goal_done call in the
+      // turn keys the answer to the completed entry; a nudge opening line
+      // naming another objective than the state's opened the turn on another
+      // entry. The controls: a nudge line naming the state's own objective, a
+      // turn no nudge opened (the record above), a cut prompt whose goal line
+      // is not read, and a v2-journaled record where the whole-state check
+      // places the turn instead.
+      const goalDoneActivity = toolActivityText([{ name: "mcp__agentic-plugin__goal_done", input: {} }]);
+      check("a v1 record whose transcript turn called goal_done is refused as answer_on_other_goal",
+        cdStateOf(cdRecord("c-gd", { transcript: { ...rec.transcript, toolActivity: goalDoneActivity } })) === "refused: answer_on_other_goal");
+      const nudgeOn = (objective) => `[GOAL] The active goal is: ${objective}\nThe Controller detected 45s of idle time. Re-read the objective.`;
+      check("a v1 record whose transcript turn opened on a nudge naming another objective is refused as answer_on_other_goal",
+        cdStateOf(cdRecord("c-other-obj", { transcript: { ...rec.transcript, prompt: nudgeOn("Ship the release") } })) === "refused: answer_on_other_goal");
+      check("a v1 record whose transcript turn opened on a nudge naming the state's own objective builds (control)",
+        cdStateOf(cdRecord("c-same-obj", { transcript: { ...rec.transcript, prompt: nudgeOn("Keep the  notes\ntidy") } })).startsWith("Objective: "),
+        cdStateOf(cdRecord("c-same-obj", { transcript: { ...rec.transcript, prompt: nudgeOn("Keep the notes tidy") } })).slice(0, 40));
+      check("a v1 record whose nudge prompt the sampler cut is built, since its goal line is not read (stated limit)",
+        cdStateOf(cdRecord("c-cut-obj", { transcript: { ...rec.transcript, prompt: nudgeOn("Ship the release") + "p".repeat(PROMPT_MAX) } })).startsWith("Objective: "));
+      const v2GoalDone = cdRecord("c-v2-gd", {
+        state: controllerText(v1Facts, rec.transcript.finalMessage, [], catalog.CONTROLLER_LABELS),
+        jev: { probabilities: CD_V2 }, transcript: { ...rec.transcript, toolActivity: goalDoneActivity },
+      });
+      check("a v2-journaled record whose turn called goal_done builds where its state equals the journaled one, the whole-state check placing the turn (control)",
+        cdStateOf(v2GoalDone) === v2GoalDone.state, cdStateOf(v2GoalDone).slice(0, 40));
+      const otherGoalRow = await replayRecord(stubHost(async () => { throw new Error("no request expected"); }), "controller-decision", "v2",
+        cdRecord("c-gd-row", { transcript: { ...rec.transcript, toolActivity: goalDoneActivity } }));
+      check("replayRecord writes an answer_on_other_goal record as a failure row carrying the reason, and sends no request",
+        otherGoalRow.ok === false && otherGoalRow.reason === "answer_on_other_goal" && otherGoalRow.id === "c-gd-row" && !("value" in otherGoalRow), otherGoalRow);
+
+      // The refusals that name a sampler defect: no transcript, no final
+      // message, an empty one, no activity line. The record above is the
+      // withheld control.
+      for (const [what, overrides, rule] of [
+        ["no transcript", { transcript: undefined }, "carries no transcript"],
+        ["no final message", { transcript: { ...rec.transcript, finalMessage: undefined } }, "carries no final message"],
+        ["an empty final message", { transcript: { ...rec.transcript, finalMessage: "" } }, "carries no final message"],
+        ["no activity line", { transcript: { ...rec.transcript, toolActivity: undefined } }, "not a turn_tool_activity line"],
+      ]) {
+        let err = null;
+        try { controllerV2State(cdRecord("c-refused", overrides)); } catch (e) { err = e.message; }
+        check(`a controller record with ${what} is refused by name, as "${rule}"`, err !== null && err.includes("c-refused") && err.includes(rule), err);
+      }
+    }
 
     let sentIds = null;
+    let sentCdState = null;
     const captureIds = (url, init) => {
-      sentIds = Object.keys(JSON.parse(init.body).questions["controller-decision"].criteria);
+      const body = JSON.parse(init.body);
+      sentIds = Object.keys(body.questions["controller-decision"].criteria);
+      sentCdState = body.state;
       return choiceReply()(url, init);
     };
-    const cdResult = await replayRecord(stubHost(captureIds), "controller-decision", "v1", {
-      id: "c1", stampId: "s1", state: "irrelevant to the option set now", haikuValue: "nudge",
-      jev: { probabilities: { nudge: 0.7, pause: 0.1, complete: 0.1, "ask-operator": 0.1 } },
-    });
-    check("controller-decision's replay sends exactly the options its own call offered, and stamps the seam's own returned version",
+    const cdRecordPlain = cdRecord("c1");
+    const cdResult = await replayRecord(stubHost(captureIds), "controller-decision", "v2", cdRecordPlain);
+    check("controller-decision's replay sends the v2 set for the set its own call offered, and stamps the seam's own returned v2",
       same(sentIds, catalog.CONTROLLER_LABELS) &&
-      cdResult.ok === true && cdResult.id === "c1" && cdResult.version === "v1" && typeof cdResult.probabilities.nudge === "number",
+      cdResult.ok === true && cdResult.id === "c1" && cdResult.version === "v2" && typeof cdResult.probabilities.nudge === "number",
       cdResult);
+    check("the v2 replay sends the record's v2 state, not its journaled v1 state",
+      typeof controllerV2State === "function" && sentCdState === cdStateOf(cdRecordPlain) && sentCdState !== cdRecordPlain.state, sentCdState?.slice(0, 80));
 
     let sentIdsSwitch = null;
     const captureIdsSwitch = (url, init) => {
       sentIdsSwitch = Object.keys(JSON.parse(init.body).questions["controller-decision"].criteria);
       return choiceReply()(url, init);
     };
-    const cdResultSwitch = await replayRecord(stubHost(captureIdsSwitch), "controller-decision", "v1", {
-      id: "c2", stampId: "s2", state: "irrelevant to the option set now", haikuValue: null,
-      jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.1, switch: 0.6 } },
-    });
+    const cdResultSwitch = await replayRecord(stubHost(captureIdsSwitch), "controller-decision", "v2",
+      cdRecord("c2", { state: v1ControllerState(v1Facts, ["Plan two"]), haikuValue: null, jev: { probabilities: CD_V1_SWITCH } }));
     check("a record whose own call offered switch is replayed with switch offered too, recovered from its probability keys alone",
       same(sentIdsSwitch, catalog.CONTROLLER_LABELS_WITH_SWITCH) && cdResultSwitch.ok === true, { sentIdsSwitch, cdResultSwitch });
 
@@ -1365,8 +1597,8 @@ try {
       (await buildHost({}).getApiKey()) === undefined);
 
     // --- Version validation and stamping ---
-    check("REPLAYABLE_VERSIONS names, per question, the one version the catalog ships: turn-score at v2, the other two at v1",
-      same(REPLAYABLE_VERSIONS, { "controller-decision": ["v1"], "turn-score": ["v2"], "block-owner": ["v1"] }), REPLAYABLE_VERSIONS);
+    check("REPLAYABLE_VERSIONS names, per question, the one version the catalog ships: controller-decision and turn-score at v2, block-owner at v1",
+      same(REPLAYABLE_VERSIONS, { "controller-decision": ["v2"], "turn-score": ["v2"], "block-owner": ["v1"] }), REPLAYABLE_VERSIONS);
     check("each replayable version is the version the catalog ships for that question",
       Object.entries(REPLAYABLE_VERSIONS).every(([q, versions]) => versions.length === 1 && versions[0] === catalog.SHIPPED_QUESTIONS[q]?.version),
       Object.keys(REPLAYABLE_VERSIONS).map((q) => [q, catalog.SHIPPED_QUESTIONS[q]?.version]));
@@ -1374,9 +1606,13 @@ try {
     const stateFile = path.join(TMP, "replay-state.jsonl");
     fs.writeFileSync(stateFile, JSON.stringify({ id: "x1", stampId: "s1" }) + "\n");
     let versionErr = null;
-    try { await replayMain(["--question", "controller-decision", "--version", "v2", "--state-from", stateFile], {}); } catch (e) { versionErr = e.message; }
+    try { await replayMain(["--question", "block-owner", "--version", "v2", "--state-from", stateFile], {}); } catch (e) { versionErr = e.message; }
     check("replay.mjs refuses a --version it cannot assemble, before touching the network",
       versionErr !== null && versionErr.includes("v1"), versionErr);
+    let cdV1Err = null;
+    try { await replayMain(["--question", "controller-decision", "--version", "v1", "--state-from", stateFile], {}); } catch (e) { cdV1Err = e.message; }
+    check("replay.mjs refuses controller-decision v1, whose wording the catalog does not ship, naming v2",
+      cdV1Err !== null && cdV1Err.includes("controller-decision") && cdV1Err.includes("v2"), cdV1Err);
     let tsV1Err = null;
     try { await replayMain(["--question", "turn-score", "--version", "v1", "--state-from", stateFile], {}); } catch (e) { tsV1Err = e.message; }
     check("replay.mjs refuses turn-score v1, whose wording the catalog does not ship, naming v2",
@@ -1391,15 +1627,15 @@ try {
 
     // An active override changes the wording a call actually sends without
     // changing what --version was asked for; replay catches the mismatch
-    // rather than mislabelling the row "v1".
+    // rather than mislabelling the row "v2".
     const overrideHome = path.join(TMP, "override-home");
     const overrideDir = path.join(overrideHome, ".claude", "agentic-questions", "controller-decision");
     fs.mkdirSync(overrideDir, { recursive: true });
-    fs.writeFileSync(path.join(overrideDir, "active.json"), JSON.stringify({ version: "v2" }));
-    fs.writeFileSync(path.join(overrideDir, "v2.json"), JSON.stringify({
+    fs.writeFileSync(path.join(overrideDir, "active.json"), JSON.stringify({ version: "v3" }));
+    fs.writeFileSync(path.join(overrideDir, "v3.json"), JSON.stringify({
       primitive: "choice",
       instructions: "An overridden controller question.",
-      options: { nudge: "n", pause: "p", complete: "c", "ask-operator": "a", switch: "s" },
+      options: { nudge: "n", complete: "c", "ask-operator": "a", switch: "s" },
     }));
     const overrideHost = stubHost(choiceReply(), {
       getHome: async () => overrideHome,
@@ -1407,14 +1643,26 @@ try {
       fileExists: async (p) => { try { await fs.promises.access(p); return true; } catch { return false; } },
     });
     let overrideErr = null;
+    let overrideBody = null;
+    const overrideCapture = stubHost(async (url, init) => { overrideBody = JSON.parse(init.body); return choiceReply()(url, init); }, {
+      getHome: async () => overrideHome,
+      readFile: async (p) => fs.promises.readFile(p, "utf8"),
+      fileExists: async (p) => { try { await fs.promises.access(p); return true; } catch { return false; } },
+    });
     try {
-      await replayRecord(overrideHost, "controller-decision", "v1", {
-        id: "ov1", stampId: "sov1", state: "irrelevant to the option set now", haikuValue: null,
-        jev: { probabilities: { nudge: 0.1, pause: 0.1, complete: 0.1, "ask-operator": 0.1, switch: 0.6 } },
-      });
+      await replayRecord(overrideCapture, "controller-decision", "v2",
+        cdRecord("ov1", { state: v1ControllerState(v1Facts, ["Plan two"]), haikuValue: null, jev: { probabilities: CD_V1_SWITCH } }));
     } catch (e) { overrideErr = e.message; }
-    check("an active override sends a wording that resolves to another version, and replay refuses rather than mislabelling the row v1",
-      overrideErr !== null && overrideErr.includes('"v2"') && overrideErr.includes('"v1"'), overrideErr);
+    check("an active override sends a wording that resolves to another version, and replay refuses rather than mislabelling the row v2",
+      overrideErr !== null && overrideErr.includes('"v3"') && overrideErr.includes('"v2"'), overrideErr);
+    // The one resolution serves both: the state's option list and the
+    // request's criteria carry the override's descriptions, line for line.
+    const overrideCriteria = overrideBody && overrideBody.questions["controller-decision"].criteria;
+    check("the replay's state embeds the descriptions the request's criteria carry, an admitted override's, from one resolution",
+      overrideCriteria !== null && overrideCriteria.nudge === "n"
+        && overrideBody.state.endsWith(`\n${catalog.CONTROLLER_OPTIONS_LEAD}\n${Object.keys(overrideCriteria).map((id) => `${id}: ${overrideCriteria[id]}`).join("\n")}`),
+      { criteria: overrideCriteria, tail: overrideBody?.state?.slice(-80) });
+    void overrideHost;
   }
 } finally {
   fs.rmSync(TMP, { recursive: true, force: true });

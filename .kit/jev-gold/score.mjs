@@ -382,10 +382,12 @@ export const DEFAULT_RECALL_COUNT_FLOOR = 10;
 // clause; section 5 states their 40 (under review, may become 30) as a plain
 // floor, so they stay `not met` below it like the accuracy bars.
 export const BARS = Object.freeze({
+  // The controller's thresholds are the plan's amended bar: 0.83 accuracy
+  // and 0.35 ask-operator recall, under which controller v2 shipped.
   "controller-decision": [
-    { key: "accuracy", metric: "accuracy", threshold: 0.85, countFloor: 100 },
+    { key: "accuracy", metric: "accuracy", threshold: 0.83, countFloor: 100 },
     { key: "recall:complete", metric: "recall", option: "complete", threshold: 0.6, countFloor: DEFAULT_RECALL_COUNT_FLOOR, conditional: true },
-    { key: "recall:ask-operator", metric: "recall", option: "ask-operator", threshold: 0.5, countFloor: DEFAULT_RECALL_COUNT_FLOOR, conditional: true },
+    { key: "recall:ask-operator", metric: "recall", option: "ask-operator", threshold: 0.35, countFloor: DEFAULT_RECALL_COUNT_FLOOR, conditional: true },
   ],
   "turn-score": [
     { key: "accuracy", metric: "accuracy", threshold: 0.85, countFloor: 100 },

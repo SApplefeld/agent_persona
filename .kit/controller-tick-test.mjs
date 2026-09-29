@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HARNESS_HOME, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
 // Loaded after the harness, whose resolve hook maps the extensionless
@@ -1422,12 +1422,15 @@ async function caseItem8p2_classifier_ask_operator_converts_unconditionally(cloc
   check("item8p2a: nudge carries the ASK marker instruction", h.promptSubmits.some(t => t.includes("ASK: <question>? Recommend: <choice>")));
 }
 
-// Item 8.2 (Round 39 case a2): the classifier's "pause" verdict converts
-// exactly like "ask-operator" - the nineteenth ask that day arrived through
-// "pause" specifically, proving the classifier-prose problem was never
-// limited to one verdict. Proof uses that ask's own text verbatim.
-async function caseItem8p2_pause_converts_unconditionally(clock) {
-  console.log("\n=== Item 8.2(a2): classifier pause converts to nudge unconditionally ===");
+// The classifier is offered no pause: the label array carries nudge,
+// ask-operator and complete, plus switch where a plan is pending, and the
+// summary's option list names those ids and no other. A stub answering pause
+// anyway, which no real classify can, is a verdict outside the offered set,
+// which the tick reads as nudge: it converts nothing and opens no ask, since
+// the conversion has one arm, ask-operator, and the plain nudge goes out;
+// the case above is the control that the conversion fires at all.
+async function caseItem8p2_pauseIsNotOfferedAndConvertsNothing(clock) {
+  console.log("\n=== Item 8.2(a2): the classifier is offered no pause, and a stray pause converts nothing ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
@@ -1462,7 +1465,6 @@ async function caseItem8p2_pause_converts_unconditionally(clock) {
   if (startH) await startH(h.fake, {}, () => {});
 
   h.setClassifyValue("pause");
-  // Today's real pause-triggered ask text, verbatim.
   h.fake.model.complete = async () =>
     "Repeated off-goal-by-instruction scores and operator-skipped decisions indicate systemic blocker requiring root-cause investigation before proce";
 
@@ -1471,15 +1473,23 @@ async function caseItem8p2_pause_converts_unconditionally(clock) {
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
 
+  const idleCalls = h.classifyCalls.filter(c => Array.isArray(c[1]) && c[1].includes("nudge"));
+  check("item8p2a2 control: the idle classifier was called", idleCalls.length > 0, h.classifyCalls.length);
+  check("item8p2a2: no label array offered to the idle classifier carries pause",
+    idleCalls.every(c => !c[1].includes("pause")), idleCalls.map(c => [...c[1]]));
+  check("item8p2a2: the summary's option list names the ids offered and no other, so no pause line",
+    idleCalls.every(c => {
+      const lines = String(c[0]).split(`\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n`)[1]?.split("\n") ?? [];
+      return lines.length === c[1].length && lines.every((l, i) => l.startsWith(`${c[1][i]}: `)) && !String(c[0]).includes("pause");
+    }), idleCalls.map(c => String(c[0]).split(`\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n`)[1]));
+
   const decisions = getDecisions(h);
   const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
   check("item8p2a2: no ask record written", askKeys.length === 0);
-
-  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
-  check("item8p2a2: ask_idle_gap_converted decision present", conversionCount >= 1);
-
-  const nudgeCount = decisions.filter(d => d.action === "nudge_sent").length;
-  check("item8p2a2: nudge_sent decision present", nudgeCount >= 1);
+  check("item8p2a2: a stray pause answer converts nothing, since the conversion has no pause arm",
+    decisions.filter(d => d.action === "ask_idle_gap_converted").length === 0, decisions.map(d => d.action));
+  check("item8p2a2: a verdict outside the offered set is read as nudge, so the plain nudge went out",
+    decisions.filter(d => d.action === "nudge_sent").length >= 1 && h.promptSubmits.some(t => t.includes("The Controller detected")), decisions.map(d => d.action));
 }
 
 // Item 8.2 (Round 36 case b): an ask record opens only when the worker's own
@@ -3461,7 +3471,7 @@ async function main() {
     await caseItem2_untrackedWorkCarriesCountPastCap(clock);
     await caseItem2_untrackedWorkRestartsCountOnPersonaSwitch(clock);
     await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
-    await caseItem8p2_pause_converts_unconditionally(clock);
+    await caseItem8p2_pauseIsNotOfferedAndConvertsNothing(clock);
     await caseItem8p2_worker_states_fork_opens_ask(clock);
     await caseItem8p2_placeholder_marker_refused(clock);
     await caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock);
@@ -4071,6 +4081,10 @@ async function main() {
     await caseTurnClose_theJournaledStateCarriesTheFourFields(clock);
     await caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock);
     await caseTurnScore_aSubagentCompletionIsNotScored(clock);
+    await caseController_theV2StateIsOneTextForHaikuJevAndTheReplay(clock);
+    await caseController_eachAnswerActsAsBeforeWithAndWithoutAPendingPlan(clock);
+    await caseController_aNewLastAnswerAloneIsNotSkipped(clock);
+    await caseController_anAdmittedOverrideReachesTheStateAndTheRequestAlike(clock);
     await caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock);
     await caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock);
 
@@ -20352,20 +20366,21 @@ async function casePlannerCatch_switchReasonAndDistillSitesReadTheObject(clock) 
   check("planner-catch switch no-text: one completion_no_text names the site and the shape", getDecisions(s2).some((d) => d.action === "completion_no_text" && d.detail === "plan-switch: completion returned no text (number, keys: none)"), getDecisions(s2).filter((d) => d.action === "completion_no_text"));
   check("planner-catch switch no-text: the switch fails as on an empty reply and nothing throws past the tick", getDecisions(s2).some((d) => d.action === "switch_failed") && !getDecisions(s2).some((d) => d.action === "switch_to"), getDecisions(s2).map((d) => d.action));
 
-  // Reason: the controller choosing switch with no pending plan, so no switch
-  // call runs and the reason call is the one completion.
+  // Reason: the controller choosing complete on a task entry, an offered
+  // verdict that is not a nudge, so no switch call runs and the reason call
+  // is the one completion before the entry completes.
   const reasonTree = () => [
     makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
-    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active" }),
+    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "task", status: "active", maxRounds: 5 }),
   ];
   clock.set(T0);
-  const r = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_object", classifyValue: "switch", completeValue: { isAnswered: true, text: "Because the plan is done.", usage: {} }, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
+  const r = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_object", classifyValue: "complete", completeValue: { isAnswered: true, text: "Because the plan is done.", usage: {} }, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
   clock.advance(130_000);
   await tickAndSettle(r, clock, 50);
   const tickLine = getDecisions(r).find((d) => d.action === "controller_tick");
   check("planner-catch reason object: the tick's decision carries the object's text as its reason", typeof tickLine?.detail === "string" && tickLine.detail.includes("Because the plan is done."), tickLine?.detail);
   clock.set(T0);
-  const r2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_no_text", classifyValue: "switch", completeValue: {}, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
+  const r2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_no_text", classifyValue: "complete", completeValue: {}, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
   clock.advance(130_000);
   await tickAndSettle(r2, clock, 50);
   const tickLine2 = getDecisions(r2).find((d) => d.action === "controller_tick");
@@ -26466,6 +26481,408 @@ async function caseTurnScore_aSubagentCompletionIsNotScored(clock) {
   check("turn score subagent delivery: neither completion made a scorer classify or wrote a turn-score call line",
     scorerCallsOf(d).length === deliveryCallsBefore && callLinesOf(d).length === 0,
     { classify: scorerCallsOf(d).length - deliveryCallsBefore, lines: callLinesOf(d).length });
+}
+
+// Controller v2 (jev-question-quality section 3). One idle tick's state is
+// read three ways: the text Haiku's classify call was handed, the state the
+// Jev request carried, and the state the journal's call line records, and
+// the three are one text. It carries the worker's last answer, folded and cut
+// at 1,500, the pending plans by id and title where any exist, and an option
+// list naming exactly the ids in force. .kit/jev-gold/replay.mjs then rebuilds
+// it from a record in the shape sample.mjs writes one, in both journal
+// shapes: from the v2 state the tick itself journaled, byte-identical; and
+// from a v1-shaped state rendered over the same fact lines, byte-identical
+// where no plan is pending and one stated line apart where one is, since the
+// v1 journal named plans by title alone. That is the pin the replay's v2
+// figure rests on. The last answer is moved by the persona's own turn end
+// alone: a subagent's completion and an aborted completion after it leave it
+// where it was. A tick before any turn ended reads none. Jev answering the
+// last option in force changes no decision.
+async function caseController_theV2StateIsOneTextForHaikuJevAndTheReplay(clock) {
+  console.log("\n=== Controller v2: one state for Haiku, Jev and the journal, byte-identical to the replay's, journaled as v2 ===");
+  const { controllerV2State } = await import("./jev-gold/replay.mjs");
+  const { toolActivityText } = await import("./jev-gold/sample.mjs");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const controllerBodiesOf = (h) => h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.CONTROLLER_DECISION));
+  const controllerCallLinesOf = (h) => journalLinesOfKind(h, "call").filter((line) => line.questionSet === Catalog.CONTROLLER_DECISION);
+  const options = Catalog.SHIPPED_QUESTIONS[Catalog.CONTROLLER_DECISION].options;
+  const optionLines = (ids) => ids.map((id) => `${id}: ${options[id]}`).join("\n");
+  const foldedAnswer = (raw) => Catalog.kaizenLine(raw).replace(/\s+/g, " ").trim().slice(0, 1500);
+  const idleClassify = (prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard";
+  // The v1 journal's shape over the same fact lines: the facts, the idle
+  // sentence, the lead, the four v1 option lines, and the switch line with
+  // the pending titles where any, as the v1 summary wrote them.
+  const V1_TAIL = "\n\nThe session has been idle for 130s.\nChoose the best decision:\n"
+    + "nudge: prompt the worker to take the next concrete step toward the goal\n"
+    + "pause: repeated drift or off-goal-by-instruction suggests the operator changed direction\n"
+    + "complete: objective evidently met\n"
+    + "ask-operator: blocked, ambiguous, or round budget nearly spent\n";
+  const v1Shaped = (v2State, titles) => v2State.split("\n\n")[0].split("\n")
+    .filter((l) => !l.startsWith(`${Catalog.CONTROLLER_LAST_ANSWER_LABEL}: `) && !l.startsWith(`${Catalog.CONTROLLER_PENDING_PLANS_LABEL}: `)).join("\n")
+    + V1_TAIL + (titles.length > 0 ? `switch: switch to a different pending plan: ${titles.map((t) => t.slice(0, 30)).join("; ")}\n` : "");
+  const CD_V1 = { nudge: 0.7, pause: 0.1, complete: 0.1, "ask-operator": 0.1 };
+  const CD_V1_SWITCH = { ...CD_V1, nudge: 0.6, switch: 0.1 };
+  const answer = "Tidied the [notes] today.\n\n" + "a".repeat(1600) + "ANSWER-TAIL";
+
+  for (const pending of [true, false]) {
+    const tag = pending ? "controller v2 (pending plan)" : "controller v2 (no pending plan)";
+    clock.set(T0);
+    const goals = [
+      makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+      makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5 }),
+      ...(pending ? [makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" })] : []),
+    ];
+    const h = await seedSeamHarness(`controller_v2_state_${pending ? "pending" : "none"}`, clock, { stateOpts: { goals, activeGoalId: "g-plan" }, costMaxNudgesPerHour: 10 });
+    h.setHttpResponse(jevAgreeing);
+    h.setClassifyValue(idleClassify);
+    // The persona's own turn, ending on the answer the state carries; then a
+    // subagent's completion inside a second turn and the persona's own
+    // aborted completion of it, neither of which is an answer to judge.
+    await recordTurn(h, "t-cd-1", "Tidy the notes.", answer);
+    await recordTurnStart(h, "t-cd-2", "Carry on.");
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-cd-2", agentId: "sub-cd", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-cd-2", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+    await settleJournalWrites(h);
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    await settleJournalWrites(h);
+
+    const calls = controllerCallsOf(h);
+    const bodies = controllerBodiesOf(h);
+    const callLines = controllerCallLinesOf(h);
+    const haikuState = calls.length === 1 ? String(calls[0][0]) : null;
+    const jevState = bodies.length === 1 ? bodies[0].state : null;
+    const labels = pending ? Catalog.CONTROLLER_LABELS_WITH_SWITCH : Catalog.CONTROLLER_LABELS;
+    check(`${tag} (control): the tick classified once, asked Jev once and journaled once`,
+      calls.length === 1 && bodies.length === 1 && callLines.length === 1, { haiku: calls.length, jev: bodies.length, lines: callLines.length });
+    check(`${tag}: Haiku and Jev are handed the same text, and the journal records that text`,
+      typeof haikuState === "string" && haikuState === jevState && callLines[0]?.state === jevState,
+      { haiku: haikuState?.slice(0, 60), jev: jevState?.slice(0, 60), journal: callLines[0]?.state?.slice(0, 60) });
+    check(`${tag}: Haiku is offered ${pending ? "the set with switch" : "the set without switch"}, and Jev the same ids`,
+      calls.length === 1 && JSON.stringify([...calls[0][1]]) === JSON.stringify([...labels])
+        && bodies.length === 1 && JSON.stringify(Object.keys(bodies[0].questions[Catalog.CONTROLLER_DECISION].criteria)) === JSON.stringify([...labels]),
+      { haiku: calls[0]?.[1], jev: bodies[0] && Object.keys(bodies[0].questions[Catalog.CONTROLLER_DECISION].criteria) });
+    const objective = getState(h).goals.find((g) => g.id === "g-plan")?.objective;
+    check(`${tag}: the state opens on the objective, carries the idle time as a fact, and no idle sentence or pause`,
+      typeof jevState === "string" && jevState.startsWith(`Objective: ${objective}\n`) && jevState.includes("\nIdle time: ")
+        && !jevState.includes("The session has been idle") && !jevState.includes("pause"), jevState?.slice(0, 120));
+    check(`${tag}: the Last answer line is the persona's own answer, folded, collapsed and cut at 1,500, its tail gone`,
+      typeof jevState === "string" && jevState.includes(`\nLast answer: ${foldedAnswer(answer)}\n`) && !jevState.includes("ANSWER-TAIL")
+        && jevState.includes("Last answer: Tidied the (notes) today. aaa"), jevState?.split("\n").find((l) => l.startsWith("Last answer"))?.slice(0, 80));
+    check(`${tag}: neither the subagent's completion nor the aborted completion moved the last answer`,
+      typeof jevState === "string" && !jevState.includes("The subagent's report.") && jevState.split("\n").filter((l) => l.startsWith("Last answer: ")).length === 1,
+      jevState?.split("\n").find((l) => l.startsWith("Last answer"))?.slice(0, 60));
+    if (pending) {
+      check(`${tag}: the Pending plans line names the plan by id and title, between the last answer and the lead`,
+        typeof jevState === "string" && jevState.includes(`\nPending plans: g-plan-2: The other plan\n\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n`), jevState?.slice(-400));
+    } else {
+      check(`${tag}: the state carries no Pending plans line and no switch line`,
+        typeof jevState === "string" && !jevState.includes("Pending plans") && !jevState.includes("\nswitch: "), jevState?.slice(-300));
+    }
+    check(`${tag}: the option list is one line per id in force with its catalog description, and nothing follows it`,
+      typeof jevState === "string" && jevState.endsWith(`\n\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n${optionLines(labels)}`), jevState?.slice(-200));
+    const answerLine = journalLinesOfKind(h, "answer").find((line) => line.callStampId === callLines[0]?.stampId);
+    check(`${tag}: the answer line carries version v2`, answerLine?.questionVersion === "v2", answerLine?.questionVersion);
+    check(`${tag} (control): Jev agreeing with Haiku left the tick nudging`,
+      getDecisions(h).some((d) => d.action === "nudge_sent"), getDecisions(h).map((d) => d.action));
+
+    // The replay's record for the same tick, in sample.mjs's shape, from
+    // the v2 state the tick journaled: byte-identical, plan ids read back.
+    const v2Record = {
+      id: "cd-v2-fixture", stampId: callLines[0]?.stampId, state: callLines[0]?.state,
+      jev: { probabilities: answerLine?.probabilities },
+      transcript: { prompt: "Tidy the notes.", finalMessage: answer, toolActivity: toolActivityText([]) },
+    };
+    let v2Replay = null;
+    try { const built = controllerV2State(v2Record); v2Replay = built.ok ? built.state : `refused: ${built.reason}`; } catch (e) { v2Replay = `threw: ${e.message}`; }
+    check(`${tag}: the replay's v2 state from the tick's own journaled state is byte-identical to the state the plugin sent`,
+      typeof jevState === "string" && v2Replay === jevState, { plugin: jevState?.slice(-120), replay: typeof v2Replay === "string" ? v2Replay.slice(-120) : v2Replay });
+    // And from a v1-shaped state over the same fact lines, as the sampled
+    // records carry one, with the v1 probability keys its call offered.
+    const v1Record = {
+      ...v2Record, id: "cd-v1-fixture",
+      state: v1Shaped(jevState, pending ? ["The other plan"] : []),
+      jev: { probabilities: pending ? CD_V1_SWITCH : CD_V1 },
+    };
+    let v1Replay = null;
+    try { const built = controllerV2State(v1Record); v1Replay = built.ok ? built.state : `refused: ${built.reason}`; } catch (e) { v1Replay = `threw: ${e.message}`; }
+    if (pending) {
+      check(`${tag}: the replay's v2 state from a v1-shaped record is the plugin's bytes in every line but Pending plans, which carries the title alone`,
+        typeof jevState === "string" && v1Replay !== jevState
+          && v1Replay === jevState.replace("\nPending plans: g-plan-2: The other plan\n", "\nPending plans: The other plan\n"),
+        { plugin: jevState?.split("\n").find((l) => l.startsWith("Pending plans")), replay: typeof v1Replay === "string" ? v1Replay.split("\n").find((l) => l.startsWith("Pending plans")) : v1Replay });
+    } else {
+      check(`${tag}: the replay's v2 state from a v1-shaped record is byte-identical to the state the plugin sent`,
+        typeof jevState === "string" && v1Replay === jevState, { plugin: jevState?.slice(-120), replay: typeof v1Replay === "string" ? v1Replay.slice(-120) : v1Replay });
+    }
+  }
+
+  // The answer belongs to the entry its turn started on. After the active
+  // entry moves with no new turn, by a switch the tick itself made or by a
+  // goal_done inside the answering turn, the next tick's state reads none;
+  // the control is the same drive with no entry change, which keeps it.
+  {
+    const lastAnswerLineOf = (h, index) => String(controllerCallsOf(h)[index]?.[0] ?? "").split("\n").find((l) => l.startsWith("Last answer: "));
+    const objectiveLineOf = (h, index) => String(controllerCallsOf(h)[index]?.[0] ?? "").split("\n")[0];
+    for (const change of ["switch", "none"]) {
+      clock.set(T0);
+      const k = await seedSeamHarness(`controller_v2_keyed_${change}`, clock, {
+        stateOpts: {
+          goals: [
+            makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+            makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5, objective: "The first objective" }),
+            makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan", objective: "The second objective" }),
+          ],
+          activeGoalId: "g-plan",
+        },
+        costMaxNudgesPerHour: 10,
+      });
+      k.setHttpResponse(jevAgreeing);
+      k.setCompleteValue("g-plan-2");
+      await recordTurn(k, "t-cd-keyed", "Tidy the notes.", "Tidied them on the first plan.");
+      k.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? (change === "switch" ? "switch" : "nudge") : "discard");
+      clock.advance(130_000);
+      await tickAndSettle(k, clock, 50);
+      k.setClassifyValue(idleClassify);
+      clock.advance(130_000);
+      await tickAndSettle(k, clock, 50);
+      check(`controller v2 keyed (${change}, control): two ticks classified, the first over the first plan's state carrying the answer`,
+        controllerCallsOf(k).length === 2 && objectiveLineOf(k, 0) === "Objective: The first objective" && lastAnswerLineOf(k, 0) === "Last answer: Tidied them on the first plan.",
+        { calls: controllerCallsOf(k).length, first: [objectiveLineOf(k, 0), lastAnswerLineOf(k, 0)] });
+      if (change === "switch") {
+        check("controller v2 keyed (switch): the tick switched to the other plan, and the next tick's state pairs its objective with Last answer: none",
+          getState(k).activeGoalId === "g-plan-2" && objectiveLineOf(k, 1) === "Objective: The second objective" && lastAnswerLineOf(k, 1) === `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`,
+          { active: getState(k).activeGoalId, second: [objectiveLineOf(k, 1), lastAnswerLineOf(k, 1)] });
+      } else {
+        check("controller v2 keyed (no change, control): with the entry unchanged the next tick's state still carries the answer",
+          getState(k).activeGoalId === "g-plan" && objectiveLineOf(k, 1) === "Objective: The first objective" && lastAnswerLineOf(k, 1) === "Last answer: Tidied them on the first plan.",
+          { active: getState(k).activeGoalId, second: [objectiveLineOf(k, 1), lastAnswerLineOf(k, 1)] });
+      }
+    }
+    // goal_done inside the answering turn: the answer closes the entry it
+    // started on, and the next tick's node is the entry goal_done activated.
+    clock.set(T0);
+    const gd = await createTickHarness({
+      stateOpts: {
+        goals: [
+          makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+          makeGoalNode({ id: "g-task", parentId: "g-root", kind: "task", status: "active", maxRounds: 5, title: "The task", objective: "The first task" }),
+          makeGoalNode({ id: "g-task-2", parentId: "g-root", kind: "task", status: "pending", maxRounds: 5, title: "The next task", objective: "The second task" }),
+        ],
+        activeGoalId: "g-task",
+      },
+      ...OPTS, caseName: "controller_v2_keyed_goal_done", costMaxNudgesPerHour: 10,
+    });
+    gd.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+    gd.setHttpResponse(jevAgreeing);
+    gd.setClassifyValue(idleClassify);
+    await recordTurnStart(gd, "t-cd-gd", "Finish the task.");
+    const done = await callTool(gd, { tool: "mcp__agentic-plugin__goal_done", note: "finished", turnId: "t-cd-gd" }, async () => ({ result: "passthrough" }));
+    await recordTurnComplete(gd, "t-cd-gd", "Finished the first task.");
+    clock.advance(130_000);
+    await tickAndSettle(gd, clock, 50);
+    check("controller v2 keyed (goal_done, control): goal_done completed the first task and activated the next",
+      done?.deny === undefined && getState(gd).goals.find((g) => g.id === "g-task")?.status === "complete" && getState(gd).activeGoalId === "g-task-2",
+      { deny: done?.deny, active: getState(gd).activeGoalId });
+    check("controller v2 keyed (goal_done): the next tick's state pairs the next task's objective with Last answer: none, not the closing answer",
+      controllerCallsOf(gd).length === 1 && objectiveLineOf(gd, 0) === "Objective: The second task" && lastAnswerLineOf(gd, 0) === `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`,
+      { calls: controllerCallsOf(gd).length, state: [objectiveLineOf(gd, 0), lastAnswerLineOf(gd, 0)] });
+  }
+
+  // Before any turn has ended in this process, the last answer reads none.
+  clock.set(T0);
+  const n = await seedSeamHarness("controller_v2_no_answer", clock, { costMaxNudgesPerHour: 10 });
+  n.setHttpResponse(jevAgreeing);
+  n.setClassifyValue(idleClassify);
+  clock.advance(130_000);
+  await tickAndSettle(n, clock, 50);
+  const noneCalls = controllerCallsOf(n);
+  check("controller v2 (no turn yet): the state's Last answer line reads none",
+    noneCalls.length === 1 && String(noneCalls[0][0]).includes(`\nLast answer: ${Catalog.CONTROLLER_NO_ANSWER}\n\n`),
+    noneCalls[0] && String(noneCalls[0][0]).split("\n").find((l) => l.startsWith("Last answer")));
+
+  // The seam invariance over the new state: Jev answering the last option in
+  // force, switch here, while Haiku answers nudge, changes no decision.
+  clock.set(T0);
+  const o = await seedSeamHarness("controller_v2_opposite", clock, {
+    stateOpts: {
+      goals: [
+        makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+        makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5 }),
+        makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" }),
+      ],
+      activeGoalId: "g-plan",
+    },
+    costMaxNudgesPerHour: 10,
+  });
+  o.setHttpResponse(jevOpposite);
+  o.setClassifyValue(idleClassify);
+  await recordTurn(o, "t-cd-opp", "Tidy the notes.", "Tidied them.");
+  clock.advance(130_000);
+  await tickAndSettle(o, clock, 50);
+  const oppositeActions = getDecisions(o).map((d) => d.action);
+  check("controller v2 (opposite Jev, control): the tick asked Jev over the set with switch",
+    controllerBodiesOf(o).length === 1 && Object.keys(controllerBodiesOf(o)[0].questions[Catalog.CONTROLLER_DECISION].criteria).includes("switch"), controllerBodiesOf(o).length);
+  check("controller v2 (opposite Jev): Jev answering switch changed no decision, the tick nudged and switched nothing",
+    oppositeActions.includes("nudge_sent") && !oppositeActions.some((a) => a === "switch_to" || a === "switch_from" || a === "completed_by_controller" || a === "ask_idle_gap_converted")
+      && getState(o).activeGoalId === "g-plan", oppositeActions);
+}
+
+// The controller's action on each of the four answers, with and without a
+// pending plan, on a task entry so complete can act: nudge sends the plain
+// nudge; ask-operator converts, records ask_idle_gap_converted and sends the
+// idle-gap nudge with its ASK: line, opening no ask; complete completes the
+// entry; switch activates the pending plan where one exists and, where none
+// does, is not offered and a stray answer is read as nudge. Across every
+// leg no label array carries pause, which is the no-path-produces-pause
+// reading beside the stray-pause case above.
+async function caseController_eachAnswerActsAsBeforeWithAndWithoutAPendingPlan(clock) {
+  console.log("\n=== Controller v2: each of the four answers acts as before, with and without a pending plan ===");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const offeredEverywhere = [];
+  for (const pending of [true, false]) {
+    for (const answer of ["nudge", "ask-operator", "complete", "switch"]) {
+      const tag = `controller action ${answer} ${pending ? "with" : "without"} a pending plan`;
+      clock.set(T0);
+      const goals = [
+        makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+        makeGoalNode({ id: "g-task", parentId: "g-root", kind: "task", status: "active", maxRounds: 5, title: "The task", objective: "Finish the task" }),
+        ...(pending ? [makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" })] : []),
+      ];
+      const h = await createTickHarness({ stateOpts: { goals, activeGoalId: "g-task" }, ...OPTS, caseName: `controller_action_${answer}_${pending ? "pending" : "none"}`, costMaxNudgesPerHour: 10 });
+      h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? answer : "discard");
+      // The plan switch's second call names the pending plan; the reason call
+      // for a non-nudge decision returns the same text, which is harmless.
+      h.setCompleteValue(pending ? "g-plan-2" : "no reason");
+      await fireTurn(h);
+      await new Promise((r) => setTimeout(r, 20));
+      clock.advance(65000);
+      await tickAndSettle(h, clock);
+      const calls = controllerCallsOf(h);
+      const actions = getDecisions(h).map((d) => d.action);
+      const labels = pending ? Catalog.CONTROLLER_LABELS_WITH_SWITCH : Catalog.CONTROLLER_LABELS;
+      check(`${tag} (control): the idle classifier was offered ${pending ? "the set with switch" : "the set without switch"}`,
+        calls.length === 1 && JSON.stringify([...calls[0][1]]) === JSON.stringify([...labels]), calls.map((c) => [...c[1]]));
+      for (const c of calls) offeredEverywhere.push([...c[1]]);
+      const task = getState(h).goals.find((g) => g.id === "g-task");
+      const nudges = h.promptSubmits.filter((t) => t.startsWith("[GOAL]"));
+      if (answer === "nudge") {
+        check(`${tag}: the plain nudge went out, with no conversion`,
+          actions.includes("nudge_sent") && !actions.includes("ask_idle_gap_converted") && nudges.length === 1
+            && nudges[0].includes("The Controller detected") && !nudges[0].includes("idle gap"), { actions, nudge: nudges[0]?.slice(0, 120) });
+      } else if (answer === "ask-operator") {
+        check(`${tag}: the verdict converted, recorded ask_idle_gap_converted, and the idle-gap nudge went out with its ASK: line`,
+          actions.includes("ask_idle_gap_converted") && actions.includes("nudge_sent") && nudges.length === 1
+            && nudges[0].includes("The controller read this as an idle gap, not a real fork") && nudges[0].includes("ASK: <question>? Recommend: <choice>"),
+          { actions, nudge: nudges[0]?.slice(0, 200) });
+        check(`${tag}: no ask record was opened from the verdict`,
+          [...h.storeMap.keys()].every((k) => !k.startsWith("ask:")), [...h.storeMap.keys()].filter((k) => k.startsWith("ask:")));
+      } else if (answer === "complete") {
+        check(`${tag}: the task entry was completed by the controller and no nudge went out`,
+          actions.includes("completed_by_controller") && task?.status === "complete" && !actions.includes("nudge_sent"), { actions, status: task?.status });
+      } else if (pending) {
+        check(`${tag}: the pending plan was activated and the current entry set aside`,
+          actions.includes("switch_from") && actions.includes("switch_to") && getState(h).activeGoalId === "g-plan-2"
+            && getState(h).goals.find((g) => g.id === "g-plan-2")?.status === "active", { actions, active: getState(h).activeGoalId });
+      } else {
+        check(`${tag}: switch is not offered, and a stray switch answer activates nothing and is read as the plain nudge`,
+          !calls[0][1].includes("switch") && !actions.some((a) => a === "switch_to" || a === "switch_from" || a === "switch_failed")
+            && actions.includes("nudge_sent") && nudges.length === 1 && nudges[0].includes("The Controller detected")
+            && getState(h).activeGoalId === "g-task" && task?.status === "active", { actions, active: getState(h).activeGoalId });
+      }
+    }
+  }
+  check("controller actions: across every leg no label array offered to the idle classifier carried pause",
+    offeredEverywhere.length === 8 && offeredEverywhere.every((ids) => !ids.includes("pause")), offeredEverywhere);
+}
+
+// The idle tick's skip hash reads the last answer: a second tick inside the
+// nudge floor, with nothing changed but a new answer on the node, classifies
+// again rather than skipping as unchanged. The control is the same drive
+// where the turn between the ticks is aborted, which moves no answer, so the
+// second tick is skipped as unchanged.
+async function caseController_aNewLastAnswerAloneIsNotSkipped(clock) {
+  console.log("\n=== Controller v2: a tick whose only change is a new last answer is classified, not skipped ===");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const idleClassify = (prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard";
+  for (const leg of ["new answer", "no answer"]) {
+    clock.set(T0);
+    const h = await seedSeamHarness(`controller_v2_skiphash_${leg === "new answer" ? "answer" : "control"}`, clock, { costMaxNudgesPerHour: 10 });
+    h.setHttpResponse(jevAgreeing);
+    h.setClassifyValue(idleClassify);
+    await recordTurn(h, "t-sh-1", "Tidy the notes.", "Tidied the first note.");
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    check(`controller v2 skip hash (${leg}, control): the first tick classified and nudged`,
+      controllerCallsOf(h).length === 1 && getDecisions(h).some((d) => d.action === "nudge_sent"), controllerCallsOf(h).length);
+    if (leg === "new answer") {
+      await recordTurn(h, "t-sh-2", "Carry on.", "Tidied the second note.");
+    } else {
+      await recordTurnStart(h, "t-sh-2", "Carry on.");
+      await h.handlers["turn.complete"](h.fake, { turnId: "t-sh-2", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+    }
+    // Inside the nudge floor, so only the hash decides whether to classify.
+    clock.advance(65_000);
+    await tickAndSettle(h, clock, 50);
+    const skipped = getDecisions(h).filter((d) => d.action === "controller_tick" && d.detail.endsWith("unchanged, skipped")).length;
+    if (leg === "new answer") {
+      check("controller v2 skip hash: a new last answer alone makes the second tick classify, over the new answer, with no unchanged skip",
+        controllerCallsOf(h).length === 2 && skipped === 0 && String(controllerCallsOf(h)[1][0]).includes("\nLast answer: Tidied the second note.\n"),
+        { calls: controllerCallsOf(h).length, skipped, second: String(controllerCallsOf(h)[1]?.[0] ?? "").split("\n").find((l) => l.startsWith("Last answer")) });
+    } else {
+      check("controller v2 skip hash (control): an aborted turn moves no answer, so the second tick is skipped as unchanged",
+        controllerCallsOf(h).length === 1 && skipped === 1, { calls: controllerCallsOf(h).length, skipped });
+    }
+  }
+}
+
+// An admitted override of the controller question reaches the state's
+// option list, Haiku's text and Jev's criteria from one resolution: the
+// three carry the override's descriptions and the answer line carries its
+// version. The v2 state case above, with no override planted, is the
+// control that the shipped descriptions and v2 are what reach them otherwise.
+async function caseController_anAdmittedOverrideReachesTheStateAndTheRequestAlike(clock) {
+  console.log("\n=== Controller v2: an admitted override's descriptions reach the state, Haiku and Jev alike ===");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const controllerBodiesOf = (h) => h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.CONTROLLER_DECISION));
+  const caseName = "controller_v2_override";
+  const override = {
+    primitive: "choice",
+    instructions: "An overridden controller question.",
+    options: { nudge: "override nudge", "ask-operator": "override ask", complete: "override complete", switch: "override switch" },
+  };
+  clock.set(T0);
+  const h = await seedSeamHarness(caseName, clock, { costMaxNudgesPerHour: 10 });
+  const overrideDir = `${HARNESS_HOME}/${caseName}/.claude/agentic-questions/${Catalog.CONTROLLER_DECISION}`;
+  h.fsMap.set(`${overrideDir}/active.json`, JSON.stringify({ version: "v3" }));
+  h.fsMap.set(`${overrideDir}/v3.json`, JSON.stringify(override));
+  h.setHttpResponse(jevAgreeing);
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  await recordTurn(h, "t-ov", "Tidy the notes.", "Tidied them.");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  await settleJournalWrites(h);
+  const calls = controllerCallsOf(h);
+  const bodies = controllerBodiesOf(h);
+  const haikuState = calls.length === 1 ? String(calls[0][0]) : null;
+  const jevState = bodies.length === 1 ? bodies[0].state : null;
+  const criteria = bodies.length === 1 ? bodies[0].questions[Catalog.CONTROLLER_DECISION].criteria : null;
+  const expectedLines = Catalog.CONTROLLER_LABELS.map((id) => `${id}: ${override.options[id]}`).join("\n");
+  check("controller v2 override (control): the tick classified once and asked Jev once",
+    calls.length === 1 && bodies.length === 1, { haiku: calls.length, jev: bodies.length });
+  check("controller v2 override: Haiku's text and Jev's state are one text whose option list carries the override's descriptions",
+    typeof haikuState === "string" && haikuState === jevState && haikuState.endsWith(`\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n${expectedLines}`)
+      && !haikuState.includes(Catalog.SHIPPED_QUESTIONS[Catalog.CONTROLLER_DECISION].options.nudge), haikuState?.slice(-160));
+  check("controller v2 override: the request's criteria carry the same descriptions, line for line with the state",
+    criteria !== null && Catalog.CONTROLLER_LABELS.every((id) => criteria[id] === override.options[id]) && Object.keys(criteria).length === Catalog.CONTROLLER_LABELS.length,
+    criteria);
+  const answerLine = journalLinesOfKind(h, "answer").find((line) => line.questionId === Catalog.CONTROLLER_DECISION);
+  check("controller v2 override: the answer line carries the override's version",
+    answerLine?.questionVersion === "v3" && answerLine?.overrideRefused === null, answerLine && [answerLine.questionVersion, answerLine.overrideRefused]);
 }
 
 // next_prompt_kind is written once against every disposition stamp pending on

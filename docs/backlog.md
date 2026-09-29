@@ -1,8 +1,8 @@
 # Backlog
 
-## The controller question needs a stall signal before a v2 can meet its bar (found 2026-09-28)
+## The controller question reads most stalls as a plain nudge (found 2026-09-28)
 
-The Jev question quality plan's controller v2 missed its dev bar twice and was not committed: accuracy 0.833 against 0.85 and ask-operator recall 0.367 against 0.5 on the second replay. Jev reads most gold stalls as an ordinary nudge at high confidence. The two clusters are a worker working off the objective the state names and a worker waiting on another session rather than on its own dispatched work, and the option descriptions already named both. Remedy: decompose the stall read, for example a separate question or a state fact on whether the last answer works on the named objective and whom it waits on, then replay against the same gold. The built v2 is kept as .kit/scratch/jev-question-quality/section-3-v2.patch in the plan's worktree, and the plan's Chapter 4 carries the figures. The operator's ruling to drop pause waits for that v2.
+Controller v2 shipped on the Jev question quality plan at the operator's lowered bar, 0.840 accuracy and 0.367 ask-operator recall on dev, but it still reads 19 of 31 gold stalls as a plain nudge at high confidence. The two clusters are a worker working off the objective the state names and a worker waiting on another session rather than on its own dispatched work, and the option descriptions already name both. Remedy: decompose the stall read, for example a separate question or a state fact on whether the last answer works on the named objective and whom it waits on, then replay against the same gold with `.kit/jev-gold/replay.mjs` and `score.mjs`. The plan's Chapters 4 and 5 carry the figures.
 
 ## Operator checks owed by the Jev memory gate plan (parked 2026-09-27)
 
