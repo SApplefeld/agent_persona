@@ -24,11 +24,13 @@ Use the hindsight as evidence of what the worker's situation really was, not as 
 
 Pick exactly one:
 
-- `nudge`: the worker has a next concrete step it can take on its own and simply stopped. Includes a worker that reported a step done and has the next step in the plan, a worker that ended on an intermediate status with nothing formally pending, and a plan entry whose work reads finished, since on a plan entry nothing but a nudge acts. Not a worker that is waiting on something it named that has not arrived.
-- `ask-operator`: the worker is stuck at a fork or a question and should be pushed to state it, which is what the idle-gap nudge does. Includes a worker that says it needs a decision, reports a blocker it cannot clear, is looping on the same step without progress, or keeps drifting off the objective. The nearest case that is not this one: a worker waiting on its own background task or reviewers, which is `nudge` if the wait is over and `unclear` if you cannot tell.
+There is no label for leaving the worker alone. Both nudges carry the same line on a plan entry, that a `WAITING:` or `BLOCKED:` line holds the controller's nudges, so a worker honestly waiting is not disturbed by either one. The question is which nudge's words fit the worker's situation.
+
+- `nudge`: the worker is on its objective and either has a next step or is honestly waiting on work of its own that is in flight. Includes a worker that reported a step done and has the next step in the plan, a worker that ended on an intermediate status, a worker waiting on a background job, implementer, reviewer, test run or workflow it dispatched for this objective, whether or not the record shows the wait is over, and a plan entry whose work reads finished, since on a plan entry nothing but a nudge acts. The nearest case that is not this one: a wait on something that is not coming, which is `ask-operator`.
+- `ask-operator`: the worker is stalled in a way the idle-gap nudge addresses, since that nudge tells it this is not a real fork, to re-read the plan, and to state any genuine fork as an `ASK:` line. Includes a worker that says it needs a decision, reports a blocker it cannot clear itself, waits on a person or another session rather than on its own in-flight work, is looping on the same step or the same wait across nudges without progress, or is working on something other than the objective the state names. The nearest case that is not this one: a first wait on its own dispatched work, which is `nudge`.
 - `complete`: a task entry whose objective the worker has evidently finished, so the goal should be marked done now. Never on a plan entry.
 - `switch`: the option list offers switch, and the current goal cannot move while a pending plan can, or the worker itself says the pending plan is the one to work on now. Never where the option list does not offer switch.
-- `unclear`: the record does not carry enough to choose between two of the labels above. Use it sparingly, and say in the note which two.
+- `unclear`: the record carries evidence for two labels in equal weight. Not a label for a wait whose end the record does not show; that is `nudge` or `ask-operator` by the rules above. Say in the note which two.
 
 ## Confidence and note
 

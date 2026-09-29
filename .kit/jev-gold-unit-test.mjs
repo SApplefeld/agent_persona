@@ -341,20 +341,24 @@ try {
     const recs = [{ id: "r1" }, { id: "r2" }];
     const allowed = ["on-goal", "drift"];
     let err = null;
-    try { checkBatch(recs, [{ id: "r1", label: "on-goal" }], allowed); } catch (e) { err = e.message; }
-    check("a reply missing a record is refused, naming it", err !== null && err.includes("r2"), err);
+    let partial = null;
+    try { partial = checkBatch(recs, [{ id: "r1", label: "on-goal" }], allowed); } catch (e) { err = e.message; }
+    check("a reply missing a record returns it as missing rather than throwing, and keeps the labels it has",
+      err === null && partial !== null && same(partial.missing, ["r2"]) && same(partial.labels.map((l) => l.id), ["r1"]), [err, partial]);
     err = null;
     try { checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "pause" }], allowed); } catch (e) { err = e.message; }
     check("a reply carrying a label the rubric does not offer is refused", err !== null && err.includes("pause"), err);
     err = null;
     try { checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "drift" }, { id: "r9", label: "drift" }], allowed); } catch (e) { err = e.message; }
-    check("a reply naming a record outside the batch is refused", err !== null && err.includes("r9"), err);
-    check("control: a whole reply passes", checkBatch(recs, [{ id: "r2", label: "drift" }, { id: "r1", label: "on-goal" }], allowed).map((l) => l.id).join() === "r1,r2");
+    check("a reply naming a record outside the records sent is refused", err !== null && err.includes("outside the records sent: r9"), err);
+    const whole = checkBatch(recs, [{ id: "r2", label: "drift" }, { id: "r1", label: "on-goal" }], allowed);
+    check("control: a whole reply passes, in batch order, with nothing missing",
+      whole.labels.map((l) => l.id).join() === "r1,r2" && same(whole.missing, []), whole);
     err = null;
     try { checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "drift" }, { id: "r1", label: "drift" }], allowed); } catch (e) { err = e.message; }
     check("a reply giving one record two different labels is refused, naming it", err !== null && err.includes("r1") && err.includes("drift"), err);
     check("a reply repeating a record with the same label passes",
-      checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "drift" }, { id: "r1", label: "on-goal" }], allowed).map((l) => l.label).join() === "on-goal,drift");
+      checkBatch(recs, [{ id: "r1", label: "on-goal" }, { id: "r2", label: "drift" }, { id: "r1", label: "on-goal" }], allowed).labels.map((l) => l.label).join() === "on-goal,drift");
   }
 
   // --- Kappa ---
@@ -438,27 +442,79 @@ try {
       stale.stderr);
   }
 
-  // --- A reply that drops a record fails the run ---
-  console.log("\nrefusals");
+  // --- A reply that drops a record gets one re-send of the missing records ---
+  console.log("\nre-sends and refusals");
   {
     const dir = path.join(TMP, "label-missing");
     run(SAMPLE, ["--question", "turn-score", "--journal", JOURNAL, "--projects", PROJECTS, "--out", dir]);
     const answersFile = path.join(TMP, "answers-missing.json");
-    const [, idMissing] = readLines(path.join(dir, "sample.jsonl")).map((x) => x.id);
+    const callLog = path.join(TMP, "stub-missing.log");
+    const [idFirst, idMissing, idLast] = readLines(path.join(dir, "sample.jsonl")).map((x) => x.id);
     fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" }, [idMissing]: { a: null } }));
-    const env = { JEV_GOLD_LABELLER: STUB, JEV_GOLD_STUB_ANSWERS: answersFile };
+    const env = { JEV_GOLD_LABELLER: STUB, JEV_GOLD_STUB_ANSWERS: answersFile, JEV_GOLD_STUB_LOG: callLog };
+
+    // The first reply for labeller a's batch omits one record; the re-send
+    // answers it.
+    const omitOnceFile = path.join(TMP, "omitted-once");
+    fs.writeFileSync(callLog, "");
+    const resent = run(LABEL, ["--question", "turn-score", "--in", dir], { ...env, JEV_GOLD_STUB_OMIT_ONCE: omitOnceFile });
+    const resentCalls = readLines(callLog);
+    check("a batch whose first reply omits a record is re-sent and the run exits 0", resent.status === 0, [resent.stdout, resent.stderr]);
+    check("the re-sent record lands in the label file, in sample order",
+      resent.status === 0 && same(readLines(path.join(dir, "labels-a.jsonl")).map((l) => [l.id, l.label, l.batch]),
+        [[idFirst, "on-goal", 1], [idMissing, "on-goal", 1], [idLast, "on-goal", 1]]),
+      fs.existsSync(path.join(dir, "labels-a.jsonl")) ? fs.readFileSync(path.join(dir, "labels-a.jsonl"), "utf8") : "no file");
+    check("the run prints exactly one re-send line, naming the batch and the record",
+      (resent.stdout.match(/re-sending them once/g) || []).length === 1 &&
+      resent.stdout.includes(`labeller a batch 1 (${idFirst}..${idLast}): reply missing 1 record(s): ${idMissing}; re-sending them once`),
+      resent.stdout);
+    check("the re-send carries the missing record alone, under the same labeller",
+      resentCalls.length === 3 && same(resentCalls.map((c) => c.name), ["a", "a", "b"]) &&
+      same(resentCalls[0].ids, [idFirst, idMissing, idLast]) && same(resentCalls[1].ids, [idMissing]),
+      resentCalls.map((c) => [c.name, c.ids]));
+    check("the re-send runs with the same flags and rubric as the first call",
+      resentCalls.length > 1 && same(resentCalls[1].argv, resentCalls[0].argv), resentCalls.length);
+    for (const f of ["labels-a.jsonl", "labels-b.jsonl", "kappa.txt"]) fs.rmSync(path.join(dir, f), { force: true });
+
+    // Every reply for labeller a omits the record, the re-send's included.
+    fs.writeFileSync(callLog, "");
     const r = run(LABEL, ["--question", "turn-score", "--in", dir], env);
-    check("a labeller reply missing a record fails the run", r.status === 1, r.status);
-    check("the failure names the labeller, the batch and the record",
-      r.stderr.includes("labeller a batch 1") && r.stderr.includes(`missing 1 record(s): ${idMissing}`), r.stderr);
+    const missingCalls = readLines(callLog);
+    check("a labeller reply still missing a record after the re-send fails the run", r.status === 1, r.status);
+    check("the failure names the labeller, the batch, the record and the re-send",
+      r.stderr.includes("labeller a batch 1") && r.stderr.includes(`missing 1 record(s) after one re-send: ${idMissing}`), r.stderr);
+    check("the batch was sent twice, the second time with the missing record alone",
+      missingCalls.length === 2 && missingCalls.every((c) => c.name === "a") && same(missingCalls[1].ids, [idMissing]),
+      missingCalls.map((c) => [c.name, c.ids]));
     check("a failed run writes no label file", !fs.existsSync(path.join(dir, "labels-a.jsonl")) && !fs.existsSync(path.join(dir, "kappa.txt")));
     check("control: the same answers with the record present pass",
       (fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" } })), run(LABEL, ["--question", "turn-score", "--in", dir], env).status === 0));
 
-    fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "pause" } }));
+    // The re-send's reply is checked against the missing records alone, so a
+    // record the first reply already labelled is outside what the re-send sent.
+    fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" }, [idMissing]: { a: null } }));
+    fs.writeFileSync(callLog, "");
+    const repeated = run(LABEL, ["--question", "turn-score", "--in", dir],
+      { ...env, JEV_GOLD_STUB_OMIT_ONCE: path.join(TMP, "omitted-once-repeat"), JEV_GOLD_STUB_EXTRA_ID: idFirst });
+    const repeatedCalls = readLines(callLog);
+    check("a re-send reply repeating a record from the first reply fails the run, naming the re-send and the record",
+      repeated.status === 1 &&
+      repeated.stderr.includes(`labeller a batch 1 (${idFirst}..${idLast}) re-send: the reply names a record outside the records sent: ${idFirst}`),
+      repeated.stderr);
+    check("the repeating re-send was the second call, carrying the missing record alone",
+      same(repeatedCalls.map((c) => [c.name, c.ids]), [["a", [idFirst, idMissing, idLast]], ["a", [idMissing]]]),
+      repeatedCalls.map((c) => [c.name, c.ids]));
+
+    // One record labeller b leaves out and another it labels outside the
+    // rubric: the rubric refusal comes first, so nothing is re-sent.
+    fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" }, [idMissing]: { b: null }, [idLast]: { b: "pause" } }));
+    fs.writeFileSync(callLog, "");
     const rl = run(LABEL, ["--question", "turn-score", "--in", dir], env);
+    const rubricCalls = readLines(callLog);
     check("a label outside the rubric fails the run, naming the batch",
       rl.status === 1 && rl.stderr.includes("labeller b batch 1") && rl.stderr.includes("pause"), rl.stderr);
+    check("a label outside the rubric is never re-sent, even beside a missing record: labeller b's batch is called once",
+      same(rubricCalls.map((c) => c.name), ["a", "b"]) && !rl.stdout.includes("re-sending"), [rubricCalls.map((c) => c.name), rl.stdout]);
 
     fs.writeFileSync(answersFile, JSON.stringify({ "*": { a: "on-goal", b: "on-goal" } }));
     const slow = run(LABEL, ["--question", "turn-score", "--in", dir], { ...env, JEV_GOLD_TIMEOUT_MS: "1500", JEV_GOLD_STUB_SLEEP_MS: "6000" });

@@ -17,12 +17,15 @@
 // settings, which --safe-mode leaves in force. It writes no transcript, so
 // nothing it does lands in the folders sample.mjs scans. Its environment is
 // this process's, less the vendor key and the parent session's markers.
-// A batch whose output does not carry every record id, or carries a label
-// outside the rubric's, fails the run naming the batch. A child that outlives
-// the timeout is retried once before the run fails naming the batch; a child
-// ended any other way fails the run at once, naming how. Nothing is written
-// until both labellers have finished, so a failed run is re-run and nothing
-// is undone.
+// A batch whose output leaves out some record ids re-sends those records
+// alone, once, and fails the run naming the batch if the second reply still
+// leaves any out. A reply naming a record outside what was sent, a label
+// outside the rubric's, or two labels for one record fails the run at once,
+// naming the batch, and is never re-sent. A child that outlives the timeout
+// is retried once before the run fails naming the batch, the re-send's child
+// included; a child ended any other way fails the run at once, naming how.
+// Nothing is written until both labellers have finished, so a failed run is
+// re-run and nothing is undone.
 //
 // JEV_GOLD_LABELLER names a node script to run in place of `claude`, which is
 // how the unit suite drives this without a real model. JEV_GOLD_TIMEOUT_MS
@@ -191,29 +194,55 @@ export function parseReply(stdout) {
   return out;
 }
 
-// One batch's labels, checked against its records: every id present, no id
-// outside the batch, no id given two different labels, every label one the
-// rubric offers. A failure throws,
-// and the caller names the batch.
+// One reply's labels, checked against the records sent: no id outside them,
+// no id given two different labels, every label one the rubric offers. Any of
+// those throws, and the caller names the batch. A sent record the reply
+// leaves out is returned in `missing`, for the caller to re-send; `labels`
+// holds the rest, in the order the records were sent.
 export function checkBatch(records, labels, allowed) {
   const want = new Set(records.map((r) => r.id));
   const got = new Map();
   for (const l of labels) {
     if (!l || typeof l.id !== "string") continue;
-    if (!want.has(l.id)) throw new Error(`the reply names a record outside the batch: ${l.id}`);
+    if (!want.has(l.id)) throw new Error(`the reply names a record outside the records sent: ${l.id}`);
     if (!allowed.includes(l.label)) throw new Error(`record ${l.id} carries a label the rubric does not offer: ${String(l.label)}`);
-    // A record labelled twice alike is one label; labelled twice apart, the
-    // reply names no label for it, which is a missing record.
+    // A record labelled twice alike is one label. Labelled twice apart, the
+    // reply contradicts itself, which throws and is never re-sent.
     const prior = got.get(l.id);
     if (prior && prior.label !== l.label) throw new Error(`the reply gives record ${l.id} two labels: ${prior.label} and ${l.label}`);
     if (!prior) got.set(l.id, l);
   }
   const missing = records.filter((r) => !got.has(r.id)).map((r) => r.id);
-  if (missing.length > 0) throw new Error(`the reply is missing ${missing.length} record(s): ${missing.join(", ")}`);
-  return records.map((r) => {
+  const checked = records.filter((r) => got.has(r.id)).map((r) => {
     const l = got.get(r.id);
     return { id: r.id, label: l.label, confidence: l.confidence ?? null, note: l.note ?? null };
   });
+  return { labels: checked, missing };
+}
+
+// One child call for `input`, with the batch's single timeout retry. Returns
+// the child's run once it exits 0; any other end throws, naming `where`.
+function callLabeller(child, where, input) {
+  let run = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    run = runChild(child.cmd, child.args, input, child.timeoutMs, child.env);
+    if (!run.timedOut) break;
+    child.log(`${where}: timed out after ${child.timeoutMs} ms on attempt ${attempt}`);
+  }
+  if (run.timedOut) throw new Error(`${where} timed out twice`);
+  if (run.killed) throw new Error(`${where} ended without an exit status: ${run.killed}`);
+  if (run.status !== 0) throw new Error(`${where} exited ${run.status}: ${(run.stderr || run.stdout).slice(0, 300)}`);
+  return run;
+}
+
+// A reply's labels checked against `records`, with any check failure named
+// by `where`.
+function checkedReply(where, records, run, allowed) {
+  try {
+    return checkBatch(records, parseReply(run.stdout), allowed);
+  } catch (e) {
+    throw new Error(`${where}: ${e.message}`);
+  }
 }
 
 // Runs one labeller over `records` in the order given, in batches. Returns
@@ -225,32 +254,36 @@ export function runLabeller(name, question, records, opts = {}) {
   const timeoutMs = Number(env.JEV_GOLD_TIMEOUT_MS) > 0 ? Number(env.JEV_GOLD_TIMEOUT_MS) : TIMEOUT_MS;
   const rubric = rubricText(question);
   const allowed = rubricLabels(rubric);
-  const cmd = labellerCommand(env);
-  const args = ["-p", ...CLI_FLAGS, "--system-prompt", rubric];
-  const childEnv = childEnvOf(env, name);
   const log = opts.log || ((line) => process.stdout.write(line + "\n"));
+  const child = {
+    cmd: labellerCommand(env),
+    args: ["-p", ...CLI_FLAGS, "--system-prompt", rubric],
+    env: childEnvOf(env, name),
+    timeoutMs,
+    log,
+  };
   const labels = [];
   const timings = [];
   for (let b = 0; b * BATCH_SIZE < records.length; b++) {
     const batch = records.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
     const where = `labeller ${name} batch ${b + 1} (${batch[0].id}..${batch[batch.length - 1].id})`;
-    const input = batchPrompt(batch);
-    let run = null;
     const started = Date.now();
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      run = runChild(cmd, args, input, timeoutMs, childEnv);
-      if (!run.timedOut) break;
-      log(`${where}: timed out after ${timeoutMs} ms on attempt ${attempt}`);
+    const first = checkedReply(where, batch, callLabeller(child, where, batchPrompt(batch)), allowed);
+    const byId = new Map(first.labels.map((l) => [l.id, l]));
+    if (first.missing.length > 0) {
+      // The records the reply left out go back alone, once, under the same
+      // rubric, flags and labeller; the second reply is checked against them
+      // only.
+      log(`${where}: reply missing ${first.missing.length} record(s): ${first.missing.join(", ")}; re-sending them once`);
+      const missingRecords = batch.filter((r) => !byId.has(r.id));
+      const resendWhere = `${where} re-send`;
+      const second = checkedReply(resendWhere, missingRecords, callLabeller(child, resendWhere, batchPrompt(missingRecords)), allowed);
+      if (second.missing.length > 0) {
+        throw new Error(`${where}: the reply is missing ${second.missing.length} record(s) after one re-send: ${second.missing.join(", ")}`);
+      }
+      for (const l of second.labels) byId.set(l.id, l);
     }
-    if (run.timedOut) throw new Error(`${where} timed out twice`);
-    if (run.killed) throw new Error(`${where} ended without an exit status: ${run.killed}`);
-    if (run.status !== 0) throw new Error(`${where} exited ${run.status}: ${(run.stderr || run.stdout).slice(0, 300)}`);
-    let checked;
-    try {
-      checked = checkBatch(batch, parseReply(run.stdout), allowed);
-    } catch (e) {
-      throw new Error(`${where}: ${e.message}`);
-    }
+    const checked = batch.map((r) => byId.get(r.id));
     const ms = Date.now() - started;
     timings.push({ labeller: name, batch: b + 1, records: batch.length, ms });
     log(`${where}: ${batch.length} records in ${(ms / 1000).toFixed(1)} s`);
