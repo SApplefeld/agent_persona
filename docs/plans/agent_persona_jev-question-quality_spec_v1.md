@@ -392,3 +392,11 @@ Stamps: adjudicated 0, stamped 0.
 Gate: documents only; no code changed since Chapter 6's gate at beed05a. A sweep of README.md and docs/architecture.md for the retired ids, the four-question request and continued_unprompted finds only the retirement note, the outcome-kind table and the test bullet on the retired kinds' silence. Every shipped question is a choice (hooks/question-catalog.ts 216-326) and FIXED_LEVEL_SETS is empty (line 200), as the rewritten override recipe states.
 Next: finishing
 Commit Model: Branch-and-PR
+
+### Interim board 5 - 2026-09-29
+
+Finishing pass, opened. Sections 1 to 6 are closed (Chapters 1 to 7). Base ref for the pass: a2dcf3279753edc997783286e3f4a5e1aa27cc4e, the merge-base of plan/jev-question-quality with origin/main. The changeset listing against it holds only files inside the plan's scope lines plus .kit/.gitignore, the fixtures under .kit/fixtures/jev-gold/ and docs/archive/backlog-2026-Q3.md, each written by a section of this plan.
+
+origin/main was 34 commits ahead, the persona memory port among them, so it was merged before the finishing gates as 0886111. Five files conflicted and were resolved by hand: hooks/index.ts (the controller Memory fact takes the port's wording, matching the skip hash's auto-merged line; the memory-check turn detection sits beside the subagent guard; plan health keeps chapter_within out and gains the memory-check skip), the tick test's import list (union), the README controller paragraph, docs/architecture.md (main's memory-store bullet beside the one-question TypeSafe bullet) and docs/backlog.md (both sides' items). A sweep of hooks/index.ts after the resolution finds no chapter_within, lead_blocked or continued_unprompted writer.
+
+Next: step 1, the qa-verifier over the merged tree with the whole gate; then steps 2 and 3 in one wave at fable (performance, security, adversarial over the whole changeset), step 4's goal read, step 5's docs-curator, the final Chapter, archive, the handoff gate and the pull request.
