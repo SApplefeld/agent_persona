@@ -154,12 +154,13 @@ import {
   turnScoreStateText,
   type TurnScoreTools,
   controllerStateText,
+  controllerLastAnswerText,
   type ControllerStateFact,
   resolverOf,
 } from "./question-catalog";
 // The decision seam, which puts the same closed question to Jev that the four
-// Haiku-paired sites below put to Haiku, and also carries the four plan
-// health questions no classifier asks, plus the journal that records every
+// Haiku-paired sites below put to Haiku, and also carries the one plan
+// health question no classifier asks, plus the journal that records every
 // answer.
 import { ask, askAll, type ChoiceAnswer, type JevAnswer, type QuestionAsk, type QuestionResolver, type SeamFailureReason, type SeamResult, type SeamSetResult } from "./decision-seam";
 import { newStampId, splitOf, writeCall, writeAnswers, writeOutcome, ASK_MARKER_VALUE, type JournalWrite, type OutcomeKind } from "./decision-journal";
@@ -8995,7 +8996,7 @@ export const register: Register = async (on, options) => {
                 return `LESSON: ${newest.text.slice(0, 120)}\n`;
               })() +
               envLine +
-              `Last answer: ${lastAnswer ?? ""}\n`;
+              `Last answer: ${controllerLastAnswerText(lastAnswer)}\n`;
             const currentHash = fnv1aHash(stableSubset);
             const prevHash = sess.state.monitor.cost.lastSummaryHash;
             const nudgeDue = idleMs >= nudgeIdleMs && (now - sess.lastNudgeAt >= nudgeFloorMs);
@@ -9818,7 +9819,8 @@ export const register: Register = async (on, options) => {
       : undefined;
     if (memoryCheck !== undefined) memoryCheckTurns.delete(e.turnId);
     // A [MEMORY CHECK] turn's answer names records rather than work on the
-    // active entry, so plan health and memory curation below leave it unread.
+    // active entry, so the last-answer writer, plan health and memory
+    // curation below leave it unread.
     const isMemoryCheckTurn = wasMemoryCheck || memoryCheck !== undefined;
     if (!completesSubagentLoop) currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId && !(typeof e.agentId === "string" && e.agentId.length > 0)) {
@@ -9848,8 +9850,9 @@ export const register: Register = async (on, options) => {
     // refused or answerless completion, and nothing more: a turn a channel
     // message or a delivered record opened, which the scorer leaves
     // unscored, still ends on the worker's own answer and moves this.
-    // completesGateTurn excludes a subagent's completion.
-    if (completesGateTurn && !skipped && typeof e.answer === "string") {
+    // completesGateTurn excludes a subagent's completion, and a [MEMORY CHECK]
+    // turn's answer names records rather than work on the next goal.
+    if (completesGateTurn && !skipped && !isMemoryCheckTurn && typeof e.answer === "string") {
       sess.lastAnswer = { goalId: turnLeafIdAtDelete, text: e.answer };
     }
 
@@ -10483,7 +10486,9 @@ export const register: Register = async (on, options) => {
       if (turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
         const entryId = turnLeaf.id;
         const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
-        if (!skipped && !isMemoryCheckTurn && sess.isOwner && !entryOver) {
+        // A subagent's completion is its report, not the worker's closing
+        // text, so it asks nothing and enters no recent text.
+        if (!skipped && !isMemoryCheckTurn && !completesSubagentLoop && sess.isOwner && !entryOver) {
           let record = sess.jevPlanHealth.get(entryId);
           if (record === undefined) {
             record = { closingTexts: [] };

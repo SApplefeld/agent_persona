@@ -4048,6 +4048,7 @@ async function main() {
 
     // The plan health request: block-owner v2, asked alone.
     await casePlanHealth_oneCallAndOneAnswerPerPlanEntryTurn(clock);
+    await casePlanHealth_aSubagentsCompletionAsksNothing(clock);
     await casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock);
     await casePlanHealth_theRetiredOutcomeWritersWriteNothing(clock);
     await casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock);
@@ -4183,6 +4184,7 @@ async function main() {
     await caseMemq25_twoPendingChecksAnswerTheirOwnGoals(clock);
     await caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock);
     await caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock);
+    await caseMemq27b_theCheckTurnIsNotTheControllersLastAnswer(clock);
     await caseMemq28_anUnansweredCheckStampsNothing(clock);
     await caseMemq29_aRefusedCheckSubmitClears(clock);
     await caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock);
@@ -24358,6 +24360,27 @@ async function casePlanHealth_oneCallAndOneAnswerPerPlanEntryTurn(clock) {
 // The next_speaker outcome records what opened the next turn: a channel
 // message, a delivered record, or neither, each once against the call that
 // awaited it.
+// A background subagent's completion inside a plan-entry turn is the
+// subagent's report, not the worker's closing text: it makes no plan-health
+// call and enters no recent text. The persona's own completion of the same
+// turn is the control that the request fires at all.
+async function casePlanHealth_aSubagentsCompletionAsksNothing(clock) {
+  console.log("\n=== Plan health: a subagent's completion asks nothing and leaves the recent texts alone ===");
+  const h = await planHealthHarness("s5_subagent", clock);
+  h.setHttpResponse(jevPicking());
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ph-sub" }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-ph-sub" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ph-sub", agentId: "sub-1", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  check("plan health (subagent): the subagent's completion made no plan-health call and no request",
+    planHealthLines(h).calls.length === 0 && planHealthRequests(h).length === 0, { calls: planHealthLines(h).calls.length, requests: planHealthRequests(h).length });
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ph-sub", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  const { calls } = planHealthLines(h);
+  check("plan health (subagent) control: the persona's own completion made one call whose state holds its own text alone",
+    calls.length === 1 && calls[0].state === JSON.stringify({ closingText: "Working on it.", recentClosingTexts: ["Working on it."] }), calls.map((c) => c.state));
+}
+
 async function casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock) {
   console.log("\n=== Plan health: next_speaker records channel, delivery or neither ===");
   const h = await planHealthHarness("s5_next_speaker", clock);
@@ -35312,6 +35335,32 @@ async function caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock) {
   await plan2ScoredTurn(h, "t-memq27-ctl", "on-goal");
   check("memq27 control: an ordinary turn after it is scored against task-2",
     getDecisions(h).some((d) => d.action === "score" && d.detail.includes("task-2")), getDecisions(h).slice(-6));
+}
+
+async function caseMemq27b_theCheckTurnIsNotTheControllersLastAnswer(clock) {
+  console.log("\n=== Persona memory 27b: the [MEMORY CHECK] turn's answer is not the controller's Last answer on the goal active after the close ===");
+  const lastAnswerLine = (h) => {
+    const calls = h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+    return String(calls[calls.length - 1]?.[0] ?? "").split("\n").find((l) => l.startsWith("Last answer: "));
+  };
+  const h = await memq20Harness(clock, "memq27b", memq20TaskTree(), memq20Shown("task-1", "task-2"));
+  h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  await MEMQ20_SITES[3].close(h, clock);
+  await memq20Answer(h, "t-memq27b-check", MEMQ13_NAMES[0]);
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check("memq27b: the next tick on task-2 reads Last answer: none, not the check turn's record names",
+    getState(h).activeGoalId === "task-2" && lastAnswerLine(h) === `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`,
+    { active: getState(h).activeGoalId, line: lastAnswerLine(h) });
+  // The control: an ordinary answered turn on task-2 moves the line, so the
+  // none above is the skip and not a writer that never runs.
+  await plan2ScoredTurn(h, "t-memq27b-ctl", "on-goal");
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check("memq27b control: after an ordinary turn on task-2 the Last answer line is no longer none",
+    typeof lastAnswerLine(h) === "string" && lastAnswerLine(h) !== `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`, lastAnswerLine(h));
 }
 
 async function caseMemq28_anUnansweredCheckStampsNothing(clock) {

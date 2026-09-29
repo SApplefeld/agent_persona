@@ -103,9 +103,10 @@ export const ROUNDS_CONVERGING = "rounds-converging";
 export const WORK_CONTINUES = "work-continues";
 export const RETIRED_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES]);
 
-// The block owner's options, which are this catalog's own. The caller names
-// them at request time, the way it names a label array for the Haiku-paired
-// sets, so the ids offered and the ids journaled are one constant.
+// The block owner's options, which are this catalog's own. The plugin and the
+// replay both offer the shipped entry's option ids; this constant is the
+// closed vocabulary a load and the rubric check read, and Test 2e2 pins it
+// equal to those ids in order.
 export const BLOCK_OWNER_OPTIONS: readonly string[] = Object.freeze(["operator", "coordinator", "another-plan", "self-resolving", "none"]);
 
 // The fields of the plan health state. The state is an object and the
@@ -146,8 +147,9 @@ export const TURN_DISPOSITION = "turn-disposition";
 // promotion bar is the shadow journal's count of what that gate would skip.
 export const PROMOTABLE_SET_IDS: readonly string[] = Object.freeze([TURN_OPEN, TURN_DISPOSITION, MEMORY_KIND]);
 
-// Each set's option ids in force, the caller's one constant, offered to Jev
-// and journaled as a closed vocabulary the way BLOCK_OWNER_OPTIONS is.
+// Each set's option ids in force, the caller's one constant, journaled as a
+// closed vocabulary the way BLOCK_OWNER_OPTIONS is, and here also the ids
+// offered to Jev.
 export const TURN_OPEN_OPTIONS: readonly string[] = Object.freeze(["new-goal", "step", "continuation"]);
 export const TURN_DISPOSITION_OPTIONS: readonly string[] = Object.freeze(["delivered", "mid_work", "blocked_or_waiting"]);
 
@@ -442,8 +444,9 @@ export function turnScoreStateText(prompt: string, answer: string, objective: st
 export const CONTROLLER_LAST_ANSWER_MAX = 1500;
 export const CONTROLLER_LAST_ANSWER_LABEL = "Last answer";
 export const CONTROLLER_PENDING_PLANS_LABEL = "Pending plans";
-// What the last answer line reads where no answer is held: before the
-// persona's first turn end in this process.
+// What the last answer line reads where no answer is held for this node:
+// before the persona's first turn end in this process, or where the held
+// answer was given on another entry.
 export const CONTROLLER_NO_ANSWER = "none";
 // The line between the facts and the option list.
 export const CONTROLLER_OPTIONS_LEAD = "Choose the best decision:";
@@ -455,6 +458,13 @@ export type ControllerStateFact = readonly [label: string, value: string];
 // carried titles only. So a replay of such a record is the plugin's bytes in
 // every part but this line, which the replay states rather than hides.
 export type ControllerPendingPlan = { id: string | null; title: string };
+
+// The `Last answer:` value as the state carries it: collapsed and cut, or
+// none where no answer is held. The controller's skip hash reads this too, so
+// an answer that changes only past the cut sends the same bytes and skips.
+export function controllerLastAnswerText(lastAnswer: string | null): string {
+  return lastAnswer === null ? CONTROLLER_NO_ANSWER : stateValue(lastAnswer).slice(0, CONTROLLER_LAST_ANSWER_MAX);
+}
 
 // `lastAnswer` is the worker's most recent answer, raw, or null where none
 // is held; its cut is applied to the collapsed value, so the bound counts
@@ -473,7 +483,7 @@ export function controllerStateText(
   options: Readonly<Record<string, string | null>>,
 ): string {
   const lines = facts.map(([label, value]) => `${stateValue(label)}: ${stateValue(value)}`);
-  lines.push(`${CONTROLLER_LAST_ANSWER_LABEL}: ${lastAnswer === null ? CONTROLLER_NO_ANSWER : stateValue(lastAnswer).slice(0, CONTROLLER_LAST_ANSWER_MAX)}`);
+  lines.push(`${CONTROLLER_LAST_ANSWER_LABEL}: ${controllerLastAnswerText(lastAnswer)}`);
   if (pendingPlans.length > 0) {
     const named = pendingPlans.map((p) => (p.id === null ? stateValue(p.title) : `${stateValue(p.id)}: ${stateValue(p.title)}`));
     lines.push(`${CONTROLLER_PENDING_PLANS_LABEL}: ${named.join("; ")}`);

@@ -74,7 +74,7 @@ const {
   CONTROLLER_DECISION, CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH,
   controllerStateText, CONTROLLER_LAST_ANSWER_MAX, CONTROLLER_LAST_ANSWER_LABEL, CONTROLLER_PENDING_PLANS_LABEL, CONTROLLER_OPTIONS_LEAD, CONTROLLER_NO_ANSWER, SHIPPED_QUESTIONS, kaizenLine,
   TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText, TURN_SCORE_PROMPT_MAX, TURN_SCORE_ANSWER_MAX,
-  BLOCK_OWNER, BLOCK_OWNER_OPTIONS,
+  BLOCK_OWNER,
   PLAN_HEALTH_STATE_CLOSING, PLAN_HEALTH_STATE_RECENT,
   resolverOf,
 } = await import("../../hooks/question-catalog.ts");
@@ -510,7 +510,7 @@ export async function replayRecord(host, question, version, record) {
   if (question === "block-owner") {
     const built = blockOwnerV2State(record);
     if (!built.ok) return { id: record.id, stampId: record.stampId, version, ok: false, reason: built.reason, detail: built.detail };
-    const asks = [{ questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS }];
+    const asks = [{ questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: Object.keys(SHIPPED_QUESTIONS[BLOCK_OWNER].options) }];
     const result = await askAll(host, asks, built.state, MODE, resolverOf(host));
     if (!result.ok) return { id: record.id, stampId: record.stampId, version, ok: false, reason: result.reason, detail: result.detail };
     const answered = result.answers.find((a) => a.questionSetId === BLOCK_OWNER);

@@ -205,9 +205,9 @@ const VALID_CONTROLLER_OVERRIDE = {
     [CONTROLLER_DECISION, CONTROLLER_LABELS_WITH_SWITCH],
     [TURN_SCORE, SCORER_LABELS],
     [MEMORY_KIND, MEMORY_KIND_LABELS],
-    // The block owner has no Haiku label array. The plugin offers its shipped
-    // options' ids and .kit/jev-gold/replay.mjs offers BLOCK_OWNER_OPTIONS, so
-    // Test 2e2 below pins the two equal in order.
+    // The block owner has no Haiku label array. The plugin and
+    // .kit/jev-gold/replay.mjs both offer its shipped options' ids, and Test
+    // 2e2 below pins BLOCK_OWNER_OPTIONS equal to them in order.
     [BLOCK_OWNER, BLOCK_OWNER_OPTIONS],
     // The two turn record sets are the block owner's case again: no Haiku
     // label array, and the option constant is the one source of the ids the
@@ -222,9 +222,9 @@ const VALID_CONTROLLER_OVERRIDE = {
     check(`Test 2f: every ${id} option carries a description`,
       Object.values(SHIPPED_QUESTIONS[id].options).every((d) => typeof d === "string" && d.length > 0), Object.keys(SHIPPED_QUESTIONS[id].options));
   }
-  // The request's option-id order is part of what the replay sends, so the
-  // block owner's shipped options and BLOCK_OWNER_OPTIONS agree in order, not
-  // only as sets.
+  // The request's option-id order is part of what the plugin and the replay
+  // send, and BLOCK_OWNER_OPTIONS is the vocabulary a load reads, so the two
+  // agree in order, not only as sets.
   check("Test 2e2: block-owner's shipped option ids equal BLOCK_OWNER_OPTIONS in order",
     JSON.stringify(Object.keys(SHIPPED_QUESTIONS[BLOCK_OWNER].options)) === JSON.stringify([...BLOCK_OWNER_OPTIONS]),
     Object.keys(SHIPPED_QUESTIONS[BLOCK_OWNER].options));
