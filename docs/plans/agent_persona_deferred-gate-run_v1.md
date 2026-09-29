@@ -1,6 +1,6 @@
 # Deferred gate run
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-18
 
@@ -13,6 +13,8 @@ When this is done, every test run the gate policy below deferred has run once ag
 The operator asked for this on 2026-09-18 on the coordinator's own Discord thread. Their words: "The 40+ minute gates whenever we need to run a test are blocking other development." and "when all the plans are done, we can do a test run and evaluate any that fail as a wholly separate circle back to fix things." Offered the choice between suspending every check and suspending only the runs that hold the box, they answered "I'm good with Option 2." That is authorization to author and to apply the policy to the queued plans. Execution of this plan is armed only on the operator's own word, typed into the executing session's thread or relayed through the coordinator. The executor is the dev persona.
 
 The operator armed execution on 2026-09-19, naming this plan in a `/kit-goal` invocation relayed to the executing session on the operator's own channel, which is the channel this section reserves the arming to. That is the execution arming, given separately from the authorization to author above, and it approves this plan as written. It is recorded here because the arming state itself does not keep it: a run that re-arms a queue for itself after a session ends records its own invocation and no longer reads the operator's, so a later session reading only that state would find this plan unarmed. The project memory record `self-armed-arming-does-not-satisfy-an-operator-only-execution-grant` holds the general shape.
+
+On 2026-09-29 the operator cleared this run again on the executing session's own relay thread: "You're cleared to do all of them in whatever order you recommend, and the box is quiet except for you, so you can run the deferred test whenever you prefer". That is the window Operator Verification item 1 reserves to the operator. The live suites still need every plugin-loaded session closed, this one and the `STEWARD` seat included, so stopping those two went to the operator as its own ask.
 
 ## The gate policy
 
@@ -230,3 +232,16 @@ Not a Chapter. The deferred suites did not run, so the `Status:` header stays at
 **Asks in flight.** None from this session. The expert ask executing-work requires before a declaration was not sent, because this session holds the `WORKER:DEV-PERSONA` ground and `fleet_status` refuses it the roster read, so no live expert seat could be identified. The blocker is also a physical window rather than a question, so an answer could not have prevented the declaration. A notice went to the `STEWARD` seat naming the flipped gate.
 
 **Next action.** The operator names a window with the fleet down, including this session, and the run then polls for a foreign runner, runs `.kit/supervisor-natural-exit-test.sh` and `.kit/live-all.sh` with each exit code captured to its own marker, takes the measurements `docs/archive/agent_persona_supervisor-peer_v1.md` Sections 1 and 3 deferred here, and writes the per-suite table Section 1's acceptance requires.
+### Interim board 7 - 2026-09-29
+
+Not a Chapter. Section 1 is running. The `Status:` header reads `In Progress` from this board on, changed from `Ready` when the operator cleared the run on 2026-09-29 (recorded in the Dispatch Authorization).
+
+**The trunk gate is still met.** `origin/main` stands at `4557c7e` after a fetch this session, and every plan the policy covers is archived there, as board 6 read. This branch, `plan/deferred-gate-run`, is cut from that commit and carries board 6 cherry-picked from the retired `plan/deferred-gate-board`.
+
+**The natural-exit half is running, and the live half is not.** `.kit/supervisor-natural-exit-test.sh` isolates itself with its own HOME and a stub `claude`, so it runs beside a live fleet. It started 22:03:30Z with its exit code going to `.kit/scratch/deferred-gate/ne.exit`. `.kit/live-all.sh` refuses beside any live persona claim, and a read of every store this session found all six roster personas live with heartbeats under two seconds old: STEWARD, ARCHITECT, DEV-PERSONA, DEV-PLUGIN, DEV-DISCORD and ASSISTANT. The operator approved stopping STEWARD and this session on a reading that named only those two. The corrected reading went back to the operator as an ask to stop all six, and it is open.
+
+**The stop is prepared.** A one-shot waiter, `.kit/scratch/deferred-gate/live-waiter.ps1` in this worktree, runs as its own S4U scheduled task outside every persona tree. It writes `shutdown.request` into each run directory, waits until every `AgentPersona-*` task leaves Running and the refuse check passes, runs `.kit/live-all.sh` from `D:agent_persona` with the exit code to `live/live.exit`, then removes any leftover request, releases each persona with `Start-Persona.ps1 -Release` and starts its task. Two controls ran: a test S4U task registered, ran as `scott-claudelocaladmin` and was removed, and the waiter's refuse snippet exits 1 naming STEWARD against the live fleet.
+
+**Three reds so far, one cause, traced and fixed on its own branch.** The suite's static pins `a root_complete detail is found`, `every root_complete decision yielded a detail (0/1)` and `no root_complete detail carries the reader's substring` fail because `64e8f2a` (the goal-levels plan) moved every `root_complete` write into a `completeRoot(dp, rootId, detail)` helper that passes its detail through. The pin read backtick literals inside the decision and found none. The fix is on `fix/root-complete-pin`: the pin reads the literal details on each `completeRoot(` call line and asserts one write, by the helper passing `detail,` through. It passes against the real hooks and fails its own check against three altered copies. A whole-suite green re-run is owed once this run ends.
+
+**Next action.** Read `ne.exit` and write the Section 1 table. Then, on the operator's answer, run the waiter now or at the time they name.
