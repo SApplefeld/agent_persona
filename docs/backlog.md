@@ -1021,3 +1021,17 @@ Remedy: run the `claude` steps under the async `spawn` so the child's pid is kno
 `claude plugin test <dir>` runs every `*.test.ts` and `*.test.tsx` under the directory through the real engine, and exits 1 when a test fails. agentic-plugin has none. So step 6 of the upgrade check, `bin/upgrade-check.mjs`, records `gap` on every build, and a behavior change that keeps its types passes steps 2 to 5 unseen until the canary restart. The offline suites under `.kit/` drive the hooks through a harness of their own rather than through the engine, so they cannot stand in.
 
 Remedy: its own effort, with its own plan. Pick the hooks whose behavior an engine change would break first, likely `session.start`'s claim, `prompt.submit`'s priming blocks and `turn.complete`'s reply backfill, and write one `*.test.ts` each under `claude plugin test`. Step 6 then reads `pass` or `fail` with no change to the script, since it already runs the command wherever such a file exists. Filed by section 2 of `docs/archive/agent_persona_upgrade-check-and-restart-recap_spec_v1.md`.
+
+## The natural-exit suite's case (nf) leaves its first supervisor and holder running (found 2026-09-29)
+
+Each whole run of `.kit/supervisor-natural-exit-test.sh` leaves two processes behind: the `bin/supervise.sh` that case `(nf)` starts through `sup_bg`, and its `bin/supervise-holder.sh`. Both keep running after the suite deletes their temp root. They also pin the worktree they ran from, so `git worktree remove` fails with "Permission denied". The deferred gate run's two whole runs, at 22:03Z and 23:12Z on 2026-09-29, each left one such pair, and both were killed by hand.
+
+The cause is inferred, not confirmed. `sup_bg` records `$!` from `env -i ... bash supervise.sh &`, which is the `env` process. Under MSYS that wrapper likely does not exec into bash, so the case's `kill -TERM "$NF_SUP1"` does not reach the supervisor. The holder outlives a supervisor stop by design. Confirming takes one `(nf)` run with the process list read before and after its TERM.
+
+Remedy: after its checks, the case stops its own first supervisor and holder by the pids its run directory records, ticks-matched as `kill_leaked_survivors` does. Then it asserts both are gone. The other `sup_bg` callers should be checked for the same shape.
+
+## A failed holder kill still logs "input closed" (found 2026-09-29)
+
+`kill_holder` in `bin/supervise.sh` discards the holder kill's result with `|| true`. `stop_child` then logs `STOP[<label>]: input closed (eof_closed)` whatever happened. So when the holder kill fails, the log claims a closed input, and the next line a reader sees is the EOF grace expiring 60 seconds later. The deferred gate run's saved log for case `(pkdu)` on trunk `4557c7e` shows exactly that pair. The adversarial review of `fix/pkdu-holder-injection` found it.
+
+Remedy: `kill_holder` returns the kill's result, and `stop_child` logs "input close unverified" when it fails. The stop's own verdict is unchanged, since the EOF, TERM and KILL rungs and the snapshot check already decide it.

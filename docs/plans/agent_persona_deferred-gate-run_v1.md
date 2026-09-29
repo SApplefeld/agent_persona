@@ -269,3 +269,28 @@ The supervisor-peer measurements Section 1 names need the fleet stopped too, so 
 **Other fixes in flight from this session's mandate.** Pull request 125 carries the subagent-report fix: the tick suite is red on the old code (exit 5, the five new checks) and green on the fix (exit 0, 6205 OK). Pull request 126 carries the override version floor. Both have auto-merge armed.
 
 **Next action.** Read `ne2.exit`. On green, push both suite fixes and open their pull requests. Then run the live half once the operator answers.
+
+### Interim board 9 - 2026-09-29
+
+Not a Chapter. Both natural-exit reds are fixed, with a green whole-suite re-run and a pull request each. The live half still waits on the operator's answer to the six-persona stop.
+
+**Green re-run.** The table row sits beside board 8's trunk row.
+
+| Suite | Command | Wall clock | Exit | Pass / fail | Failing cases |
+|---|---|---|---|---|---|
+| Natural exit, trunk plus both fixes | `bash .kit/supervisor-natural-exit-test.sh` over `f046f8b` with `260d84a` cherry-picked | 23:12:50Z to 23:44:22Z, 32 min | 0, from `ne2.exit` | 335 OK / 0 FAIL | none |
+
+The nine extra passes over the trunk's 326 are the five fixed checks and four new ones: two `root_complete` run pins, the holder pin and the pkdu grace check. Both injection pins read OK in this run.
+
+**Red dispositions.**
+
+| Red | Disposition | Cause and plan | Fix |
+|---|---|---|---|
+| Three `root_complete` detail pins | fixed | `64e8f2a`, the goal-levels plan | pull request 127, `fix/root-complete-pin` |
+| `(pkdu)`, two checks | fixed, test defect | `ec2e415`, the supervisor-peer plan, by bisect | pull request 128, `fix/pkdu-holder-injection`, with the review's two Minors applied in `8391669`; `--cases r pkdu` exits 0, 18 OK |
+
+**Filed to `docs/backlog.md`.** First, case `(nf)` leaves its first supervisor and holder running after every whole run. Both runs here leaked one pair each, and four processes were killed by hand. Second, a failed holder kill still logs "input closed", the review's third Minor.
+
+**Pull requests.** 125 merged as `ad4d089`. 126 has main merged in, with its archive conflict resolved and its gates re-run green. 127 and 128 are open. All three have auto-merge armed and wait on the operator's review.
+
+**Next action.** On the operator's yes, commit and push everything, then register the waiter and run the live half. Without it, the live half holds.
