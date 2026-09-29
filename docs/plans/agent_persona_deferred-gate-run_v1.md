@@ -240,8 +240,32 @@ Not a Chapter. Section 1 is running. The `Status:` header reads `In Progress` fr
 
 **The natural-exit half is running, and the live half is not.** `.kit/supervisor-natural-exit-test.sh` isolates itself with its own HOME and a stub `claude`, so it runs beside a live fleet. It started 22:03:30Z with its exit code going to `.kit/scratch/deferred-gate/ne.exit`. `.kit/live-all.sh` refuses beside any live persona claim, and a read of every store this session found all six roster personas live with heartbeats under two seconds old: STEWARD, ARCHITECT, DEV-PERSONA, DEV-PLUGIN, DEV-DISCORD and ASSISTANT. The operator approved stopping STEWARD and this session on a reading that named only those two. The corrected reading went back to the operator as an ask to stop all six, and it is open.
 
-**The stop is prepared.** A one-shot waiter, `.kit/scratch/deferred-gate/live-waiter.ps1` in this worktree, runs as its own S4U scheduled task outside every persona tree. It writes `shutdown.request` into each run directory, waits until every `AgentPersona-*` task leaves Running and the refuse check passes, runs `.kit/live-all.sh` from `D:agent_persona` with the exit code to `live/live.exit`, then removes any leftover request, releases each persona with `Start-Persona.ps1 -Release` and starts its task. Two controls ran: a test S4U task registered, ran as `scott-claudelocaladmin` and was removed, and the waiter's refuse snippet exits 1 naming STEWARD against the live fleet.
+**The stop is prepared.** A one-shot waiter, `.kit/scratch/deferred-gate/live-waiter.ps1` in this worktree, runs as its own S4U scheduled task outside every persona tree. It writes `shutdown.request` into each run directory, waits until every `AgentPersona-*` task leaves Running and the refuse check passes, runs `.kit/live-all.sh` from `D:\agent_persona` with the exit code to `live/live.exit`, then removes any leftover request, releases each persona with `Start-Persona.ps1 -Release` and starts its task. Two controls ran: a test S4U task registered, ran as `scott-claude\localadmin` and was removed, and the waiter's refuse snippet exits 1 naming STEWARD against the live fleet.
 
 **Three reds so far, one cause, traced and fixed on its own branch.** The suite's static pins `a root_complete detail is found`, `every root_complete decision yielded a detail (0/1)` and `no root_complete detail carries the reader's substring` fail because `64e8f2a` (the goal-levels plan) moved every `root_complete` write into a `completeRoot(dp, rootId, detail)` helper that passes its detail through. The pin read backtick literals inside the decision and found none. The fix is on `fix/root-complete-pin`: the pin reads the literal details on each `completeRoot(` call line and asserts one write, by the helper passing `detail,` through. It passes against the real hooks and fails its own check against three altered copies. A whole-suite green re-run is owed once this run ends.
 
 **Next action.** Read `ne.exit` and write the Section 1 table. Then, on the operator's answer, run the waiter now or at the time they name.
+
+### Interim board 8 - 2026-09-29
+
+Not a Chapter. The natural-exit half of Section 1 has run once on the trunk and its reds are traced and fixed on their own branches. The live half has not run, because it needs every persona stopped and the operator has not yet answered that ask.
+
+**Section 1 ledger so far.** There is no baseline to diff against, per board 6: no pre-policy whole gate exists for these suites.
+
+| Suite | Command | Wall clock | Exit | Pass / fail | Failing cases |
+|---|---|---|---|---|---|
+| Loader rule | `node .kit/check-loader-rule.mjs` | seconds | 0 | PASS | none |
+| Natural exit, trunk `4557c7e` | `bash .kit/supervisor-natural-exit-test.sh` | 22:03:30Z to 22:35:43Z, 32 min | 1, from `ne.exit` | 326 OK / 5 FAIL | the three `root_complete` detail pins; `(pkdu) the exit line names what the stop could not clear`; `(pkdu) the supervisor exits 5 rather than reporting the park as honored (rc=6)` |
+| Live suites | `bash .kit/live-all.sh` | not run | none | none | not run: the suite refuses beside a live persona claim, and all six roster personas are live |
+
+The supervisor-peer measurements Section 1 names need the fleet stopped too, so they wait with the live half.
+
+**Red 1: the three `root_complete` detail pins.** The cause is `64e8f2a`, from the goal-levels plan, which moved every `root_complete` write into a `completeRoot` helper. The fix is on `fix/root-complete-pin`, commit `f046f8b`, and it also closes a reader defect the review found: a `goal_done` note containing the word "backfilled" read as a backfilled root. Its targeted lanes are green: supervisor unit 99/99 and poll unit 80/80.
+
+**Red 2: case `(pkdu)`, two checks.** It is a test defect, and the supervisor's own reading was true. The case failed 3 of 3 isolated runs on the trunk. `git bisect` over the 39 supervisor commits since the case was added named `ec2e415`, from the supervisor-peer plan, as the first bad commit. That commit routes the holder kill through `kill_process_snapshot`, the function the case's injection forces to fail. So the stop never closed the child's input, waited out the 60-second grace, and sent TERM. The 90-second survivor process ended on its own before the check, so the tree read as clear and the supervisor exited 6. The fix is on `fix/pkdu-holder-injection`, commit `260d84a`: the injection spares the holder's exact call, a pin holds that call's text, and the case checks it never waited out the grace. Cases r, u, pku and pkdu on the fix exit 0, 34 OK.
+
+**Green re-run.** One whole natural-exit run over a scratch tree carrying both fixes is in progress, with its exit code going to `.kit/scratch/deferred-gate/ne2.exit`.
+
+**Other fixes in flight from this session's mandate.** Pull request 125 carries the subagent-report fix: the tick suite is red on the old code (exit 5, the five new checks) and green on the fix (exit 0, 6205 OK). Pull request 126 carries the override version floor. Both have auto-merge armed.
+
+**Next action.** Read `ne2.exit`. On green, push both suite fixes and open their pull requests. Then run the live half once the operator answers.
