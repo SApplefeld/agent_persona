@@ -361,7 +361,7 @@ Declared in `plugin.json` with defaults. Read as `options.<name>` in `register(o
 | `hooks/plan-record.ts` | The plan document parser, the directory resolver that walks up from the session's live directory to the nearest copy inside the same checkout, and the reader: `Status: Complete`, the Chapter count, and the archive places, for a queue entry that carries a `planPath` |
 | `hooks/host.ts` | The `PluginHost` interface every module outside `hooks/index.ts` takes a slice of, since the engine refuses the module when the injected `$` crosses an import |
 | `hooks/decision-seam.ts` | The one path a closed question takes to Jev, and the only place the vendor key is held |
-| `hooks/question-catalog.ts` | The ten shipped questions, the label arrays the classify sites pass, the promotable set, and the override resolver |
+| `hooks/question-catalog.ts` | The seven shipped questions, the label arrays the classify sites pass, the promotable set, and the override resolver |
 | `hooks/decision-journal.ts` | The append-only record of every shadow call, its answer and its outcome |
 | `.agentic-personas.json` | Persona store (project root) |
 | `.agentic-heartbeat.json` | Heartbeat sidecar (project root) |
@@ -872,7 +872,7 @@ Four questions go through it one at a time, one per site that already asks Haiku
 
 The two turn record questions ship in `hooks/question-catalog.ts` with their option arrays, `TURN_OPEN_OPTIONS` and `TURN_DISPOSITION_OPTIONS`, and the two constants beside them: `TURN_DELIVERED_THRESHOLD` (0.5) and `RECORD_OUTCOME_TURNS` (3), the number of the persona's own turns a `record_delivered_within` outcome waits. Their wording is fixed data rather than prose: the agreement figure that promotes one to the live list was measured on that exact wording, so a rewording takes a new version through the override layer below rather than an edit of the shipped default.
 
-The plan-health site runs at the end of every completed turn on a plan entry (see "Plan entries: judged from the record" above), on the session that owns the store only, and asks nothing on a turn that left its entry complete or abandoned. Nothing there is asked of Haiku, so its answers are measured against outcomes the plugin observes afterwards rather than against a Haiku answer. At each of the other four sites, each call sends Jev the same state text and the same option ids Haiku received for that same question. The state is the prompt text the site built. The option ids are the labels the answer has to be one of, single-sourced in `hooks/question-catalog.ts` so the set Haiku is offered and the set Jev is offered cannot drift.
+The plan-health site runs at the end of every completed turn on a plan entry (see "Plan entries: judged from the record" above), on the session that owns the store only. It asks nothing on a turn that left its entry complete or abandoned, on a skipped turn, on a `[MEMORY CHECK]` turn, or at a background subagent's completion, whose answer is the subagent's report rather than the worker's. Nothing there is asked of Haiku, so its answers are measured against outcomes the plugin observes afterwards rather than against a Haiku answer. At each of the other four sites, each call sends Jev the same state text and the same option ids Haiku received for that same question. The state is the prompt text the site built. The option ids are the labels the answer has to be one of, single-sourced in `hooks/question-catalog.ts` so the set Haiku is offered and the set Jev is offered cannot drift.
 
 ### Bars
 
@@ -895,7 +895,7 @@ Three shadow questions carry a bar: a measured floor against a gold sample, stat
 
 Jev is a System One classifier. It takes one block of state and a set of questions, and answers each with one option id, a probability for every offered option, and a confidence. It returns no prose and holds no conversation.
 
-The seam exists to measure. Every shadow call writes Jev's option id beside Haiku's for the same input, so the agreement rate between the two can be counted from real traffic before anything is asked to depend on it. Nothing in this repository acts on a Jev answer except `liveAsk` on a question named live, and nothing in this repository reads the journal back.
+The seam exists to measure. Every shadow call writes Jev's option id beside Haiku's for the same input, so the agreement rate between the two can be counted from real traffic before anything is asked to depend on it. Nothing in this repository acts on a Jev answer except `liveAsk` on a question named live, and nothing in the plugin reads the journal back. The offline tools under `.kit/jev-gold/` read it to build gold samples and scores.
 
 A question asks for one answer shape, which the vendor calls a primitive, and this plugin sends three. A `choice` answers with one option id out of a named set, a probability per option and a confidence. A `noul` answers with one number, the probability of yes, and nothing beside it: no distribution and no confidence, since a two-outcome distribution is described whole by that one value. A `score` answers with a position on an ordered list of two to ten levels, numbered from 0, with a probability per level and a confidence. The seam validates each answer against its question's shape and refuses any other, and a request carrying several questions is refused whole when any one answer fails, so a call records every answer it asked for or none.
 
@@ -906,7 +906,7 @@ Three modules carry the feature, and none of them imports `$`. The engine's load
 | Module | What it owns |
 |---|---|
 | `hooks/decision-seam.ts` | `ask` and `askAll`, the one path a question takes to Jev: the key, the request, the two modes `shadow` and `live` with a timeout each, the response validation and the closed failure set |
-| `hooks/question-catalog.ts` | the ten shipped questions, the label arrays the Haiku sites pass, the promotable set with the two turn record option arrays, and `resolverOf`, which reads the override layer |
+| `hooks/question-catalog.ts` | the seven shipped questions, the label arrays the Haiku sites pass, the promotable set with the two turn record option arrays, and `resolverOf`, which reads the override layer |
 | `hooks/decision-journal.ts` | `writeCall`, `writeAnswers` and `writeOutcome`, the three line kinds, the stamp id and the split |
 
 `ask` has this shape and never rejects:
@@ -971,7 +971,7 @@ A question's instructions and its option descriptions travel in an HTTP request 
 
 ### Question wording
 
-A question's wording lives in two layers. The shipped defaults are constants in `hooks/question-catalog.ts`, one question set per id, each carrying its instructions, a description per option, and the version label `v1`.
+A question's wording lives in two layers. The shipped defaults are constants in `hooks/question-catalog.ts`, one question set per id, each carrying its instructions, a description per option, and a version label: `v2` for `controller-decision`, `turn-score` and `block-owner`, and `v1` for the other four.
 
 An override layer sits outside the repository, under the home directory the plugin resolves (see "Which home" below):
 
@@ -1001,7 +1001,7 @@ A version file holds the question itself. For a `choice` all three fields are re
 }
 ```
 
-Nothing else the file carries is read. The resolver copies out those fields and drops the rest. The round budget the shipped `ask-operator` description names is a task entry's: a plan entry has none, and the summary line the controller sends for one says so.
+Nothing else the file carries is read. The resolver copies out those fields and drops the rest. The round budget this example's `ask-operator` description names is a task entry's: a plan entry has none, and the summary line the controller sends for one says so.
 
 The resolver holds nothing between calls and reads at most two files per call, so editing `active.json` takes effect on the next question asked, with no restart. Writing a new `v<N>.json` and then repointing `active.json` at it is how a wording changes without touching the answers already recorded under the old label. One override reaches further than Jev. An admitted `controller-decision` override's option descriptions are also the option list in the summary Haiku classifies over, so it changes the live controller's decisions as well as the criteria Jev is sent. Every other override changes only the question Jev is sent. Where that question is named live, Jev's answer to it still acts. A version file is meant to be immutable once written, because the journal records only the version label beside each answer, so a label whose wording changed underneath it makes two different questions read as one. That rule is the operator's to keep. No code enforces it.
 
@@ -1037,7 +1037,7 @@ Three kinds of line appear, and no others. Every field of a line's kind is prese
 | `lineKind` | `call` |
 | `stampId` | this call's id, minted when the call starts. Four dot-separated parts: the sanitized persona, the sanitized session id, the milliseconds since the Unix epoch at which the call started, and a per-session counter. No part can carry a dot, so a reader splits an id into exactly four |
 | `at` | the ISO timestamp at which the line was written, which is after the call settled |
-| `persona`, `session`, `site` | the persona, the session id, and one of the five site labels in the table above |
+| `persona`, `session`, `site` | the persona, the session id, and one of the seven site labels in the table above |
 | `questionSet` | the question set id asked, `block-owner` on the `plan-health` site |
 | `mode` | `shadow` or `live`; `off` writes no line at all |
 | `split` | `holdout` or `dev`, a function of the stamp id alone so an id's split never changes. Present on this line kind only |
@@ -1073,7 +1073,7 @@ The values `result` can take besides `ok` are these eleven, and no others:
 A sample `call` line, with invented state:
 
 ```json
-{"lineKind":"call","stampId":"default.abc123.1789905600000.4","at":"2026-09-20T12:00:00.412Z","persona":"default","session":"abc123","site":"controller","questionSet":"controller-decision","mode":"shadow","split":"dev","stateHash":906887610,"state":"Objective: turn the survey notes into three short essays\nNode: plan-2 (plan), status active, round 3/10\nLast 5 scores: on-goal, on-goal, drift, on-goal, on-goal\nOn-goal count: 4 of 5\nIdle time: 4min\nNudged answers with no status line: 1\nDecisions tail: monitor:nudge_sent, goal:score_recorded\nMemory: 2 self-review lessons, 3 written this session\nLESSON: Read the whole brief before proposing a structure.\nEnvironment: git: essays dirty 2 ahead 0 behind 0\n","stateRef":null,"inputTokens":312,"outputTokens":9,"latencyMs":412,"result":"ok","detail":null}
+{"lineKind":"call","stampId":"default.abc123.1789905600000.4","at":"2026-09-20T12:00:00.412Z","persona":"default","session":"abc123","site":"controller","questionSet":"controller-decision","mode":"shadow","split":"dev","stateHash":1771462282,"state":"Objective: turn the survey notes into three short essays\nNode: plan-2 (plan), status active, round 3/10\nLast 5 scores: on-goal, on-goal, drift, on-goal, on-goal\nOn-goal count: 4 of 5\nIdle time: 4min\nNudged answers with no status line: 1\nDecisions tail: monitor:nudge_sent, goal:score_recorded\nMemory: 2 self-review lessons, 3 written this session\nLESSON: Read the whole brief before proposing a structure.\nEnvironment: git: essays dirty 2 ahead 0 behind 0\nLast answer: Outlined the second essay and drafted its opening section.\n\nChoose the best decision:\nnudge: Send the plain nudge, which names the idle time and tells the worker to re-read the objective and take the next concrete step. The worker is on the objective and either has a next step or is honestly waiting on work of its own for it: it reported a step done and the plan holds the next one, it ended on an intermediate status, or it waits on an implementer, a reviewer, a test run or a workflow it dispatched for this objective, whether or not the last answer shows that wait ending. A plan entry whose work reads finished still takes this, since on a plan entry only a nudge acts. A wait on something that is not coming, or on a person, is ask-operator, not this.\nask-operator: Send the idle-gap nudge, which tells the worker the controller read no real fork, to re-read the plan document, and to state any genuine fork as a line ASK: <question>? Recommend: <choice>; nobody is asked unless the worker writes that line. The worker is stalled: its last answer says it needs a decision or reports a blocker it cannot clear itself, it waits on a person or on another session rather than on work it dispatched, it repeats the same step or the same wait across nudges with no progress, or it is working on something other than the objective the state names. A first wait on the worker's own dispatched work is nudge, not this.\ncomplete: Mark the goal done now and activate the next one: a task entry whose objective the last answer shows finished in full. Never on a plan entry, whose done is read from the plan document and where this becomes a plain nudge. A step, a section, a review round or a commit landed with the objective still open is nudge, not this.","stateRef":null,"inputTokens":312,"outputTokens":9,"latencyMs":412,"result":"ok","detail":null}
 ```
 
 The sample's `round 3/10` is a task entry's line. The node is of kind `plan` and carries no `planPath`, so it is a task entry by the plan-entry rule, and a plan entry's line reads `plan entry, no round budget` in its place.
@@ -1086,7 +1086,7 @@ The sample's `round 3/10` is a task entry's line. The node is of kind `plan` and
 | `stampId` | this line's own id, minted at write time in the same four-part shape |
 | `callStampId` | the `stampId` of the call line this answers. The join key |
 | `questionId` | the question set id answered |
-| `questionVersion` | the version label the wording came from: `v1` for a shipped default, or the override's own label |
+| `questionVersion` | the version label the wording came from: the shipped default's own label, `v2` for `controller-decision`, `turn-score` and `block-owner` and `v1` for the other four, or the override's own label |
 | `overrideRefused` | the reason an override was refused for this call, or `null` where none was refused or none exists |
 | `primitive` | `choice`, `noul` or `score`, which says how the three columns below read |
 | `value` | for a `choice`, the option id Jev chose; for a `score`, its level's position, counted from 0; for a `noul`, the probability of yes, as a decimal string |
@@ -1100,7 +1100,7 @@ This line carries no `at` field. Its timestamp is the call line's, reached throu
 `overrideRefused` sits here and nowhere else. So a refused override on a call that timed out, returned an error status, or ran with no key is recorded nowhere, because such a call writes a call line and no answer line.
 
 ```json
-{"lineKind":"answer","stampId":"default.abc123.1789905600412.5","callStampId":"default.abc123.1789905600000.4","questionId":"controller-decision","questionVersion":"v2","overrideRefused":null,"primitive":"choice","value":"nudge","probabilities":{"nudge":0.71,"complete":0.04,"ask-operator":0.17,"switch":0.08},"confidence":0.71,"haikuValue":"nudge","agrees":true}
+{"lineKind":"answer","stampId":"default.abc123.1789905600412.5","callStampId":"default.abc123.1789905600000.4","questionId":"controller-decision","questionVersion":"v2","overrideRefused":null,"primitive":"choice","value":"nudge","probabilities":{"nudge":0.75,"ask-operator":0.2,"complete":0.05},"confidence":0.75,"haikuValue":"nudge","agrees":true}
 ```
 
 **An `outcome` line**, one per signal the plugin produced later about a call already made.
@@ -1116,7 +1116,7 @@ This line carries no `at` field. Its timestamp is the call line's, reached throu
 
 A `next_score` outcome is the first turn scored after a controller call. An `ask_marker` outcome is the first worker `ASK:` line matched after one. Each fires once per controller call and then releases its hold, so a second scored turn or a second marker writes nothing. The ask marker's value is a fixed token because what matched is a line the worker wrote, and a journal line records that the marker fired rather than what it said.
 
-Of the other four kinds, only `next_speaker` is still written. It belongs to the `plan-health` call and records something the plugin observed for itself. It is written at the next turn end in the same session, whatever entry that turn was on and even where that turn was skipped, from what opened it. Its stamp is held in session memory only, apart from the entry, so a restart drops it and that call carries no outcome. `lead_blocked`, `chapter_within` and `continued_unprompted` belonged to `worker-blocked`, `rounds-converging` and `work-continues`, the three plan-health questions retired on 2026-09-29. Nothing writes them now. They stay in the journal's outcome kinds because older lines carry them and the gold sampler still reads those lines. A reader of the journal tolerates a call with no outcome.
+Of the other four kinds, only `next_speaker` is still written. It belongs to the `plan-health` call and records something the plugin observed for itself. It is written at the next turn end in the same session, whatever entry that turn was on and even where that turn was skipped, from what opened it. That turn end includes a background subagent's completion, which records `neither` for the held call; `docs/backlog.md` carries this among the readers a subagent's completion still advances. Its stamp is held in session memory only, apart from the entry, so a restart drops it and that call carries no outcome. `lead_blocked`, `chapter_within` and `continued_unprompted` belonged to `worker-blocked`, `rounds-converging` and `work-continues`, the three plan-health questions retired on 2026-09-29. Nothing writes them now. They stay in the journal's outcome kinds because older lines carry them and the gold sampler still reads those lines. A reader of the journal tolerates a call with no outcome.
 
 Two more kinds belong to the two turn record questions, and the journal accepts them from any joiner. `record_delivered_within` answers `turn-open`: whether the turn record that call opened or continued reached `delivered` within `RECORD_OUTCOME_TURNS` of the persona's own turns, written once as `true` or `false`. The `turn.complete` hook writes it, at the persona's own turn end, against every `turn-open` call the record still holds as a pending stamp: `true` at the first of those turn ends that finds the record delivered, `false` at the third without one, and the stamp is dropped as its line goes out. `next_prompt_kind` answers `turn-disposition`: the verdict the next external message took on `turn-open` where a verdict was read, `fallback` where none was, or `none` where the record expired before another message arrived. The `prompt.submit` hook writes it at that next message, against every `turn-disposition` call the record still holds as a pending stamp, dropping the list as the lines go out. The `turn.complete` hook writes the `none` arm, at the persona's own turn end, for a record the timeout has expired. `fallback` is what a call reads while the question is not live, since no verdict steered the message then, and the verdict itself stays recoverable from that call's own answer line.
 
@@ -1126,7 +1126,7 @@ Two more kinds belong to the two turn record questions, and the journal accepts 
 {"lineKind":"outcome","stampId":"default.abc123.1789905730000.6","callStampId":"default.abc123.1789905600000.4","kind":"next_score","value":"on-goal","at":"2026-09-20T12:02:10.000Z"}
 ```
 
-No code here consumes a journal line, deletes one or uploads a file, and no other process in this repository loads one. The files are written and left. The journal module does read the day file, because an append reads it whole and rewrites it, which is why one file per session per day bounds that cost.
+No plugin code consumes a journal line, deletes one or uploads a file. The one other reader in this repository is the offline gold tooling under `.kit/jev-gold/`, run by hand, which reads the journal and never writes it. The files are written and left. The journal module does read the day file, because an append reads it whole and rewrites it, which is why one file per session per day bounds that cost.
 
 A write that fails is recorded once a UTC day, as a single entry in the decision log, so an unwritable journal costs one decision line a day rather than one a tick. That latch is in memory, so a restart lets the day's first failure be reported again.
 
@@ -1170,6 +1170,8 @@ What is in that state differs by site. Seven sites have a call site today, liste
 **The memory read** is not a seam call. It reaches Jev through the kit's memq rather than through the seam's client. At each prompt of an owner-armed session, the plugin hands `memq judged` the first 500 code points of the prompt's text as its situation. The read skips no kind of prompt, so a task-notification block, a peer session's message and the supervisor's priming and ask turns reach the three places below too, wherever they arrive as a prompt. memq sends that text to three places, in order. First it posts the text to the embedding server, the one `embedding.url` names in `~/.claude/kit-memory-db.json`. Then it sends that same text again to the shared memory database host that same file names. The resulting vector, the project's segment and the `persona-<id>` tag go with it. Last, the kit's judge sends the text to the Jev endpoint named in `~/.claude/kit-jev.json`, with each candidate record's name, description and status, and never a record's body. The plugin writes no Jev journal line for this call. Where any line comes back, the plugin logs one `memory_inject` decision with the count.
 
 **The memory write** sends nothing itself. `memq put` writes one record file in the project's store, and the kit's own publish leg carries it to the shared memory database later, as it does every record. The kit's documents state what a publish sends.
+
+**The gold tools** under `.kit/jev-gold/` are not the plugin and run only by hand. `label.mjs` and `adjudicate.mjs` send each sampled record's journaled state, the transcript's opening prompt, final message and tool activity, and the next state to the headless Claude CLI's Opus model. `replay.mjs` sends rebuilt states to TypeSafe through the seam. `sample.mjs` reads transcripts under `~/.claude/projects/` and sends nothing. Every output stays in `.kit/jev-gold/out/`, which git ignores.
 
 Nothing else is sent. The seven sites above are every seam call site in the plugin. The memory read is the one other path, and it reaches the three endpoints above. Each sends the state named under its own entry and nothing besides. At the seven seam sites, the persona name, the session id, the site label and the stamp id stay on this machine: they ride journal lines and never the request. The memory paths are different: the memory read carries the persona's store id as the `persona-<id>` tag, and each written record's body names the persona and the session id, which the kit's publish carries to the shared memory database host.
 
