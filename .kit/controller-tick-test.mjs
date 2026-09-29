@@ -4049,6 +4049,7 @@ async function main() {
     // The plan health request: block-owner v2, asked alone.
     await casePlanHealth_oneCallAndOneAnswerPerPlanEntryTurn(clock);
     await casePlanHealth_aSubagentsCompletionAsksNothing(clock);
+    await caseSubagentReport_opensNoAskSetsNoLeadFilesNoReply(clock);
     await casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock);
     await casePlanHealth_theRetiredOutcomeWritersWriteNothing(clock);
     await casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock);
@@ -24379,6 +24380,68 @@ async function casePlanHealth_aSubagentsCompletionAsksNothing(clock) {
   const { calls } = planHealthLines(h);
   check("plan health (subagent) control: the persona's own completion made one call whose state holds its own text alone",
     calls.length === 1 && calls[0].state === JSON.stringify({ closingText: "Working on it.", recentClosingTexts: ["Working on it."] }), calls.map((c) => c.state));
+}
+
+// A background subagent's completion carries the subagent's report, not the
+// persona's closing text, so none of the three turn-end readers that act on
+// the persona's words acts on it: the ASK: marker opens no ask, a BLOCKED: or
+// WAITING: line sets no lead and a work tool call clears none, and a record
+// stamped with the turn gets no reply. Each leg's control is the persona's own
+// completion of the same turn doing what the subagent's did not.
+async function caseSubagentReport_opensNoAskSetsNoLeadFilesNoReply(clock) {
+  console.log("\n=== Turn end: a subagent's report opens no ask, moves no lead and files no reply ===");
+  const actions = (h, action) => getDecisions(h).filter((d) => d.action === action);
+  const subagentThenOwn = async (h, turnId, subAnswer, ownAnswer, between) => {
+    await h.handlers["turn.start"](h.fake, { turnId }, async () => ({ result: "ok" }));
+    await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId, agentId: "sub-1", answer: subAnswer, reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+    between();
+    await h.handlers["turn.complete"](h.fake, { turnId, answer: ownAnswer, reason: "completed" }, async () => ({ result: "ok" }));
+    await new Promise((r) => setTimeout(r, 60));
+  };
+
+  const ask = await planHealthHarness("sub_readers_ask", clock);
+  ask.setHttpResponse(jevPicking());
+  const askLine = "ASK: Should the release ship today? Recommend: ship it.";
+  await subagentThenOwn(ask, "t-sr-ask", askLine, askLine, () => {
+    check("subagent report: an ASK: line in the subagent's report opens no ask",
+      actions(ask, "ask_opened").length === 0, actions(ask, "ask_opened").map((d) => d.detail));
+  });
+  check("subagent report control: the persona's own ASK: line opens one ask",
+    actions(ask, "ask_opened").length === 1, actions(ask, "ask_opened").map((d) => d.detail));
+
+  const lead = await planHealthHarness("sub_readers_lead", clock);
+  lead.setHttpResponse(jevPicking());
+  await subagentThenOwn(lead, "t-sr-lead", "BLOCKED: the subagent's build failed", "BLOCKED: waiting on the operator's fork", () => {
+    check("subagent report: a BLOCKED: line in the subagent's report sets no lead",
+      actions(lead, "lead_set").length === 0, actions(lead, "lead_set").map((d) => d.detail));
+  });
+  check("subagent report control: the persona's own BLOCKED: line sets the lead with its own reason",
+    actions(lead, "lead_set").length === 1 && actions(lead, "lead_set")[0].detail.includes("waiting on the operator's fork"),
+    actions(lead, "lead_set").map((d) => d.detail));
+  clock.advance(1000);
+  await subagentThenOwn(lead, "t-sr-clear", "The subagent's report.", "Carried on with the work.", () => {
+    check("subagent report: the subagent's completion of a turn that called a work tool clears no lead",
+      actions(lead, "lead_cleared").length === 0, actions(lead, "lead_cleared").map((d) => d.detail));
+  });
+  check("subagent report control: the persona's own completion of that turn clears the lead",
+    actions(lead, "lead_cleared").length === 1, actions(lead, "lead_cleared").map((d) => d.detail));
+
+  const reply = await planHealthHarness("sub_readers_reply", clock);
+  reply.setHttpResponse(jevPicking());
+  const at = clock.get();
+  seedReaderClaim(reply, "writer-sr", at);
+  const replyKey = seedInboxRecord(reply, "writer-sr", 1, { at: at - 1000, status: "pending" });
+  await tickAndSettle(reply, clock, 50);
+  await subagentThenOwn(reply, "t-sr-reply", "The subagent's report.", "Handled the record.", () => {
+    check("subagent report (setup sanity): the delivered record was stamped with the turn the subagent completes under",
+      readStoreRecord(reply, replyKey)?.turnId === "t-sr-reply", readStoreRecord(reply, replyKey));
+    check("subagent report: the subagent's completion files no reply to the record stamped with the turn",
+      actions(reply, "operator_answered").length === 0, actions(reply, "operator_answered").map((d) => d.detail));
+  });
+  check("subagent report control: the persona's own completion files one reply to that record",
+    actions(reply, "operator_answered").length === 1, actions(reply, "operator_answered").map((d) => d.detail));
 }
 
 async function casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock) {
