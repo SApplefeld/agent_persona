@@ -19,7 +19,7 @@
 // Usage: node controller-tick-test.mjs
 // Exits 0 on success, 1 on failure.
 
-import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireSessionCompact, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, processRunByPrefix, processRunRejects, processRunTimesOut, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
+import { createTickHarness, createFake$, fakeHostOf, stubDateNow, fireTick, fireHeartbeat, fireSessionStart, fireSessionCompact, fireTurn, openPromptTurn, openQueuedTurn, closeTurn, SESSION_ID, HARNESS_CWD, HARNESS_PLUGIN_ROOT, HARNESS_HOME, HEARTBEAT_FILE, PERSONA_STORE_FILE, YIELD_LOG_FILE, loadModule, makeState, makeGoalNode, seedPersonaStore, journalLines, journalLinesOfKind, jevChoiceResponse, jevResponseFor, processRunByPrefix, processRunRejects, processRunTimesOut, JEV_FAKE_KEY, JOURNAL_MARK, storedGoalTrees } from "./tick-harness.mjs";
 import { DECISIONS_MAX, MEMORY_MAX, PLAN_PATH_PATTERN, PLAN_PATH_TEXT_PATTERN, isActivationEligible, parseState, resolvePlanPath } from "../hooks/agent-state.ts";
 import * as AgentState from "../hooks/agent-state.ts";
 // Loaded after the harness, whose resolve hook maps the extensionless
@@ -1423,12 +1423,15 @@ async function caseItem8p2_classifier_ask_operator_converts_unconditionally(cloc
   check("item8p2a: nudge carries the ASK marker instruction", h.promptSubmits.some(t => t.includes("ASK: <question>? Recommend: <choice>")));
 }
 
-// Item 8.2 (Round 39 case a2): the classifier's "pause" verdict converts
-// exactly like "ask-operator" - the nineteenth ask that day arrived through
-// "pause" specifically, proving the classifier-prose problem was never
-// limited to one verdict. Proof uses that ask's own text verbatim.
-async function caseItem8p2_pause_converts_unconditionally(clock) {
-  console.log("\n=== Item 8.2(a2): classifier pause converts to nudge unconditionally ===");
+// The classifier is offered no pause: the label array carries nudge,
+// ask-operator and complete, plus switch where a plan is pending, and the
+// summary's option list names those ids and no other. A stub answering pause
+// anyway, which no real classify can, is a verdict outside the offered set,
+// which the tick reads as nudge: it converts nothing and opens no ask, since
+// the conversion has one arm, ask-operator, and the plain nudge goes out;
+// the case above is the control that the conversion fires at all.
+async function caseItem8p2_pauseIsNotOfferedAndConvertsNothing(clock) {
+  console.log("\n=== Item 8.2(a2): the classifier is offered no pause, and a stray pause converts nothing ===");
   clock.set(T0);
   const mySid = SESSION_ID;
   const now = T0;
@@ -1463,7 +1466,6 @@ async function caseItem8p2_pause_converts_unconditionally(clock) {
   if (startH) await startH(h.fake, {}, () => {});
 
   h.setClassifyValue("pause");
-  // Today's real pause-triggered ask text, verbatim.
   h.fake.model.complete = async () =>
     "Repeated off-goal-by-instruction scores and operator-skipped decisions indicate systemic blocker requiring root-cause investigation before proce";
 
@@ -1472,15 +1474,23 @@ async function caseItem8p2_pause_converts_unconditionally(clock) {
   clock.advance(130_000);
   await tickAndSettle(h, clock, 50);
 
+  const idleCalls = h.classifyCalls.filter(c => Array.isArray(c[1]) && c[1].includes("nudge"));
+  check("item8p2a2 control: the idle classifier was called", idleCalls.length > 0, h.classifyCalls.length);
+  check("item8p2a2: no label array offered to the idle classifier carries pause",
+    idleCalls.every(c => !c[1].includes("pause")), idleCalls.map(c => [...c[1]]));
+  check("item8p2a2: the summary's option list names the ids offered and no other, so no pause line",
+    idleCalls.every(c => {
+      const lines = String(c[0]).split(`\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n`)[1]?.split("\n") ?? [];
+      return lines.length === c[1].length && lines.every((l, i) => l.startsWith(`${c[1][i]}: `)) && !String(c[0]).includes("pause");
+    }), idleCalls.map(c => String(c[0]).split(`\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n`)[1]));
+
   const decisions = getDecisions(h);
   const askKeys = [...h.storeMap.keys()].filter(k => k.startsWith("ask:"));
   check("item8p2a2: no ask record written", askKeys.length === 0);
-
-  const conversionCount = decisions.filter(d => d.action === "ask_idle_gap_converted").length;
-  check("item8p2a2: ask_idle_gap_converted decision present", conversionCount >= 1);
-
-  const nudgeCount = decisions.filter(d => d.action === "nudge_sent").length;
-  check("item8p2a2: nudge_sent decision present", nudgeCount >= 1);
+  check("item8p2a2: a stray pause answer converts nothing, since the conversion has no pause arm",
+    decisions.filter(d => d.action === "ask_idle_gap_converted").length === 0, decisions.map(d => d.action));
+  check("item8p2a2: a verdict outside the offered set is read as nudge, so the plain nudge went out",
+    decisions.filter(d => d.action === "nudge_sent").length >= 1 && h.promptSubmits.some(t => t.includes("The Controller detected")), decisions.map(d => d.action));
 }
 
 // Item 8.2 (Round 36 case b): an ask record opens only when the worker's own
@@ -3462,7 +3472,7 @@ async function main() {
     await caseItem2_untrackedWorkCarriesCountPastCap(clock);
     await caseItem2_untrackedWorkRestartsCountOnPersonaSwitch(clock);
     await caseItem8p2_classifier_ask_operator_converts_unconditionally(clock);
-    await caseItem8p2_pause_converts_unconditionally(clock);
+    await caseItem8p2_pauseIsNotOfferedAndConvertsNothing(clock);
     await caseItem8p2_worker_states_fork_opens_ask(clock);
     await caseItem8p2_placeholder_marker_refused(clock);
     await caseItem8p2_memory_quality_self_scoring_vs_proof_backed(clock);
@@ -4036,22 +4046,17 @@ async function main() {
     await caseSeamSkippedTickAndOffModeWriteNothing(clock);
     await caseSeamAnUnwritableJournalPushesOneDecisionADay(clock);
 
-    // Section 5 (plan-health-from-the-record): the four shadow questions.
-    await casePlanHealth_oneCallAndFourAnswersPerPlanEntryTurn(clock);
+    // The plan health request: block-owner v2, asked alone.
+    await casePlanHealth_oneCallAndOneAnswerPerPlanEntryTurn(clock);
+    await casePlanHealth_aSubagentsCompletionAsksNothing(clock);
     await casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock);
-    await casePlanHealth_continuedUnpromptedTrueUnnudgedFalseNudged(clock);
-    await casePlanHealth_continuedUnpromptedSettlesTheCallItWasArmedForAcrossAParkedSubmit(clock);
-    await casePlanHealth_continuedUnpromptedFalseOnChannelAndDeliveryNextTurns(clock);
-    await casePlanHealth_continuedUnpromptedNudgeForAnotherEntryLeavesTheHeldCallUnwritten(clock);
-    await casePlanHealth_continuedUnpromptedAtMostOnceAcrossFurtherTurns(clock);
-    await casePlanHealth_continuedUnpromptedRestoresOnAFailedSubmitThenSettlesTrue(clock);
-    await casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock);
-    await casePlanHealth_chapterWithinSeesARiseReadOnASiblingsTurn(clock);
+    await casePlanHealth_theRetiredOutcomeWritersWriteNothing(clock);
     await casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock);
     await casePlanHealth_entryCompletingDropsThePendingOutcomes(clock);
     await casePlanHealth_taskEntryAsksNone(clock);
     await casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock);
     await casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock);
+    await casePlanHealth_theReplaysV2RequestIsThePluginsByteForByte(clock);
 
     // Section 4 (goal-every-turn): opening a turn record at the prompt.
     await caseTurnRecord_theFallbackContinuesAttachesOrOpensBare(clock);
@@ -4070,6 +4075,12 @@ async function main() {
     await caseTurnClose_aSubagentCompletionClosesNothing(clock);
     await caseTurnClose_theCompactionRuleInBothDirections(clock);
     await caseTurnClose_theJournaledStateCarriesTheFourFields(clock);
+    await caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock);
+    await caseTurnScore_aSubagentCompletionIsNotScored(clock);
+    await caseController_theV2StateIsOneTextForHaikuJevAndTheReplay(clock);
+    await caseController_eachAnswerActsAsBeforeWithAndWithoutAPendingPlan(clock);
+    await caseController_aNewLastAnswerAloneIsNotSkipped(clock);
+    await caseController_anAdmittedOverrideReachesTheStateAndTheRequestAlike(clock);
     await caseTurnClose_nextPromptKindIsWrittenOnceAgainstEveryDispositionStamp(clock);
     await caseTurnClose_aNewerTurnStartingDuringTheCloseWritesNothing(clock);
 
@@ -4173,6 +4184,7 @@ async function main() {
     await caseMemq25_twoPendingChecksAnswerTheirOwnGoals(clock);
     await caseMemq26_aNonOwnerAsksNothingAndStampsNothing(clock);
     await caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock);
+    await caseMemq27b_theCheckTurnIsNotTheControllersLastAnswer(clock);
     await caseMemq28_anUnansweredCheckStampsNothing(clock);
     await caseMemq29_aRefusedCheckSubmitClears(clock);
     await caseMemq30_theCheckTurnFeedsNoPlanHealthOrCuration(clock);
@@ -19241,9 +19253,10 @@ async function caseR119_aMetNudgeClearsItsOwnCount(clock) {
   check("r119: the scored turns saw the nudge-aware label set",
     scoredLabels.length === 4 && scoredLabels.every((labels) => !labels.includes("off-goal-by-instruction")));
   // The prompt text was spent before the submit, so the scorer judges the answer
-  // against the nudge the worker was actually answering.
+  // against the nudge the worker was actually answering. The state folds the
+  // nudge's brackets, as it folds every bracket a value carries.
   check("r119: the scorer read the nudge text as the prompt",
-    scoredPrompts.length === 4 && scoredPrompts[0].includes("[GOAL] The active goal is"));
+    scoredPrompts.length === 4 && scoredPrompts[0].startsWith("Turn opened with: (GOAL) The active goal is"), scoredPrompts[0]?.slice(0, 80));
 }
 
 // The withheld control, varying only the first round: with no status line on
@@ -20407,20 +20420,21 @@ async function casePlannerCatch_switchReasonAndDistillSitesReadTheObject(clock) 
   check("planner-catch switch no-text: one completion_no_text names the site and the shape", getDecisions(s2).some((d) => d.action === "completion_no_text" && d.detail === "plan-switch: completion returned no text (number, keys: none)"), getDecisions(s2).filter((d) => d.action === "completion_no_text"));
   check("planner-catch switch no-text: the switch fails as on an empty reply and nothing throws past the tick", getDecisions(s2).some((d) => d.action === "switch_failed") && !getDecisions(s2).some((d) => d.action === "switch_to"), getDecisions(s2).map((d) => d.action));
 
-  // Reason: the controller choosing switch with no pending plan, so no switch
-  // call runs and the reason call is the one completion.
+  // Reason: the controller choosing complete on a task entry, an offered
+  // verdict that is not a nudge, so no switch call runs and the reason call
+  // is the one completion before the entry completes.
   const reasonTree = () => [
     makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending" }),
-    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active" }),
+    makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "task", status: "active", maxRounds: 5 }),
   ];
   clock.set(T0);
-  const r = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_object", classifyValue: "switch", completeValue: { isAnswered: true, text: "Because the plan is done.", usage: {} }, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
+  const r = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_object", classifyValue: "complete", completeValue: { isAnswered: true, text: "Because the plan is done.", usage: {} }, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
   clock.advance(130_000);
   await tickAndSettle(r, clock, 50);
   const tickLine = getDecisions(r).find((d) => d.action === "controller_tick");
   check("planner-catch reason object: the tick's decision carries the object's text as its reason", typeof tickLine?.detail === "string" && tickLine.detail.includes("Because the plan is done."), tickLine?.detail);
   clock.set(T0);
-  const r2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_no_text", classifyValue: "switch", completeValue: {}, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
+  const r2 = await createTickHarness({ ...OPTS, caseName: "planner_catch_reason_no_text", classifyValue: "complete", completeValue: {}, stateOpts: { now: T0, goals: reasonTree(), activeGoalId: "g-plan" } });
   clock.advance(130_000);
   await tickAndSettle(r2, clock, 50);
   const tickLine2 = getDecisions(r2).find((d) => d.action === "controller_tick");
@@ -24162,26 +24176,34 @@ async function caseSeamSkippedTickAndOffModeWriteNothing(clock) {
 }
 
 // ============================================================
-// Section 5 (plan-health-from-the-record): the four shadow questions asked
-// at the end of every turn on a plan entry, journaled with four outcomes,
-// and never read by a branch.
+// The plan health request (plan-health-from-the-record section 5, re-posed
+// by the Jev question quality plan's section 5): block-owner v2, asked alone
+// at the end of every turn on a plan entry, journaled with its next_speaker
+// outcome, and never read by a branch.
 //
 // The invariance cases read the plan's central constraint the way the
-// decision seam's own cases do: a run with the questions on, against a Jev
-// answering at each extreme, failing, or never answering, produces the same
+// decision seam's own cases do: a run with the question on, against a Jev
+// answering each option, failing, or never answering, produces the same
 // decisions and the same goal tree as a run with the kill switch off. The
-// rest pin the lines: one call and four answers per plan-entry turn, the
-// four primitives by name, each outcome kind landing once against the right
-// stamp id, a completing entry dropping what it held, a task entry asking
-// none, and a hung request delaying no turn's end.
+// rest pin the lines: one call and one answer per plan-entry turn, the
+// request carrying block-owner alone, next_speaker landing once against the
+// right stamp id, the three retired outcome kinds never written, a
+// completing entry dropping what it held, a task entry asking none, a hung
+// request delaying no turn's end, and the replay's request for a journaled
+// call being the plugin's request byte for byte.
 // ============================================================
 
 const PLAN_HEALTH_SITE = "plan-health";
-const PLAN_HEALTH_KINDS = ["lead_blocked", "chapter_within", "next_speaker", "continued_unprompted"];
-const PLAN_HEALTH_QUESTION_SET = "worker-blocked,rounds-converging,block-owner,work-continues";
+// The outcome kinds read as the plan health call's: next_speaker, which the
+// plugin writes, and the three whose questions are retired. The three stay in
+// the reader, so each absence below is read by an instrument that would count
+// a line of that kind; withOutcomeLine is the control that shows it would.
+const RETIRED_OUTCOME_KINDS = ["lead_blocked", "chapter_within", "continued_unprompted"];
+const PLAN_HEALTH_KINDS = ["next_speaker", ...RETIRED_OUTCOME_KINDS];
+const PLAN_HEALTH_QUESTION_SET = "block-owner";
 
 // The lines the plan health request wrote: its call lines, the answer lines
-// joined to them, and the outcome lines of its four kinds.
+// joined to them, and the outcome lines of the four kinds above.
 function planHealthLines(h) {
   const calls = journalLinesOfKind(h, "call").filter((c) => c.site === PLAN_HEALTH_SITE);
   const answers = journalLinesOfKind(h, "answer").filter((a) => calls.some((c) => c.stampId === a.callStampId));
@@ -24189,17 +24211,37 @@ function planHealthLines(h) {
   return { calls, answers, outcomes };
 }
 
-// The request bodies that carried the four questions, read off the fake's
-// own record of every fetch rather than a path the case names.
+// The request bodies that carried block-owner, read off the fake's own record
+// of every fetch rather than a path the case names. The seam keys a request's
+// questions by question id.
 function planHealthRequests(h) {
   return h.httpCalls
     .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
-    .filter((b) => b && b.questions && Object.keys(b.questions).length === 4);
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.BLOCK_OWNER));
+}
+
+// The retired outcome kinds written against the given calls, as the reader
+// above reads them.
+function retiredOutcomesOf(h, calls) {
+  return planHealthLines(h).outcomes.filter((o) => RETIRED_OUTCOME_KINDS.includes(o.kind) && calls.some((c) => c.stampId === o.callStampId));
+}
+
+// The harness's journal as it stands with one outcome line of `kind` against
+// `stampId` appended to a file it already holds, and nothing else changed:
+// the withheld control for each absence of a retired kind, showing the
+// reader counts such a line had the plugin written one. The harness itself is
+// not touched.
+function withOutcomeLine(h, kind, stampId) {
+  const fsMap = new Map(h.fsMap);
+  const path = [...fsMap.keys()].find((p) => p.includes(JOURNAL_MARK));
+  const line = JSON.stringify({ lineKind: "outcome", stampId: `${stampId}o-${kind}`, callStampId: stampId, kind, value: "true", at: new Date(T0).toISOString() });
+  const content = path === undefined ? "" : String(fsMap.get(path));
+  if (path !== undefined) fsMap.set(path, `${content}${content.endsWith("\n") ? "" : "\n"}${line}\n`);
+  return { fsMap };
 }
 
 // A Jev answering every question from the request body it was handed, with
-// the pickers given: the first option, a Noul in the middle and the middle
-// level unless a case says otherwise.
+// the pickers given: the first option unless a case says otherwise.
 function jevPicking(pick = {}) {
   const pickers = { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.2, score: () => 1, ...pick };
   return (url, init) => jevResponseFor(init, pickers);
@@ -24243,81 +24285,62 @@ async function planHealthDeliveryTurn(h, clock, turnId, seq, answer) {
   await new Promise((r) => setTimeout(r, 60));
 }
 
-// Bullet 3: one call line and four answer lines per plan-entry turn, the
-// four primitives recorded by name, and the request carrying the state the
-// plan states, for the plan node and for a task under it.
-async function casePlanHealth_oneCallAndFourAnswersPerPlanEntryTurn(clock) {
-  console.log("\n=== Section 5 plan health: one call and four answers per plan-entry turn ===");
+// One call line and one answer line per plan-entry turn, the request carrying
+// block-owner alone at v2 over the state the plan states, for the plan node
+// and for a task under it, and no outcome but next_speaker.
+async function casePlanHealth_oneCallAndOneAnswerPerPlanEntryTurn(clock) {
+  console.log("\n=== Plan health: one call and one block-owner answer per plan-entry turn ===");
   for (const shape of [{ key: "plan", taskUnderPlan: false, leafId: "plan-1" }, { key: "taskunderplan", taskUnderPlan: true, leafId: "task-1" }]) {
     const h = await planHealthHarness(`s5_lines_${shape.key}`, clock, { taskUnderPlan: shape.taskUnderPlan });
     h.setHttpResponse(jevPicking());
     await planHealthTurn(h, "t-ph-1", "Working on it.");
-    const label = `s5 lines (${shape.key})`;
+    const label = `plan health lines (${shape.key})`;
 
     const { calls, answers, outcomes } = planHealthLines(h);
-    check(`${label}: one plan-health call line, ok, naming the four sets`,
+    check(`${label}: one plan-health call line, ok, naming block-owner alone`,
       calls.length === 1 && calls[0].result === "ok" && calls[0].questionSet === PLAN_HEALTH_QUESTION_SET && calls[0].mode === "shadow", calls);
     check(`${label}: the call line's state is the object with this turn's closing text and the one recent text`,
       calls.length === 1 && calls[0].state === JSON.stringify({ closingText: "Working on it.", recentClosingTexts: ["Working on it."] }), calls[0] && calls[0].state);
-    check(`${label}: four answer lines joined to that call, the primitives by name in the request's order`,
-      answers.length === 4 && answers.every((a) => a.callStampId === calls[0].stampId)
-        && answers.map((a) => a.primitive).join(",") === "noul,score,choice,noul"
-        && answers.map((a) => a.questionId).join(",") === PLAN_HEALTH_QUESTION_SET, answers);
-    check(`${label}: the Noul lines carry their probability, the Score its level, the Choice its option, with no Haiku value`,
-      answers.length === 4 && answers[0].value === "0.2" && answers[0].confidence === null
-        && answers[1].value === "1" && answers[1].probabilities["1"] === 1
-        && answers[2].value === "operator"
-        && answers[3].value === "0.2" && answers[3].confidence === null
-        && answers.every((a) => a.haikuValue === null && a.agrees === null), answers);
+    check(`${label}: one answer line joined to that call, block-owner's choice at v2, with no Haiku value`,
+      answers.length === 1 && answers[0].callStampId === calls[0].stampId && answers[0].questionId === Catalog.BLOCK_OWNER
+        && answers[0].primitive === "choice" && answers[0].value === "operator" && answers[0].questionVersion === "v2"
+        && answers[0].haikuValue === null && answers[0].agrees === null, answers);
 
     const requests = planHealthRequests(h);
-    check(`${label}: exactly one request carried four questions`, requests.length === 1, h.httpCalls.length);
+    check(`${label}: exactly one request carried block-owner`, requests.length === 1, h.httpCalls.length);
     const q = requests.length === 1 ? requests[0].questions : {};
-    check(`${label}: the request's four questions are the noul, the score, the choice and the second noul under their set ids`,
-      Object.keys(q).join(",") === PLAN_HEALTH_QUESTION_SET
-        && q["worker-blocked"].type === "noul" && q["rounds-converging"].type === "score" && q["block-owner"].type === "choice"
-        && q["work-continues"].type === "noul", q);
-    check(`${label}: the Score carries three levels and the Choice the five owner ids`,
-      Array.isArray(q["rounds-converging"].criteria) && q["rounds-converging"].criteria.length === 3
-        && Object.keys(q["block-owner"].criteria).join(",") === "operator,coordinator,another-plan,self-resolving,none", q);
-    check(`${label}: the request's state is an object whose two fields the instructions name`,
+    check(`${label}: the request carries block-owner alone, a choice over the five owner ids with the catalog's v2 instructions`,
+      JSON.stringify(Object.keys(q)) === JSON.stringify([Catalog.BLOCK_OWNER]) && q[Catalog.BLOCK_OWNER].type === "choice"
+        && JSON.stringify(Object.keys(q[Catalog.BLOCK_OWNER].criteria)) === JSON.stringify([...Catalog.BLOCK_OWNER_OPTIONS])
+        && q[Catalog.BLOCK_OWNER].instructions === Catalog.SHIPPED_QUESTIONS[Catalog.BLOCK_OWNER].instructions, Object.keys(q));
+    check(`${label}: the request's state is an object whose closing text field the instructions name`,
       requests.length === 1 && typeof requests[0].state === "object" && requests[0].state.closingText === "Working on it."
-        && q["worker-blocked"].instructions.includes("`closingText`") && q["rounds-converging"].instructions.includes("`recentClosingTexts`")
-        && q["block-owner"].instructions.includes("`closingText`") && q["work-continues"].instructions.includes("`closingText`"), requests[0] && requests[0].state);
-    check(`${label}: one lead_blocked outcome, false, against the call's own stamp id, and no other outcome yet`,
-      outcomes.length === 1 && outcomes[0].kind === "lead_blocked" && outcomes[0].value === "false" && outcomes[0].callStampId === calls[0].stampId, outcomes);
+        && q[Catalog.BLOCK_OWNER].instructions.includes("`closingText`"), requests[0] && requests[0].state);
+    check(`${label}: no outcome was written at the call's own turn end`, outcomes.length === 0, outcomes);
 
     // A second turn, whose closing text opens with the worker's BLOCKED:
-    // lead: its own lead_blocked is true, the first call's next_speaker and
-    // continued_unprompted both land now (the turn being no nudge), and the
-    // state carries both closing texts oldest first.
+    // lead: the first call's next_speaker lands now, and the state carries
+    // both closing texts oldest first.
     clock.advance(1000);
     await planHealthTurn(h, "t-ph-2", "BLOCKED: waiting on the operator's fork");
     const after = planHealthLines(h);
-    check(`${label}: the second turn wrote its own call and four more answers`,
-      after.calls.length === 2 && after.answers.length === 8, { calls: after.calls.length, answers: after.answers.length });
+    check(`${label}: the second turn wrote its own call and one more answer`,
+      after.calls.length === 2 && after.answers.length === 2, { calls: after.calls.length, answers: after.answers.length });
     check(`${label}: the second call's state carries both closing texts, oldest first`,
       after.calls[1].state === JSON.stringify({ closingText: "BLOCKED: waiting on the operator's fork", recentClosingTexts: ["Working on it.", "BLOCKED: waiting on the operator's fork"] }),
       after.calls[1].state);
     const byKind = (kind) => after.outcomes.filter((o) => o.kind === kind);
-    check(`${label}: lead_blocked landed once per call, false then true, each against its own stamp id`,
-      byKind("lead_blocked").length === 2
-        && byKind("lead_blocked")[0].callStampId === after.calls[0].stampId && byKind("lead_blocked")[0].value === "false"
-        && byKind("lead_blocked")[1].callStampId === after.calls[1].stampId && byKind("lead_blocked")[1].value === "true", byKind("lead_blocked"));
-    check(`${label}: next_speaker landed once, neither, against the first call's stamp id`,
-      byKind("next_speaker").length === 1 && byKind("next_speaker")[0].value === "neither" && byKind("next_speaker")[0].callStampId === after.calls[0].stampId, byKind("next_speaker"));
-    check(`${label}: continued_unprompted landed once, true, against the first call's stamp id, the second turn being no nudge`,
-      byKind("continued_unprompted").length === 1 && byKind("continued_unprompted")[0].value === "true" && byKind("continued_unprompted")[0].callStampId === after.calls[0].stampId, byKind("continued_unprompted"));
-    check(`${label}: no chapter_within yet, the Chapter count not having risen`, byKind("chapter_within").length === 0, byKind("chapter_within"));
+    check(`${label}: next_speaker landed once, neither, against the first call's stamp id, and no other outcome was written`,
+      byKind("next_speaker").length === 1 && byKind("next_speaker")[0].value === "neither" && byKind("next_speaker")[0].callStampId === after.calls[0].stampId
+        && after.outcomes.length === 1, after.outcomes);
     check(`${label}: the lead itself was still set by Section 3's read`,
       getState(h).goals.find((g) => g.id === shape.leafId).lead?.state === "blocked", getState(h).goals.find((g) => g.id === shape.leafId).lead);
     check(`${label}: no journal_write_failed decision was pushed`,
       !getDecisions(h).some((d) => d.action === "journal_write_failed"), getDecisions(h).map((d) => d.action));
 
-    // Fix round 1, item 2: a third turn whose closing text runs past the
-    // 1,000-character cut. The request's closingText is cut where the recent
-    // list is, so the two are the same bytes, and the call line's state
-    // carries the cut text.
+    // A third turn whose closing text runs past the 1,000-character cut. The
+    // request's closingText is cut where the recent list is, so the two are
+    // the same bytes, and the call line's state carries the cut text.
     clock.advance(1000);
     const longText = `Long closing text. ${"x".repeat(1200)}`;
     await planHealthTurn(h, "t-ph-3", longText);
@@ -24337,8 +24360,29 @@ async function casePlanHealth_oneCallAndFourAnswersPerPlanEntryTurn(clock) {
 // The next_speaker outcome records what opened the next turn: a channel
 // message, a delivered record, or neither, each once against the call that
 // awaited it.
+// A background subagent's completion inside a plan-entry turn is the
+// subagent's report, not the worker's closing text: it makes no plan-health
+// call and enters no recent text. The persona's own completion of the same
+// turn is the control that the request fires at all.
+async function casePlanHealth_aSubagentsCompletionAsksNothing(clock) {
+  console.log("\n=== Plan health: a subagent's completion asks nothing and leaves the recent texts alone ===");
+  const h = await planHealthHarness("s5_subagent", clock);
+  h.setHttpResponse(jevPicking());
+  await h.handlers["turn.start"](h.fake, { turnId: "t-ph-sub" }, async () => ({ result: "ok" }));
+  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-ph-sub" }, async () => ({ result: "ok" }));
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ph-sub", agentId: "sub-1", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  check("plan health (subagent): the subagent's completion made no plan-health call and no request",
+    planHealthLines(h).calls.length === 0 && planHealthRequests(h).length === 0, { calls: planHealthLines(h).calls.length, requests: planHealthRequests(h).length });
+  await h.handlers["turn.complete"](h.fake, { turnId: "t-ph-sub", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await new Promise((r) => setTimeout(r, 60));
+  const { calls } = planHealthLines(h);
+  check("plan health (subagent) control: the persona's own completion made one call whose state holds its own text alone",
+    calls.length === 1 && calls[0].state === JSON.stringify({ closingText: "Working on it.", recentClosingTexts: ["Working on it."] }), calls.map((c) => c.state));
+}
+
 async function casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock) {
-  console.log("\n=== Section 5 plan health: next_speaker records channel, delivery or neither ===");
+  console.log("\n=== Plan health: next_speaker records channel, delivery or neither ===");
   const h = await planHealthHarness("s5_next_speaker", clock);
   h.setHttpResponse(jevPicking());
   await planHealthTurn(h, "t-ns-1", "Working on it.");
@@ -24363,266 +24407,104 @@ async function casePlanHealth_nextSpeakerRecordsChannelDeliveryOrNeither(clock) 
     getDecisions(h).filter((d) => d.action === "score_skipped").map((d) => d.detail));
 }
 
-// The continued_unprompted outcome, section 4's acceptance: true where the
-// entry's next completed turn was not itself a nudge, false the moment a
-// nudge goes out for the entry meanwhile, and never both for the same call.
-async function casePlanHealth_continuedUnpromptedTrueUnnudgedFalseNudged(clock) {
-  console.log("\n=== Section 5 plan health: continued_unprompted is true un-nudged, false on a nudge, and lands once per call ===");
+// The retired questions' outcome kinds are written on none of the paths their
+// retired rules named. Each leg's absence is read over every plan health call
+// the run made, by the reader that counts the retired kinds, and each leg
+// carries two controls: the path the writer sat on ran (the fact it read was
+// there to read), and the reader counts a line of the kind in this run's own
+// journal once one is appended beside it.
+async function casePlanHealth_theRetiredOutcomeWritersWriteNothing(clock) {
+  console.log("\n=== Plan health: the retired lead_blocked, continued_unprompted and chapter_within writers write nothing ===");
+  const countOf = (view, kind, call) => planHealthLines(view).outcomes.filter((o) => o.kind === kind && o.callStampId === call.stampId).length;
+  const readerSees = (h, kind, call) => countOf(withOutcomeLine(h, kind, call.stampId), kind, call) === countOf(h, kind, call) + 1;
 
-  // The un-nudged direction: an ordinary second turn is not a nudge, so it
-  // settles the first call's continued_unprompted true.
-  const trueRun = await planHealthHarness("s5_cu_true", clock);
-  trueRun.setHttpResponse(jevPicking());
-  await planHealthTurn(trueRun, "t-cu-true-1", "Working on it.");
+  // lead_blocked: a call's own turn end that opens with BLOCKED:, the
+  // reading its retired rule names.
+  const blocked = await planHealthHarness("s5_retired_lead_blocked", clock);
+  blocked.setHttpResponse(jevPicking());
+  await planHealthTurn(blocked, "t-rb-1", "BLOCKED: waiting on the operator's fork");
+  const blockedCalls = planHealthLines(blocked).calls;
+  check("s5 retired lead_blocked control: the BLOCKED: turn was asked about and its lead was read and set",
+    blockedCalls.length === 1 && getDecisions(blocked).some((d) => d.action === "lead_set"), getDecisions(blocked).map((d) => d.action));
+  check("s5 retired lead_blocked control: the reader counts a lead_blocked line once one is in the journal",
+    readerSees(blocked, "lead_blocked", blockedCalls[0]));
+  check("s5 retired lead_blocked: a BLOCKED: turn's call gets no lead_blocked outcome",
+    retiredOutcomesOf(blocked, blockedCalls).length === 0, retiredOutcomesOf(blocked, blockedCalls));
+
+  // continued_unprompted at the turn end: an un-nudged, unaccounted next
+  // turn, the one its retired true rule names.
+  const unnudged = await planHealthHarness("s5_retired_cu_turn_end", clock);
+  unnudged.setHttpResponse(jevPicking());
+  await planHealthTurn(unnudged, "t-rcu-1", "Working on it.");
   clock.advance(1000);
-  await planHealthTurn(trueRun, "t-cu-true-2", "Carrying on.");
-  const trueLines = planHealthLines(trueRun);
-  const trueOutcomes = trueLines.outcomes.filter((o) => o.kind === "continued_unprompted");
-  check("s5 continued_unprompted: true on an un-nudged next turn, against the first call's stamp id, landed once",
-    trueOutcomes.length === 1 && trueOutcomes[0].value === "true" && trueOutcomes[0].callStampId === trueLines.calls[0].stampId, trueOutcomes);
+  await planHealthTurn(unnudged, "t-rcu-2", "Carrying on.");
+  const unnudgedLines = planHealthLines(unnudged);
+  check("s5 retired continued_unprompted (turn end) control: the next turn's joiner ran for the first call, writing its next_speaker",
+    unnudgedLines.calls.length === 2 && unnudgedLines.outcomes.filter((o) => o.kind === "next_speaker" && o.callStampId === unnudgedLines.calls[0].stampId).length === 1,
+    unnudgedLines.outcomes);
+  check("s5 retired continued_unprompted (turn end) control: the reader counts a continued_unprompted line once one is in the journal",
+    readerSees(unnudged, "continued_unprompted", unnudgedLines.calls[0]));
+  check("s5 retired continued_unprompted (turn end): an un-nudged next turn writes none for either call",
+    retiredOutcomesOf(unnudged, unnudgedLines.calls).length === 0, retiredOutcomesOf(unnudged, unnudgedLines.calls));
 
-  // The nudged direction: the entry going idle and getting nudged settles
-  // the pending call false at once, before any further turn completes.
-  const falseRun = await planHealthHarness("s5_cu_false", clock);
-  falseRun.setHttpResponse(jevPicking());
-  await planHealthTurn(falseRun, "t-cu-false-1", "Working on it.");
-  const firstCall = planHealthLines(falseRun).calls[0];
-  const idle = await lead3IdleTick(falseRun, clock);
-  check("s5 continued_unprompted control: the idle tick nudged the entry", idle.nudged === true, idle);
+  // continued_unprompted in the nudge path: the entry goes idle and is
+  // nudged, the moment its retired false rule names, and the nudged turn
+  // then completes.
+  const nudged = await planHealthHarness("s5_retired_cu_nudge", clock);
+  nudged.setHttpResponse(jevPicking());
+  await planHealthTurn(nudged, "t-rcn-1", "Working on it.");
+  const idle = await lead3IdleTick(nudged, clock);
   await new Promise((r) => setTimeout(r, 60));
-  const afterNudge = planHealthLines(falseRun).outcomes.filter((o) => o.kind === "continued_unprompted");
-  check("s5 continued_unprompted: false the moment a nudge is sent, against the pending call's stamp id",
-    afterNudge.length === 1 && afterNudge[0].value === "false" && afterNudge[0].callStampId === firstCall.stampId, afterNudge);
-
-  // The nudged turn itself then completes: the second site, which would
-  // otherwise read this turn's own origin, finds nothing held and writes no
-  // second outcome for the same call.
-  await openQueuedTurn(falseRun, "t-cu-nudged");
-  await falseRun.handlers["turn.complete"](falseRun.fake, { turnId: "t-cu-nudged", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
+  await openQueuedTurn(nudged, "t-rcn-nudged");
+  await nudged.handlers["turn.complete"](nudged.fake, { turnId: "t-rcn-nudged", answer: "Working on it.", reason: "completed" }, async () => ({ result: "ok" }));
   await new Promise((r) => setTimeout(r, 60));
-  const afterNudgedTurn = planHealthLines(falseRun).outcomes.filter((o) => o.kind === "continued_unprompted" && o.callStampId === firstCall.stampId);
-  check("s5 continued_unprompted: the nudged turn's own completion writes no second outcome for the same call",
-    afterNudgedTurn.length === 1, afterNudgedTurn);
-}
+  const nudgedLines = planHealthLines(nudged);
+  check("s5 retired continued_unprompted (nudge) control: the idle tick nudged the entry the call was asked about",
+    idle.nudged === true && getDecisions(nudged).some((d) => d.action === "nudge_sent" && d.detail.startsWith("plan-1:")), idle);
+  check("s5 retired continued_unprompted (nudge) control: the nudged turn's own completion wrote the first call's next_speaker",
+    nudgedLines.outcomes.filter((o) => o.kind === "next_speaker" && o.callStampId === nudgedLines.calls[0]?.stampId).length === 1, nudgedLines.outcomes);
+  check("s5 retired continued_unprompted (nudge) control: the reader counts a continued_unprompted line once one is in the journal",
+    nudgedLines.calls.length >= 1 && readerSees(nudged, "continued_unprompted", nudgedLines.calls[0]));
+  check("s5 retired continued_unprompted (nudge): neither the nudge nor the nudged turn writes one",
+    retiredOutcomesOf(nudged, nudgedLines.calls).length === 0, retiredOutcomesOf(nudged, nudgedLines.calls));
 
-// The nudge site captures the call it is settling before
-// $.prompt.submit parks, and settles that captured call rather than
-// whatever the field holds once the submit resolves. A whole nudged turn
-// can open and complete, arming a fresh call for the same entry, while the
-// nudge's own submit is still parked; the false write stays on the call
-// the nudge was actually about.
-async function casePlanHealth_continuedUnpromptedSettlesTheCallItWasArmedForAcrossAParkedSubmit(clock) {
-  console.log("\n=== Section 5 plan health: a nudge settles the call it was armed for, not one armed while its submit parked ===");
-  const h = await planHealthHarness("s5_cu_parked", clock);
-  h.setHttpResponse(jevPicking());
-  await planHealthTurn(h, "t-cu-parked-1", "Working on it.");
-  const firstCall = planHealthLines(h).calls[0];
-
-  h.setClassifyValue((prompt, labels) => {
-    if (!Array.isArray(labels)) return "discard";
-    if (labels.includes("drift")) return "drift";
-    if (labels.includes("nudge")) return "nudge";
-    return "discard";
-  });
-  h.holdPromptSubmits();
+  // continued_unprompted after a failed nudge submit, the case the retired
+  // nudge-path hold names, followed by an un-nudged turn.
+  const failing = await planHealthHarness("s5_retired_cu_failed_submit", clock);
+  failing.setHttpResponse(jevPicking());
+  await planHealthTurn(failing, "t-rcf-1", "Working on it.");
+  failing.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  failing.failPromptSubmits(new Error("submit boom"));
   clock.advance(130_000);
-  await fireTick(h);
-  const queued = await waitUntil(() => goalPrompts(h).length >= 1);
-  check("s5 continued_unprompted parked control: the nudge reached the actuator and parked", queued, goalPrompts(h));
-
-  // The nudged turn opens and completes entirely while the nudge's own
-  // submit is still parked: a fresh call is armed for the same entry
-  // before this tick resumes.
-  await openQueuedTurn(h, "t-cu-parked-nudged");
-  await h.handlers["tool.call"](h.fake, { tool: "Bash", turnId: "t-cu-parked-nudged" }, async () => ({ result: "ok" }));
-  await h.handlers["turn.complete"](h.fake, { turnId: "t-cu-parked-nudged", answer: "Still working, parked.", reason: "completed" }, async () => ({ result: "ok" }));
+  await fireTick(failing);
+  const failedSubmit = await waitUntil(() => getDecisions(failing).some((d) => d.action === "nudge_failed"));
   await new Promise((r) => setTimeout(r, 60));
-  const midway = planHealthLines(h);
-  check("s5 continued_unprompted parked control: the nudged turn's own completion armed a second call and settled no outcome for the first",
-    midway.calls.length === 2 && midway.calls[0].stampId === firstCall.stampId
-      && !midway.outcomes.some((o) => o.kind === "continued_unprompted"), midway);
-
-  h.releasePromptSubmits();
-  const settled = await waitUntil(() => getDecisions(h).some((d) => d.action === "nudge_sent"));
-  check("s5 continued_unprompted parked control: the nudge's own submit resolved", settled, getDecisions(h).map((d) => d.action));
-  await new Promise((r) => setTimeout(r, 80));
-
-  const after = planHealthLines(h);
-  const cu = after.outcomes.filter((o) => o.kind === "continued_unprompted");
-  check("s5 continued_unprompted: settles the call it was armed for, false, exactly once",
-    cu.length === 1 && cu[0].value === "false" && cu[0].callStampId === firstCall.stampId, cu);
-  check("s5 continued_unprompted: the second call, armed during the parked window, carries no outcome yet",
-    !after.outcomes.some((o) => o.kind === "continued_unprompted" && o.callStampId === after.calls[1].stampId), after.outcomes);
-}
-
-// The true rule is unaccounted-and-not-channel, not merely
-// "not a nudge". A channel message and a delivered record are each somebody
-// or something else acting first, so the next completed turn opening from
-// either writes false.
-async function casePlanHealth_continuedUnpromptedFalseOnChannelAndDeliveryNextTurns(clock) {
-  console.log("\n=== Section 5 plan health: continued_unprompted is false where the next completed turn was a channel message or a delivery ===");
-  const channelRun = await planHealthHarness("s5_cu_channel", clock);
-  channelRun.setHttpResponse(jevPicking());
-  await planHealthTurn(channelRun, "t-cu-ch-1", "Working on it.");
-  const channelFirstCall = planHealthLines(channelRun).calls[0];
   clock.advance(1000);
-  await planHealthTurn(channelRun, "t-cu-ch-2", "Answering the operator.", { channel: true });
-  const channelOutcomes = planHealthLines(channelRun).outcomes.filter((o) => o.kind === "continued_unprompted");
-  check("s5 continued_unprompted: false where the next completed turn opened from a channel message",
-    channelOutcomes.length === 1 && channelOutcomes[0].value === "false" && channelOutcomes[0].callStampId === channelFirstCall.stampId, channelOutcomes);
+  await planHealthTurn(failing, "t-rcf-2", "Carrying on with no nudge in between.");
+  const failingLines = planHealthLines(failing);
+  check("s5 retired continued_unprompted (failed submit) control: the nudge attempt failed and the next turn wrote the first call's next_speaker",
+    failedSubmit && failingLines.outcomes.filter((o) => o.kind === "next_speaker" && o.callStampId === failingLines.calls[0]?.stampId).length === 1,
+    { failedSubmit, outcomes: failingLines.outcomes });
+  check("s5 retired continued_unprompted (failed submit): no outcome of a retired kind for either call",
+    retiredOutcomesOf(failing, failingLines.calls).length === 0, retiredOutcomesOf(failing, failingLines.calls));
 
-  const deliveryRun = await planHealthHarness("s5_cu_delivery", clock);
-  deliveryRun.setHttpResponse(jevPicking());
-  await planHealthTurn(deliveryRun, "t-cu-dl-1", "Working on it.");
-  const deliveryFirstCall = planHealthLines(deliveryRun).calls[0];
-  clock.advance(1000);
-  await planHealthDeliveryTurn(deliveryRun, clock, "t-cu-dl-2", 1, "Handled the record.");
-  const deliveryOutcomes = planHealthLines(deliveryRun).outcomes.filter((o) => o.kind === "continued_unprompted");
-  check("s5 continued_unprompted: false where the next completed turn was a delivery",
-    deliveryOutcomes.length === 1 && deliveryOutcomes[0].value === "false" && deliveryOutcomes[0].callStampId === deliveryFirstCall.stampId, deliveryOutcomes);
-}
-
-// A nudge for a different entry leaves the held call
-// unwritten at the nudge site, since that nudge says nothing about it.
-async function casePlanHealth_continuedUnpromptedNudgeForAnotherEntryLeavesTheHeldCallUnwritten(clock) {
-  console.log("\n=== Section 5 plan health: a nudge for a different entry leaves the held call unwritten ===");
-  const h = await planHealthSiblingsHarness("s5_cu_entry_scope", clock);
-  await planHealthTurn(h, "t-es-1", "Working on A.");
-  const firstCall = planHealthLines(h).calls[0];
-
-  await planHealthSwitchTo(h, "task-2");
-  const idle = await lead3IdleTick(h, clock);
-  check("s5 continued_unprompted entry-scope control: the idle tick nudged the now-active sibling", idle.nudged === true, idle);
-  await new Promise((r) => setTimeout(r, 60));
-
-  const outcomes = planHealthLines(h).outcomes.filter((o) => o.kind === "continued_unprompted" && o.callStampId === firstCall.stampId);
-  check("s5 continued_unprompted: a nudge for a different entry writes no outcome for the first entry's held call",
-    outcomes.length === 0, outcomes);
-}
-
-// The at-most-once case, driven across an entry
-// that carries no plan document: the first call is settled by the very
-// next completed turn regardless of that turn's entry, and a non-plan-entry
-// turn arms no new call to settle in its place, so a further turn writes
-// nothing more for the first call.
-async function casePlanHealth_continuedUnpromptedAtMostOnceAcrossFurtherTurns(clock) {
-  console.log("\n=== Section 5 plan health: continued_unprompted lands at most once for the first call across further turns ===");
-  clock.set(T0);
-  const tree = plan2Goals({ chapterCount: 1 });
-  tree.goals.push(makeGoalNode({ id: "task-bare", parentId: "root-1", kind: "task", status: "paused", maxRounds: 10, createdAt: T0 - 4000 }));
-  const h = await createTickHarness({
-    ...OPTS,
-    jevMode: "shadow",
-    caseName: "s5_cu_at_most_once",
-    stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId },
-  });
-  h.fsMap.set(PLAN2_FILE, LEAD3_DOC);
-  h.storeMap.set(`commons:${SESSION_ID}`, {
-    sessionId: SESSION_ID,
-    lastSeen: T0,
-    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
-  });
-  h.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
-  h.setHttpResponse(jevPicking());
-
-  await planHealthTurn(h, "t-amo-1", "Working on the plan.");
-  const firstCall = planHealthLines(h).calls[0];
-  check("s5 continued_unprompted at-most-once control: the plan-entry turn armed one call", planHealthLines(h).calls.length === 1, planHealthLines(h).calls);
-
-  await planHealthSwitchTo(h, "task-bare");
-  clock.advance(1000);
-  await planHealthTurn(h, "t-amo-2", "On the bare task now.");
-  const afterFirst = planHealthLines(h);
-  const cuFirst = afterFirst.outcomes.filter((o) => o.kind === "continued_unprompted");
-  check("s5 continued_unprompted at-most-once: the non-plan-entry turn settles the first call true and asks no new plan-health call",
-    afterFirst.calls.length === 1 && cuFirst.length === 1 && cuFirst[0].value === "true" && cuFirst[0].callStampId === firstCall.stampId, afterFirst);
-
-  clock.advance(1000);
-  await planHealthTurn(h, "t-amo-3", "Still on the bare task.");
-  const afterSecond = planHealthLines(h);
-  check("s5 continued_unprompted at-most-once: a further turn writes no second outcome for the first call",
-    afterSecond.outcomes.filter((o) => o.kind === "continued_unprompted").length === 1, afterSecond.outcomes);
-}
-
-// The failed-submit case: a rejected nudge submit
-// restores the held record rather than leaving it lost, and the next
-// un-originated turn then settles it true.
-async function casePlanHealth_continuedUnpromptedRestoresOnAFailedSubmitThenSettlesTrue(clock) {
-  console.log("\n=== Section 5 plan health: a failed nudge submit restores the held record, settled true by the next turn ===");
-  const h = await planHealthHarness("s5_cu_failed_submit", clock);
-  h.setHttpResponse(jevPicking());
-  await planHealthTurn(h, "t-cu-fail-1", "Working on it.");
-  const firstCall = planHealthLines(h).calls[0];
-
-  h.setClassifyValue((prompt, labels) => {
-    if (!Array.isArray(labels)) return "discard";
-    if (labels.includes("drift")) return "drift";
-    if (labels.includes("nudge")) return "nudge";
-    return "discard";
-  });
-  h.failPromptSubmits(new Error("submit boom"));
-  clock.advance(130_000);
-  await fireTick(h);
-  const failed = await waitUntil(() => getDecisions(h).some((d) => d.action === "nudge_failed"));
-  check("s5 continued_unprompted failed-submit control: the nudge attempt failed", failed, getDecisions(h).map((d) => d.action));
-  await new Promise((r) => setTimeout(r, 60));
-  check("s5 continued_unprompted failed-submit: no outcome was written for the restored call",
-    !planHealthLines(h).outcomes.some((o) => o.kind === "continued_unprompted"), planHealthLines(h).outcomes);
-
-  clock.advance(1000);
-  await planHealthTurn(h, "t-cu-fail-2", "Carrying on with no nudge in between.");
-  const after = planHealthLines(h);
-  const cu = after.outcomes.filter((o) => o.kind === "continued_unprompted");
-  check("s5 continued_unprompted: the restored record is settled true by the next un-originated turn",
-    cu.length === 1 && cu[0].value === "true" && cu[0].callStampId === firstCall.stampId, cu);
-}
-
-// The chapter_within outcome is true when the Chapter count rises within the
-// next five turns on the entry, written at the rise, and false at the fifth
-// turn without one, each once against the call that awaited it.
-async function casePlanHealth_chapterWithinTrueOnARiseAndFalseAtTheFifthTurn(clock) {
-  console.log("\n=== Section 5 plan health: chapter_within is true at a rise and false at the fifth turn without one ===");
-  // A rise on the second turn after the question.
-  const rise = await planHealthHarness("s5_chapter_rise", clock);
-  rise.setHttpResponse(jevPicking());
-  await planHealthTurn(rise, "t-cw-1", "Working on it.");
-  clock.advance(1000);
-  await planHealthTurn(rise, "t-cw-2", "Still working.");
-  clock.advance(1000);
-  rise.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
-  await planHealthTurn(rise, "t-cw-3", "Chapter 2 is in.");
-  const riseLines = planHealthLines(rise);
-  const within = riseLines.outcomes.filter((o) => o.kind === "chapter_within");
-  check("s5 chapter_within control: the rise was read as plan_progress",
-    getDecisions(rise).filter((d) => d.action === "plan_progress").length === 1, getDecisions(rise).map((d) => d.action));
-  check("s5 chapter_within: at the rise, true once for each call still waiting, against their own stamp ids",
-    within.length === 2 && within.every((o) => o.value === "true")
-      && within[0].callStampId === riseLines.calls[0].stampId && within[1].callStampId === riseLines.calls[1].stampId, within);
-  clock.advance(1000);
-  await planHealthTurn(rise, "t-cw-4", "Carrying on.");
-  const withinAfter = planHealthLines(rise).outcomes.filter((o) => o.kind === "chapter_within");
-  check("s5 chapter_within: a later turn writes nothing more for the calls already settled",
-    withinAfter.length === 2, withinAfter.length);
-
-  // No rise for five turns after the question.
-  const flat = await planHealthHarness("s5_chapter_flat", clock);
-  flat.setHttpResponse(jevPicking());
-  await planHealthTurn(flat, "t-cf-1", "Working on it.");
-  for (let turn = 2; turn <= 5; turn += 1) {
-    clock.advance(1000);
-    await planHealthTurn(flat, `t-cf-${turn}`, `Turn ${turn}.`);
+  // chapter_within: a Chapter rise on the third turn, then turns past the
+  // fifth without another, the two moments its retired rules name.
+  const chapters = await planHealthHarness("s5_retired_chapter_within", clock);
+  chapters.setHttpResponse(jevPicking());
+  for (let turn = 1; turn <= 7; turn += 1) {
+    if (turn > 1) clock.advance(1000);
+    if (turn === 3) chapters.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
+    await planHealthTurn(chapters, `t-rcw-${turn}`, `Turn ${turn}.`);
   }
-  const flatLines = planHealthLines(flat);
-  check("s5 chapter_within: after four turns without a rise, no chapter_within has been written",
-    flatLines.outcomes.filter((o) => o.kind === "chapter_within").length === 0, flatLines.outcomes.filter((o) => o.kind === "chapter_within"));
-  clock.advance(1000);
-  await planHealthTurn(flat, "t-cf-6", "Turn 6.");
-  const flatAfter = planHealthLines(flat);
-  const flatWithin = flatAfter.outcomes.filter((o) => o.kind === "chapter_within");
-  check("s5 chapter_within: at the fifth turn without a rise, false once, against the first call's stamp id alone",
-    flatWithin.length === 1 && flatWithin[0].value === "false" && flatWithin[0].callStampId === flatAfter.calls[0].stampId, flatWithin);
-  check("s5 chapter_within control: the document's count never rose in the flat run",
-    !getDecisions(flat).some((d) => d.action === "plan_progress"), getDecisions(flat).map((d) => d.action));
+  const chapterLines = planHealthLines(chapters);
+  check("s5 retired chapter_within control: seven calls, and the rise was read once as plan_progress",
+    chapterLines.calls.length === 7 && getDecisions(chapters).filter((d) => d.action === "plan_progress").length === 1,
+    { calls: chapterLines.calls.length, actions: getDecisions(chapters).map((d) => d.action) });
+  check("s5 retired chapter_within control: the reader counts a chapter_within line once one is in the journal",
+    readerSees(chapters, "chapter_within", chapterLines.calls[0]));
+  check("s5 retired chapter_within: neither the rise nor the turns past the fifth write one, for any call",
+    retiredOutcomesOf(chapters, chapterLines.calls).length === 0, retiredOutcomesOf(chapters, chapterLines.calls));
 }
 
 // The Section 2 tree with two task entries under the one plan holder: task-1
@@ -24659,57 +24541,11 @@ async function planHealthSwitchTo(h, nodeId) {
   if (state.activeGoalId !== nodeId) throw new Error(`goal_resume ${nodeId} left ${state.activeGoalId} active`);
 }
 
-// chapter_within is measured against the holder's count at the call, per
-// entry: two task entries share one plan holder, so a rise read on one
-// entry's turn stores the new count on the holder, and the other entry's
-// pending call must still see that rise on its own next turn.
-async function casePlanHealth_chapterWithinSeesARiseReadOnASiblingsTurn(clock) {
-  console.log("\n=== Section 5 plan health (fix round 1, item 1): chapter_within on one task entry sees a rise read on its sibling's turn ===");
-  const h = await planHealthSiblingsHarness("s5_chapter_sibling", clock);
-  // A question on A's turn, then one on B's turn.
-  await planHealthTurn(h, "t-cs-1", "Working on A.");
-  clock.advance(1000);
-  await planHealthSwitchTo(h, "task-2");
-  await planHealthTurn(h, "t-cs-2", "Working on B.");
-  const asked = planHealthLines(h).calls;
-  check("s5 chapter_within sibling control: one call per turn, on A then on B",
-    asked.length === 2, asked.length);
-  // The rise is read on A's next turn, which stores the new count on the
-  // holder and settles A's call.
-  clock.advance(1000);
-  await planHealthSwitchTo(h, "task-1");
-  h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
-  await planHealthTurn(h, "t-cs-3", "Chapter 2 is in.");
-  const atRise = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
-  check("s5 chapter_within sibling control: the rise was read once as plan_progress on A's turn",
-    getDecisions(h).filter((d) => d.action === "plan_progress").length === 1
-      && getState(h).goals.find((g) => g.id === "plan-1").chapterCount === 2, getDecisions(h).map((d) => d.action));
-  check("s5 chapter_within sibling: A's call lands true at the rise on A's own turn, and B's is still waiting",
-    atRise.length === 1 && atRise[0].value === "true" && atRise[0].callStampId === asked[0].stampId, atRise);
-  // B's next turn: the holder's count is above the count B's call was made
-  // at, so B's call lands true although the holder's count did not move on
-  // this turn.
-  clock.advance(1000);
-  await planHealthSwitchTo(h, "task-2");
-  await planHealthTurn(h, "t-cs-4", "Back on B.");
-  const afterB = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
-  check("s5 chapter_within sibling: B's call lands true on B's next turn, against B's own stamp id",
-    afterB.length === 2 && afterB[1].value === "true" && afterB[1].callStampId === asked[1].stampId, afterB);
-  // Once: later turns on B, the new call on t-cs-4 included, write nothing
-  // more for the two settled calls.
-  clock.advance(1000);
-  await planHealthTurn(h, "t-cs-5", "Still on B.");
-  const later = planHealthLines(h).outcomes.filter((o) => o.kind === "chapter_within");
-  check("s5 chapter_within sibling: a later turn on B writes nothing more for the settled calls",
-    later.length === 2 && later.every((o) => o.callStampId !== planHealthLines(h).calls[3].stampId), later);
-}
-
-// An entry whose questions await an outcome is abandoned while a sibling is
-// the turn leaf: the sibling's turn drops the record, so no chapter_within is
-// ever written for the abandoned entry's call, whatever the sibling's later
-// turns read.
+// An entry is abandoned while a sibling is the turn leaf: the sibling's turns
+// go on asking about the sibling alone, the abandoned entry's call still gets
+// its next_speaker, and nothing throws into a turn.
 async function casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock) {
-  console.log("\n=== Section 5 plan health (fix round 1, item 3): an entry abandoned while a sibling is the leaf drops its held record ===");
+  console.log("\n=== Plan health: an entry abandoned while a sibling is the leaf is asked about no more ===");
   const unhandled = [];
   const onUnhandled = (reason) => { unhandled.push(reason); };
   process.on("unhandledRejection", onUnhandled);
@@ -24725,23 +24561,18 @@ async function casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock)
     check("s5 abandoned sibling control: A is abandoned while B is active",
       dropped.deny === undefined && getState(h).goals.find((g) => g.id === "task-1").status === "abandoned" && getState(h).activeGoalId === "task-2",
       [dropped, getState(h).goals.find((g) => g.id === "task-1").status]);
-    // Six turns on B, a Chapter rise among them: every chance A's record
-    // would have had to settle, had it still been held and joined.
     for (let turn = 2; turn <= 7; turn += 1) {
       clock.advance(1000);
       if (turn === 4) h.fsMap.set(PLAN2_FILE, plan2Doc("Status: In Progress", ["### Chapter 1", "### Chapter 2"]));
       await planHealthTurn(h, `t-ab-${turn}`, `Turn ${turn} on B.`);
     }
     const { calls, outcomes } = planHealthLines(h);
-    check("s5 abandoned sibling control: the rise was read on B's turn and B's own first call landed true",
-      getDecisions(h).filter((d) => d.action === "plan_progress").length === 1
-        && outcomes.some((o) => o.kind === "chapter_within" && o.value === "true" && o.callStampId === calls[1].stampId), outcomes);
-    check("s5 abandoned sibling: no chapter_within was written for the abandoned entry's call",
-      !outcomes.some((o) => o.kind === "chapter_within" && o.callStampId === asked[0].stampId), outcomes.filter((o) => o.kind === "chapter_within"));
     check("s5 abandoned sibling: the abandoned entry's next_speaker still landed once, its turn's origin being known before the drop",
       outcomes.filter((o) => o.kind === "next_speaker" && o.callStampId === asked[0].stampId).length === 1, outcomes.filter((o) => o.kind === "next_speaker"));
-    check("s5 abandoned sibling: no later call was made for the abandoned entry",
-      calls.length === 7, calls.length);
+    check("s5 abandoned sibling: no later call was made for the abandoned entry, and B's calls carry B's closing texts alone",
+      calls.length === 7 && calls.slice(1).every((c) => !c.state.includes("Working on A.")), calls.length);
+    check("s5 abandoned sibling: no outcome of a retired kind for any call",
+      retiredOutcomesOf(h, calls).length === 0, retiredOutcomesOf(h, calls));
     check("s5 abandoned sibling: nothing threw into a turn",
       !getDecisions(h).some((d) => d.action === "plan_record_failed" || d.action === "score_failed"), getDecisions(h).map((d) => d.action));
     await new Promise((r) => setImmediate(r));
@@ -24751,11 +24582,11 @@ async function casePlanHealth_abandonedEntryDropsItsRecordOnASiblingsTurn(clock)
   }
 }
 
-// Bullet 4: an entry that completes two turns after a question writes no
-// chapter_within outcome for it and throws nothing. The entry completing
-// drops what it held: the outcomes it awaited are never written.
+// An entry that completes two turns after a question asks nothing on its
+// completing turn and throws nothing. The entry completing drops what it
+// held.
 async function casePlanHealth_entryCompletingDropsThePendingOutcomes(clock) {
-  console.log("\n=== Section 5 plan health: an entry completing two turns after a question writes no chapter_within and throws nothing ===");
+  console.log("\n=== Plan health: an entry completing two turns after a question asks nothing more and throws nothing ===");
   const unhandled = [];
   const onUnhandled = (reason) => { unhandled.push(reason); };
   process.on("unhandledRejection", onUnhandled);
@@ -24775,8 +24606,6 @@ async function casePlanHealth_entryCompletingDropsThePendingOutcomes(clock) {
     const { calls, outcomes } = planHealthLines(h);
     check("s5 completing: the completing turn asked nothing, so two calls stand",
       calls.length === 2, calls.length);
-    check("s5 completing: no chapter_within was written for either call",
-      outcomes.filter((o) => o.kind === "chapter_within").length === 0, outcomes);
     check("s5 completing: the second call's next_speaker still landed, the turn's origin being known before the entry completed",
       outcomes.filter((o) => o.kind === "next_speaker").length === 2, outcomes.filter((o) => o.kind === "next_speaker"));
     // Later turns on the next entry, a task entry, ask nothing and write no
@@ -24787,9 +24616,9 @@ async function casePlanHealth_entryCompletingDropsThePendingOutcomes(clock) {
     h.fsMap.set(PLAN2_FILE, plan2Doc("Status: Complete", ["### Chapter 1", "### Chapter 2"]));
     await planHealthTurn(h, "t-done-5", "And a Chapter landed somewhere.");
     const later = planHealthLines(h);
-    check("s5 completing: no later turn wrote a call, a chapter_within or a next_speaker for the dropped calls",
-      later.calls.length === 2 && later.outcomes.filter((o) => o.kind === "chapter_within").length === 0
-        && later.outcomes.filter((o) => o.kind === "next_speaker").length === 2, later.outcomes);
+    check("s5 completing: no later turn wrote a call or a next_speaker for the dropped calls, and no retired kind was written",
+      later.calls.length === 2 && later.outcomes.filter((o) => o.kind === "next_speaker").length === 2
+        && retiredOutcomesOf(h, later.calls).length === 0, later.outcomes);
     check("s5 completing: nothing threw into a turn",
       !getDecisions(h).some((d) => d.action === "plan_record_failed" || d.action === "score_failed"), getDecisions(h).map((d) => d.action));
     await new Promise((r) => setImmediate(r));
@@ -24799,9 +24628,9 @@ async function casePlanHealth_entryCompletingDropsThePendingOutcomes(clock) {
   }
 }
 
-// Bullet 5: a task-entry turn asks none of the three.
+// A task-entry turn asks nothing.
 async function casePlanHealth_taskEntryAsksNone(clock) {
-  console.log("\n=== Section 5 plan health: a task entry's turn asks none of the three ===");
+  console.log("\n=== Plan health: a task entry's turn asks nothing ===");
   clock.set(T0);
   const shape = SECTION4_SHAPES.find((s) => !s.planEntry);
   const h = await section4Harness("s5_task_none", shape);
@@ -24811,9 +24640,9 @@ async function casePlanHealth_taskEntryAsksNone(clock) {
   clock.advance(1000);
   await planHealthTurn(h, "t-task-2", "Working.");
   const { calls, answers, outcomes } = planHealthLines(h);
-  check("s5 task entry: no plan-health call line, no answer joined to one, no outcome of the three kinds",
+  check("s5 task entry: no plan-health call line, no answer joined to one, no plan health outcome",
     calls.length === 0 && answers.length === 0 && outcomes.length === 0, { calls, answers, outcomes });
-  check("s5 task entry: no request carried three questions", planHealthRequests(h).length === 0, h.httpCalls.length);
+  check("s5 task entry: no request carried block-owner", planHealthRequests(h).length === 0, h.httpCalls.length);
   // The control: the key was live and the turn did reach a shadow site, so
   // the absence above is the plan-entry gate and not an off switch.
   check("s5 task entry control: the same turns still sent the memory gate's own shadow request",
@@ -24822,7 +24651,7 @@ async function casePlanHealth_taskEntryAsksNone(clock) {
 
 // The one drive every invariance run makes: a plain turn, a BLOCKED: turn,
 // a channel turn on which the Chapter count rises, a delivery turn, and a
-// plain turn. Every joiner and both scorer skips fire along it, so a value
+// plain turn. The joiner and both scorer skips fire along it, so a value
 // that leaked from an answer into any of them would show as a differing
 // decision or goal field against the off run.
 async function planHealthDrive(h, clock) {
@@ -24903,13 +24732,12 @@ function checkPlanHealthInvariant(label, shadow, off) {
     !shadowState.decisions.some((d) => d.action === "journal_write_failed"), shadowState.decisions.map((d) => d.action));
 }
 
-// Bullets 1 and 2, and the Tests line: decision invariance against a Jev
-// that answers at each extreme, fails, or hangs. Each fake is named by the
-// value it drives, and each run's control reads that value back off the
-// answer lines, so an identical pair of runs is never two runs that both
-// asked nothing.
+// Decision invariance against a Jev that answers each block-owner option,
+// fails, or hangs. Each fake is named by the value it drives, and each run's
+// control reads that value back off the answer lines, so an identical pair of
+// runs is never two runs that both asked nothing.
 async function casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock) {
-  console.log("\n=== Section 5 plan health: decisions and goal fields are invariant across a Jev at each extreme, failing and hung ===");
+  console.log("\n=== Plan health: decisions and goal fields are invariant across a Jev answering each option, failing and hung ===");
   const off = await planHealthHarness("s5_inv_off", clock, { jevMode: "off" });
   await planHealthDrive(off, clock);
   check("s5 invariance control: the off run sent no request and wrote no journal line",
@@ -24920,26 +24748,20 @@ async function casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock) 
     getDecisions(off).some((d) => d.action === "lead_set") && getDecisions(off).some((d) => d.action === "plan_progress")
       && getDecisions(off).filter((d) => d.action === "score_skipped").length >= 5, getDecisions(off).map((d) => d.action));
 
-  const extremes = [
-    ["a Noul of 0", { noul: () => 0 }, (a) => a.filter((x) => x.primitive === "noul").every((x) => x.value === "0")],
-    ["a Noul of 1", { noul: () => 1 }, (a) => a.filter((x) => x.primitive === "noul").every((x) => x.value === "1")],
-    ["a Score at its lowest level", { score: () => 0 }, (a) => a.filter((x) => x.primitive === "score").every((x) => x.value === "0")],
-    ["a Score at its highest level", { score: (q, count) => count - 1 }, (a) => a.filter((x) => x.primitive === "score").every((x) => x.value === "2")],
-    ...["operator", "coordinator", "another-plan", "self-resolving", "none"].map((option) => [
-      `a Choice of ${option}`, { choice: () => option }, (a) => a.filter((x) => x.primitive === "choice").every((x) => x.value === option),
-    ]),
-  ];
+  const extremes = Catalog.BLOCK_OWNER_OPTIONS.map((option) => [
+    `a Choice of ${option}`, { choice: () => option }, (a) => a.every((x) => x.primitive === "choice" && x.value === option),
+  ]);
   for (const [label, pick, holds] of extremes) {
     const shadow = await planHealthHarness(`s5_inv_${label.replace(/[^a-z0-9]+/gi, "_")}`, clock);
     shadow.setHttpResponse(jevPicking(pick));
     await planHealthDrive(shadow, clock);
     const { calls, answers } = planHealthLines(shadow);
-    check(`s5 invariance control (${label}): five calls, twenty answers, every answer carrying the driven value`,
-      calls.length === 5 && answers.length === 20 && holds(answers), answers.map((a) => [a.primitive, a.value]));
+    check(`s5 invariance control (${label}): five calls, five answers, every answer carrying the driven value`,
+      calls.length === 5 && answers.length === 5 && holds(answers), answers.map((a) => [a.primitive, a.value]));
     // The drive's channel turn goes through the real prompt.submit hook, so the
     // record step runs and puts the turn-open question. Read here because the
     // controls above count plan-health lines alone: they would stand at five
-    // calls and twenty answers with no turn-open call leaving at all, and the
+    // calls and five answers with no turn-open call leaving at all, and the
     // record comparison would then be a comparison of two empty layers.
     check(`s5 invariance control (${label}): the drive's own channel message put the turn-open question, so the record layer was exercised`,
       turnOpenCallLines(shadow).length === 1 && recordsOf(shadow).length === 1,
@@ -24973,12 +24795,13 @@ async function casePlanHealth_decisionsAreInvariantAcrossEveryJevExtreme(clock) 
   checkPlanHealthInvariant("s5 invariance (hung)", hung, off);
 }
 
-// The Tests line: a hung request cannot delay a turn's end. The turn's own
-// completion handler resolves against a real timer while the request is
-// still pending, and the fake clock moves by the case's steps and nothing
-// else.
+// A hung request cannot delay a turn's end. The turn's own completion handler
+// resolves against a real timer while the request is still pending, and the
+// fake clock moves by the case's steps and nothing else. The stamp id is
+// minted when the request starts, so the next turn's next_speaker lands
+// against it while the call has written no line.
 async function casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock) {
-  console.log("\n=== Section 5 plan health: a hung request cannot delay a turn's end ===");
+  console.log("\n=== Plan health: a hung request cannot delay a turn's end ===");
   const h = await planHealthHarness("s5_hung_turn", clock);
   h.setHttpResponse(() => new Promise(() => {}));
   h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
@@ -24995,12 +24818,68 @@ async function casePlanHealth_hungRequestCannotDelayTheTurnEnd(clock) {
   check("s5 hung turn control: the request left and its timer is pending, so the silence is a call in flight",
     planHealthRequests(h).length === 1 && h.pendingSleepCount >= 1, { requests: planHealthRequests(h).length, sleeps: h.pendingSleepCount });
   const { calls, outcomes } = planHealthLines(h);
-  check("s5 hung turn: no call line landed, the call not having settled", calls.length === 0, calls);
-  check("s5 hung turn: the lead_blocked outcome still landed against the minted stamp id",
-    outcomes.length === 1 && outcomes[0].kind === "lead_blocked" && outcomes[0].value === "true" && typeof outcomes[0].callStampId === "string", outcomes);
+  check("s5 hung turn: no call line and no outcome landed, the call not having settled", calls.length === 0 && outcomes.length === 0, { calls, outcomes });
   check("s5 hung turn: the fake clock did not move", clock.get() === clockBefore, { before: clockBefore, after: clock.get() });
   check("s5 hung turn: the lead was set as on any turn",
     getState(h).goals.find((g) => g.id === "plan-1").lead?.state === "blocked", getState(h).goals.find((g) => g.id === "plan-1").lead);
+  await planHealthTurn(h, "t-hung-2", "Still waiting on the suite.");
+  const next = planHealthLines(h);
+  check("s5 hung turn: the next turn's next_speaker lands against the stamp id the hung call was minted with, though no call line exists",
+    next.calls.length === 0 && next.outcomes.length === 1 && next.outcomes[0].kind === "next_speaker" && typeof next.outcomes[0].callStampId === "string",
+    next.outcomes);
+}
+
+// The replay's block-owner v2 request for a journaled call is the request
+// the plugin sent for it, byte for byte. The plugin's call is driven over a
+// closing text carrying a line break, quotes, brackets and characters past
+// ASCII, on a second turn so the recent list holds two texts; the replay's
+// record is built from that call's own journal line in the shape sample.mjs
+// writes, once as a v2-journaled record and once as a v1-journaled one, whose
+// request carried four questions over the same state. That is the pin the
+// replay's v2 figure rests on.
+async function casePlanHealth_theReplaysV2RequestIsThePluginsByteForByte(clock) {
+  console.log("\n=== Plan health: the replay's block-owner v2 request is the plugin's, byte for byte ===");
+  const { replayRecord } = await import("./jev-gold/replay.mjs");
+  const h = await planHealthHarness("s5_replay_bytes", clock);
+  h.setHttpResponse(jevPicking({ choice: () => "self-resolving" }));
+  await planHealthTurn(h, "t-rb-bytes-1", "WAITING: the \"suite\" [bk1] is running.\nNext: read it. Café ✓");
+  clock.advance(1000);
+  await planHealthTurn(h, "t-rb-bytes-2", `BLOCKED: ${"y".repeat(1100)}`);
+  const pluginBodies = h.httpCalls.map((c) => String(c.init.body)).filter((body) => {
+    try { return Object.hasOwn(JSON.parse(body).questions, Catalog.BLOCK_OWNER); } catch { return false; }
+  });
+  const { calls, answers } = planHealthLines(h);
+  check("s5 replay bytes (control): two plan-entry turns sent two block-owner requests and journaled two calls, each answered at v2",
+    pluginBodies.length === 2 && calls.length === 2 && answers.length === 2 && answers.every((a) => a.questionVersion === "v2"),
+    { bodies: pluginBodies.length, calls: calls.length, versions: answers.map((a) => a.questionVersion) });
+  check("s5 replay bytes (control): the second call's state carries both closing texts, the second cut at 1,000",
+    calls.length === 2 && JSON.parse(calls[1].state).recentClosingTexts.length === 2 && JSON.parse(calls[1].state).closingText.length === 1000,
+    calls[1] && calls[1].state.length);
+
+  for (const [journaled, questionVersion] of [["v2-journaled", "v2"], ["v1-journaled", "v1"]]) {
+    for (let i = 0; i < calls.length; i += 1) {
+      const record = {
+        id: `bo-fixture-${i}`, stampId: calls[i].stampId, state: calls[i].state, haikuValue: null,
+        jev: { version: questionVersion, value: answers[i]?.value, probabilities: answers[i]?.probabilities },
+      };
+      let replayBody = null;
+      const host = {
+        getApiKey: async () => JEV_FAKE_KEY,
+        getHome: async () => undefined,
+        readFile: async () => { throw new Error("no override is read"); },
+        fileExists: async () => false,
+        sleep: async () => {},
+        fetch: async (url, init) => { replayBody = String(init.body); return jevPicking({ choice: () => "self-resolving" })(url, init); },
+      };
+      let row = null;
+      try { row = await replayRecord(host, "block-owner", "v2", record); } catch (e) { row = { threw: e.message }; }
+      check(`s5 replay bytes (${journaled}, call ${i + 1}): the replay's request body is the plugin's, byte for byte`,
+        typeof replayBody === "string" && replayBody === pluginBodies[i],
+        { plugin: pluginBodies[i]?.slice(0, 120), replay: replayBody?.slice(0, 120), row });
+      check(`s5 replay bytes (${journaled}, call ${i + 1}): the replay row is answered and stamped v2`,
+        row !== null && row.ok === true && row.version === "v2" && row.value === "self-resolving", row);
+    }
+  }
 }
 
 // --- Goal levels Section 3: the long-term goal is a list beside the tree ---
@@ -26303,6 +26182,644 @@ async function caseTurnClose_theJournaledStateCarriesTheFourFields(clock) {
   const forged = turnDispositionRequests(forging)[0]?.state;
   check("close state guard: a closing text carrying a label and a line break stays inside agent_final_message, and the state is four lines",
     typeof forged === "string" && forged.split("\n").length === 4 && forged.split("\n")[2].includes("active_goal: a goal the persona never had"), forged);
+}
+
+// Turn-score v2 (jev-question-quality section 4). One scored turn's state is
+// read three ways: the text Haiku's classify call was handed, the state the
+// Jev request carried, and the state the journal's call line records, and the
+// three are one text. .kit/jev-gold/replay.mjs then rebuilds it from a record
+// carrying the same turn in the shape sample.mjs writes one, its activity line
+// written by sample.mjs's own toolActivityText over the same tool calls, and
+// the two are byte-identical. That is the pin the replay's v2 figure rests on:
+// a drift between the plugin's state and the replay's is exactly what it
+// catches. The prompt and the answer run past both cuts, and the turn sets
+// three flags, so the cuts and the Tools line are inside the comparison. The
+// answer line carries v2. A nudged turn on a plan entry is then scored over the
+// three-label array, offered to Haiku and to Jev alike, over one text that
+// opens with the nudge the worker was answering.
+async function caseTurnScore_theV2StateIsOneTextForHaikuJevAndTheReplay(clock) {
+  console.log("\n=== Turn score v2: one state for Haiku, Jev and the journal, byte-identical to the replay's, journaled as v2, and a nudged turn offered three labels ===");
+  const { turnScoreV2State } = await import("./jev-gold/replay.mjs");
+  const { toolActivityText } = await import("./jev-gold/sample.mjs");
+  const answerEveryQuestion = (url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 });
+  const scorerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("on-goal"));
+  const turnScoreBodiesOf = (h) => h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.TURN_SCORE));
+  const turnScoreCallLinesOf = (h) => journalLinesOfKind(h, "call").filter((line) => line.questionSet === Catalog.TURN_SCORE);
+
+  clock.set(T0);
+  const h = await seedSeamHarness("turn_score_v2_state", clock);
+  h.setHttpResponse(answerEveryQuestion);
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  const prompt = "Tidy the notes [today].\n" + "p".repeat(1300) + "PROMPT-TAIL";
+  const answer = "WORKING: tidied them.\n" + "a".repeat(3100) + "ANSWER-TAIL";
+  const turnId = "t-ts-v2";
+  const calls = [
+    { tool: "Read", file_path: "D:/agent_persona/docs/plans/x_v1.md" },
+    { tool: "Bash", command: "git commit -m 'x'" },
+    { tool: "Grep", pattern: "x" },
+    { tool: "mcp__plugin_relay_channel-relay__reply", message: "on it" },
+  ];
+  await submitMessage(h, prompt);
+  await recordTurnStart(h, turnId, prompt);
+  for (const call of calls) await callTool(h, { ...call, turnId }, async () => ({ result: "ok" }));
+  await recordTurnComplete(h, turnId, answer);
+  await settleJournalWrites(h);
+
+  const scorerCalls = scorerCallsOf(h);
+  const bodies = turnScoreBodiesOf(h);
+  const callLines = turnScoreCallLinesOf(h);
+  const haikuState = scorerCalls.length === 1 ? scorerCalls[0][0] : null;
+  const jevState = bodies.length === 1 ? bodies[0].state : null;
+  check("turn score v2 (control): the turn was scored once by Haiku, asked of Jev once and journaled once",
+    scorerCalls.length === 1 && bodies.length === 1 && callLines.length === 1,
+    { haiku: scorerCalls.length, jev: bodies.length, lines: callLines.length });
+  check("turn score v2: Haiku and Jev are handed the same text, and the journal records that text",
+    typeof haikuState === "string" && haikuState === jevState && callLines[0]?.state === jevState,
+    { haiku: haikuState?.slice(0, 60), jev: jevState?.slice(0, 60), journal: callLines[0]?.state?.slice(0, 60) });
+  const objective = getState(h).goals.find((g) => g.id === "g-plan")?.objective;
+  check("turn score v2: the state is the catalog's builder over this turn's prompt, answer, objective and tool activity",
+    typeof objective === "string" && jevState === Catalog.turnScoreStateText(prompt, answer, objective, {
+      flags: { plan_read: true, plan_edited: false, commit: true, push: false, agent_dispatched: false, goal_done: false, reply: true },
+      calls: ["Read", "Bash", "Grep", "mcp__plugin_relay_channel-relay__reply"],
+    }), jevState?.slice(-160));
+  check("turn score v2: the prompt is cut at 1,200 and the answer at 3,000, so both tails are gone",
+    typeof jevState === "string" && !jevState.includes("PROMPT-TAIL") && !jevState.includes("ANSWER-TAIL")
+      && jevState.includes(`Turn opened with: Tidy the notes (today). ${"p".repeat(1200 - "Tidy the notes [today].\n".length)}\n\n`),
+    jevState?.slice(0, 80));
+  check("turn score v2: the Tools line names the flags that held, then the calls in order, and nothing follows it",
+    typeof jevState === "string" && jevState.endsWith("\n\nTools: flags: plan_read, commit, reply; calls: Read, Bash, Grep, mcp__plugin_relay_channel-relay__reply"),
+    jevState?.slice(-120));
+
+  // The replay's record for the same turn, in sample.mjs's shape: a v1 state
+  // of the kind the sampled records carry, the Jev probabilities the call
+  // answered with, and the transcript fields.
+  const answerLine = journalLinesOfKind(h, "answer").find((line) => line.callStampId === callLines[0]?.stampId);
+  const record = {
+    id: "ts-fixture",
+    stampId: callLines[0]?.stampId,
+    state: `User asked: ${prompt.slice(0, 500)}\n\nWorker answered: ${answer.slice(0, 1000)}\n\nGoal objective: ${objective}\n\nDid the worker's answer advance the goal objective?`,
+    jev: { probabilities: answerLine?.probabilities },
+    transcript: {
+      prompt,
+      finalMessage: answer,
+      toolActivity: toolActivityText(calls.map(({ tool, ...input }) => ({ name: tool, input }))),
+    },
+  };
+  let replayState = null;
+  try {
+    const built = turnScoreV2State(record);
+    replayState = built.ok ? built.state : `refused: ${built.reason}`;
+  } catch (e) { replayState = `threw: ${e.message}`; }
+  check("turn score v2: the replay's v2 state for the same turn is byte-identical to the state the plugin sent",
+    typeof jevState === "string" && replayState === jevState,
+    { plugin: jevState?.slice(-120), replay: typeof replayState === "string" ? replayState.slice(-120) : replayState });
+  check("turn score v2: the answer line carries version v2",
+    answerLine?.questionVersion === "v2", answerLine?.questionVersion);
+
+  // The mid-turn leg: a task notification submitted while the turn is open
+  // replaces the last prompt the plugin saw, and the state still opens with
+  // the text the turn opened with.
+  clock.set(T0);
+  const m = await seedSeamHarness("turn_score_v2_midturn", clock);
+  m.setHttpResponse(answerEveryQuestion);
+  m.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  await submitMessage(m, "Tidy the notes.");
+  await recordTurnStart(m, "t-ts-midturn", "Tidy the notes.");
+  await submitMessage(m, "<task-notification>\n<task-id>b-mid</task-id>\n</task-notification>", null);
+  await recordTurnComplete(m, "t-ts-midturn", "Tidied them.");
+  await settleJournalWrites(m);
+  const midBodies = turnScoreBodiesOf(m);
+  check("turn score v2 mid-turn: a prompt submitted inside the turn does not replace the opening text the state carries",
+    midBodies.length === 1 && midBodies[0].state.startsWith("Turn opened with: Tidy the notes.\n\n") && !midBodies[0].state.includes("task-notification"),
+    midBodies[0]?.state?.slice(0, 100));
+
+  // The nudged leg: a plan entry nudged by the idle tick, whose own turn is
+  // scored over the three labels a nudged turn is offered.
+  clock.set(T0);
+  const n = await lead3Harness("turn_score_v2_nudged");
+  n.storeMap.set(`commons:${SESSION_ID}`, {
+    sessionId: SESSION_ID,
+    lastSeen: T0,
+    claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }],
+  });
+  n.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  n.setHttpResponse(answerEveryQuestion);
+  const idle = await lead3IdleTick(n, clock);
+  check("turn score v2 nudged (control): the idle tick nudged the entry", idle.nudged === true, idle);
+  n.setClassifyValue((prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("on-goal")) return "on-goal";
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  });
+  await openQueuedTurn(n, "t-ts-nudged");
+  await n.handlers["turn.complete"](n.fake, { turnId: "t-ts-nudged", answer: "WORKING: took the next step.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(n);
+  const nudgedScorer = scorerCallsOf(n);
+  const nudgedBodies = turnScoreBodiesOf(n);
+  check("turn score v2 nudged (control): the nudged turn was scored once and asked of Jev once",
+    nudgedScorer.length === 1 && nudgedBodies.length === 1, { haiku: nudgedScorer.length, jev: nudgedBodies.length });
+  check("turn score v2 nudged: Haiku is offered the three-label array",
+    nudgedScorer.length === 1 && JSON.stringify([...nudgedScorer[0][1]]) === JSON.stringify([...Catalog.SCORER_LABELS_AFTER_NUDGE]),
+    nudgedScorer[0]?.[1]);
+  check("turn score v2 nudged: Jev is offered the same three ids, and never off-goal-by-instruction",
+    nudgedBodies.length === 1 && JSON.stringify(Object.keys(nudgedBodies[0].questions[Catalog.TURN_SCORE].criteria)) === JSON.stringify([...Catalog.SCORER_LABELS_AFTER_NUDGE]),
+    nudgedBodies[0] && Object.keys(nudgedBodies[0].questions[Catalog.TURN_SCORE].criteria));
+  check("turn score v2 nudged: the one text both are handed opens with the nudge the worker was answering, its label folded",
+    nudgedScorer.length === 1 && nudgedBodies.length === 1 && nudgedScorer[0][0] === nudgedBodies[0].state
+      && nudgedBodies[0].state.startsWith("Turn opened with: (GOAL) The active goal is"),
+    nudgedBodies[0]?.state?.slice(0, 80));
+}
+
+// A subagent's completion is not scored. It arrives inside the persona's
+// open turn carrying the subagent's report as its answer and a non-empty
+// agentId, and makes no scorer classify, writes no turn-score call line and
+// pushes no score onto the goal. The persona's own completion of the same turn
+// afterwards is scored once, which is the control that the instrument reading
+// the absences speaks.
+async function caseTurnScore_aSubagentCompletionIsNotScored(clock) {
+  console.log("\n=== Turn score: a subagent's completion is not scored, and the persona's own completion after it is ===");
+  const scorerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("on-goal"));
+  const callLinesOf = (h) => journalLinesOfKind(h, "call").filter((line) => line.questionSet === Catalog.TURN_SCORE);
+  const scoresOf = (h) => getState(h).goals.find((g) => g.id === "g-plan")?.scores?.length ?? -1;
+  clock.set(T0);
+  const h = await seedSeamHarness("turn_score_subagent", clock);
+  h.setHttpResponse((url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 }));
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  const turnId = "t-ts-sub";
+  await submitMessage(h, "Tidy the notes.");
+  await recordTurnStart(h, turnId, "Tidy the notes.");
+  const scoresBefore = scoresOf(h);
+  await h.handlers["turn.complete"](h.fake, { turnId, agentId: "sub-ts", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(h);
+  check("turn score subagent: the subagent's completion made no scorer classify",
+    scorerCallsOf(h).length === 0, scorerCallsOf(h).length);
+  check("turn score subagent: the subagent's completion wrote no turn-score call line",
+    callLinesOf(h).length === 0, callLinesOf(h).length);
+  check("turn score subagent: the subagent's completion pushed no score",
+    scoresBefore >= 0 && scoresOf(h) === scoresBefore, { before: scoresBefore, after: scoresOf(h) });
+  await recordTurnComplete(h, turnId, "Tidied them.");
+  await settleJournalWrites(h);
+  check("turn score subagent (control): the persona's own completion was scored once, with one call line and one score",
+    scorerCallsOf(h).length === 1 && callLinesOf(h).length === 1 && scoresOf(h) === scoresBefore + 1,
+    { classify: scorerCallsOf(h).length, lines: callLinesOf(h).length, scores: scoresOf(h) });
+  check("turn score subagent (control): the scored answer is the persona's own, not the subagent's report",
+    callLinesOf(h)[0]?.state?.includes("Worker answered: Tidied them.") === true, callLinesOf(h)[0]?.state?.slice(0, 120));
+
+  // The nudged leg. A plan entry's nudged turn holds a subagent whose
+  // completion, under the nudged turn's own id, arrives first. The persona's
+  // own completion still reads the turn as the nudge's: it is scored once,
+  // over the three-label array, and not skipped as a plan-entry turn no
+  // nudge opened.
+  clock.set(T0);
+  const n = await lead3Harness("turn_score_subagent_nudged");
+  n.storeMap.set(`commons:${SESSION_ID}`, { sessionId: SESSION_ID, lastSeen: T0, claims: [{ resource: "persona:default", claimedAt: T0 - 2000 }] });
+  n.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+  n.setHttpResponse((url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 }));
+  const idle = await lead3IdleTick(n, clock);
+  check("turn score subagent nudged (control): the idle tick nudged the plan entry", idle.nudged === true, idle);
+  n.setClassifyValue((prompt, labels) => {
+    if (!Array.isArray(labels)) return "discard";
+    if (labels.includes("on-goal")) return "on-goal";
+    if (labels.includes("nudge")) return "nudge";
+    return "discard";
+  });
+  await openQueuedTurn(n, "t-ts-sub-nudged");
+  await n.handlers["turn.complete"](n.fake, { turnId: "t-ts-sub-nudged", agentId: "sub-nudged", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(n);
+  await n.handlers["turn.complete"](n.fake, { turnId: "t-ts-sub-nudged", answer: "WORKING: took the next step.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(n);
+  const nudgedScorer = scorerCallsOf(n);
+  check("turn score subagent nudged: the persona's own completion is scored once, over the three-label array",
+    nudgedScorer.length === 1 && JSON.stringify([...nudgedScorer[0][1]]) === JSON.stringify([...Catalog.SCORER_LABELS_AFTER_NUDGE]),
+    nudgedScorer.map((c) => c[1]));
+  check("turn score subagent nudged: the plan entry's turn is not skipped as one no nudge opened",
+    !getDecisions(n).some((d) => d.action === "score_skipped" && d.detail.includes("not opened by a nudge")),
+    getDecisions(n).filter((d) => d.action === "score_skipped").map((d) => d.detail));
+
+  // The delivery leg. A delivered record's turn holds a subagent whose
+  // completion arrives first. The persona's own completion still reads the
+  // turn as a delivery, so it is skipped rather than scored.
+  clock.set(T0);
+  const d = await seedSeamHarness("turn_score_subagent_delivery", clock);
+  d.setHttpResponse((url, init) => jevResponseFor(init, { choice: (questionId, optionIds) => optionIds[0], noul: () => 0.5, score: () => 0 }));
+  d.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("on-goal")) ? "on-goal" : "discard");
+  await openDeliveryTurn(d, "default", { text: "Pick up the next piece.", turnId: "t-ts-sub-delivery" });
+  const deliveryCallsBefore = scorerCallsOf(d).length;
+  await d.handlers["turn.complete"](d.fake, { turnId: "t-ts-sub-delivery", agentId: "sub-delivery", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(d);
+  await d.handlers["turn.complete"](d.fake, { turnId: "t-ts-sub-delivery", answer: "Picked it up.", reason: "completed" }, async () => ({ result: "ok" }));
+  await settleJournalWrites(d);
+  check("turn score subagent delivery: the persona's own completion is skipped as a delivered record's turn",
+    getDecisions(d).some((x) => x.action === "score_skipped" && x.detail.includes("a delivered record")),
+    getDecisions(d).filter((x) => x.action === "score_skipped").map((x) => x.detail));
+  check("turn score subagent delivery: neither completion made a scorer classify or wrote a turn-score call line",
+    scorerCallsOf(d).length === deliveryCallsBefore && callLinesOf(d).length === 0,
+    { classify: scorerCallsOf(d).length - deliveryCallsBefore, lines: callLinesOf(d).length });
+}
+
+// Controller v2 (jev-question-quality section 3). One idle tick's state is
+// read three ways: the text Haiku's classify call was handed, the state the
+// Jev request carried, and the state the journal's call line records, and
+// the three are one text. It carries the worker's last answer, folded and cut
+// at 1,500, the pending plans by id and title where any exist, and an option
+// list naming exactly the ids in force. .kit/jev-gold/replay.mjs then rebuilds
+// it from a record in the shape sample.mjs writes one, in both journal
+// shapes: from the v2 state the tick itself journaled, byte-identical; and
+// from a v1-shaped state rendered over the same fact lines, byte-identical
+// where no plan is pending and one stated line apart where one is, since the
+// v1 journal named plans by title alone. That is the pin the replay's v2
+// figure rests on. The last answer is moved by the persona's own turn end
+// alone: a subagent's completion and an aborted completion after it leave it
+// where it was. A tick before any turn ended reads none. Jev answering the
+// last option in force changes no decision.
+async function caseController_theV2StateIsOneTextForHaikuJevAndTheReplay(clock) {
+  console.log("\n=== Controller v2: one state for Haiku, Jev and the journal, byte-identical to the replay's, journaled as v2 ===");
+  const { controllerV2State } = await import("./jev-gold/replay.mjs");
+  const { toolActivityText } = await import("./jev-gold/sample.mjs");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const controllerBodiesOf = (h) => h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.CONTROLLER_DECISION));
+  const controllerCallLinesOf = (h) => journalLinesOfKind(h, "call").filter((line) => line.questionSet === Catalog.CONTROLLER_DECISION);
+  const options = Catalog.SHIPPED_QUESTIONS[Catalog.CONTROLLER_DECISION].options;
+  const optionLines = (ids) => ids.map((id) => `${id}: ${options[id]}`).join("\n");
+  const foldedAnswer = (raw) => Catalog.kaizenLine(raw).replace(/\s+/g, " ").trim().slice(0, 1500);
+  const idleClassify = (prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard";
+  // The v1 journal's shape over the same fact lines: the facts, the idle
+  // sentence, the lead, the four v1 option lines, and the switch line with
+  // the pending titles where any, as the v1 summary wrote them.
+  const V1_TAIL = "\n\nThe session has been idle for 130s.\nChoose the best decision:\n"
+    + "nudge: prompt the worker to take the next concrete step toward the goal\n"
+    + "pause: repeated drift or off-goal-by-instruction suggests the operator changed direction\n"
+    + "complete: objective evidently met\n"
+    + "ask-operator: blocked, ambiguous, or round budget nearly spent\n";
+  const v1Shaped = (v2State, titles) => v2State.split("\n\n")[0].split("\n")
+    .filter((l) => !l.startsWith(`${Catalog.CONTROLLER_LAST_ANSWER_LABEL}: `) && !l.startsWith(`${Catalog.CONTROLLER_PENDING_PLANS_LABEL}: `)).join("\n")
+    + V1_TAIL + (titles.length > 0 ? `switch: switch to a different pending plan: ${titles.map((t) => t.slice(0, 30)).join("; ")}\n` : "");
+  const CD_V1 = { nudge: 0.7, pause: 0.1, complete: 0.1, "ask-operator": 0.1 };
+  const CD_V1_SWITCH = { ...CD_V1, nudge: 0.6, switch: 0.1 };
+  const answer = "Tidied the [notes] today.\n\n" + "a".repeat(1600) + "ANSWER-TAIL";
+
+  for (const pending of [true, false]) {
+    const tag = pending ? "controller v2 (pending plan)" : "controller v2 (no pending plan)";
+    clock.set(T0);
+    const goals = [
+      makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+      makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5 }),
+      ...(pending ? [makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" })] : []),
+    ];
+    const h = await seedSeamHarness(`controller_v2_state_${pending ? "pending" : "none"}`, clock, { stateOpts: { goals, activeGoalId: "g-plan" }, costMaxNudgesPerHour: 10 });
+    h.setHttpResponse(jevAgreeing);
+    h.setClassifyValue(idleClassify);
+    // The persona's own turn, ending on the answer the state carries; then a
+    // subagent's completion inside a second turn and the persona's own
+    // aborted completion of it, neither of which is an answer to judge.
+    await recordTurn(h, "t-cd-1", "Tidy the notes.", answer);
+    await recordTurnStart(h, "t-cd-2", "Carry on.");
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-cd-2", agentId: "sub-cd", answer: "The subagent's report.", reason: "completed" }, async () => ({ result: "ok" }));
+    await h.handlers["turn.complete"](h.fake, { turnId: "t-cd-2", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+    await settleJournalWrites(h);
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    await settleJournalWrites(h);
+
+    const calls = controllerCallsOf(h);
+    const bodies = controllerBodiesOf(h);
+    const callLines = controllerCallLinesOf(h);
+    const haikuState = calls.length === 1 ? String(calls[0][0]) : null;
+    const jevState = bodies.length === 1 ? bodies[0].state : null;
+    const labels = pending ? Catalog.CONTROLLER_LABELS_WITH_SWITCH : Catalog.CONTROLLER_LABELS;
+    check(`${tag} (control): the tick classified once, asked Jev once and journaled once`,
+      calls.length === 1 && bodies.length === 1 && callLines.length === 1, { haiku: calls.length, jev: bodies.length, lines: callLines.length });
+    check(`${tag}: Haiku and Jev are handed the same text, and the journal records that text`,
+      typeof haikuState === "string" && haikuState === jevState && callLines[0]?.state === jevState,
+      { haiku: haikuState?.slice(0, 60), jev: jevState?.slice(0, 60), journal: callLines[0]?.state?.slice(0, 60) });
+    check(`${tag}: Haiku is offered ${pending ? "the set with switch" : "the set without switch"}, and Jev the same ids`,
+      calls.length === 1 && JSON.stringify([...calls[0][1]]) === JSON.stringify([...labels])
+        && bodies.length === 1 && JSON.stringify(Object.keys(bodies[0].questions[Catalog.CONTROLLER_DECISION].criteria)) === JSON.stringify([...labels]),
+      { haiku: calls[0]?.[1], jev: bodies[0] && Object.keys(bodies[0].questions[Catalog.CONTROLLER_DECISION].criteria) });
+    const objective = getState(h).goals.find((g) => g.id === "g-plan")?.objective;
+    check(`${tag}: the state opens on the objective, carries the idle time as a fact, and no idle sentence or pause`,
+      typeof jevState === "string" && jevState.startsWith(`Objective: ${objective}\n`) && jevState.includes("\nIdle time: ")
+        && !jevState.includes("The session has been idle") && !jevState.includes("pause"), jevState?.slice(0, 120));
+    check(`${tag}: the Last answer line is the persona's own answer, folded, collapsed and cut at 1,500, its tail gone`,
+      typeof jevState === "string" && jevState.includes(`\nLast answer: ${foldedAnswer(answer)}\n`) && !jevState.includes("ANSWER-TAIL")
+        && jevState.includes("Last answer: Tidied the (notes) today. aaa"), jevState?.split("\n").find((l) => l.startsWith("Last answer"))?.slice(0, 80));
+    check(`${tag}: neither the subagent's completion nor the aborted completion moved the last answer`,
+      typeof jevState === "string" && !jevState.includes("The subagent's report.") && jevState.split("\n").filter((l) => l.startsWith("Last answer: ")).length === 1,
+      jevState?.split("\n").find((l) => l.startsWith("Last answer"))?.slice(0, 60));
+    if (pending) {
+      check(`${tag}: the Pending plans line names the plan by id and title, between the last answer and the lead`,
+        typeof jevState === "string" && jevState.includes(`\nPending plans: g-plan-2: The other plan\n\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n`), jevState?.slice(-400));
+    } else {
+      check(`${tag}: the state carries no Pending plans line and no switch line`,
+        typeof jevState === "string" && !jevState.includes("Pending plans") && !jevState.includes("\nswitch: "), jevState?.slice(-300));
+    }
+    check(`${tag}: the option list is one line per id in force with its catalog description, and nothing follows it`,
+      typeof jevState === "string" && jevState.endsWith(`\n\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n${optionLines(labels)}`), jevState?.slice(-200));
+    const answerLine = journalLinesOfKind(h, "answer").find((line) => line.callStampId === callLines[0]?.stampId);
+    check(`${tag}: the answer line carries version v2`, answerLine?.questionVersion === "v2", answerLine?.questionVersion);
+    check(`${tag} (control): Jev agreeing with Haiku left the tick nudging`,
+      getDecisions(h).some((d) => d.action === "nudge_sent"), getDecisions(h).map((d) => d.action));
+
+    // The replay's record for the same tick, in sample.mjs's shape, from
+    // the v2 state the tick journaled: byte-identical, plan ids read back.
+    const v2Record = {
+      id: "cd-v2-fixture", stampId: callLines[0]?.stampId, state: callLines[0]?.state,
+      jev: { probabilities: answerLine?.probabilities },
+      transcript: { prompt: "Tidy the notes.", finalMessage: answer, toolActivity: toolActivityText([]) },
+    };
+    let v2Replay = null;
+    try { const built = controllerV2State(v2Record); v2Replay = built.ok ? built.state : `refused: ${built.reason}`; } catch (e) { v2Replay = `threw: ${e.message}`; }
+    check(`${tag}: the replay's v2 state from the tick's own journaled state is byte-identical to the state the plugin sent`,
+      typeof jevState === "string" && v2Replay === jevState, { plugin: jevState?.slice(-120), replay: typeof v2Replay === "string" ? v2Replay.slice(-120) : v2Replay });
+    // And from a v1-shaped state over the same fact lines, as the sampled
+    // records carry one, with the v1 probability keys its call offered.
+    const v1Record = {
+      ...v2Record, id: "cd-v1-fixture",
+      state: v1Shaped(jevState, pending ? ["The other plan"] : []),
+      jev: { probabilities: pending ? CD_V1_SWITCH : CD_V1 },
+    };
+    let v1Replay = null;
+    try { const built = controllerV2State(v1Record); v1Replay = built.ok ? built.state : `refused: ${built.reason}`; } catch (e) { v1Replay = `threw: ${e.message}`; }
+    if (pending) {
+      check(`${tag}: the replay's v2 state from a v1-shaped record is the plugin's bytes in every line but Pending plans, which carries the title alone`,
+        typeof jevState === "string" && v1Replay !== jevState
+          && v1Replay === jevState.replace("\nPending plans: g-plan-2: The other plan\n", "\nPending plans: The other plan\n"),
+        { plugin: jevState?.split("\n").find((l) => l.startsWith("Pending plans")), replay: typeof v1Replay === "string" ? v1Replay.split("\n").find((l) => l.startsWith("Pending plans")) : v1Replay });
+    } else {
+      check(`${tag}: the replay's v2 state from a v1-shaped record is byte-identical to the state the plugin sent`,
+        typeof jevState === "string" && v1Replay === jevState, { plugin: jevState?.slice(-120), replay: typeof v1Replay === "string" ? v1Replay.slice(-120) : v1Replay });
+    }
+  }
+
+  // The answer belongs to the entry its turn started on. After the active
+  // entry moves with no new turn, by a switch the tick itself made or by a
+  // goal_done inside the answering turn, the next tick's state reads none;
+  // the control is the same drive with no entry change, which keeps it.
+  {
+    const lastAnswerLineOf = (h, index) => String(controllerCallsOf(h)[index]?.[0] ?? "").split("\n").find((l) => l.startsWith("Last answer: "));
+    const objectiveLineOf = (h, index) => String(controllerCallsOf(h)[index]?.[0] ?? "").split("\n")[0];
+    for (const change of ["switch", "none"]) {
+      clock.set(T0);
+      const k = await seedSeamHarness(`controller_v2_keyed_${change}`, clock, {
+        stateOpts: {
+          goals: [
+            makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+            makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5, objective: "The first objective" }),
+            makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan", objective: "The second objective" }),
+          ],
+          activeGoalId: "g-plan",
+        },
+        costMaxNudgesPerHour: 10,
+      });
+      k.setHttpResponse(jevAgreeing);
+      k.setCompleteValue("g-plan-2");
+      await recordTurn(k, "t-cd-keyed", "Tidy the notes.", "Tidied them on the first plan.");
+      k.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? (change === "switch" ? "switch" : "nudge") : "discard");
+      clock.advance(130_000);
+      await tickAndSettle(k, clock, 50);
+      k.setClassifyValue(idleClassify);
+      clock.advance(130_000);
+      await tickAndSettle(k, clock, 50);
+      check(`controller v2 keyed (${change}, control): two ticks classified, the first over the first plan's state carrying the answer`,
+        controllerCallsOf(k).length === 2 && objectiveLineOf(k, 0) === "Objective: The first objective" && lastAnswerLineOf(k, 0) === "Last answer: Tidied them on the first plan.",
+        { calls: controllerCallsOf(k).length, first: [objectiveLineOf(k, 0), lastAnswerLineOf(k, 0)] });
+      if (change === "switch") {
+        check("controller v2 keyed (switch): the tick switched to the other plan, and the next tick's state pairs its objective with Last answer: none",
+          getState(k).activeGoalId === "g-plan-2" && objectiveLineOf(k, 1) === "Objective: The second objective" && lastAnswerLineOf(k, 1) === `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`,
+          { active: getState(k).activeGoalId, second: [objectiveLineOf(k, 1), lastAnswerLineOf(k, 1)] });
+      } else {
+        check("controller v2 keyed (no change, control): with the entry unchanged the next tick's state still carries the answer",
+          getState(k).activeGoalId === "g-plan" && objectiveLineOf(k, 1) === "Objective: The first objective" && lastAnswerLineOf(k, 1) === "Last answer: Tidied them on the first plan.",
+          { active: getState(k).activeGoalId, second: [objectiveLineOf(k, 1), lastAnswerLineOf(k, 1)] });
+      }
+    }
+    // goal_done inside the answering turn: the answer closes the entry it
+    // started on, and the next tick's node is the entry goal_done activated.
+    clock.set(T0);
+    const gd = await createTickHarness({
+      stateOpts: {
+        goals: [
+          makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+          makeGoalNode({ id: "g-task", parentId: "g-root", kind: "task", status: "active", maxRounds: 5, title: "The task", objective: "The first task" }),
+          makeGoalNode({ id: "g-task-2", parentId: "g-root", kind: "task", status: "pending", maxRounds: 5, title: "The next task", objective: "The second task" }),
+        ],
+        activeGoalId: "g-task",
+      },
+      ...OPTS, caseName: "controller_v2_keyed_goal_done", costMaxNudgesPerHour: 10,
+    });
+    gd.setEnv("TYPESAFE_API_KEY", JEV_FAKE_KEY);
+    gd.setHttpResponse(jevAgreeing);
+    gd.setClassifyValue(idleClassify);
+    await recordTurnStart(gd, "t-cd-gd", "Finish the task.");
+    const done = await callTool(gd, { tool: "mcp__agentic-plugin__goal_done", note: "finished", turnId: "t-cd-gd" }, async () => ({ result: "passthrough" }));
+    await recordTurnComplete(gd, "t-cd-gd", "Finished the first task.");
+    clock.advance(130_000);
+    await tickAndSettle(gd, clock, 50);
+    check("controller v2 keyed (goal_done, control): goal_done completed the first task and activated the next",
+      done?.deny === undefined && getState(gd).goals.find((g) => g.id === "g-task")?.status === "complete" && getState(gd).activeGoalId === "g-task-2",
+      { deny: done?.deny, active: getState(gd).activeGoalId });
+    check("controller v2 keyed (goal_done): the next tick's state pairs the next task's objective with Last answer: none, not the closing answer",
+      controllerCallsOf(gd).length === 1 && objectiveLineOf(gd, 0) === "Objective: The second task" && lastAnswerLineOf(gd, 0) === `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`,
+      { calls: controllerCallsOf(gd).length, state: [objectiveLineOf(gd, 0), lastAnswerLineOf(gd, 0)] });
+  }
+
+  // Before any turn has ended in this process, the last answer reads none.
+  clock.set(T0);
+  const n = await seedSeamHarness("controller_v2_no_answer", clock, { costMaxNudgesPerHour: 10 });
+  n.setHttpResponse(jevAgreeing);
+  n.setClassifyValue(idleClassify);
+  clock.advance(130_000);
+  await tickAndSettle(n, clock, 50);
+  const noneCalls = controllerCallsOf(n);
+  check("controller v2 (no turn yet): the state's Last answer line reads none",
+    noneCalls.length === 1 && String(noneCalls[0][0]).includes(`\nLast answer: ${Catalog.CONTROLLER_NO_ANSWER}\n\n`),
+    noneCalls[0] && String(noneCalls[0][0]).split("\n").find((l) => l.startsWith("Last answer")));
+
+  // The seam invariance over the new state: Jev answering the last option in
+  // force, switch here, while Haiku answers nudge, changes no decision.
+  clock.set(T0);
+  const o = await seedSeamHarness("controller_v2_opposite", clock, {
+    stateOpts: {
+      goals: [
+        makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+        makeGoalNode({ id: "g-plan", parentId: "g-root", kind: "plan", status: "active", maxRounds: 5 }),
+        makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" }),
+      ],
+      activeGoalId: "g-plan",
+    },
+    costMaxNudgesPerHour: 10,
+  });
+  o.setHttpResponse(jevOpposite);
+  o.setClassifyValue(idleClassify);
+  await recordTurn(o, "t-cd-opp", "Tidy the notes.", "Tidied them.");
+  clock.advance(130_000);
+  await tickAndSettle(o, clock, 50);
+  const oppositeActions = getDecisions(o).map((d) => d.action);
+  check("controller v2 (opposite Jev, control): the tick asked Jev over the set with switch",
+    controllerBodiesOf(o).length === 1 && Object.keys(controllerBodiesOf(o)[0].questions[Catalog.CONTROLLER_DECISION].criteria).includes("switch"), controllerBodiesOf(o).length);
+  check("controller v2 (opposite Jev): Jev answering switch changed no decision, the tick nudged and switched nothing",
+    oppositeActions.includes("nudge_sent") && !oppositeActions.some((a) => a === "switch_to" || a === "switch_from" || a === "completed_by_controller" || a === "ask_idle_gap_converted")
+      && getState(o).activeGoalId === "g-plan", oppositeActions);
+}
+
+// The controller's action on each of the four answers, with and without a
+// pending plan, on a task entry so complete can act: nudge sends the plain
+// nudge; ask-operator converts, records ask_idle_gap_converted and sends the
+// idle-gap nudge with its ASK: line, opening no ask; complete completes the
+// entry; switch activates the pending plan where one exists and, where none
+// does, is not offered and a stray answer is read as nudge. Across every
+// leg no label array carries pause, which is the no-path-produces-pause
+// reading beside the stray-pause case above.
+async function caseController_eachAnswerActsAsBeforeWithAndWithoutAPendingPlan(clock) {
+  console.log("\n=== Controller v2: each of the four answers acts as before, with and without a pending plan ===");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const offeredEverywhere = [];
+  for (const pending of [true, false]) {
+    for (const answer of ["nudge", "ask-operator", "complete", "switch"]) {
+      const tag = `controller action ${answer} ${pending ? "with" : "without"} a pending plan`;
+      clock.set(T0);
+      const goals = [
+        makeGoalNode({ id: "g-root", parentId: null, kind: "root", status: "pending", maxRounds: 5 }),
+        makeGoalNode({ id: "g-task", parentId: "g-root", kind: "task", status: "active", maxRounds: 5, title: "The task", objective: "Finish the task" }),
+        ...(pending ? [makeGoalNode({ id: "g-plan-2", parentId: "g-root", kind: "plan", status: "pending", title: "The other plan" })] : []),
+      ];
+      const h = await createTickHarness({ stateOpts: { goals, activeGoalId: "g-task" }, ...OPTS, caseName: `controller_action_${answer}_${pending ? "pending" : "none"}`, costMaxNudgesPerHour: 10 });
+      h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? answer : "discard");
+      // The plan switch's second call names the pending plan; the reason call
+      // for a non-nudge decision returns the same text, which is harmless.
+      h.setCompleteValue(pending ? "g-plan-2" : "no reason");
+      await fireTurn(h);
+      await new Promise((r) => setTimeout(r, 20));
+      clock.advance(65000);
+      await tickAndSettle(h, clock);
+      const calls = controllerCallsOf(h);
+      const actions = getDecisions(h).map((d) => d.action);
+      const labels = pending ? Catalog.CONTROLLER_LABELS_WITH_SWITCH : Catalog.CONTROLLER_LABELS;
+      check(`${tag} (control): the idle classifier was offered ${pending ? "the set with switch" : "the set without switch"}`,
+        calls.length === 1 && JSON.stringify([...calls[0][1]]) === JSON.stringify([...labels]), calls.map((c) => [...c[1]]));
+      for (const c of calls) offeredEverywhere.push([...c[1]]);
+      const task = getState(h).goals.find((g) => g.id === "g-task");
+      const nudges = h.promptSubmits.filter((t) => t.startsWith("[GOAL]"));
+      if (answer === "nudge") {
+        check(`${tag}: the plain nudge went out, with no conversion`,
+          actions.includes("nudge_sent") && !actions.includes("ask_idle_gap_converted") && nudges.length === 1
+            && nudges[0].includes("The Controller detected") && !nudges[0].includes("idle gap"), { actions, nudge: nudges[0]?.slice(0, 120) });
+      } else if (answer === "ask-operator") {
+        check(`${tag}: the verdict converted, recorded ask_idle_gap_converted, and the idle-gap nudge went out with its ASK: line`,
+          actions.includes("ask_idle_gap_converted") && actions.includes("nudge_sent") && nudges.length === 1
+            && nudges[0].includes("The controller read this as an idle gap, not a real fork") && nudges[0].includes("ASK: <question>? Recommend: <choice>"),
+          { actions, nudge: nudges[0]?.slice(0, 200) });
+        check(`${tag}: no ask record was opened from the verdict`,
+          [...h.storeMap.keys()].every((k) => !k.startsWith("ask:")), [...h.storeMap.keys()].filter((k) => k.startsWith("ask:")));
+      } else if (answer === "complete") {
+        check(`${tag}: the task entry was completed by the controller and no nudge went out`,
+          actions.includes("completed_by_controller") && task?.status === "complete" && !actions.includes("nudge_sent"), { actions, status: task?.status });
+      } else if (pending) {
+        check(`${tag}: the pending plan was activated and the current entry set aside`,
+          actions.includes("switch_from") && actions.includes("switch_to") && getState(h).activeGoalId === "g-plan-2"
+            && getState(h).goals.find((g) => g.id === "g-plan-2")?.status === "active", { actions, active: getState(h).activeGoalId });
+      } else {
+        check(`${tag}: switch is not offered, and a stray switch answer activates nothing and is read as the plain nudge`,
+          !calls[0][1].includes("switch") && !actions.some((a) => a === "switch_to" || a === "switch_from" || a === "switch_failed")
+            && actions.includes("nudge_sent") && nudges.length === 1 && nudges[0].includes("The Controller detected")
+            && getState(h).activeGoalId === "g-task" && task?.status === "active", { actions, active: getState(h).activeGoalId });
+      }
+    }
+  }
+  check("controller actions: across every leg no label array offered to the idle classifier carried pause",
+    offeredEverywhere.length === 8 && offeredEverywhere.every((ids) => !ids.includes("pause")), offeredEverywhere);
+}
+
+// The idle tick's skip hash reads the last answer: a second tick inside the
+// nudge floor, with nothing changed but a new answer on the node, classifies
+// again rather than skipping as unchanged. The control is the same drive
+// where the turn between the ticks is aborted, which moves no answer, so the
+// second tick is skipped as unchanged.
+async function caseController_aNewLastAnswerAloneIsNotSkipped(clock) {
+  console.log("\n=== Controller v2: a tick whose only change is a new last answer is classified, not skipped ===");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const idleClassify = (prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard";
+  for (const leg of ["new answer", "no answer"]) {
+    clock.set(T0);
+    const h = await seedSeamHarness(`controller_v2_skiphash_${leg === "new answer" ? "answer" : "control"}`, clock, { costMaxNudgesPerHour: 10 });
+    h.setHttpResponse(jevAgreeing);
+    h.setClassifyValue(idleClassify);
+    await recordTurn(h, "t-sh-1", "Tidy the notes.", "Tidied the first note.");
+    clock.advance(130_000);
+    await tickAndSettle(h, clock, 50);
+    check(`controller v2 skip hash (${leg}, control): the first tick classified and nudged`,
+      controllerCallsOf(h).length === 1 && getDecisions(h).some((d) => d.action === "nudge_sent"), controllerCallsOf(h).length);
+    if (leg === "new answer") {
+      await recordTurn(h, "t-sh-2", "Carry on.", "Tidied the second note.");
+    } else {
+      await recordTurnStart(h, "t-sh-2", "Carry on.");
+      await h.handlers["turn.complete"](h.fake, { turnId: "t-sh-2", aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+    }
+    // Inside the nudge floor, so only the hash decides whether to classify.
+    clock.advance(65_000);
+    await tickAndSettle(h, clock, 50);
+    const skipped = getDecisions(h).filter((d) => d.action === "controller_tick" && d.detail.endsWith("unchanged, skipped")).length;
+    if (leg === "new answer") {
+      check("controller v2 skip hash: a new last answer alone makes the second tick classify, over the new answer, with no unchanged skip",
+        controllerCallsOf(h).length === 2 && skipped === 0 && String(controllerCallsOf(h)[1][0]).includes("\nLast answer: Tidied the second note.\n"),
+        { calls: controllerCallsOf(h).length, skipped, second: String(controllerCallsOf(h)[1]?.[0] ?? "").split("\n").find((l) => l.startsWith("Last answer")) });
+    } else {
+      check("controller v2 skip hash (control): an aborted turn moves no answer, so the second tick is skipped as unchanged",
+        controllerCallsOf(h).length === 1 && skipped === 1, { calls: controllerCallsOf(h).length, skipped });
+    }
+  }
+}
+
+// An admitted override of the controller question reaches the state's
+// option list, Haiku's text and Jev's criteria from one resolution: the
+// three carry the override's descriptions and the answer line carries its
+// version. The v2 state case above, with no override planted, is the
+// control that the shipped descriptions and v2 are what reach them otherwise.
+async function caseController_anAdmittedOverrideReachesTheStateAndTheRequestAlike(clock) {
+  console.log("\n=== Controller v2: an admitted override's descriptions reach the state, Haiku and Jev alike ===");
+  const controllerCallsOf = (h) => h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+  const controllerBodiesOf = (h) => h.httpCalls
+    .map((c) => { try { return JSON.parse(c.init.body); } catch { return null; } })
+    .filter((b) => b && b.questions && Object.hasOwn(b.questions, Catalog.CONTROLLER_DECISION));
+  const caseName = "controller_v2_override";
+  const override = {
+    primitive: "choice",
+    instructions: "An overridden controller question.",
+    options: { nudge: "override nudge", "ask-operator": "override ask", complete: "override complete", switch: "override switch" },
+  };
+  clock.set(T0);
+  const h = await seedSeamHarness(caseName, clock, { costMaxNudgesPerHour: 10 });
+  const overrideDir = `${HARNESS_HOME}/${caseName}/.claude/agentic-questions/${Catalog.CONTROLLER_DECISION}`;
+  h.fsMap.set(`${overrideDir}/active.json`, JSON.stringify({ version: "v3" }));
+  h.fsMap.set(`${overrideDir}/v3.json`, JSON.stringify(override));
+  h.setHttpResponse(jevAgreeing);
+  h.setClassifyValue((prompt, labels) => (Array.isArray(labels) && labels.includes("nudge")) ? "nudge" : "discard");
+  await recordTurn(h, "t-ov", "Tidy the notes.", "Tidied them.");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  await settleJournalWrites(h);
+  const calls = controllerCallsOf(h);
+  const bodies = controllerBodiesOf(h);
+  const haikuState = calls.length === 1 ? String(calls[0][0]) : null;
+  const jevState = bodies.length === 1 ? bodies[0].state : null;
+  const criteria = bodies.length === 1 ? bodies[0].questions[Catalog.CONTROLLER_DECISION].criteria : null;
+  const expectedLines = Catalog.CONTROLLER_LABELS.map((id) => `${id}: ${override.options[id]}`).join("\n");
+  check("controller v2 override (control): the tick classified once and asked Jev once",
+    calls.length === 1 && bodies.length === 1, { haiku: calls.length, jev: bodies.length });
+  check("controller v2 override: Haiku's text and Jev's state are one text whose option list carries the override's descriptions",
+    typeof haikuState === "string" && haikuState === jevState && haikuState.endsWith(`\n${Catalog.CONTROLLER_OPTIONS_LEAD}\n${expectedLines}`)
+      && !haikuState.includes(Catalog.SHIPPED_QUESTIONS[Catalog.CONTROLLER_DECISION].options.nudge), haikuState?.slice(-160));
+  check("controller v2 override: the request's criteria carry the same descriptions, line for line with the state",
+    criteria !== null && Catalog.CONTROLLER_LABELS.every((id) => criteria[id] === override.options[id]) && Object.keys(criteria).length === Catalog.CONTROLLER_LABELS.length,
+    criteria);
+  const answerLine = journalLinesOfKind(h, "answer").find((line) => line.questionId === Catalog.CONTROLLER_DECISION);
+  check("controller v2 override: the answer line carries the override's version",
+    answerLine?.questionVersion === "v3" && answerLine?.overrideRefused === null, answerLine && [answerLine.questionVersion, answerLine.overrideRefused]);
 }
 
 // next_prompt_kind is written once against every disposition stamp pending on
@@ -34818,6 +35335,32 @@ async function caseMemq27_theCheckTurnIsNotScoredAgainstTheNextGoal(clock) {
   await plan2ScoredTurn(h, "t-memq27-ctl", "on-goal");
   check("memq27 control: an ordinary turn after it is scored against task-2",
     getDecisions(h).some((d) => d.action === "score" && d.detail.includes("task-2")), getDecisions(h).slice(-6));
+}
+
+async function caseMemq27b_theCheckTurnIsNotTheControllersLastAnswer(clock) {
+  console.log("\n=== Persona memory 27b: the [MEMORY CHECK] turn's answer is not the controller's Last answer on the goal active after the close ===");
+  const lastAnswerLine = (h) => {
+    const calls = h.classifyCalls.filter((c) => Array.isArray(c[1]) && c[1].includes("nudge"));
+    return String(calls[calls.length - 1]?.[0] ?? "").split("\n").find((l) => l.startsWith("Last answer: "));
+  };
+  const h = await memq20Harness(clock, "memq27b", memq20TaskTree(), memq20Shown("task-1", "task-2"));
+  h.setProcessRun(processRunByPrefix([[["node", MEMQ1_SCRIPT, "touch"], MEMQ4_WRITTEN]]));
+  await MEMQ20_SITES[3].close(h, clock);
+  await memq20Answer(h, "t-memq27b-check", MEMQ13_NAMES[0]);
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check("memq27b: the next tick on task-2 reads Last answer: none, not the check turn's record names",
+    getState(h).activeGoalId === "task-2" && lastAnswerLine(h) === `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`,
+    { active: getState(h).activeGoalId, line: lastAnswerLine(h) });
+  // The control: an ordinary answered turn on task-2 moves the line, so the
+  // none above is the skip and not a writer that never runs.
+  await plan2ScoredTurn(h, "t-memq27b-ctl", "on-goal");
+  h.setClassifyValue("nudge");
+  clock.advance(130_000);
+  await tickAndSettle(h, clock, 50);
+  check("memq27b control: after an ordinary turn on task-2 the Last answer line is no longer none",
+    typeof lastAnswerLine(h) === "string" && lastAnswerLine(h) !== `Last answer: ${Catalog.CONTROLLER_NO_ANSWER}`, lastAnswerLine(h));
 }
 
 async function caseMemq28_anUnansweredCheckStampsNothing(clock) {

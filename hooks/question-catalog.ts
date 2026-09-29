@@ -29,6 +29,7 @@
 
 import type { PluginHost } from "./host";
 import { SCORE_MIN_LEVELS, SCORE_MAX_LEVELS, type ChoiceQuestion, type ResolvedQuestion, type QuestionResolver } from "./decision-seam";
+import { bracketSafeText, LINE_TERMINATOR } from "./agent-state";
 
 // --- The label arrays the three classify sites pass to Haiku ---
 //
@@ -50,10 +51,14 @@ import { SCORE_MIN_LEVELS, SCORE_MAX_LEVELS, type ChoiceQuestion, type ResolvedQ
 // set holds the superset with a description per option, and the caller names
 // the ids in force at request time.
 
-// The controller's decision on an idle worker, with no pending plan to switch to.
-export const CONTROLLER_LABELS: readonly string[] = Object.freeze(["nudge", "pause", "complete", "ask-operator"]);
+// The controller's decision on an idle worker, with no pending plan to switch
+// to: the three decisions the controller acts on, each named for the action it
+// selects. ask-operator selects the idle-gap nudge, the one that tells the
+// worker to state a real fork as an ASK: line, and is the one verdict the
+// controller converts; nothing offers pause, which selected that same nudge.
+export const CONTROLLER_LABELS: readonly string[] = Object.freeze(["nudge", "ask-operator", "complete"]);
 // The same decision where at least one pending plan exists. The superset.
-export const CONTROLLER_LABELS_WITH_SWITCH: readonly string[] = Object.freeze(["nudge", "pause", "complete", "ask-operator", "switch"]);
+export const CONTROLLER_LABELS_WITH_SWITCH: readonly string[] = Object.freeze(["nudge", "ask-operator", "complete", "switch"]);
 
 // The turn scorer on a turn the plugin nudged: a worker answering our own
 // nudge cannot be off goal by the operator's instruction.
@@ -74,31 +79,40 @@ export const PLAN_SWITCH = "plan-switch";
 export const TURN_SCORE = "turn-score";
 export const MEMORY_KIND = "memory-kind";
 
-// --- The four plan health sets ---
+// --- The plan health set ---
 //
-// These four are asked together, in one request, at the end of every turn on
-// an entry that carries a plan document. They have no Haiku counterpart: no
-// classify call asks them, and nothing branches on an answer. What each one is
-// measured against is an outcome the plugin observes for itself afterwards,
-// which the decision journal records as an outcome line.
+// Block-owner is asked at the end of every turn on an entry that carries a
+// plan document. It has no Haiku counterpart: no classify call asks it, and
+// nothing branches on its answer. What it is measured against is the
+// next_speaker outcome the plugin observes for itself afterwards, which the
+// decision journal records as an outcome line.
+export const BLOCK_OWNER = "block-owner";
+
+// --- The retired sets ---
+//
+// Three retired plan health questions: whether the worker says it cannot
+// carry on, where its last few turns sit between closing out and reopening,
+// and whether work should continue on its own. Their ids are not in
+// QUESTION_SET_IDS or SHIPPED_QUESTIONS, so the resolver answers each with
+// UNKNOWN_QUESTION and the seam refuses a request naming one as
+// no_question. The journal holds their calls, answers and outcomes, so
+// .kit/jev-gold/sample.mjs, the journal's reader, admits these ids to draw
+// from that history.
 export const WORKER_BLOCKED = "worker-blocked";
 export const ROUNDS_CONVERGING = "rounds-converging";
-export const BLOCK_OWNER = "block-owner";
-// The shadow question: whether work should continue on its own after this
-// message, with nobody else acting first. Its outcome, continued_unprompted,
-// is written by the controller from what actually happens next; nothing here
-// reads the answer, and it reaches no branch, state field or nudge text.
 export const WORK_CONTINUES = "work-continues";
+export const RETIRED_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES]);
 
-// The block owner's options, which are this catalog's own. The caller names
-// them at request time, the way it names a label array for the Haiku-paired
-// sets, so the ids offered and the ids journaled are one constant.
+// The block owner's options, which are this catalog's own. The plugin and the
+// replay both offer the shipped entry's option ids; this constant is the
+// closed vocabulary a load and the rubric check read, and Test 2e2 pins it
+// equal to those ids in order.
 export const BLOCK_OWNER_OPTIONS: readonly string[] = Object.freeze(["operator", "coordinator", "another-plan", "self-resolving", "none"]);
 
-// The state field each set's instructions name. One request carries one
-// state, so the state is an object and each question reads the field it needs
-// by name (https://docs.typesafe.ai/api.md, on structured instructions).
-// `closingText` is the turn's own closing text, and `recentClosingTexts` the
+// The fields of the plan health state. The state is an object and the
+// question reads the field it needs by name (https://docs.typesafe.ai/api.md,
+// on structured instructions). `closingText` is the turn's own closing text,
+// which block-owner's instructions name, and `recentClosingTexts` the
 // entry's last few, oldest first.
 export const PLAN_HEALTH_STATE_CLOSING = "closingText";
 export const PLAN_HEALTH_STATE_RECENT = "recentClosingTexts";
@@ -133,8 +147,9 @@ export const TURN_DISPOSITION = "turn-disposition";
 // promotion bar is the shadow journal's count of what that gate would skip.
 export const PROMOTABLE_SET_IDS: readonly string[] = Object.freeze([TURN_OPEN, TURN_DISPOSITION, MEMORY_KIND]);
 
-// Each set's option ids in force, the caller's one constant, offered to Jev
-// and journaled as a closed vocabulary the way BLOCK_OWNER_OPTIONS is.
+// Each set's option ids in force, the caller's one constant, journaled as a
+// closed vocabulary the way BLOCK_OWNER_OPTIONS is, and here also the ids
+// offered to Jev.
 export const TURN_OPEN_OPTIONS: readonly string[] = Object.freeze(["new-goal", "step", "continuation"]);
 export const TURN_DISPOSITION_OPTIONS: readonly string[] = Object.freeze(["delivered", "mid_work", "blocked_or_waiting"]);
 
@@ -147,16 +162,16 @@ export const RECORD_OUTCOME_TURNS = 3;
 
 export const QUESTION_SET_IDS: readonly string[] = Object.freeze([
   CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND,
-  WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES,
+  BLOCK_OWNER,
   TURN_OPEN, TURN_DISPOSITION,
 ]);
 
-// The four asked together at a plan entry's turn end, in the order the
-// request carries them.
-export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES]);
+// The sets asked at a plan entry's turn end, in the order the request
+// carries them: block-owner alone.
+export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([BLOCK_OWNER]);
 
-// The version label a shipped default carries into the journal. An override
-// carries its own label instead.
+// The version label a shipped default carries into the journal, where its
+// entry names no later one. An override carries its own label instead.
 export const SHIPPED_VERSION = "v1";
 
 // A Choice takes up to 255 options (https://docs.typesafe.ai/primitives/choice.md).
@@ -181,26 +196,32 @@ export const FIXED_OPTION_SETS: readonly string[] = Object.freeze([CONTROLLER_DE
 // A Score's levels are positions rather than names, so what an override of
 // one must keep is their count: the journal records a level number and a load
 // reads it against the levels the question shipped with. An override that
-// rewords the three levels of a shipped Score is admitted; one that adds or
-// drops a level is refused.
-export const FIXED_LEVEL_SETS: readonly string[] = Object.freeze([ROUNDS_CONVERGING]);
+// rewords the levels of a Score listed here is admitted; one that adds or
+// drops a level is refused. No shipped question is a Score, so the list is
+// empty, and a Score that ships later is listed here with it.
+export const FIXED_LEVEL_SETS: readonly string[] = Object.freeze([]);
 
 // The shipped defaults. Instructions are one snap judgment each, which is
 // what a System One model is built for, and every option carries a one-line
 // description, which is what the vendor's Choice page asks for.
 export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
+  // v2: asked over controllerStateText's state, the controller's own facts,
+  // the worker's last answer and the pending plans, with the option list
+  // embedded as the last part. Each option is the decision the controller
+  // acts on, and each description carries the nearest cases that are still
+  // this option or that belong to a neighbour, since those are where the
+  // answer is decided.
   [CONTROLLER_DECISION]: {
     id: CONTROLLER_DECISION,
-    version: SHIPPED_VERSION,
+    version: "v2",
     overrideRefused: null,
     primitive: "choice",
-    instructions: "An autonomous worker session has gone idle. Given its goal, its recent scores and how long it has been idle, which action should the controller take now?",
+    instructions: "An autonomous worker session has gone idle. Given its goal, its recent scores, how long it has been idle and its last answer, which action should the controller take now?",
     options: {
-      "nudge": "Prompt the worker to take the next concrete step toward the goal.",
-      "pause": "Repeated drift or off-goal-by-instruction suggests the operator changed direction, so stop nudging.",
-      "complete": "The objective is evidently met.",
-      "ask-operator": "The worker is blocked or the goal is ambiguous, or the round budget is nearly spent.",
-      "switch": "A different pending plan is the one to work on now.",
+      "nudge": "Send the plain nudge, which names the idle time and tells the worker to re-read the objective and take the next concrete step. The worker is on the objective and either has a next step or is honestly waiting on work of its own for it: it reported a step done and the plan holds the next one, it ended on an intermediate status, or it waits on an implementer, a reviewer, a test run or a workflow it dispatched for this objective, whether or not the last answer shows that wait ending. A plan entry whose work reads finished still takes this, since on a plan entry only a nudge acts. A wait on something that is not coming, or on a person, is ask-operator, not this.",
+      "ask-operator": "Send the idle-gap nudge, which tells the worker the controller read no real fork, to re-read the plan document, and to state any genuine fork as a line ASK: <question>? Recommend: <choice>; nobody is asked unless the worker writes that line. The worker is stalled: its last answer says it needs a decision or reports a blocker it cannot clear itself, it waits on a person or on another session rather than on work it dispatched, it repeats the same step or the same wait across nudges with no progress, or it is working on something other than the objective the state names. A first wait on the worker's own dispatched work is nudge, not this.",
+      "complete": "Mark the goal done now and activate the next one: a task entry whose objective the last answer shows finished in full. Never on a plan entry, whose done is read from the plan document and where this becomes a plain nudge. A step, a section, a review round or a commit landed with the objective still open is nudge, not this.",
+      "switch": "Set the current goal aside and activate one of the pending plans the state lists: the current goal cannot move while a pending plan can, the operator has set the current plan aside, or the worker itself says a pending plan is the one to take up. Offered only where the state lists pending plans. A current goal waiting on an approval its own order requires before the next plan is ask-operator, not this.",
     },
   },
   [PLAN_SWITCH]: {
@@ -218,17 +239,21 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
       [PLAN_SWITCH_NO_MATCH]: "None of the pending plans fits.",
     },
   },
+  // v2: asked over turnScoreStateText's state, the opening prompt, the answer,
+  // the objective and the Tools line, with no question sentence in the state.
+  // Each description carries the nearest cases that are still this option or
+  // that belong to a neighbour, since those are where the answer is decided.
   [TURN_SCORE]: {
     id: TURN_SCORE,
-    version: SHIPPED_VERSION,
+    version: "v2",
     overrideRefused: null,
     primitive: "choice",
-    instructions: "Given the goal objective, what did the worker's answer do about it?",
+    instructions: "Given the goal objective, what did this turn's answer do about it?",
     options: {
-      "on-goal": "The answer advanced the stated objective.",
-      "off-goal-by-instruction": "The answer went elsewhere because the user asked it to.",
-      "drift": "The answer went elsewhere with no instruction to do so.",
-      "complete": "The answer finished the objective.",
+      "on-goal": "The answer moved the objective forward or kept it correctly in hand. That includes a step taken, a commit, a dispatch, or a section or review round landed while the objective still has work left. It includes a WAITING or BLOCKED turn whose wait is on the worker's own work for the objective, such as its implementer, reviewers, test run or QA check, even where the turn only checked that this work is still alive, and a hold that names what blocks the objective. A turn opened by a task notification or a channel message is still on-goal when what it did was work on the objective, and a side note or a short reply beside that work does not change it.",
+      "off-goal-by-instruction": "The prompt that opened the turn asked for something outside the objective, and the answer spent the turn doing it: answering an operator's question, following a coordinator's or another session's steer about a different plan, or relaying a notice, even where that took commits and pushes. What decides it is what the opening prompt asked for, not who sent it or how much work it took. A turn opened by a channel message or a delivered record is scored only when it answers a nudge, and a nudged turn is never offered this option.",
+      "drift": "The answer went elsewhere, or did nothing toward the objective, with no instruction in the opening prompt to do so: it declined or set aside the objective, spent the turn on an unrelated fix or chore, or waited on work that serves a different plan. A nudge restating the objective, and a task notification, are not instructions to go elsewhere, so declining the nudge or following a notification into other work is drift. Waiting on the worker's own work for this objective is not drift.",
+      "complete": "The objective itself is finished in this turn, all of what it names, such as the plan reaching Complete and archived where that is the objective. A section landed, a review round passed, a commit pushed or a pull request opened that leaves the objective with steps still to do is on-goal, not complete.",
     },
   },
   [MEMORY_KIND]: {
@@ -244,48 +269,23 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
       "discard": "Nothing worth keeping, including a description of what happened this turn and an instruction to call a tool.",
     },
   },
-  [WORKER_BLOCKED]: {
-    id: WORKER_BLOCKED,
-    version: SHIPPED_VERSION,
-    overrideRefused: null,
-    primitive: "noul",
-    instructions: "`closingText` is how an autonomous worker session ended its last turn. In it, is the worker saying it cannot carry on until someone or something else acts first?",
-  },
-  [ROUNDS_CONVERGING]: {
-    id: ROUNDS_CONVERGING,
-    version: SHIPPED_VERSION,
-    overrideRefused: null,
-    primitive: "score",
-    instructions: "`recentClosingTexts` holds how an autonomous worker session ended each of its last few turns on one plan, oldest first. Across those turns, where does the work sit between closing out and reopening?",
-    // Ordered from the low end to the high end, and a level's number is its
-    // position here. The order is the plan's own: converging, steady, then
-    // reopening.
-    levels: Object.freeze([
-      "Each turn closes more than it opens: the worker reports work finished, and raises less new work than it finished.",
-      "The turns hold steady: about as much new work is raised as is finished, so the same ground is held.",
-      "The turns reopen what earlier turns settled: work reported finished in an earlier turn is open again.",
-    ]),
-  },
+  // v2: asked alone over the plan health state, on who acts next rather than
+  // who acts before the worker can carry on. Each description carries the
+  // nearest cases that are still this option or that belong to a neighbour,
+  // since those are where the answer is decided.
   [BLOCK_OWNER]: {
     id: BLOCK_OWNER,
-    version: SHIPPED_VERSION,
+    version: "v2",
     overrideRefused: null,
     primitive: "choice",
-    instructions: "`closingText` is how an autonomous worker session ended its last turn. Who has to act before the worker can carry on?",
+    instructions: "`closingText` is how an autonomous worker session ended its last turn. Who has to act next before this worker's work moves?",
     options: {
-      "operator": "The human operator: a question, a decision or an approval is owed.",
-      "coordinator": "The coordinating session that queues this worker's work: it has to queue, release or reassign something.",
-      "another-plan": "Other work has to land first, such as another plan or another worker's change.",
-      "self-resolving": "Nobody: something already running will finish on its own, such as a background job, a suite or a timer.",
-      "none": "Nobody: the worker is not waiting on anything and is carrying on.",
+      "operator": "The human operator: this work's next step needs a question answered, a decision made or an approval given that only the operator can give. That includes a BLOCKED: or ASK: line put to the operator this turn, a pull request waiting on the operator's review before this work can start or ship, and a restart, reboot or plugin update only the operator can run. It includes a WAITING turn whose own work is still running where the operator's pending answer is what this same work needs next. An operator question left open beside the worker's own running work, where nothing in this work waits on it or it belongs to another plan, is self-resolving, not this.",
+      "coordinator": "The coordinating session, or another peer session such as the architect: it has to reply, rule, queue, release or reassign something before this work moves. That includes a wait on a peer session's reply to a message or its ruling on a question, an entry finished and handed back with nothing active until the coordinator assigns the next, and a worker holding off a plan another session may already be running. A pull request only the operator can approve is operator, not this, even where the coordinator passed it on.",
+      "another-plan": "Other work outside this worker's own has to land first: this entry's start condition waits on another plan finishing or merging, or on another worker's change it depends on, with no one person asked to act. The worker's own implementers, reviewers or other sections of this same plan still in flight are self-resolving, not this, and a merge held only for the operator's review is operator.",
+      "self-resolving": "Nobody: something this worker already started will finish on its own and wake it, such as its own implementers, reviewers, consultants, verifiers or curators, a background suite or build, or a timer, including dispatches building other sections of the same plan. That holds where the turn also names an open question to the operator that this work's next step does not wait on, since the running work is what the worker reads next. Where the operator's answer is what this work needs next, it is operator, not this.",
+      "none": "Nobody: the worker is not waiting on anything and is carrying on, with its next step in hand and nothing of its own still running. A turn that reports and moves on is this. A wait on the worker's own running work is self-resolving, not this.",
     },
-  },
-  [WORK_CONTINUES]: {
-    id: WORK_CONTINUES,
-    version: SHIPPED_VERSION,
-    overrideRefused: null,
-    primitive: "noul",
-    instructions: "`closingText` is how an autonomous worker session ended its last turn. Should work continue on its own after this message, with nobody else acting first?",
   },
   // The two turn record sets' wording is fixed data: the agreement figure
   // that promotes one to a live list was measured on this exact text, so a
@@ -330,6 +330,168 @@ export const UNKNOWN_QUESTION: ChoiceQuestion = {
   options: {},
 };
 
+// --- One line of text inside a composed message ---
+
+// One line of text the plugin splices into a message or a state it composes:
+// its line breaks are folded, and it passes through bracketSafeText, which
+// turns '[' and ']' into '(' and ')', so the text cannot forge a delivery
+// label or write a field of its own into a state the plugin is the only
+// author of. hooks/index.ts calls it wherever stored or external text reaches
+// such a message, and turnScoreStateText below calls it for every value. It
+// lives here rather than in hooks/index.ts because .kit/jev-gold/replay.mjs
+// builds the turn-score state offline through this module and cannot load
+// hooks/index.ts.
+export function kaizenLine(text: string): string {
+  return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
+}
+
+// --- The turn-score state ---
+//
+// The state turn-score v2 is asked over, built by this one function for the
+// plugin's scorer and for .kit/jev-gold/replay.mjs alike, so the replay's
+// figure is read on the bytes the plugin sends. Haiku and Jev are handed the
+// same text. Four parts, a blank line between each, and no question sentence:
+// the options are the question.
+
+// The most characters of the turn's opening prompt and of its answer the
+// state carries.
+export const TURN_SCORE_PROMPT_MAX = 1200;
+export const TURN_SCORE_ANSWER_MAX = 3000;
+
+// The flags the Tools line can name, in the order it names them: the seven
+// yes-or-no readings of hooks/index.ts's turn_tool_activity line, under that
+// line's own names, so the replay reads a sampled record's activity line back
+// onto these keys.
+export const TURN_SCORE_TOOL_FLAGS = Object.freeze([
+  "plan_read", "plan_edited", "commit", "push", "agent_dispatched", "goal_done", "reply",
+] as const);
+export type TurnScoreToolFlag = (typeof TURN_SCORE_TOOL_FLAGS)[number];
+
+// The turn's tool activity: which of TURN_SCORE_TOOL_FLAGS held, and the names
+// of the last eight tools the turn called, in call order, the ring
+// hooks/index.ts keeps under TURN_TOOL_RING_MAX.
+export type TurnScoreTools = {
+  flags: Readonly<Record<TurnScoreToolFlag, boolean>>;
+  calls: readonly string[];
+};
+
+// The Tools line: the flags that held, by name, then the ring's tool names in
+// call order, each list reading `none` where it is empty.
+function turnScoreToolsLine(tools: TurnScoreTools): string {
+  const held = TURN_SCORE_TOOL_FLAGS.filter((name) => tools.flags[name] === true);
+  return `flags: ${held.length > 0 ? held.join(", ") : "none"}; calls: ${tools.calls.length > 0 ? tools.calls.join(", ") : "none"}`;
+}
+
+// The line the engine puts ahead of a message a plugin submits, and the
+// paragraph it puts after one submitted between turns. Neither is the
+// message's own text. The paragraph is matched as the engine writes it, its
+// dash written as an escape.
+const PLUGIN_MESSAGE_WRAPPER = /^The [\w-]+ plugin sent a message:\s*/;
+const HARNESS_TRAILER = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
+
+// The text a turn opened with, as the message its sender wrote: trimmed, with
+// the engine's wrapper line removed from its start and the engine's trailer
+// paragraph from its end, where either is present. turnScoreStateText applies
+// it to the opening text the plugin holds, and .kit/jev-gold/sample.mjs to
+// the opening text it reads from a transcript, so the two meet on one text.
+export function turnOpeningText(text: string): string {
+  const unwrapped = text.trim().replace(PLUGIN_MESSAGE_WRAPPER, "").trimEnd();
+  return unwrapped.endsWith(HARNESS_TRAILER) ? unwrapped.slice(0, -HARNESS_TRAILER.length).trimEnd() : unwrapped;
+}
+
+// One value of the state: kaizenLine's fold, then every run of whitespace
+// collapsed to one space and the ends trimmed. Two texts that differ only in
+// the length or kind of a whitespace run, or in whitespace at their ends,
+// give the same value, which is what lets .kit/jev-gold/replay.mjs rebuild
+// the plugin's state from a transcript whose reader trims a message. Whitespace
+// present in one text and absent in the other is not reconciled: text blocks
+// the transcript reader joins with a line break and the hook's answer joined
+// with none give two values, one space apart, and replay.mjs refuses such a
+// record where the journal lets it see the difference.
+function stateValue(text: string): string {
+  return kaizenLine(text).replace(/\s+/g, " ").trim();
+}
+
+// `prompt` is the text the turn opened with, whole: the engine's wrapper and
+// trailer come off it first, so the caller hands it uncut. Each cut is then
+// applied to the collapsed value, so each bound counts the text as it is sent.
+// Every value goes through stateValue, the prompt and the answer being
+// external and model text and the objective stored text, so no value can
+// write a fifth part.
+export function turnScoreStateText(prompt: string, answer: string, objective: string, tools: TurnScoreTools): string {
+  return `Turn opened with: ${stateValue(turnOpeningText(prompt)).slice(0, TURN_SCORE_PROMPT_MAX)}\n\n` +
+    `Worker answered: ${stateValue(answer).slice(0, TURN_SCORE_ANSWER_MAX)}\n\n` +
+    `Goal objective: ${stateValue(objective)}\n\n` +
+    `Tools: ${stateValue(turnScoreToolsLine(tools))}`;
+}
+
+// --- The controller state ---
+//
+// The state controller-decision v2 is asked over, built by this one function
+// for the plugin's controller tick and for .kit/jev-gold/replay.mjs alike, so
+// the replay's figure is read on the bytes the plugin sends. Haiku and Jev are
+// handed the same text. Three parts: one line per fact the tick holds, then
+// the worker's last answer and the pending plans; a blank line; then the
+// option list, one line per option id in force with its shipped description,
+// so a record's text names no option Jev was not offered.
+//
+// The facts are label and value pairs the caller names, rather than fields
+// this module names, because the replay copies them off a journaled state
+// whose labels have changed across the plugin's versions, and a replay that
+// re-derived them would read the v2 figure on facts the plugin never sent.
+
+// The most characters of the worker's last answer the state carries.
+export const CONTROLLER_LAST_ANSWER_MAX = 1500;
+export const CONTROLLER_LAST_ANSWER_LABEL = "Last answer";
+export const CONTROLLER_PENDING_PLANS_LABEL = "Pending plans";
+// What the last answer line reads where no answer is held for this node:
+// before the persona's first turn end in this process, or where the held
+// answer was given on another entry.
+export const CONTROLLER_NO_ANSWER = "none";
+// The line between the facts and the option list.
+export const CONTROLLER_OPTIONS_LEAD = "Choose the best decision:";
+
+export type ControllerStateFact = readonly [label: string, value: string];
+// A pending plan as the state names it: its id and title where the caller
+// holds both, and its title alone where the id is not known, which is how
+// .kit/jev-gold/replay.mjs rebuilds the line from a v1 journal state that
+// carried titles only. So a replay of such a record is the plugin's bytes in
+// every part but this line, which the replay states rather than hides.
+export type ControllerPendingPlan = { id: string | null; title: string };
+
+// The `Last answer:` value as the state carries it: collapsed and cut, or
+// none where no answer is held. The controller's skip hash reads this too, so
+// an answer that changes only past the cut sends the same bytes and skips.
+export function controllerLastAnswerText(lastAnswer: string | null): string {
+  return lastAnswer === null ? CONTROLLER_NO_ANSWER : stateValue(lastAnswer).slice(0, CONTROLLER_LAST_ANSWER_MAX);
+}
+
+// `lastAnswer` is the worker's most recent answer, raw, or null where none
+// is held; its cut is applied to the collapsed value, so the bound counts
+// the text as it is sent. `options` is the description per option id of the
+// question as the caller resolved it, an admitted override's or the shipped
+// entry's, so the list Haiku reads and the criteria Jev is sent carry one
+// text; an id with no description writes an empty one. Every label, value,
+// title, id and description goes through stateValue, the answer and the
+// titles being worker and stored text and the descriptions an override's,
+// so no value can write a line of its own into the state.
+export function controllerStateText(
+  facts: readonly ControllerStateFact[],
+  lastAnswer: string | null,
+  pendingPlans: readonly ControllerPendingPlan[],
+  optionIds: readonly string[],
+  options: Readonly<Record<string, string | null>>,
+): string {
+  const lines = facts.map(([label, value]) => `${stateValue(label)}: ${stateValue(value)}`);
+  lines.push(`${CONTROLLER_LAST_ANSWER_LABEL}: ${controllerLastAnswerText(lastAnswer)}`);
+  if (pendingPlans.length > 0) {
+    const named = pendingPlans.map((p) => (p.id === null ? stateValue(p.title) : `${stateValue(p.id)}: ${stateValue(p.title)}`));
+    lines.push(`${CONTROLLER_PENDING_PLANS_LABEL}: ${named.join("; ")}`);
+  }
+  const optionLines = optionIds.map((id) => `${id}: ${stateValue(options[id] ?? "")}`);
+  return `${lines.join("\n")}\n\n${CONTROLLER_OPTIONS_LEAD}\n${optionLines.join("\n")}`;
+}
+
 // --- The override layer ---
 //
 // Layout under the home directory host.getHome() resolves:
@@ -366,8 +528,9 @@ export type CatalogHost = Pick<PluginHost, "getHome" | "readFile" | "fileExists"
 // resolves as readily as POSIX. Kept here because those two are local to
 // hooks/index.ts. The ground is not that a helper cannot cross an import,
 // which it can: only the injected host object cannot. This is a copy, kept
-// because the helper is three lines and this module imports no runtime value
-// from its siblings. The cost of the copy is that a path join drifting in one
+// because the helper is three lines and this module imports runtime values
+// from two siblings only, decision-seam.ts for the Score level bounds and
+// agent-state.ts for the text guard, and neither carries it. The cost of the copy is that a path join drifting in one
 // of them changes where one module reads and another writes.
 function joined(root: string, ...parts: string[]): string {
   return [root.replace(/[/\\]+$/, ""), ...parts].join("/");

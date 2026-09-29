@@ -139,12 +139,8 @@ import {
   TURN_SCORE,
   MEMORY_KIND,
   PLAN_SWITCH_NO_MATCH,
-  WORKER_BLOCKED,
-  ROUNDS_CONVERGING,
-  BLOCK_OWNER,
-  BLOCK_OWNER_OPTIONS,
-  WORK_CONTINUES,
   PLAN_HEALTH_SET_IDS,
+  SHIPPED_QUESTIONS,
   PLAN_HEALTH_STATE_CLOSING,
   PLAN_HEALTH_STATE_RECENT,
   PROMOTABLE_SET_IDS,
@@ -154,13 +150,19 @@ import {
   TURN_DISPOSITION_OPTIONS,
   TURN_DELIVERED_THRESHOLD,
   RECORD_OUTCOME_TURNS,
+  kaizenLine,
+  turnScoreStateText,
+  type TurnScoreTools,
+  controllerStateText,
+  controllerLastAnswerText,
+  type ControllerStateFact,
   resolverOf,
 } from "./question-catalog";
 // The decision seam, which puts the same closed question to Jev that the four
-// Haiku-paired sites below put to Haiku, and also carries the four plan
-// health questions no classifier asks, plus the journal that records every
+// Haiku-paired sites below put to Haiku, and also carries the one plan
+// health question no classifier asks, plus the journal that records every
 // answer.
-import { ask, askAll, type ChoiceAnswer, type JevAnswer, type QuestionAsk, type SeamFailureReason, type SeamResult, type SeamSetResult } from "./decision-seam";
+import { ask, askAll, type ChoiceAnswer, type JevAnswer, type QuestionAsk, type QuestionResolver, type SeamFailureReason, type SeamResult, type SeamSetResult } from "./decision-seam";
 import { newStampId, splitOf, writeCall, writeAnswers, writeOutcome, ASK_MARKER_VALUE, type JournalWrite, type OutcomeKind } from "./decision-journal";
 
 // --- Module-scope session identity ---
@@ -240,6 +242,11 @@ function noteJournalWrite(write: JournalWrite, site: string): void {
  * machine where the operator turned Jev off is a file per session per day
  * saying so.
  */
+// `resolve` is the resolver the seam reads the question through, the host's
+// own by default. The controller passes the resolver that already answered
+// for this tick, so the option descriptions its state embeds and the
+// criteria the request carries come from one resolution rather than two
+// reads of the override layer that could straddle an edit.
 function shadowAsk(
   host: PluginHost,
   site: string,
@@ -248,6 +255,7 @@ function shadowAsk(
   state: string,
   mode: string,
   haikuValue: string | null,
+  resolve: QuestionResolver = resolverOf(host),
 ): string | null {
   // The exact string `shadow` and nothing else. The seam's other sending
   // mode, `live`, is its own internal mode: liveAsk chooses it per question
@@ -263,7 +271,7 @@ function shadowAsk(
   // always has an id to cite even where its outcome line reaches the file
   // before this call's own line does.
   const stampId = newStampId(persona, session);
-  void ask(host, questionSetId, optionIds, state, mode, haikuValue, resolverOf(host))
+  void ask(host, questionSetId, optionIds, state, mode, haikuValue, resolve)
     .then(async (result: SeamResult) => {
       noteJournalWrite(await writeCall(host, {
         stampId,
@@ -438,8 +446,8 @@ export async function liveAsk(
   return result.ok ? { stampId, answer: result.answer } : { stampId, reason: result.reason };
 }
 
-// Section 5 (plan-health-from-the-record): the four plan health questions.
-// The journal site their call line carries.
+// The plan health request: block-owner, asked at a plan entry's turn end.
+// The journal site its call line carries.
 const PLAN_HEALTH_SITE = "plan-health";
 // How many of an entry's closing texts the request's state carries, and the
 // most characters any closing text carries in that state: the one cut bounds
@@ -447,9 +455,6 @@ const PLAN_HEALTH_SITE = "plan-health";
 // journal's state column, which is exempt from the field clamp.
 const PLAN_HEALTH_RECENT_MAX = 5;
 const PLAN_HEALTH_TEXT_MAX = 1000;
-// How many turns on the entry a chapter_within outcome waits for a Chapter
-// rise before it is written as false.
-const CHAPTER_WITHIN_TURNS = 5;
 
 /**
  * The answer line's three value columns for one answer, by its shape. A
@@ -464,19 +469,19 @@ function journalValuesOf(answer: JevAnswer): { value: string; probabilities: Rec
 }
 
 /**
- * Start the four plan health measurements at the end of a turn on a plan
- * entry, in one request over one state, and journal them once it settles:
- * one call line and one answer line per question. Returns the stamp id its
+ * Start the plan health measurement at the end of a turn on a plan entry:
+ * block-owner alone, in one request over one state, journaled once it
+ * settles as one call line and one answer line. Returns the stamp id its
  * lines carry, or null where the kill switch is off, which is also what the
- * four outcome joiners read as having no call to cite.
+ * next_speaker joiner reads as having no call to cite.
  *
  * Not awaited by the caller, for the reason shadowAsk is not: a slow,
  * failing or hung Jev cannot delay the turn's end. Nothing it produces
  * reaches a branch, a state field, a decision action or a nudge text; the
  * only state it touches is the one decision an unwritable journal earns.
- * There is no Haiku value beside these answers, since no classifier asks
- * them: what they are measured against is the outcome lines the plugin
- * writes from what it observes afterwards.
+ * There is no Haiku value beside the answer, since no classifier asks it:
+ * what it is measured against is the next_speaker outcome the plugin writes
+ * from what it observes afterwards.
  */
 function shadowAskPlanHealth(
   host: PluginHost,
@@ -488,14 +493,21 @@ function shadowAskPlanHealth(
   const persona = sess.persona;
   const session = sess.mySessionId;
   const stampId = newStampId(persona, session);
-  const asks: readonly QuestionAsk[] = [
-    { questionSetId: WORKER_BLOCKED, primitive: "noul" },
-    { questionSetId: ROUNDS_CONVERGING, primitive: "score" },
-    { questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS },
-    { questionSetId: WORK_CONTINUES, primitive: "noul" },
-  ];
-  // The one state the request carries, whose two fields the four questions
-  // name by their field names.
+  // PLAN_HEALTH_SET_IDS decides both the sets this request asks and the
+  // questionSet its call line journals. Each ask takes its primitive and
+  // option ids from the set's shipped catalog entry, and the seam resolves
+  // its wording through the catalog's resolver.
+  const asks: readonly QuestionAsk[] = PLAN_HEALTH_SET_IDS.map((questionSetId): QuestionAsk => {
+    const shipped = SHIPPED_QUESTIONS[questionSetId];
+    return shipped.primitive === "choice"
+      ? { questionSetId, primitive: "choice", optionIds: Object.keys(shipped.options) }
+      : { questionSetId, primitive: shipped.primitive };
+  });
+  // The one state the request carries, whose fields a question names by
+  // their field names. The replay's byte-identity check in
+  // .kit/jev-gold/replay.mjs rebuilds this object from the journaled text and
+  // compares it byte for byte, so it holds while recentClosingTexts stays in
+  // the state and the two fields keep this order.
   const state = {
     [PLAN_HEALTH_STATE_CLOSING]: closingText,
     [PLAN_HEALTH_STATE_RECENT]: recentClosingTexts,
@@ -827,6 +839,19 @@ function turnToolActivityText(flags: TurnToolFlags, ring: readonly string[], wor
   return `plan_read=${yn(flags.planRead)} plan_edited=${yn(flags.planEdited)} commit=${yn(flags.committed)} push=${yn(flags.pushed)} ` +
     `agent_dispatched=${yn(flags.agentDispatched)} goal_done=${yn(flags.goalDoneCalled)} reply=${yn(replyCalled)} ` +
     `work_tools=${workToolCount} tools=${ring.join(",")}`;
+}
+
+// The turn's tool activity as the turn-score state reads it: the seven flags
+// under the names turnToolActivityText gives them, and a copy of the ring, so
+// a call landing after this read cannot change what the scorer is handed.
+function turnScoreToolsOf(flags: TurnToolFlags, ring: readonly string[], replyCalled: boolean): TurnScoreTools {
+  return {
+    flags: {
+      plan_read: flags.planRead, plan_edited: flags.planEdited, commit: flags.committed, push: flags.pushed,
+      agent_dispatched: flags.agentDispatched, goal_done: flags.goalDoneCalled, reply: replyCalled,
+    },
+    calls: [...ring],
+  };
 }
 
 // The turn-disposition question's state, as the one text the seam's `ask`
@@ -1624,15 +1649,6 @@ export const PROPOSAL_EVERY_MS = 24 * 3_600_000;
 // announced on the persona's own thread instead of being sent again.
 export const PLAN_RECORD_MAX_RESENDS = 3;
 
-// One line of the [KAIZEN] thread message. The text comes out of the
-// persona's store, so its line breaks are folded and it passes through
-// bracketSafeText, which turns '[' and ']' into '(' and ')' so the text
-// cannot forge a delivery label. The fleet report and the fleet prompt apply
-// the same helper to the text they carry.
-function kaizenLine(text: string): string {
-  return bracketSafeText(text.split(LINE_TERMINATOR).join(" "));
-}
-
 // The [PROPOSE] frame's plan-and-ask and plan-and-start instructions: write
 // the plan document and queue it, which sends the coordinator its own
 // [PROPOSAL] or [STARTED] record through goal_add. The frame's own
@@ -1970,8 +1986,8 @@ async function tickOpenAsk(
 }
 
 /**
- * D5b: an open ask never silences the worker, part 2. The classifier can
- * propose the identical ask-operator/pause question again right after the
+ * D5b: an open ask never silences the worker, part 2. A worker can state
+ * the identical ASK: question again right after the
  * operator (or a thread reply) just closed it, which reads as the worker
  * ignoring the answer. Suppress a re-open of the exact same question on the
  * exact same node within the suppress window; the caller falls through to a
@@ -2116,32 +2132,29 @@ const sess: {
   // process made, and a restart's first tick mints a new one.
   jevScoreOutcomeStampId: string | null;
   jevAskMarkerOutcomeStampId: string | null;
-  // Section 5 (plan-health-from-the-record): what the four plan health
-  // questions are still waiting on, per plan entry. `closingTexts` is the
+  // The plan health request's memory, per plan entry: `closingTexts` is the
   // entry's last few closing texts, oldest first, which the next request's
-  // state carries. `chapterWithin` is every stamp id whose chapter_within
-  // outcome is undecided, each with the turns on the entry counted since its
-  // call and the plan holder's Chapter count at the call, which is what a
-  // rise is measured against: two entries under one holder share its count,
-  // and a rise read on one entry's turn is still a rise for the other's
-  // pending call. Session memory rather than persisted state: a restart or
-  // the entry completing drops the record and the outcomes it awaited are
-  // never written, which the journal's readers tolerate.
-  jevPlanHealth: Map<string, { closingTexts: string[]; chapterWithin: { stampId: string; turns: number; chapterCount: number }[] }>;
+  // state carries. Session memory rather than persisted state: a restart or
+  // the entry completing drops the record.
+  jevPlanHealth: Map<string, { closingTexts: string[] }>;
   // The stamp id of the latest plan health call, awaiting the next turn's
   // origin for its next_speaker outcome. Null where none is held.
   jevNextSpeakerStampId: string | null;
-  // The latest plan-health call still awaiting its continued_unprompted
-  // outcome, held as its stamp id and the entry the call was asked about.
-  // Settled true at the next completed turn, whatever entry that turn was
-  // on, where that turn opened unaccounted (nothing the plugin queued
-  // matched it) and not from a channel message, since only then did nobody
-  // and nothing the plugin tracks act first. Settled false the moment a
-  // nudge goes out for this record's own entry, at the nudge-sending site; a
-  // nudge for a different entry leaves the record held for the completion
-  // site to settle. Null where none is held, including once either site has
-  // settled it.
-  jevWorkContinuesStampId: { stampId: string; entryId: string } | null;
+  // The worker's most recent answer, raw, and the entry the turn that gave
+  // it started on, which the controller's state carries as its Last answer
+  // line where that entry is the tick's own node. Moved only by the persona's
+  // own turn end with an answer to judge: a subagent's completion carries the
+  // subagent's report, which is not the worker's answer, and an aborted or
+  // answerless completion leaves the previous answer as the most recent. The
+  // entry is the key because the answer belongs to the work it closed: after
+  // goal_done, a switch, a resume or a completion moves the active entry,
+  // the next tick's node is another entry and its state reads none rather
+  // than pairing that entry's objective with the old entry's closing answer.
+  // Null where none is held, before the first such turn end in this process.
+  // Session memory rather than persisted state: a restart's first tick reads
+  // none, since the answer that ended a turn under another process is not
+  // what this one saw.
+  lastAnswer: { goalId: string | null; text: string } | null;
   // Why this session's persona state is not loaded, or null once it is. It
   // starts as the start-up cause, because a session whose session.start
   // never finished holds the built-in default state below and nothing else.
@@ -2213,7 +2226,7 @@ const sess: {
   jevAskMarkerOutcomeStampId: null,
   jevPlanHealth: new Map(),
   jevNextSpeakerStampId: null,
-  jevWorkContinuesStampId: null,
+  lastAnswer: null,
   stateNotLoaded: "plugin start-up did not finish, and the debug log's `session.start hook skipped` line names why",
   untrackedWorkAt: null,
   untrackedWorkCount: 0,
@@ -8777,14 +8790,14 @@ export const register: Register = async (on, options) => {
       const last5 = g.scores.slice(-5).map((s) => s.result).join(", ") || "none";
       const onGoalCount = g.scores.filter((s) => s.result === "on-goal").length;
 
-      // R6: switch label offered only when ≥1 pending plan exists.
+      // R6: switch is offered only when at least one pending plan exists, and
+      // the state names each pending plan by id and title on its own line.
       const pendingPlans = sess.state.goals.filter((x) => x.kind === "plan" && x.status === "pending");
       const hasSwitch = pendingPlans.length > 0;
-      const switchLabel = hasSwitch ? `switch: switch to a different pending plan: ${pendingPlans.map((p) => p.title.slice(0, 30)).join("; ")}\n` : "";
 
       // C7: Environment line only when env.git or env.health is non-null.
       const env = sess.state.monitor.env;
-      let envLine = "";
+      let envText: string | null = null;
       if (env.git !== null || env.health !== null) {
         const parts: string[] = [];
         if (env.git !== null) {
@@ -8793,37 +8806,39 @@ export const register: Register = async (on, options) => {
         if (env.health !== null) {
           parts.push(`health: exit ${env.health.exitCode} for ${env.health.forNodeId || "no-node"}`);
         }
-        envLine = `Environment: ${parts.join(", ")}\n`;
+        envText = parts.join(", ");
       }
-
-      const summary =
-        `Objective: ${g.objective}\n` +
-        `Node: ${g.id} (${g.kind}), status ${g.status}, ${roundSummaryText(sess.state, g)}\n` +
-        `Last 5 scores: ${last5}\n` +
-        `On-goal count: ${onGoalCount} of ${g.scores.length}\n` +
-        `Idle time: ${idleDisplay}\n` +
-        `Nudged answers with no status line: ${sess.nudgedAnswersWithoutStatus}\n` +
-        `Decisions tail: ${sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")}\n` +
-        `Memory: ${selfReviewLessonCount()} self-review lessons, ${sess.memqWrittenThisSession} written this session\n` +
-        (() => {
-          const sr = sess.state.memory.filter((m) => m.source === "self-review" && m.kind === "lesson");
-          if (sr.length === 0) return "";
-          const newest = sr.sort((a, b) => b.createdAt - a.createdAt)[0];
-          return `LESSON: ${newest.text.slice(0, 120)}\n`;
-        })() +
-        envLine +
-        `\n` +
-        `The session has been idle for ${idleDisplay}.\n` +
-        `Choose the best decision:\n` +
-        `nudge: prompt the worker to take the next concrete step toward the goal\n` +
-        `pause: repeated drift or off-goal-by-instruction suggests the operator changed direction\n` +
-        `complete: objective evidently met\n` +
-        `ask-operator: blocked, ambiguous, or round budget nearly spent\n` +
-        switchLabel;
+      const envLine = envText === null ? "" : `Environment: ${envText}\n`;
 
       const classifyLabels: readonly string[] = hasSwitch
         ? CONTROLLER_LABELS_WITH_SWITCH
         : CONTROLLER_LABELS;
+
+      // The controller's state's inputs, read here in the synchronous region
+      // so they are this tick's readings: the facts, the last answer where
+      // it was given on this node and none otherwise, and the pending plans.
+      // The state itself is built below, once the question is resolved, since
+      // its option list carries the resolved descriptions.
+      const lastAnswer = sess.lastAnswer !== null && sess.lastAnswer.goalId === g.id ? sess.lastAnswer.text : null;
+      const facts: ControllerStateFact[] = [
+        ["Objective", g.objective],
+        ["Node", `${g.id} (${g.kind}), status ${g.status}, ${roundSummaryText(sess.state, g)}`],
+        ["Last 5 scores", last5],
+        ["On-goal count", `${onGoalCount} of ${g.scores.length}`],
+        ["Idle time", idleDisplay],
+        ["Nudged answers with no status line", String(sess.nudgedAnswersWithoutStatus)],
+        ["Decisions tail", sess.state.decisions.slice(-5).map((d) => `${d.loop}:${d.action}`).join(", ")],
+        ["Memory", `${selfReviewLessonCount()} self-review lessons, ${sess.memqWrittenThisSession} written this session`],
+      ];
+      {
+        const sr = sess.state.memory.filter((m) => m.source === "self-review" && m.kind === "lesson");
+        if (sr.length > 0) {
+          const newest = sr.sort((a, b) => b.createdAt - a.createdAt)[0];
+          facts.push(["LESSON", newest.text.slice(0, 120)]);
+        }
+      }
+      if (envText !== null) facts.push(["Environment", envText]);
+      const statePendingPlans = pendingPlans.map((p) => ({ id: p.id, title: p.title }));
 
       // Fire-and-forget: the timer callback is sync, so we schedule async work.
       Promise.resolve().then(async () => {
@@ -8964,7 +8979,10 @@ export const register: Register = async (on, options) => {
           // D2: Idle tick skip. Hash the stable subset of the summary.
           // Skip classify+reason only when the hash is unchanged AND the nudge is not due.
           if (costEnabled) {
-            // Build the stable subset string (exclude idle time, nudge count, decisions tail).
+            // Build the stable subset string (exclude idle time, nudge count,
+            // decisions tail). The last answer is in it: a tick whose only
+            // change is a new answer on this node is a new situation to
+            // classify, not a repeat of the last one.
             const stableSubset =
               `Objective: ${g.objective}\n` +
               `Node: ${g.id} (${g.kind}), status ${g.status}, ${roundSummaryText(sess.state, g)}\n` +
@@ -8977,7 +8995,8 @@ export const register: Register = async (on, options) => {
                 const newest = sr.sort((a, b) => b.createdAt - a.createdAt)[0];
                 return `LESSON: ${newest.text.slice(0, 120)}\n`;
               })() +
-              envLine;
+              envLine +
+              `Last answer: ${controllerLastAnswerText(lastAnswer)}\n`;
             const currentHash = fnv1aHash(stableSubset);
             const prevHash = sess.state.monitor.cost.lastSummaryHash;
             const nudgeDue = idleMs >= nudgeIdleMs && (now - sess.lastNudgeAt >= nudgeFloorMs);
@@ -8999,6 +9018,23 @@ export const register: Register = async (on, options) => {
             sess.state.monitor.cost.lastSummaryHash = currentHash;
           }
 
+          // The controller's state, one text for Haiku and for the shadow
+          // call. The catalog builds it, so .kit/jev-gold/replay.mjs builds
+          // the same state from a sampled record. Its option list is the
+          // labels in force, so the text names switch only where it is
+          // offered, each with the description of the question as resolved
+          // now, an admitted override's or the shipped entry's; the same
+          // resolution is handed to the shadow call, so Haiku's text and
+          // Jev's criteria carry one wording.
+          const controllerHost = hostOf($);
+          const controllerQuestion = await resolverOf(controllerHost)(CONTROLLER_DECISION);
+          const summary = controllerStateText(
+            facts,
+            lastAnswer,
+            statePendingPlans,
+            classifyLabels,
+            controllerQuestion.primitive === "choice" ? controllerQuestion.options : {},
+          );
           const decision = await $.model.classify(
             summary,
             classifyLabels,
@@ -9020,45 +9056,44 @@ export const register: Register = async (on, options) => {
           // this plugin's own, so the value Haiku answered with is the one an
           // agreement figure has to be read against.
           const shadowStampId = shadowAsk(
-            hostOf($),
+            controllerHost,
             "controller",
             CONTROLLER_DECISION,
             classifyLabels,
             summary,
             jevMode,
             typeof decision === "string" ? decision : null,
+            async () => controllerQuestion,
           );
           sess.jevScoreOutcomeStampId = shadowStampId;
           sess.jevAskMarkerOutcomeStampId = shadowStampId;
-          let finalDecision: string = decision ?? "nudge";
-          // Item 8.2 (Round 36, extended Round 39): neither classifier
-          // verdict that used to open an ask directly from classifier prose
-          // - "ask-operator" nor "pause" - opens an ask record anymore.
-          // Word-matching the model's reason text for "unclear"/"scope"/
-          // idle-gap language let real forks through unrecognized (eighteen
-          // ask wordings in one day matched no keyword list), and the
-          // nineteenth ask arrived through "pause" specifically, proving
-          // the same classifier prose problem exists on that verdict too.
-          // So the rule is structural and covers both: either verdict
-          // becomes a nudge here, unconditionally, before the reason call
-          // even runs (a failed reason call must not fall through to
-          // opening an ask with "no reason", which the old in-try
-          // conversion did). The nudge tells the worker to re-read the plan
-          // and discussion file and, if a fork truly exists, state it in
-          // its own next turn as a line `ASK: <question>? Recommend:
-          // <choice>`. Only that marker (read on turn.complete, below)
-          // opens an ask record, with the worker's own line as the stored
-          // question - never the classifier's reason.
+          // A verdict outside the labels offered is read as nudge, as a null
+          // one is: the classifier was handed a closed set, so any other
+          // string is no decision, and leaving the tick without an actuator
+          // on it would let the worker sit idle for the tick.
+          let finalDecision: string = typeof decision === "string" && classifyLabels.includes(decision) ? decision : "nudge";
+          // The classifier's ask-operator verdict opens no ask record from
+          // classifier prose: a classifier reason is an idle reading, never a
+          // concrete blocking question. The verdict becomes a nudge here,
+          // unconditionally and before the reason call runs, so a failed
+          // reason call cannot fall through to opening an ask with no
+          // reason. The nudge it selects is the idle-gap arm below, which
+          // tells the worker to re-read the plan and the discussion file
+          // and, if a fork truly exists, to state it in its own next turn as
+          // a line `ASK: <question>? Recommend: <choice>`. Only that marker
+          // (read on turn.complete, below) opens an ask record, with the
+          // worker's own line as the stored question. No other verdict
+          // converts here: the classifier is offered CONTROLLER_LABELS, which
+          // carries no pause.
           let idleGapConverted = false;
-          if (finalDecision === "ask-operator" || finalDecision === "pause") {
-            const convertedFrom = finalDecision;
+          if (finalDecision === "ask-operator") {
             finalDecision = "nudge";
             idleGapConverted = true;
             sess.state.decisions.push({
               timestamp: Date.now(),
               loop: "monitor",
               action: "ask_idle_gap_converted",
-              detail: `${g.id}: classifier ${convertedFrom} converted to nudge (worker states a real fork itself, if one exists)`,
+              detail: `${g.id}: classifier ask-operator converted to nudge (worker states a real fork itself, if one exists)`,
             });
           }
 
@@ -9287,25 +9322,6 @@ export const register: Register = async (on, options) => {
               // which was taken before the classify call: classify latency
               // would otherwise come out of the floor and shorten it.
               sess.lastNudgeAt = Date.now();
-              // Section 4 (plan-health-from-the-record): captured here,
-              // still in the synchronous region, and cleared from the field
-              // only where it is this nudge's own entry. $.prompt.submit
-              // below does not resolve until the session is next idle, so a
-              // whole nudged turn can open and complete before this tick
-              // resumes; were the field read fresh after that await, it
-              // could by then hold the stamp that same completion just
-              // armed for its own next plan-health call, and writing false
-              // against it would wrongly settle a call this nudge never
-              // touched. Capturing now and clearing the field takes that
-              // call out of play for the rest of this region, so the
-              // completion joiner that runs during the await finds nothing
-              // held and neither double-settles this record nor loses its
-              // own. A held call on a different entry is left in the field
-              // untouched: this nudge says nothing about it, and the
-              // completion joiner settles it in the ordinary way.
-              const heldWorkContinues = sess.jevWorkContinuesStampId;
-              const workContinuesIsThisEntry = heldWorkContinues !== null && heldWorkContinues.entryId === g.id;
-              if (workContinuesIsThisEntry) sess.jevWorkContinuesStampId = null;
               // The rest of this nudge's own bookkeeping is spent here for the
               // same reason as the floor. The region from the open-turn check
               // above to this point is synchronous, so both writes are made
@@ -9342,12 +9358,6 @@ export const register: Register = async (on, options) => {
                   action: "nudge_failed",
                   detail: `${g.id}: submit ${nudgeOutcome.how}, floor already spent: ${nudgeOutcome.reason}`.slice(0, 200),
                 });
-                // No nudge went out, so the captured record is restored,
-                // unless the await let a fresh call arm itself for this same
-                // entry meanwhile, which must not be overwritten.
-                if (workContinuesIsThisEntry && sess.jevWorkContinuesStampId === null) {
-                  sess.jevWorkContinuesStampId = heldWorkContinues;
-                }
               }
               if (nudgeOutcome.ok) {
                 // D1: increment nudge ledger (count only, no token estimate)
@@ -9360,15 +9370,6 @@ export const register: Register = async (on, options) => {
                   action: "nudge_sent",
                   detail: `${g.id}: idle ${idleDisplay}, nudged answers without a status line: ${unlinedAnswers}`,
                 });
-                // A nudge going out settles this entry's own pending
-                // continued_unprompted outcome as false: work did not
-                // continue on its own, since this session had to prompt it.
-                // Whichever of this write and the completion joiner's read
-                // fires first is the one that lands; the other finds
-                // nothing held for this record.
-                if (jevMode === "shadow" && workContinuesIsThisEntry) {
-                  shadowOutcome(hostOf($), heldWorkContinues!.stampId, "continued_unprompted", "false");
-                }
               }
             } else {
               // The decider said nudge and the floor held. This is the ordinary
@@ -9512,9 +9513,12 @@ export const register: Register = async (on, options) => {
     lastPromptWasExternal = false;
     replyCalledThisTurn = false;
     // Section 5 (goal-every-turn): the turn's tool activity starts empty, and
-    // the text this turn opened with is held for the disposition state.
+    // the text this turn opened with is held whole for the disposition and
+    // turn-score states, each of which cuts it to its own bound. The
+    // turn-score state removes the engine's wrapper and trailer before its cut,
+    // so it needs the text uncut.
     resetTurnToolActivity();
-    currentTurnAskedText = typeof e.text === "string" ? e.text.slice(0, TURN_DISPOSITION_ASKED_MAX) : "";
+    currentTurnAskedText = typeof e.text === "string" ? e.text : "";
     currentTurnNudged = false;
     // D4: reset backoff skip counter on new turn (activity breaks the skip streak).
     if (costEnabled && sess.state.monitor.cost) {
@@ -9694,13 +9698,18 @@ export const register: Register = async (on, options) => {
     // settled too late to owe a bank. The entry active now, as the turn left
     // it, is read here too, for a turn that opened with none active.
     // A completion naming a subagent loop (e.agentId set) is never the
-    // persona's own turn end, whatever turn id it carries.
+    // persona's own turn end, whatever turn id it carries. The scorer reads
+    // the same fact: a subagent's report is not the worker's answer.
+    const completesSubagentLoop = typeof e.agentId === "string" && e.agentId.length > 0;
     const completesGateTurn = currentGateTurnId !== null && e.turnId === currentGateTurnId
-      && !(typeof e.agentId === "string" && e.agentId.length > 0);
+      && !completesSubagentLoop;
     const turnKindAtStart: string = currentTurnKind;
     const turnOpenAfterDelete = turnIsOpen();
     const turnStartSeqAtDelete = turnStartSeq;
     const activeIdAtDelete = sess.state.activeGoalId;
+    // The entry this turn started on, read here for the same reason, since
+    // the next turn.start rewrites it: the last answer is keyed to it below.
+    const turnLeafIdAtDelete = turnLeafId;
     // Section 5 (goal-every-turn): the record close's own facts, read here for
     // the same reason. The text this turn opened with, and the tool activity
     // the turn's own calls wrote, are both rewritten by the next turn.start.
@@ -9710,6 +9719,10 @@ export const register: Register = async (on, options) => {
     // lands during those awaits is not read as the nudged turn's.
     if (completesGateTurn) currentTurnNudged = false;
     const activityTextAtDelete = turnToolActivityText(turnToolFlags, turnToolRing, turnWorkToolCalls, replyCalledThisTurn);
+    // The turn-score state's tool activity, read here for the same reason:
+    // the next turn.start rewrites it, and the scorer reads it after the
+    // awaits below. Its opening text is askedTextAtDelete above.
+    const scoreToolsAtDelete = turnScoreToolsOf(turnToolFlags, turnToolRing, replyCalledThisTurn);
     // Section 6 (goal-every-turn): route one's own fact, read here for the same
     // reason. The plan documents this turn edited are rewritten by the next
     // turn.start too, and route one reads them after an await of its own. The
@@ -9776,13 +9789,6 @@ export const register: Register = async (on, options) => {
     // list itself is not touched here: its entries leave it at turn.start,
     // one per turn the plugin opened.
     const wasNudged = currentTurnKind === "nudge";
-    // Section 4 (plan-health-from-the-record): captured before the reset
-    // below clears it, for continued_unprompted's true rule: unaccounted is
-    // what a turn reads when nothing the plugin queued (no nudge, delivery,
-    // proposal or plugin prompt) matched it, which combined with the
-    // channel-origin read below is "opened by nothing the plugin tracks and
-    // no channel message" - work continuing with nobody else acting first.
-    const wasUnaccounted = currentTurnKind === "unaccounted";
     // Section 4 (plan-health-from-the-record): captured before the resets
     // below clear both facts, so the scorer can read what this turn opened
     // as. A channel message or a delivered record carries no worker
@@ -9796,10 +9802,13 @@ export const register: Register = async (on, options) => {
     // and spends no round.
     const wasMemoryCheck = currentTurnKind === "memoryCheck";
     // Whether this completion is the nudged turn's own, read by id rather
-    // than from currentTurnKind, which the first completion to arrive resets
-    // whatever turn it belongs to. The id is spent here, so the nudged turn
-    // is read once.
-    const completesNudgedTurn = nudgedTurnId !== null && e.turnId === nudgedTurnId;
+    // than from currentTurnKind, which the first of the persona's own
+    // completions to arrive resets whatever turn it belongs to. The id is
+    // spent here, so the nudged turn is read once. A subagent's completion
+    // is never the nudged turn's own, whatever turn id it carries, and
+    // resets neither the id nor the kind, so the persona's own completion
+    // after it still reads what its turn opened as.
+    const completesNudgedTurn = !completesSubagentLoop && nudgedTurnId !== null && e.turnId === nudgedTurnId;
     if (completesNudgedTurn) nudgedTurnId = null;
     // The goals a [MEMORY CHECK] turn asked about, where this completion is
     // that turn's own: read by the id its turn.start carried and spent here.
@@ -9810,9 +9819,10 @@ export const register: Register = async (on, options) => {
       : undefined;
     if (memoryCheck !== undefined) memoryCheckTurns.delete(e.turnId);
     // A [MEMORY CHECK] turn's answer names records rather than work on the
-    // active entry, so plan health and memory curation below leave it unread.
+    // active entry, so the last-answer writer, plan health and memory
+    // curation below leave it unread.
     const isMemoryCheckTurn = wasMemoryCheck || memoryCheck !== undefined;
-    currentTurnKind = "unaccounted";
+    if (!completesSubagentLoop) currentTurnKind = "unaccounted";
     if (e.turnId === currentGateTurnId && !(typeof e.agentId === "string" && e.agentId.length > 0)) {
       currentTurnOriginKind = "unclassified";
       currentTurnIsPriming = false;
@@ -9834,6 +9844,17 @@ export const register: Register = async (on, options) => {
     const skipped = (e as { isAborted?: boolean; aborted?: boolean }).isAborted === true
       || (e as { aborted?: boolean }).aborted === true
       || e.reason === "aborted" || e.reason === "error" || e.reason === "refusal" || !e.answer;
+    // The worker's most recent answer, for the controller's state: the
+    // persona's own turn end with an answer to judge, keyed to the entry the
+    // turn started on. The reading is `skipped` above, an aborted, errored,
+    // refused or answerless completion, and nothing more: a turn a channel
+    // message or a delivered record opened, which the scorer leaves
+    // unscored, still ends on the worker's own answer and moves this.
+    // completesGateTurn excludes a subagent's completion, and a [MEMORY CHECK]
+    // turn's answer names records rather than work on the next goal.
+    if (completesGateTurn && !skipped && !isMemoryCheckTurn && typeof e.answer === "string") {
+      sess.lastAnswer = { goalId: turnLeafIdAtDelete, text: e.answer };
+    }
 
     // Steer 68/69: a Discord message opened this turn and the turn ended
     // with an answer but no reply-tool call - exactly the shape that left
@@ -9941,10 +9962,10 @@ export const register: Register = async (on, options) => {
       sess.untrackedWorkCount = count;
     }
 
-    // Item 8.2 (Round 36, extended Round 39): an ask record opens only when
-    // the worker's own completed turn states a real fork as a literal
-    // marker line, never from the classifier's idle-gap or pause reading
-    // (see the conversion above, which now covers both verdicts). The
+    // Item 8.2: an ask record opens only when the worker's own completed
+    // turn states a real fork as a literal marker line, never from the
+    // classifier's idle-gap reading (see the ask-operator conversion in the
+    // controller tick, the one verdict that converts). The
     // stored question is the worker's own line, not a reason the classifier
     // produced. Two guards on the marker itself: refuse a match that still
     // carries the literal template's angle-bracket placeholders (a worker
@@ -10028,8 +10049,7 @@ export const register: Register = async (on, options) => {
     // takes no lead. The ASK: marker above is handled as it is whether or
     // not this line is present.
     // The closing text's status line, read once here: the lead below, the
-    // WORKING: clear, the nudge count and the lead_blocked outcome all take
-    // it from this one reading.
+    // WORKING: clear and the nudge count all take it from this one reading.
     const statusLine = readStatusLine(e.answer);
     // Whether the turn ended on a BLOCKED: or WAITING: lead, the reading the
     // record close and the compaction boundary below both take: on a lead the
@@ -10081,8 +10101,8 @@ export const register: Register = async (on, options) => {
     // recorded at turn.start, resets it when its closing text opens with a
     // status line and adds one when it opens with none. Every other
     // completion moves nothing: an unaccounted turn, so a nudge whose turn
-    // cannot be placed never counts toward the cap; a subagent's completion
-    // under an id other than the nudged turn's; and an aborted, errored or
+    // cannot be placed never counts toward the cap; a subagent's completion,
+    // under whatever turn id it carries; and an aborted, errored or
     // refused turn. A nudged completion with no answer
     // opens with none of the three lines, so it adds one. Where an entry was
     // activated, the tree replaced or the state loaded while the nudged turn
@@ -10103,7 +10123,11 @@ export const register: Register = async (on, options) => {
       else sess.nudgedAnswersWithoutStatus += 1;
     }
 
-    if (!skipped && turnLeaf) {
+    // A subagent's completion is not scored: its answer is the subagent's
+    // report rather than the worker's, so it makes no classify, no shadow call
+    // and no score, and leaves the turn-start leaf for the persona's own
+    // completion to score.
+    if (!skipped && turnLeaf && !completesSubagentLoop) {
       if (turnLeaf.status === "complete") {
         // M11: goal_done ran during this turn, the credit is already in the
         // goal_done handler. Log score_skipped here.
@@ -10148,10 +10172,9 @@ export const register: Register = async (on, options) => {
             : SCORER_LABELS;
           try {
             // Bound to a name so the same bytes reach Haiku and the shadow call
-            // below it.
-            const scoreState =
-              `User asked: ${currentPrompt.slice(0, 500)}\n\nWorker answered: ${e.answer.slice(0, 1000)}\n\nGoal objective: ${g.objective}\n\n` +
-              `Did the worker's answer advance the goal objective?`;
+            // below it. The catalog builds it, so .kit/jev-gold/replay.mjs
+            // builds the same state from a sampled turn.
+            const scoreState = turnScoreStateText(askedTextAtDelete, e.answer, g.objective, scoreToolsAtDelete);
             const result = await $.model.classify(
               scoreState,
               labels,
@@ -10439,43 +10462,22 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // Section 5 (plan-health-from-the-record): the four shadow questions
-    // and their outcome joiners. Everything here writes journal lines and
-    // session memory and nothing else: no branch above or below reads a
-    // value from it, and the one decision it can push is the journal's own
-    // write-failure line.
+    // The plan health request and its one outcome joiner. Everything here
+    // writes journal lines and session memory and nothing else: no branch
+    // above or below reads a value from it, and the one decision it can push
+    // is the journal's own write-failure line.
     //
-    // Four joiners, in the order their facts are known. The origin of this
-    // turn settles the next_speaker outcome of the previous plan health call,
-    // whatever entry that call was on, and this same turn settles the
-    // continued_unprompted outcome of whichever call is still held, whatever
-    // entry that one was on too, true only where this turn opened
-    // unaccounted and not from a channel message - nothing the plugin
-    // tracks and no channel message acted first - and false on every other
-    // completed turn (a nudge, a delivery, a proposal, a plugin prompt or a
-    // channel message), where a nudge sent for the held record's own entry
-    // has not already settled it false first at the nudge-sending site.
-    // Every record held for an entry that has completed, been abandoned or
-    // left the tree is dropped, whichever entry this turn was on: no
-    // outcome it awaited is written, which the journal's readers tolerate.
-    // Then, for the entry this turn was on, each chapter_within outcome
-    // still held is settled true where the plan holder's Chapter count now
-    // stands above the count at its call, which covers a rise read on a
-    // sibling entry's turn, and false at the fifth turn on the entry
-    // without one. Last, on a completed turn on a plan entry, the four
-    // questions are asked over this turn's closing text and the entry's
-    // last few, and the lead_blocked outcome is written at once from the
-    // same first-line read Section 3 makes.
+    // The origin of this turn settles the next_speaker outcome of the
+    // previous plan health call, whatever entry that call was on. Every
+    // record held for an entry that has completed, been abandoned or left
+    // the tree is dropped, whichever entry this turn was on. Last, on a
+    // completed turn on a plan entry, block-owner is asked over this turn's
+    // closing text and the entry's last few.
     if (jevMode === "shadow") {
       const nextSpeakerStampId = sess.jevNextSpeakerStampId;
       if (nextSpeakerStampId !== null) {
         sess.jevNextSpeakerStampId = null;
         shadowOutcome(hostOf($), nextSpeakerStampId, "next_speaker", wasChannelOrigin ? "channel" : wasDelivery ? "delivery" : "neither");
-      }
-      const workContinuesHeld = sess.jevWorkContinuesStampId;
-      if (workContinuesHeld !== null) {
-        sess.jevWorkContinuesStampId = null;
-        shadowOutcome(hostOf($), workContinuesHeld.stampId, "continued_unprompted", wasUnaccounted && !wasChannelOrigin ? "true" : "false");
       }
       for (const heldId of [...sess.jevPlanHealth.keys()]) {
         const heldEntry = sess.state.goals.find((g) => g.id === heldId);
@@ -10484,26 +10486,12 @@ export const register: Register = async (on, options) => {
       if (turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
         const entryId = turnLeaf.id;
         const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
-        const held = sess.jevPlanHealth.get(entryId);
-        const chaptersNow = planHolder?.chapterCount ?? 0;
-        if (held !== undefined) {
-          const stillWaiting: { stampId: string; turns: number; chapterCount: number }[] = [];
-          for (const pending of held.chapterWithin) {
-            const turns = pending.turns + 1;
-            if (chaptersNow > pending.chapterCount) {
-              shadowOutcome(hostOf($), pending.stampId, "chapter_within", "true");
-            } else if (turns >= CHAPTER_WITHIN_TURNS) {
-              shadowOutcome(hostOf($), pending.stampId, "chapter_within", "false");
-            } else {
-              stillWaiting.push({ stampId: pending.stampId, turns, chapterCount: pending.chapterCount });
-            }
-          }
-          held.chapterWithin = stillWaiting;
-        }
-        if (!skipped && !isMemoryCheckTurn && sess.isOwner && !entryOver) {
-          let record = held;
+        // A subagent's completion is its report, not the worker's closing
+        // text, so it asks nothing and enters no recent text.
+        if (!skipped && !isMemoryCheckTurn && !completesSubagentLoop && sess.isOwner && !entryOver) {
+          let record = sess.jevPlanHealth.get(entryId);
           if (record === undefined) {
-            record = { closingTexts: [], chapterWithin: [] };
+            record = { closingTexts: [] };
             sess.jevPlanHealth.set(entryId, record);
           }
           // The one cut of the closing text, which both the request's
@@ -10514,12 +10502,7 @@ export const register: Register = async (on, options) => {
           record.closingTexts.push(closingText);
           while (record.closingTexts.length > PLAN_HEALTH_RECENT_MAX) record.closingTexts.shift();
           const stampId = shadowAskPlanHealth(hostOf($), closingText, [...record.closingTexts], jevMode);
-          if (stampId !== null) {
-            record.chapterWithin.push({ stampId, turns: 0, chapterCount: chaptersNow });
-            sess.jevNextSpeakerStampId = stampId;
-            sess.jevWorkContinuesStampId = { stampId, entryId };
-            shadowOutcome(hostOf($), stampId, "lead_blocked", statusLine !== null && statusLine.state === "blocked" ? "true" : "false");
-          }
+          if (stampId !== null) sess.jevNextSpeakerStampId = stampId;
         }
       }
     }
