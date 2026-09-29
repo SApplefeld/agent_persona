@@ -329,6 +329,19 @@ try {
     const supRun3 = run(SAMPLE, ["--question", "block-owner", "--supplement-of", heldInOut, "--out", path.dirname(heldInOut), "--journal", JOURNAL, "--projects", PROJECTS]);
     check("the supplement refuses an --out that would overwrite the held sample",
       supRun3.status === 2 && supRun3.stderr.includes("held sample"), supRun3);
+    for (const [flag, value] of [["--n", "10"], ["--seed", "7"]]) {
+      const drawFlagRun = run(SAMPLE, ["--question", "block-owner", "--supplement-of", heldEmpty, flag, value, "--out", path.join(supDir, "out-draw"), "--journal", JOURNAL, "--projects", PROJECTS]);
+      check(`the supplement refuses ${flag}, which only the seeded draw reads`,
+        drawFlagRun.status === 2 && drawFlagRun.stderr.includes(`${flag} does not apply to --supplement-of`)
+          && !fs.existsSync(path.join(supDir, "out-draw")), drawFlagRun);
+    }
+    const heldOther = path.join(supDir, "held-other.jsonl");
+    fs.writeFileSync(heldOther, JSON.stringify({ id: sampleModule.recordId("block-owner", "s-x") }) + "\n"
+      + JSON.stringify({ id: sampleModule.recordId("controller-decision", "s-y") }) + "\n");
+    const supRun4 = run(SAMPLE, ["--question", "block-owner", "--supplement-of", heldOther, "--out", path.join(supDir, "out-other"), "--journal", JOURNAL, "--projects", PROJECTS]);
+    check("the supplement refuses a held sample holding another question's record id, naming it",
+      supRun4.status === 2 && supRun4.stderr.includes(sampleModule.recordId("controller-decision", "s-y"))
+        && supRun4.stderr.includes("not a block-owner record id") && !fs.existsSync(path.join(supDir, "out-other")), supRun4);
     const retiredOut = path.join(TMP, "sample-wb");
     const retiredRun = run(SAMPLE, ["--question", "worker-blocked", "--journal", JOURNAL, "--projects", PROJECTS, "--out", retiredOut]);
     const retiredLines = retiredRun.status === 0 ? readLines(path.join(retiredOut, "sample.jsonl")) : [];
@@ -906,10 +919,10 @@ try {
       BARS["block-owner"].find((b) => b.key === "recall:operator").threshold === 0.75,
       BARS["block-owner"].map((b) => [b.key, b.threshold]));
 
-    // Design-weighted operator figures. Hand-computed: population 20 total,
-    // 4 whose v1 answer is operator. The scored set holds the 2 such records
-    // (h1, h2), each weight 1, and 3 others (r1..r3), each weight
-    // (20 - 4) / 3 = 16/3. Gold and predicted:
+    // Design-weighted operator figures. Hand-computed: population 18 total,
+    // 2 whose v1 answer is operator. The scored set holds both such records
+    // (h1, h2), each weight 2 / 2 = 1, and 3 others (r1..r3), each weight
+    // (18 - 2) / 3 = 16/3. Gold and predicted:
     //   h1 operator / operator: tp 1
     //   h2 self-resolving / operator: fp 1
     //   r1 operator / operator: tp 16/3
@@ -923,17 +936,51 @@ try {
       wrec("h1", "operator", "operator"), wrec("h2", "self-resolving", "operator"),
       wrec("r1", "operator", "operator"), wrec("r2", "operator", "none"), wrec("r3", "none", "operator"),
     ];
-    const population = { question: "block-owner", split: "dev", value: "operator", version: "v1", total: 20, matching: 4 };
+    const population = { question: "block-owner", split: "dev", value: "operator", version: "v1", total: 18, matching: 2 };
     const weighted = weightedOperatorOf(weightedRecords, new Set(["h1", "h2"]), population);
     check("design-weighted operator precision and recall read the hand-computed 0.5 and 19/35",
       weighted !== null && Math.abs(weighted.precision - 0.5) < 1e-9 && Math.abs(weighted.recall - 19 / 35) < 1e-9
-        && weighted.n === 5 && weighted.hits === 2 && weighted.rest === 3 && Math.abs(weighted.restWeight - 16 / 3) < 1e-9, weighted);
+        && weighted.n === 5 && weighted.hits === 2 && weighted.rest === 3 && weighted.hitWeight === 1
+        && Math.abs(weighted.restWeight - 16 / 3) < 1e-9, weighted);
     check("control: at weight 1 throughout, the same records read the unweighted 0.5 and 2/3",
-      (() => { const w = weightedOperatorOf(weightedRecords, new Set(["h1", "h2"]), { ...population, total: 7 }); return w && Math.abs(w.precision - 0.5) < 1e-9 && Math.abs(w.recall - 2 / 3) < 1e-9; })());
+      (() => { const w = weightedOperatorOf(weightedRecords, new Set(["h1", "h2"]), { ...population, total: 5 }); return w && Math.abs(w.precision - 0.5) < 1e-9 && Math.abs(w.recall - 2 / 3) < 1e-9; })());
     const weightedLine = typeof scoreModule.weightedLine === "function" ? scoreModule.weightedLine("block-owner", "v2.replay", weighted, population) : "";
-    check("the weighted figures print as their own labelled line, never a bar: line",
-      weightedLine === "weighted: block-owner v2.replay operator precision 0.500 recall 0.543 over 5 (2 v1 operator at weight 1, 3 others at weight 5.333; population 20, 4 v1 operator)",
+    check("the weighted figures print as their own labelled line, never a bar: line, with both weights",
+      weightedLine === "weighted: block-owner v2.replay operator precision 0.500 recall 0.543 over 5 (2 v1 operator at weight 1.000, 3 others at weight 5.333; population 18, 2 v1 operator)",
       weightedLine);
+    // Fewer v1 operator records scored than the population holds. Population
+    // 20 total, 6 whose v1 answer is operator; the scored set holds 3 of them
+    // (g1..g3), each weight 6 / 3 = 2, and 3 others (r1..r3), each weight
+    // (20 - 6) / 3 = 14/3. Gold and predicted:
+    //   g1 operator / operator: tp 2
+    //   g2 operator / operator: tp 2
+    //   g3 self-resolving / operator: fp 2
+    //   r1 operator / operator: tp 14/3
+    //   r2 operator / none: fn 14/3
+    //   r3 none / operator: fp 14/3
+    // tp = 26/3, fp = 20/3, fn = 14/3
+    // precision = 26 / 46 = 13/23, recall = 26 / 40 = 13/20
+    // At weight 1 on g1..g3 instead, precision would read 20/37 and recall 10/17.
+    const fewerRecords = [
+      wrec("g1", "operator", "operator"), wrec("g2", "operator", "operator"), wrec("g3", "self-resolving", "operator"),
+      wrec("r1", "operator", "operator"), wrec("r2", "operator", "none"), wrec("r3", "none", "operator"),
+    ];
+    const fewerIds = new Set(["g1", "g2", "g3"]);
+    const fewerPopulation = { ...population, total: 20, matching: 6 };
+    const fewer = weightedOperatorOf(fewerRecords, fewerIds, fewerPopulation);
+    check("with fewer v1 operator records scored than the population holds, each weighs matching / hits: 13/23 and 13/20",
+      fewer !== null && Math.abs(fewer.precision - 13 / 23) < 1e-9 && Math.abs(fewer.recall - 13 / 20) < 1e-9
+        && fewer.hits === 3 && fewer.hitWeight === 2 && Math.abs(fewer.restWeight - 14 / 3) < 1e-9, fewer);
+    const refusalOf = (records, ids, pop) => { try { weightedOperatorOf(records, ids, pop); return null; } catch (e) { return e.message; } };
+    const moreHits = refusalOf(fewerRecords, fewerIds, { ...population, total: 20, matching: 2 });
+    check("the weighted read refuses more scored v1 operator records than the population holds",
+      moreHits !== null && moreHits.includes("3 v1 operator") && moreHits.includes("holds 2"), moreHits);
+    const moreRest = refusalOf(fewerRecords, fewerIds, { ...population, total: 8, matching: 6 });
+    check("the weighted read refuses more scored other records than the population holds",
+      moreRest !== null && moreRest.includes("3 other") && moreRest.includes("holds 2"), moreRest);
+    const noHits = refusalOf(fewerRecords, new Set(), fewerPopulation);
+    check("the weighted read refuses a population with v1 operator calls where none is scored",
+      noHits !== null && noHits.includes("none of its 6 v1 operator"), noHits);
 
     // --- The scorer's own join and CLI, over small on-disk files ---
     const scoreDir = path.join(TMP, "score-cli");
@@ -1036,10 +1083,10 @@ try {
       "--replay", path.join(weightedDir, "replay.jsonl"), "--population", path.join(weightedDir, "population.json")]);
     const weightedLines = weightedCli.stdout.split("\n").filter((l) => l.startsWith("weighted: "));
     check("score.mjs --population prints the weighted line for the replay, the v1 answer weighting each record",
-      weightedCli.status === 0 && weightedLines.includes("weighted: block-owner v2.replay operator precision 0.500 recall 0.543 over 5 (2 v1 operator at weight 1, 3 others at weight 5.333; population 20, 4 v1 operator)"),
+      weightedCli.status === 0 && weightedLines.includes("weighted: block-owner v2.replay operator precision 0.500 recall 0.543 over 5 (2 v1 operator at weight 1.000, 3 others at weight 5.333; population 18, 2 v1 operator)"),
       weightedCli.stderr || weightedLines);
     check("score.mjs --population prints the weighted line for the v1 baseline off the record's own answer",
-      weightedLines.includes("weighted: block-owner v1 operator precision 0.500 recall 0.086 over 5 (2 v1 operator at weight 1, 3 others at weight 5.333; population 20, 4 v1 operator)"),
+      weightedLines.includes("weighted: block-owner v1 operator precision 0.500 recall 0.086 over 5 (2 v1 operator at weight 1.000, 3 others at weight 5.333; population 18, 2 v1 operator)"),
       weightedLines);
     check("without --population, score.mjs prints no weighted line",
       !run(SCORE, ["--question", "block-owner", "--gold", path.join(weightedDir, "gold.jsonl")]).stdout.includes("weighted: "));
@@ -1048,6 +1095,11 @@ try {
     const wrongRun = run(SCORE, ["--question", "block-owner", "--gold", path.join(weightedDir, "gold.jsonl"), "--population", wrongPopulation]);
     check("score.mjs refuses a population file drawn for another question",
       wrongRun.status === 2 && wrongRun.stderr.includes("drawn for controller-decision"), wrongRun);
+    const otherSplit = path.join(weightedDir, "population-test.json");
+    fs.writeFileSync(otherSplit, JSON.stringify({ ...population, split: "test" }) + "\n");
+    const otherSplitRun = run(SCORE, ["--question", "block-owner", "--gold", path.join(weightedDir, "gold.jsonl"), "--population", otherSplit]);
+    check("score.mjs refuses a population file counted on another split than the gold's",
+      otherSplitRun.status === 2 && otherSplitRun.stderr.includes("the test split, not the gold's dev"), otherSplitRun);
     const noOversampleRun = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl"), "--population", path.join(weightedDir, "population.json")]);
     check("score.mjs refuses --population for a question with no oversample",
       noOversampleRun.status === 2 && noOversampleRun.stderr.includes("no oversample"), noOversampleRun);

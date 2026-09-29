@@ -677,8 +677,12 @@ export function stratify(candidates, n, seed, oversample = null) {
 // label file written for another sample carries ids this sample's records
 // miss, and the adjudicator's missing-label refusal catches the mix.
 export function recordId(question, stampId) {
-  const prefix = question.split("-").map((w) => w[0]).join("");
-  return `${prefix}-${fnv1aHash(stampId).toString(16).padStart(8, "0")}`;
+  return `${recordIdPrefix(question)}-${fnv1aHash(stampId).toString(16).padStart(8, "0")}`;
+}
+
+// The question's initials, which open every record id drawn for it.
+export function recordIdPrefix(question) {
+  return question.split("-").map((w) => w[0]).join("");
 }
 
 // --- The supplement ---
@@ -725,14 +729,19 @@ export function populationOf(question, split, candidates) {
   };
 }
 
-// The record ids of a held sample.jsonl. A line that does not parse fails the
-// run, since a torn held sample would put a held record into the supplement.
-function heldIdsOf(file) {
+// The record ids of a held sample.jsonl drawn for `question`. A line that
+// does not parse fails the run, since a torn held sample would put a held
+// record into the supplement. An id without the question's record-id prefix
+// fails it too, since a sample drawn for another question holds none of this
+// question's records and would put every one of them into the supplement.
+function heldIdsOf(file, question) {
+  const prefix = `${recordIdPrefix(question)}-`;
   const ids = new Set();
   for (const line of fs.readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     const row = JSON.parse(line);
     if (typeof row.id !== "string") throw new Error(`the held sample ${file} carries a line with no id`);
+    if (!row.id.startsWith(prefix)) throw new Error(`the held sample ${file} carries ${row.id}, which is not a ${question} record id`);
     ids.add(row.id);
   }
   return ids;
@@ -750,12 +759,14 @@ export function countBy(records, keyOf) {
 
 function parseArgs(argv) {
   const flags = { n: DEFAULT_N, split: "dev", seed: DEFAULT_SEED };
+  const given = new Set();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = argv[i + 1];
     if (!a.startsWith("--") || v === undefined) throw new Error(`bad argument: ${a}`);
     i += 1;
     const name = a.slice(2);
+    given.add(name);
     if (name === "n" || name === "seed") {
       if (!/^\d+$/.test(v)) throw new Error(`--${name} takes a whole number`);
       flags[name] = Number(v);
@@ -765,6 +776,11 @@ function parseArgs(argv) {
   }
   if (!flags.question || sampleSpecOf(flags.question) === null) {
     throw new Error(`--question must be one of ${[...Object.keys(QUESTIONS), ...Object.keys(RETIRED_QUESTIONS)].join(", ")}`);
+  }
+  // The supplement takes every call its oversample names, so the seeded
+  // draw's size and seed would change nothing it writes.
+  if (flags.supplementOf) {
+    for (const name of ["n", "seed"]) if (given.has(name)) throw new Error(`--${name} does not apply to --supplement-of`);
   }
   return flags;
 }
@@ -776,14 +792,15 @@ export function homeDir(env = process.env) {
 
 // --supplement-of: writes the supplement to the held sample as sample.jsonl,
 // and the population counts as population.json beside it, and prints both
-// counts. The seeded draw, --n and --seed play no part.
+// counts. The seeded draw plays no part, and parseArgs refuses --n and --seed
+// beside --supplement-of.
 function supplementMain(flags, journalRoot, projectsRoot, out) {
   oversampleOf(flags.question);
   const outSample = path.join(out, "sample.jsonl");
   if (path.resolve(outSample) === path.resolve(flags.supplementOf)) {
     throw new Error(`--out ${out} would overwrite the held sample ${flags.supplementOf}`);
   }
-  const heldIds = heldIdsOf(flags.supplementOf);
+  const heldIds = heldIdsOf(flags.supplementOf, flags.question);
   const journal = readJournal(journalRoot);
   const transcripts = indexTranscripts(projectsRoot);
   const { candidates, dropped, admitted } = buildCandidates(journal, transcripts, flags.question, flags.split);

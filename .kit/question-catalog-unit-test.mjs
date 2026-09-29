@@ -205,8 +205,9 @@ const VALID_CONTROLLER_OVERRIDE = {
     [CONTROLLER_DECISION, CONTROLLER_LABELS_WITH_SWITCH],
     [TURN_SCORE, SCORER_LABELS],
     [MEMORY_KIND, MEMORY_KIND_LABELS],
-    // The block owner has no Haiku label array; its constant is the caller's
-    // one source of the ids it offers, pinned here the same way.
+    // The block owner has no Haiku label array. The plugin offers its shipped
+    // options' ids and .kit/jev-gold/replay.mjs offers BLOCK_OWNER_OPTIONS, so
+    // Test 2e2 below pins the two equal in order.
     [BLOCK_OWNER, BLOCK_OWNER_OPTIONS],
     // The two turn record sets are the block owner's case again: no Haiku
     // label array, and the option constant is the one source of the ids the
@@ -221,6 +222,12 @@ const VALID_CONTROLLER_OVERRIDE = {
     check(`Test 2f: every ${id} option carries a description`,
       Object.values(SHIPPED_QUESTIONS[id].options).every((d) => typeof d === "string" && d.length > 0), Object.keys(SHIPPED_QUESTIONS[id].options));
   }
+  // The request's option-id order is part of what the replay sends, so the
+  // block owner's shipped options and BLOCK_OWNER_OPTIONS agree in order, not
+  // only as sets.
+  check("Test 2e2: block-owner's shipped option ids equal BLOCK_OWNER_OPTIONS in order",
+    JSON.stringify(Object.keys(SHIPPED_QUESTIONS[BLOCK_OWNER].options)) === JSON.stringify([...BLOCK_OWNER_OPTIONS]),
+    Object.keys(SHIPPED_QUESTIONS[BLOCK_OWNER].options));
   check("Test 2g: the plan switch is not pinned and ships only no_match, its other ids being the caller's",
     !FIXED_OPTION_SETS.includes(PLAN_SWITCH) && sameSet(Object.keys(SHIPPED_QUESTIONS[PLAN_SWITCH].options), ["no_match"]),
     Object.keys(SHIPPED_QUESTIONS[PLAN_SWITCH].options));

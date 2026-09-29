@@ -475,28 +475,46 @@ export function evalBar(bar, question, version, records, split) {
 // --- Design-weighted operator figures ---
 
 // A block-owner gold sample built from a seeded draw plus sample.mjs's
-// supplement holds every dev call whose v1 answer is operator and only a
-// share of the rest, so its raw operator precision and recall over-represent
-// v1 operator answers. This read weighs them back to the population
-// sample.mjs --supplement-of counts in population.json: a record whose v1
-// answer is operator weighs 1, and every other scored record weighs the
-// population's other calls divided by the scored set's other records.
-// `v1OperatorIds` names the records whose v1 answer is operator, read off the
-// journal join, so a replayed record keeps the weight its v1 answer set. The
-// prediction is the record's own value, which is the replay's where the
-// record was replayed. The read is over every scorable record, not the bar's
-// top-probability rows. Returns null where the scored set has no record.
+// supplement holds most or all of the dev calls whose v1 answer is operator
+// and only a share of the rest, so its raw operator precision and recall
+// over-represent v1 operator answers. This read weighs both groups back to
+// the population sample.mjs --supplement-of counts in population.json: a
+// scored record whose v1 answer is operator weighs the population's v1
+// operator calls divided by the scored set's v1 operator records, and every
+// other scored record weighs the population's other calls divided by the
+// scored set's other records. The weights are recomputed for each printed
+// version group from the records that group scored, so a group missing some
+// records, such as a replay with failed rows, is still weighed to the whole
+// population. `v1OperatorIds` names the records whose v1 answer is operator,
+// read off the journal join, so a replayed record keeps the group its v1
+// answer set. The prediction is the record's own value, which is the
+// replay's where the record was replayed. The read is over every scorable
+// record, not the bar's top-probability rows. Returns null where the scored
+// set has no record. Throws where a group scores more records than the
+// population holds, or where the population holds v1 operator calls and the
+// group scores none of them, since no weight can then stand for them.
 export function weightedOperatorOf(records, v1OperatorIds, population) {
   const rows = scorable(records);
   if (rows.length === 0) return null;
   const hits = rows.filter((r) => v1OperatorIds.has(r.id)).length;
   const rest = rows.length - hits;
-  const restWeight = rest === 0 ? 0 : (population.total - population.matching) / rest;
+  const others = population.total - population.matching;
+  if (hits > population.matching) {
+    throw new Error(`the weighted read scores ${hits} v1 operator record(s) and the population holds ${population.matching}`);
+  }
+  if (rest > others) {
+    throw new Error(`the weighted read scores ${rest} other record(s) and the population holds ${others}`);
+  }
+  if (population.matching > 0 && hits === 0) {
+    throw new Error(`the weighted read scores none of its ${population.matching} v1 operator population call(s)`);
+  }
+  const hitWeight = hits === 0 ? 0 : population.matching / hits;
+  const restWeight = rest === 0 ? 0 : others / rest;
   let tp = 0;
   let fp = 0;
   let fn = 0;
   for (const r of rows) {
-    const w = v1OperatorIds.has(r.id) ? 1 : restWeight;
+    const w = v1OperatorIds.has(r.id) ? hitWeight : restWeight;
     const gold = r.label === "operator";
     const predicted = foldedValue("block-owner", r.value) === "operator";
     if (gold && predicted) tp += w;
@@ -507,6 +525,7 @@ export function weightedOperatorOf(records, v1OperatorIds, population) {
     n: rows.length,
     hits,
     rest,
+    hitWeight,
     restWeight,
     precision: tp + fp === 0 ? null : tp / (tp + fp),
     recall: tp + fn === 0 ? null : tp / (tp + fn),
@@ -519,18 +538,20 @@ export function weightedLine(question, version, w, population) {
   if (w === null) return `weighted: ${question} ${version} operator n/a over 0`;
   const f = (x) => (x === null ? "n/a" : x.toFixed(3));
   return `weighted: ${question} ${version} operator precision ${f(w.precision)} recall ${f(w.recall)} over ${w.n} ` +
-    `(${w.hits} v1 operator at weight 1, ${w.rest} others at weight ${w.restWeight.toFixed(3)}; ` +
+    `(${w.hits} v1 operator at weight ${w.hitWeight.toFixed(3)}, ${w.rest} others at weight ${w.restWeight.toFixed(3)}; ` +
     `population ${population.total}, ${population.matching} v1 operator)`;
 }
 
 // Reads population.json and refuses one that is not the population of
-// `question`'s oversample, since a weighted read over another question's
-// counts would print figures that mean nothing.
-export function readPopulation(file, question) {
+// `question`'s oversample on the gold's `split`, since a weighted read over
+// another question's or another split's counts would print figures that mean
+// nothing.
+export function readPopulation(file, question, split) {
   const p = JSON.parse(fs.readFileSync(file, "utf8"));
   const oversample = QUESTIONS[question] ? QUESTIONS[question].oversample : null;
   if (!oversample) throw new Error(`--population applies only to a question with an oversample; ${question} has no oversample`);
   if (p.question !== question) throw new Error(`the population in ${file} is drawn for ${p.question}, not ${question}`);
+  if (p.split !== split) throw new Error(`the population in ${file} counts the ${p.split} split, not the gold's ${split}`);
   if (p.value !== oversample.value || p.version !== oversample.version) {
     throw new Error(`the population in ${file} counts ${p.value} under ${p.version}, not the oversample's ${oversample.value} under ${oversample.version}`);
   }
@@ -714,7 +735,7 @@ export function main(argv) {
   const split = splitOf(joined);
   let weighting = null;
   if (flags.population) {
-    const population = readPopulation(flags.population, flags.question);
+    const population = readPopulation(flags.population, flags.question, split);
     const v1OperatorIds = new Set(joined.filter((r) => r.version === population.version && r.value === population.value).map((r) => r.id));
     weighting = { population, v1OperatorIds };
   }
