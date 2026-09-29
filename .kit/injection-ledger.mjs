@@ -966,6 +966,19 @@ function extractBackstopFrame(src) {
   return record("REPLY_BACKSTOP_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "REPLY_BACKSTOP_FRAME"));
 }
 
+// The [MEMORY CHECK] frame a goal's close queues: `[MEMORY CHECK] These
+// records were shown while you worked ${safeTitle}:\n` + nameLines +
+// `\nReply with the names...or NONE.`. The title is an interpolation and is
+// stripped; nameLines is the shown records' names, per-goal store data, and
+// is excluded as goalLines is in the [PROPOSE] frame. The capture is bounded
+// by the statement's own semicolon, so a piece added anywhere in the chain is
+// inside it.
+function extractMemoryCheckFrame(src) {
+  const m = /const memoryCheckText =\s*([\s\S]*?);\n/.exec(src);
+  if (!m) throw new Error("[MEMORY CHECK] frame not found in hooks/index.ts");
+  return record("MEMORY_CHECK_FRAME", "hooks/index.ts", literalOfTemplateChain(m[1], "MEMORY_CHECK_FRAME", ["nameLines"]));
+}
+
 // The supervisor's shutdown delivery: `[SUPERVISOR id=${rec.id}] ${...}`,
 // where the id and the quoted record text are mailbox data and are stripped as
 // interpolation, leaving the label's literal frame. The capture is bounded by
@@ -1194,22 +1207,23 @@ function extractLessonBlock(src) {
   return record("LESSON_BLOCK", "hooks/index.ts", m[1]);
 }
 
-// The memory block's first line is a plain, fully literal string; its
-// second line (`entries.map(...).join("\n")`) is per-memory data and
-// excluded.
+// The memory block's first line, the fixed sentence framing what follows as
+// data, is a plain, fully literal string; the rest
+// (`judgedLines.map(bracketSafeText).join("\n")`)
+// is the lines memq judged, per-prompt data, and excluded.
 //
 // This one refuses a split where the three frames above read one, because
 // its operands are double-quoted strings and its real second operand is a
-// `.map(...).join(...)` call that no chain reader can size. So the anchor is
-// the `+ entries.map(` that must follow the one string, and a second string
+// `.join(...)` call that no chain reader can size. So the anchor is the
+// `+ judgedLines.map(bracketSafeText).join(` that must follow the one string, and a second string
 // spliced in front of it fails the match rather than being dropped from the
 // entry. The refusal is tagged so a caller can tell it from a rule whose
 // source moved.
 function extractMemoryBlock(src) {
-  const m = /const memoryBlock =\s*\n\s*"((?:[^"\\]|\\.)*)"\s*\+\s*\n\s*entries\.map\(/.exec(src);
+  const m = /const memoryBlock =\s*\n\s*"((?:[^"\\]|\\.)*)"\s*\+\s*\n\s*judgedLines\.map\(bracketSafeText\)\.join\(/.exec(src);
   if (!m) {
     if (/const memoryBlock =/.test(src)) {
-      throw new Error("[chain-shape] MEMORY_BLOCK: the memory block is no longer one quoted string followed by `+ entries.map(`; a second literal operand here would be dropped from the entry, so size it explicitly or restore that shape");
+      throw new Error("[chain-shape] MEMORY_BLOCK: the memory block is no longer one quoted string followed by `+ judgedLines.map(bracketSafeText).join(`; a second literal operand here would be dropped from the entry, so size it explicitly or restore that shape");
     }
     throw new Error("memoryBlock not found in hooks/index.ts");
   }
@@ -1309,6 +1323,7 @@ const PROMPT_CALL_SITES = [
   { anchor: "expectedNudgeTurn", entries: ["NUDGE_TEXT_idle_gap_converted", "NUDGE_TEXT_idle_timeout"] },
   { anchor: "backstopText", entries: ["REPLY_BACKSTOP_FRAME"] },
   { anchor: "shutdownEntry", entries: ["SUPERVISOR_SHUTDOWN_FRAME"] },
+  { anchor: "memoryCheckEntry", entries: ["MEMORY_CHECK_FRAME"] },
 ];
 
 // The exclusions above in a public shape, so the duplicate test can pin the
@@ -1619,6 +1634,7 @@ function buildLedgerFrom(shSrc, holderSrc, tsSrc) {
     extractSimpleTextConst(tsSrc, "PROPOSE_FRAME_PLAN_AND_START_TEXT"),
     extractProposeFrameNoTreeClause(tsSrc),
     extractBackstopFrame(tsSrc),
+    extractMemoryCheckFrame(tsSrc),
     extractShutdownFrame(tsSrc),
     extractPlanDocumentLine(tsSrc),
     ...extractNudgeFrames(tsSrc),

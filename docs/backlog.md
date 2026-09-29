@@ -20,6 +20,25 @@ The decision this feeds: whether a question is proposed for `jevLive` under a pl
 
 `recentClosingTexts`, up to five closing texts of 1,000 characters each, still leaves the machine in every `plan-health` request, and no shipped question reads it: `block-owner`'s v2 instructions and options read `closingText` alone. `.kit/controller-tick-test.mjs`'s replay pin checks the request byte for byte against the plugin's own, so dropping the field is a wire change. Remedy: drop it together with `block-owner`'s next version and that version's own replay pin, rather than as a same-version edit, since the byte-identity check depends on the field as it stands.
 
+## Plugins-only public distribution: this repo's marketplace entry ships docs/ and .kit/ (2026-09-28, operator-decided, routed by the coordinator)
+
+The full initiative (one public marketplace repo for all three of Scott's plugins, each source repo
+going private, a tag-triggered publish job per repo with an allowlist and a leak gate) is recorded in
+`claude-kit`'s `docs/backlog.md` under the same heading text, dated 2026-09-28. This repo's own
+prerequisite: the marketplace entry here uses source `.` (the repo root is the plugin), so `docs/`
+and `.kit/` would ship inside a public snapshot. Move the plugin into a subfolder, or have the
+allowlist export only its runtime paths — either way, keep the operator's own live supervisor install
+working throughout, since this is their runtime. Needs a cross-repo spec before implementation; not
+this repo's alone to design.
+
+## Operator checks owed by the persona memory port plan (parked 2026-09-28)
+
+Two items only the operator can settle, once the persona memory port pull request merges and the plugin cache updates. The plan is at `docs/archive/agent_persona_persona-memory-port_spec_v1.md`, under its Operator Verification section and its final Chapter. First, relaunch one persona and ask it on its channel a question its store should answer, then read the injected memory block in the transcript. A block naming another persona's record reopens the kit plan's section 1, and no block with the store up and a judge configured reopens this plan's section 3. Second, close a goal on that persona and confirm the `[MEMORY CHECK]` turn appears and its reply stamps: `memq unstamped` run in that persona's launch directory no longer lists the named records.
+
+## The README's yield call-site list is stale (found 2026-09-28)
+
+`README.md`'s Yield section says "All six call sites" call the yield helpers and lists them. The code has `shouldYield` at two sites and `yieldRecord` at two, with `memory_add` reaching them through `persist()`, which it now calls twice. The count likely predates the persona memory port. Remedy: restate the section from the call sites in `hooks/index.ts`. Found by the persona memory port's finishing docs curation.
+
 ## Operator checks owed by the Jev memory gate plan (parked 2026-09-27)
 
 Four items only the operator can settle, once the Jev memory gate pull request merges and the plugin cache updates. The plan is at `docs/archive/agent_persona_jev-memory-gate_spec_v1.md`, under its Operator Verification section and its final Chapter. First, name `memory-kind` in one persona's `jevLive` roster field and relaunch it. Over the next day, that persona's decisions should show both `memory_gate_skipped` and `memory_gate_passed`, and no `memory_gate_skipped` should carry the split `holdout` in its detail. What reopens the work: a skip on a holdout stamp, or `memory_gate_fallback` on more than one memory call in twenty, which says the live timeout is too short for this machine. Second, after a week, count the `haiku_kind` outcome lines on holdout stamps whose Jev `discard` probability met the floor. The share whose label is not `discard` is the live miss rate, and `memoryGateDiscardPercent` in `fleet.json` moves from that reading. Third, decide whether `docs/security-model.md` should name the Jev service as a party that receives each shadowed and live question's state text. The state has gone to that service in shadow since 2026-09-20, and a live `memory-kind` call sends the same text, so the gate adds no new egress. The threat model names no such party today. Fourth, keep or overrule the nudge skip's reach: no completion inside a goal-nudged turn is classified, a subagent's included, with `memory-kind` live or not; overruling narrows it to the turn's own completion.
@@ -39,7 +58,6 @@ The state the memory step sends to Haiku and Jev quotes `currentPrompt` as "User
 ## Operator checks owed by the channel-log-retention plan (parked 2026-09-27)
 
 Two items only the operator can settle, once the channel-log-retention pull request merges. The plan is at `docs/archive/agent_persona_channel-log-retention_spec_v1.md`, under its final Chapter's Operator Verification. First, restart the fleet and open `supervisor.log` in the run directory of a persona whose work directory holds the frozen 4 MB `.agentic-channel.jsonl` (`D:\discord-channels`, `D:\agent_persona`, `D:\personas\ASSISTANT`). Once that file is older than 14 days, one `CHANNEL-LOG SWEEP: removed <n> file(s)` line appears and the file is gone, and a persona whose roster entry sets `channelLogRetentionDays` launches with no `ERROR:` line naming it. What reopens the work: a missing line, a surviving old file, or a removed live segment. Second, decide whether the sweep's log line should name each removed file or only count them, as it does now. The recommendation is the count; naming the files is a one-line change in `sweep_channel_log_segments` in `bin/supervise.sh`.
-
 ## Operator checks owed by the upgrade check and restart recap plan (parked 2026-09-27)
 
 Five steps only the operator can take, in this order. The plan is at `docs/archive/agent_persona_upgrade-check-and-restart-recap_spec_v1.md`, under its Operator Verification and its last Chapter.
@@ -79,7 +97,7 @@ The harness typings (`.claude/types/claude-code.d.ts`, the `prompt.submit` hook 
 
 ## The README still calls the controller the sole actuator (found 2026-09-25)
 
-`README.md`'s opening architecture summary and its Controller sections say the controller is "the sole actuator" and "the sole actor" and that its "Exactly three actuators" are "controller-only". Two submits run from the `turn.complete` handler, the reply backstop and the inbox drain, and the README's own Controller line names both, so the summary contradicts it. Remedy: restate the summary as "the controller is the main actuator, and two submits run at a turn's end", or move both onto the tick. Found by the inbox-drain plan's finishing docs curation.
+`README.md`'s opening architecture summary and its Controller sections say the controller is "the sole actuator" and "the sole actor" and that its "Exactly three actuators" are "controller-only". Two submits run from the `turn.complete` handler, the reply backstop and the inbox drain, and the README's own Controller line names both, so the summary contradicts it. Remedy: restate the summary as "the controller is the main actuator, and two submits run at a turn's end", or move both onto the tick. Found by the inbox-drain plan's finishing docs curation. The persona memory port adds a third actor outside the tick: the goal-close `[MEMORY CHECK]` turn is submitted from `turn.complete` at the scorer and plan-document closes and from the `goal_done` tool, so the restatement names it too.
 
 ## Three other turn-end readers still take a subagent's answer as the persona's (found 2026-09-25)
 

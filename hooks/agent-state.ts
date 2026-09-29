@@ -579,8 +579,42 @@ export interface FleetHealthMemo {
   departed: boolean;
 }
 
+// One record the per-prompt read showed the worker, from the kit's memory
+// store. name is the record's name there, goalId the goal entry active when it
+// was shown or null where none was, and shownAt the clock it was last shown
+// at. The list holds one entry per name per goal, newest last.
+export interface ShownMemory {
+  name: string;
+  goalId: string | null;
+  shownAt: number;
+}
+
+// The most shown records the store holds at once. The oldest goes first.
+export const SHOWN_MEMORIES_MAX = 50;
+
+// Records that the read showed `name` under `goalId` at `now`. An entry
+// already held for the same name under the same goal is removed first, so a
+// record shown on several prompts of one goal is one entry, newest last, and
+// the goal's close asks about it once. The list is then cut to
+// SHOWN_MEMORIES_MAX from the front.
+export function recordShownMemory(state: AgentState, name: string, goalId: string | null, now: number): void {
+  const kept = state.shownMemories.filter((m) => !(m.name === name && m.goalId === goalId));
+  kept.push({ name, goalId, shownAt: now });
+  state.shownMemories = kept.slice(-SHOWN_MEMORIES_MAX);
+}
+
+// Whether a stored entry is a shown record: a non-empty name, a goalId that is
+// a string or null, and a finite shownAt.
+function isShownMemory(value: unknown): value is ShownMemory {
+  const entry = value as Partial<ShownMemory> | null;
+  return !!entry && typeof entry === "object"
+    && typeof entry.name === "string" && entry.name !== ""
+    && (typeof entry.goalId === "string" || entry.goalId === null)
+    && Number.isFinite(entry.shownAt);
+}
+
 export interface AgentState {
-  version: 6;
+  version: 7;
   persona: string;
   activeSessionId: string;
   epoch: number;
@@ -589,6 +623,7 @@ export interface AgentState {
   goals: GoalNode[];
   tasks: TaskItem[]; // beside the tree, each keyed to a goal; see TaskItem
   turnRecords: TurnRecord[]; // beside the tree, one message each; see TurnRecord
+  shownMemories: ShownMemory[]; // the store's records the read showed; see ShownMemory
   activeGoalId: string | null;
   longTermGoals: LongTermGoal[]; // beside the tree, never in it; see LongTermGoal
   autonomy: AutonomyLevel; // set only by goal_autonomy; see AUTONOMY_LEVELS
@@ -749,7 +784,7 @@ export function previousSessionsText(state: AgentState): string {
 export function createDefaultState(persona: string, sessionId: string): AgentState {
   const now = Date.now();
   return {
-    version: 6,
+    version: 7,
     persona,
     activeSessionId: sessionId,
     epoch: 1,
@@ -758,6 +793,7 @@ export function createDefaultState(persona: string, sessionId: string): AgentSta
     goals: [],
     tasks: [],
     turnRecords: [],
+    shownMemories: [],
     activeGoalId: null,
     longTermGoals: [],
     autonomy: "propose",
@@ -1208,7 +1244,7 @@ export function parseState(json: string): AgentState {
     }
 
     const state: AgentState = {
-      version: 6,
+      version: 7,
       persona: old.persona,
       activeSessionId: old.activeSessionId,
       epoch: old.epoch,
@@ -1217,6 +1253,7 @@ export function parseState(json: string): AgentState {
       goals,
       tasks: [],
       turnRecords: [],
+      shownMemories: [],
       activeGoalId,
       longTermGoals: [],
       autonomy: "propose",
@@ -1243,8 +1280,9 @@ export function parseState(json: string): AgentState {
 
   if (parsed.version === 3) {
     // v3 to v4 migration: add env to monitor. The v4 to v5 step, the task
-    // list, is the fillTasks call below, and the v5 to v6 step, the turn
-    // records, is the fillTurnRecords call beside it.
+    // list, is the fillTasks call below, the v5 to v6 step, the turn records,
+    // is the fillTurnRecords call beside it, and the v6 to v7 step, the shown
+    // records, is enforceInvariants.
     const state = parsed as unknown as AgentState;
     if (!state.monitor.env) {
       state.monitor.env = {
@@ -1253,7 +1291,7 @@ export function parseState(json: string): AgentState {
         errors: { consecutiveErrorTurns: 0, toolErrorsLastTurn: 0 },
       };
     }
-    state.version = 6;
+    state.version = 7;
     if (!state.nudge) {
       state.nudge = { lastNudgeAt: 0, consecutiveNudgesWithoutOnGoal: 0 };
     }
@@ -1287,7 +1325,14 @@ export function parseState(json: string): AgentState {
     parsed.version = 6;
   }
 
-  if (parsed.version !== 6) {
+  // v6 to v7 migration: add the shown records, which enforceInvariants below
+  // seeds empty on a store that lacks them. Everything else a v6 store holds
+  // is already the v7 shape.
+  if (parsed.version === 6) {
+    parsed.version = 7;
+  }
+
+  if (parsed.version !== 7) {
     throw new Error(`Unsupported AgentState version: ${parsed.version}`);
   }
 
@@ -1436,6 +1481,13 @@ function enforceInvariants(state: AgentState): void {
   if (state.decisions.length > DECISIONS_MAX) {
     state.decisions = state.decisions.slice(-DECISIONS_MAX);
   }
+
+  // The shown records, filled on every load. A stored value that is not a list
+  // reads as an empty one, which is how a store written before the list
+  // existed loads. An entry that is not a shown record is dropped, and the list
+  // is cut to SHOWN_MEMORIES_MAX from the front, as recordShownMemory cuts it.
+  const shown = (state as { shownMemories?: unknown }).shownMemories;
+  state.shownMemories = Array.isArray(shown) ? shown.filter(isShownMemory).slice(-SHOWN_MEMORIES_MAX) : [];
 
   // The load-time backstop for the task reap; persist runs the same reap on
   // every store write.

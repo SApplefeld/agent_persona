@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Task store test: the two lists beside the goal tree, the task list and the
 // turn records. For the task list it pins the load of a store written before
-// the list existed (v2, v3 and v4 all load at version 6 with an empty list),
+// the list existed (v2, v3 and v4 all load at version 7 with an empty list),
 // the tolerance for a malformed list or entry, and the completion reap in both
 // directions: a task under a complete or abandoned goal, or under no goal at
 // all, is dropped, and one under a pending, active, paused or blocked goal is
@@ -55,8 +55,8 @@ function task(id, goalId, extra = {}) {
 }
 // A current-version store built from the fixture, carrying the goals and tasks
 // given.
-function v6Store(goals, tasks) {
-  return JSON.stringify({ ...JSON.parse(fixtureText), version: 6, goals, activeGoalId: null, tasks });
+function v7Store(goals, tasks) {
+  return JSON.stringify({ ...JSON.parse(fixtureText), version: 7, goals, activeGoalId: null, tasks });
 }
 
 // --- A store written before the list existed ---
@@ -64,15 +64,15 @@ console.log("\nFixture: state-v4-no-tasks.json (v4, tasks absent)");
 check("the fixture is a v4 store with no tasks key (the instrument)",
   JSON.parse(fixtureText).version === 4 && !fixtureText.includes("\"tasks\""));
 const fromV4 = parseState(fixtureText);
-check("v4 loads at version 6", fromV4.version === 6, fromV4.version);
+check("v4 loads at version 7", fromV4.version === 7, fromV4.version);
 check("v4 loads with an empty task list", Array.isArray(fromV4.tasks) && fromV4.tasks.length === 0, fromV4.tasks);
 check("v4 keeps its tree and its active goal",
   fromV4.goals.length === 2 && fromV4.activeGoalId === "task-1", { goals: fromV4.goals.length, active: fromV4.activeGoalId });
 
 console.log("\nOlder versions: v3 and v2");
 const fromV3 = parseState(JSON.stringify({ ...JSON.parse(fixtureText), version: 3 }));
-check("v3 loads at version 6 with an empty task list",
-  fromV3.version === 6 && Array.isArray(fromV3.tasks) && fromV3.tasks.length === 0, { version: fromV3.version, tasks: fromV3.tasks });
+check("v3 loads at version 7 with an empty task list",
+  fromV3.version === 7 && Array.isArray(fromV3.tasks) && fromV3.tasks.length === 0, { version: fromV3.version, tasks: fromV3.tasks });
 const v2 = {
   version: 2, persona: "test-persona", activeSessionId: "s-2", epoch: 1, memory: [],
   goal: { id: "goal-x", objective: "Old goal", maxRounds: 5, completedRounds: 0, status: "active", createdAt: T0, updatedAt: T0, scores: [] },
@@ -80,24 +80,24 @@ const v2 = {
   decisions: [], createdAt: T0, updatedAt: T0,
 };
 const fromV2 = parseState(JSON.stringify(v2));
-check("v2 loads at version 6 with an empty task list",
-  fromV2.version === 6 && Array.isArray(fromV2.tasks) && fromV2.tasks.length === 0, { version: fromV2.version, tasks: fromV2.tasks });
+check("v2 loads at version 7 with an empty task list",
+  fromV2.version === 7 && Array.isArray(fromV2.tasks) && fromV2.tasks.length === 0, { version: fromV2.version, tasks: fromV2.tasks });
 
 console.log("\nThe current version and the ones past it");
 const heldGoals = [goal("root-1", null, "pending"), goal("task-1", "root-1", "active")];
 const held = [task("tk-a", "task-1"), task("tk-b", "task-1", { done: true, doneAt: T0 + 5 })];
-const fromV6 = parseState(v6Store(heldGoals, held));
-check("a v6 store's list under an open goal loads as it was",
-  fromV6.version === 6 && JSON.stringify(fromV6.tasks) === JSON.stringify(held), fromV6.tasks);
+const fromV7 = parseState(v7Store(heldGoals, held));
+check("a v7 store's list under an open goal loads as it was",
+  fromV7.version === 7 && JSON.stringify(fromV7.tasks) === JSON.stringify(held), fromV7.tasks);
 let threw = null;
-try { parseState(JSON.stringify({ ...JSON.parse(fixtureText), version: 7 })); } catch (e) { threw = e; }
-check("a version past 6 is refused as unsupported",
-  threw instanceof Error && threw.message === "Unsupported AgentState version: 7", threw && threw.message);
+try { parseState(JSON.stringify({ ...JSON.parse(fixtureText), version: 8 })); } catch (e) { threw = e; }
+check("a version past 7 is refused as unsupported",
+  threw instanceof Error && threw.message === "Unsupported AgentState version: 8", threw && threw.message);
 
 // --- Malformed input ---
 console.log("\nA stored list that is not a list");
 for (const [label, value] of [["null", null], ["a string", "x"], ["an object", { a: 1 }], ["a number", 7]]) {
-  const parsed = parseState(v6Store(heldGoals, value));
+  const parsed = parseState(v7Store(heldGoals, value));
   check(`tasks as ${label} loads as an empty list`, Array.isArray(parsed.tasks) && parsed.tasks.length === 0, parsed.tasks);
 }
 
@@ -115,11 +115,11 @@ for (const [label, entry] of [
   ["a string doneAt", { ...good, id: "tk-5", done: true, doneAt: "later" }],
   ["a null doneAt", { ...good, id: "tk-6", done: true, doneAt: null }],
 ]) {
-  const parsed = parseState(v6Store(heldGoals, [good, entry]));
+  const parsed = parseState(v7Store(heldGoals, [good, entry]));
   check(`an entry with ${label} is dropped and the well-formed one kept`,
     parsed.tasks.length === 1 && parsed.tasks[0].id === "tk-good", parsed.tasks);
 }
-const parsedOpen = parseState(v6Store(heldGoals, [goodNoDoneAt]));
+const parsedOpen = parseState(v7Store(heldGoals, [goodNoDoneAt]));
 check("an open entry with no doneAt is kept (the control)",
   parsedOpen.tasks.length === 1 && parsedOpen.tasks[0].id === "tk-open" && !("doneAt" in parsedOpen.tasks[0]), parsedOpen.tasks);
 
@@ -132,7 +132,7 @@ const reapTasks = [...statuses.map((s) => task(`tk-${s}`, `g-${s}`)), task("tk-o
 const kept = ["tk-pending", "tk-active", "tk-paused", "tk-blocked"];
 
 console.log("\nThe reap at a load (the backstop)");
-const loaded = parseState(v6Store(reapGoals, reapTasks));
+const loaded = parseState(v7Store(reapGoals, reapTasks));
 const loadedIds = loaded.tasks.map((t) => t.id);
 check("the goals keep their six statuses through the load (the instrument)",
   statuses.every((s) => loaded.goals.find((g) => g.id === `g-${s}`)?.status === s), loaded.goals.map((g) => [g.id, g.status]));
@@ -156,8 +156,8 @@ check("the reap changes no field but tasks", JSON.stringify(restAfter) === other
 // --- A new state and a new id ---
 console.log("\nA new state and a new task id");
 const fresh = createDefaultState("someone", "s-1");
-check("a new state is version 6 with an empty task list",
-  fresh.version === 6 && Array.isArray(fresh.tasks) && fresh.tasks.length === 0, { version: fresh.version, tasks: fresh.tasks });
+check("a new state is version 7 with an empty task list",
+  fresh.version === 7 && Array.isArray(fresh.tasks) && fresh.tasks.length === 0, { version: fresh.version, tasks: fresh.tasks });
 const id1 = newTaskId(T0);
 const id2 = newTaskId(T0);
 check("a task id never takes a goal node's prefix",
@@ -177,7 +177,7 @@ function record(id, extra = {}) {
 // A current-version store carrying the records given and nothing else of note.
 function recordStore(records) {
   return JSON.stringify({
-    ...JSON.parse(recordFixtureText), version: 6, goals: [], activeGoalId: null, tasks: [], turnRecords: records,
+    ...JSON.parse(recordFixtureText), version: 7, goals: [], activeGoalId: null, tasks: [], turnRecords: records,
   });
 }
 // A live state carrying the records given, for the reap called directly.
@@ -192,16 +192,16 @@ console.log("\nFixture: state-v5-no-turn-records.json (v5, turnRecords absent)")
 check("the fixture is a v5 store with no turnRecords key (the instrument)",
   JSON.parse(recordFixtureText).version === 5 && !recordFixtureText.includes("\"turnRecords\""));
 const fromV5NoRecords = parseState(recordFixtureText);
-check("a v5 store loads at version 6 with an empty record list",
-  fromV5NoRecords.version === 6 && Array.isArray(fromV5NoRecords.turnRecords) && fromV5NoRecords.turnRecords.length === 0,
+check("a v5 store loads at version 7 with an empty record list",
+  fromV5NoRecords.version === 7 && Array.isArray(fromV5NoRecords.turnRecords) && fromV5NoRecords.turnRecords.length === 0,
   { version: fromV5NoRecords.version, records: fromV5NoRecords.turnRecords });
 check("a v5 store keeps its tree, its active goal and its task through the migration",
   fromV5NoRecords.goals.length === 2 && fromV5NoRecords.activeGoalId === "task-1"
   && fromV5NoRecords.tasks.length === 1 && fromV5NoRecords.tasks[0].id === "tk-held",
   { goals: fromV5NoRecords.goals.length, active: fromV5NoRecords.activeGoalId, tasks: fromV5NoRecords.tasks });
-check("a v4 store loads at version 6 with an empty record list too",
-  fromV4.version === 6 && Array.isArray(fromV4.turnRecords) && fromV4.turnRecords.length === 0, fromV4.turnRecords);
-check("a new state is version 6 with an empty record list",
+check("a v4 store loads at version 7 with an empty record list too",
+  fromV4.version === 7 && Array.isArray(fromV4.turnRecords) && fromV4.turnRecords.length === 0, fromV4.turnRecords);
+check("a new state is version 7 with an empty record list",
   Array.isArray(fresh.turnRecords) && fresh.turnRecords.length === 0, fresh.turnRecords);
 
 // --- The round trip ---
