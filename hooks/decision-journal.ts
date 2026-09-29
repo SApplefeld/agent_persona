@@ -104,18 +104,18 @@ export const SEGMENT_MAX = 64;
 // call: a `next_score` is the first turn scored after one, and an
 // `ask_marker` the first worker ASK: line matched after one.
 //
-// The other four belong to the four plan health questions, each recording
-// something the plugin observed for itself after the call. A `lead_blocked`
-// is whether the same turn's closing text opened with the worker's own
-// BLOCKED: lead. A `chapter_within` is whether the entry's plan document
-// gained a Chapter within the next few turns on that entry. A `next_speaker`
-// is what opened the next turn: a channel message, a delivered record, or
-// neither. A `continued_unprompted` is whether work continued on its own
-// with nobody else acting first: written true where the next completed
-// turn, whatever entry it ran under, opened unaccounted and not from a
-// channel message, false on every other completed turn, and false the
-// moment a nudge is sent for the held record's own entry, whichever of the
-// two happens first.
+// The other four belong to the plan health call, each recording something
+// the plugin observed for itself after it. A `next_speaker` is what opened
+// the next turn: a channel message, a delivered record, or neither; the
+// plugin writes it against every plan health call, and it is block-owner's
+// outcome. The other three belong to the three retired plan health
+// questions, and nothing in the plugin writes them: a `lead_blocked` is
+// whether the same turn's closing text opened with the worker's own BLOCKED:
+// lead, a `chapter_within` whether the entry's plan document gained a
+// Chapter within the next few turns on that entry, and a
+// `continued_unprompted` whether work continued on its own with nobody else
+// acting first. They stay in the set because the journal holds lines of each
+// and its reader takes them as they are.
 //
 // The last two belong to the two turn record questions. A
 // `record_delivered_within` answers turn-open: whether the record that call

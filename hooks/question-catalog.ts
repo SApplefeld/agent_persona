@@ -79,31 +79,39 @@ export const PLAN_SWITCH = "plan-switch";
 export const TURN_SCORE = "turn-score";
 export const MEMORY_KIND = "memory-kind";
 
-// --- The four plan health sets ---
+// --- The plan health set ---
 //
-// These four are asked together, in one request, at the end of every turn on
-// an entry that carries a plan document. They have no Haiku counterpart: no
-// classify call asks them, and nothing branches on an answer. What each one is
-// measured against is an outcome the plugin observes for itself afterwards,
-// which the decision journal records as an outcome line.
+// Block-owner is asked at the end of every turn on an entry that carries a
+// plan document. It has no Haiku counterpart: no classify call asks it, and
+// nothing branches on its answer. What it is measured against is the
+// next_speaker outcome the plugin observes for itself afterwards, which the
+// decision journal records as an outcome line.
+export const BLOCK_OWNER = "block-owner";
+
+// --- The retired sets ---
+//
+// Three retired plan health questions: whether the worker says it cannot
+// carry on, where its last few turns sit between closing out and reopening,
+// and whether work should continue on its own. Their ids are not in
+// QUESTION_SET_IDS or SHIPPED_QUESTIONS, so the resolver answers each with
+// UNKNOWN_QUESTION and the seam refuses a request naming one as
+// no_question. The journal holds their calls, answers and outcomes, so
+// .kit/jev-gold/sample.mjs, the journal's reader, admits these ids to draw
+// from that history.
 export const WORKER_BLOCKED = "worker-blocked";
 export const ROUNDS_CONVERGING = "rounds-converging";
-export const BLOCK_OWNER = "block-owner";
-// The shadow question: whether work should continue on its own after this
-// message, with nobody else acting first. Its outcome, continued_unprompted,
-// is written by the controller from what actually happens next; nothing here
-// reads the answer, and it reaches no branch, state field or nudge text.
 export const WORK_CONTINUES = "work-continues";
+export const RETIRED_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES]);
 
 // The block owner's options, which are this catalog's own. The caller names
 // them at request time, the way it names a label array for the Haiku-paired
 // sets, so the ids offered and the ids journaled are one constant.
 export const BLOCK_OWNER_OPTIONS: readonly string[] = Object.freeze(["operator", "coordinator", "another-plan", "self-resolving", "none"]);
 
-// The state field each set's instructions name. One request carries one
-// state, so the state is an object and each question reads the field it needs
-// by name (https://docs.typesafe.ai/api.md, on structured instructions).
-// `closingText` is the turn's own closing text, and `recentClosingTexts` the
+// The fields of the plan health state. The state is an object and the
+// question reads the field it needs by name (https://docs.typesafe.ai/api.md,
+// on structured instructions). `closingText` is the turn's own closing text,
+// which block-owner's instructions name, and `recentClosingTexts` the
 // entry's last few, oldest first.
 export const PLAN_HEALTH_STATE_CLOSING = "closingText";
 export const PLAN_HEALTH_STATE_RECENT = "recentClosingTexts";
@@ -152,13 +160,13 @@ export const RECORD_OUTCOME_TURNS = 3;
 
 export const QUESTION_SET_IDS: readonly string[] = Object.freeze([
   CONTROLLER_DECISION, PLAN_SWITCH, TURN_SCORE, MEMORY_KIND,
-  WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES,
+  BLOCK_OWNER,
   TURN_OPEN, TURN_DISPOSITION,
 ]);
 
-// The four asked together at a plan entry's turn end, in the order the
-// request carries them.
-export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([WORKER_BLOCKED, ROUNDS_CONVERGING, BLOCK_OWNER, WORK_CONTINUES]);
+// The sets asked at a plan entry's turn end, in the order the request
+// carries them: block-owner alone.
+export const PLAN_HEALTH_SET_IDS: readonly string[] = Object.freeze([BLOCK_OWNER]);
 
 // The version label a shipped default carries into the journal, where its
 // entry names no later one. An override carries its own label instead.
@@ -186,9 +194,10 @@ export const FIXED_OPTION_SETS: readonly string[] = Object.freeze([CONTROLLER_DE
 // A Score's levels are positions rather than names, so what an override of
 // one must keep is their count: the journal records a level number and a load
 // reads it against the levels the question shipped with. An override that
-// rewords the three levels of a shipped Score is admitted; one that adds or
-// drops a level is refused.
-export const FIXED_LEVEL_SETS: readonly string[] = Object.freeze([ROUNDS_CONVERGING]);
+// rewords the levels of a Score listed here is admitted; one that adds or
+// drops a level is refused. No shipped question is a Score, so the list is
+// empty, and a Score that ships later is listed here with it.
+export const FIXED_LEVEL_SETS: readonly string[] = Object.freeze([]);
 
 // The shipped defaults. Instructions are one snap judgment each, which is
 // what a System One model is built for, and every option carries a one-line
@@ -258,48 +267,23 @@ export const SHIPPED_QUESTIONS: Readonly<Record<string, ResolvedQuestion>> = {
       "discard": "Nothing worth keeping, including a description of what happened this turn and an instruction to call a tool.",
     },
   },
-  [WORKER_BLOCKED]: {
-    id: WORKER_BLOCKED,
-    version: SHIPPED_VERSION,
-    overrideRefused: null,
-    primitive: "noul",
-    instructions: "`closingText` is how an autonomous worker session ended its last turn. In it, is the worker saying it cannot carry on until someone or something else acts first?",
-  },
-  [ROUNDS_CONVERGING]: {
-    id: ROUNDS_CONVERGING,
-    version: SHIPPED_VERSION,
-    overrideRefused: null,
-    primitive: "score",
-    instructions: "`recentClosingTexts` holds how an autonomous worker session ended each of its last few turns on one plan, oldest first. Across those turns, where does the work sit between closing out and reopening?",
-    // Ordered from the low end to the high end, and a level's number is its
-    // position here. The order is the plan's own: converging, steady, then
-    // reopening.
-    levels: Object.freeze([
-      "Each turn closes more than it opens: the worker reports work finished, and raises less new work than it finished.",
-      "The turns hold steady: about as much new work is raised as is finished, so the same ground is held.",
-      "The turns reopen what earlier turns settled: work reported finished in an earlier turn is open again.",
-    ]),
-  },
+  // v2: asked alone over the plan health state, on who acts next rather than
+  // who acts before the worker can carry on. Each description carries the
+  // nearest cases that are still this option or that belong to a neighbour,
+  // since those are where the answer is decided.
   [BLOCK_OWNER]: {
     id: BLOCK_OWNER,
-    version: SHIPPED_VERSION,
+    version: "v2",
     overrideRefused: null,
     primitive: "choice",
-    instructions: "`closingText` is how an autonomous worker session ended its last turn. Who has to act before the worker can carry on?",
+    instructions: "`closingText` is how an autonomous worker session ended its last turn. Who has to act next before this worker's work moves?",
     options: {
-      "operator": "The human operator: a question, a decision or an approval is owed.",
-      "coordinator": "The coordinating session that queues this worker's work: it has to queue, release or reassign something.",
-      "another-plan": "Other work has to land first, such as another plan or another worker's change.",
-      "self-resolving": "Nobody: something already running will finish on its own, such as a background job, a suite or a timer.",
-      "none": "Nobody: the worker is not waiting on anything and is carrying on.",
+      "operator": "The human operator: this work's next step needs a question answered, a decision made or an approval given that only the operator can give. That includes a BLOCKED: or ASK: line put to the operator this turn, a pull request waiting on the operator's review before this work can start or ship, and a restart, reboot or plugin update only the operator can run. It includes a WAITING turn whose own work is still running where the operator's pending answer is what this same work needs next. An operator question left open beside the worker's own running work, where nothing in this work waits on it or it belongs to another plan, is self-resolving, not this.",
+      "coordinator": "The coordinating session, or another peer session such as the architect: it has to reply, rule, queue, release or reassign something before this work moves. That includes a wait on a peer session's reply to a message or its ruling on a question, an entry finished and handed back with nothing active until the coordinator assigns the next, and a worker holding off a plan another session may already be running. A pull request only the operator can approve is operator, not this, even where the coordinator passed it on.",
+      "another-plan": "Other work outside this worker's own has to land first: this entry's start condition waits on another plan finishing or merging, or on another worker's change it depends on, with no one person asked to act. The worker's own implementers, reviewers or other sections of this same plan still in flight are self-resolving, not this, and a merge held only for the operator's review is operator.",
+      "self-resolving": "Nobody: something this worker already started will finish on its own and wake it, such as its own implementers, reviewers, consultants, verifiers or curators, a background suite or build, or a timer, including dispatches building other sections of the same plan. That holds where the turn also names an open question to the operator that this work's next step does not wait on, since the running work is what the worker reads next. Where the operator's answer is what this work needs next, it is operator, not this.",
+      "none": "Nobody: the worker is not waiting on anything and is carrying on, with its next step in hand and nothing of its own still running. A turn that reports and moves on is this. A wait on the worker's own running work is self-resolving, not this.",
     },
-  },
-  [WORK_CONTINUES]: {
-    id: WORK_CONTINUES,
-    version: SHIPPED_VERSION,
-    overrideRefused: null,
-    primitive: "noul",
-    instructions: "`closingText` is how an autonomous worker session ended its last turn. Should work continue on its own after this message, with nobody else acting first?",
   },
   // The two turn record sets' wording is fixed data: the agreement figure
   // that promotes one to a live list was measured on this exact text, so a

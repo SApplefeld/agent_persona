@@ -138,11 +138,8 @@ import {
   TURN_SCORE,
   MEMORY_KIND,
   PLAN_SWITCH_NO_MATCH,
-  WORKER_BLOCKED,
-  ROUNDS_CONVERGING,
   BLOCK_OWNER,
   BLOCK_OWNER_OPTIONS,
-  WORK_CONTINUES,
   PLAN_HEALTH_SET_IDS,
   PLAN_HEALTH_STATE_CLOSING,
   PLAN_HEALTH_STATE_RECENT,
@@ -448,8 +445,8 @@ export async function liveAsk(
   return result.ok ? { stampId, answer: result.answer } : { stampId, reason: result.reason };
 }
 
-// Section 5 (plan-health-from-the-record): the four plan health questions.
-// The journal site their call line carries.
+// The plan health request: block-owner, asked at a plan entry's turn end.
+// The journal site its call line carries.
 const PLAN_HEALTH_SITE = "plan-health";
 // How many of an entry's closing texts the request's state carries, and the
 // most characters any closing text carries in that state: the one cut bounds
@@ -457,9 +454,6 @@ const PLAN_HEALTH_SITE = "plan-health";
 // journal's state column, which is exempt from the field clamp.
 const PLAN_HEALTH_RECENT_MAX = 5;
 const PLAN_HEALTH_TEXT_MAX = 1000;
-// How many turns on the entry a chapter_within outcome waits for a Chapter
-// rise before it is written as false.
-const CHAPTER_WITHIN_TURNS = 5;
 
 /**
  * The answer line's three value columns for one answer, by its shape. A
@@ -474,19 +468,19 @@ function journalValuesOf(answer: JevAnswer): { value: string; probabilities: Rec
 }
 
 /**
- * Start the four plan health measurements at the end of a turn on a plan
- * entry, in one request over one state, and journal them once it settles:
- * one call line and one answer line per question. Returns the stamp id its
+ * Start the plan health measurement at the end of a turn on a plan entry:
+ * block-owner alone, in one request over one state, journaled once it
+ * settles as one call line and one answer line. Returns the stamp id its
  * lines carry, or null where the kill switch is off, which is also what the
- * four outcome joiners read as having no call to cite.
+ * next_speaker joiner reads as having no call to cite.
  *
  * Not awaited by the caller, for the reason shadowAsk is not: a slow,
  * failing or hung Jev cannot delay the turn's end. Nothing it produces
  * reaches a branch, a state field, a decision action or a nudge text; the
  * only state it touches is the one decision an unwritable journal earns.
- * There is no Haiku value beside these answers, since no classifier asks
- * them: what they are measured against is the outcome lines the plugin
- * writes from what it observes afterwards.
+ * There is no Haiku value beside the answer, since no classifier asks it:
+ * what it is measured against is the next_speaker outcome the plugin writes
+ * from what it observes afterwards.
  */
 function shadowAskPlanHealth(
   host: PluginHost,
@@ -499,13 +493,10 @@ function shadowAskPlanHealth(
   const session = sess.mySessionId;
   const stampId = newStampId(persona, session);
   const asks: readonly QuestionAsk[] = [
-    { questionSetId: WORKER_BLOCKED, primitive: "noul" },
-    { questionSetId: ROUNDS_CONVERGING, primitive: "score" },
     { questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS },
-    { questionSetId: WORK_CONTINUES, primitive: "noul" },
   ];
-  // The one state the request carries, whose two fields the four questions
-  // name by their field names.
+  // The one state the request carries, whose fields a question names by
+  // their field names.
   const state = {
     [PLAN_HEALTH_STATE_CLOSING]: closingText,
     [PLAN_HEALTH_STATE_RECENT]: recentClosingTexts,
@@ -2125,32 +2116,14 @@ const sess: {
   // process made, and a restart's first tick mints a new one.
   jevScoreOutcomeStampId: string | null;
   jevAskMarkerOutcomeStampId: string | null;
-  // Section 5 (plan-health-from-the-record): what the four plan health
-  // questions are still waiting on, per plan entry. `closingTexts` is the
+  // The plan health request's memory, per plan entry: `closingTexts` is the
   // entry's last few closing texts, oldest first, which the next request's
-  // state carries. `chapterWithin` is every stamp id whose chapter_within
-  // outcome is undecided, each with the turns on the entry counted since its
-  // call and the plan holder's Chapter count at the call, which is what a
-  // rise is measured against: two entries under one holder share its count,
-  // and a rise read on one entry's turn is still a rise for the other's
-  // pending call. Session memory rather than persisted state: a restart or
-  // the entry completing drops the record and the outcomes it awaited are
-  // never written, which the journal's readers tolerate.
-  jevPlanHealth: Map<string, { closingTexts: string[]; chapterWithin: { stampId: string; turns: number; chapterCount: number }[] }>;
+  // state carries. Session memory rather than persisted state: a restart or
+  // the entry completing drops the record.
+  jevPlanHealth: Map<string, { closingTexts: string[] }>;
   // The stamp id of the latest plan health call, awaiting the next turn's
   // origin for its next_speaker outcome. Null where none is held.
   jevNextSpeakerStampId: string | null;
-  // The latest plan-health call still awaiting its continued_unprompted
-  // outcome, held as its stamp id and the entry the call was asked about.
-  // Settled true at the next completed turn, whatever entry that turn was
-  // on, where that turn opened unaccounted (nothing the plugin queued
-  // matched it) and not from a channel message, since only then did nobody
-  // and nothing the plugin tracks act first. Settled false the moment a
-  // nudge goes out for this record's own entry, at the nudge-sending site; a
-  // nudge for a different entry leaves the record held for the completion
-  // site to settle. Null where none is held, including once either site has
-  // settled it.
-  jevWorkContinuesStampId: { stampId: string; entryId: string } | null;
   // The worker's most recent answer, raw, and the entry the turn that gave
   // it started on, which the controller's state carries as its Last answer
   // line where that entry is the tick's own node. Moved only by the persona's
@@ -2211,7 +2184,6 @@ const sess: {
   jevAskMarkerOutcomeStampId: null,
   jevPlanHealth: new Map(),
   jevNextSpeakerStampId: null,
-  jevWorkContinuesStampId: null,
   lastAnswer: null,
   stateNotLoaded: "plugin start-up did not finish, and the debug log's `session.start hook skipped` line names why",
   untrackedWorkAt: null,
@@ -8844,25 +8816,6 @@ export const register: Register = async (on, options) => {
               // which was taken before the classify call: classify latency
               // would otherwise come out of the floor and shorten it.
               sess.lastNudgeAt = Date.now();
-              // Section 4 (plan-health-from-the-record): captured here,
-              // still in the synchronous region, and cleared from the field
-              // only where it is this nudge's own entry. $.prompt.submit
-              // below does not resolve until the session is next idle, so a
-              // whole nudged turn can open and complete before this tick
-              // resumes; were the field read fresh after that await, it
-              // could by then hold the stamp that same completion just
-              // armed for its own next plan-health call, and writing false
-              // against it would wrongly settle a call this nudge never
-              // touched. Capturing now and clearing the field takes that
-              // call out of play for the rest of this region, so the
-              // completion joiner that runs during the await finds nothing
-              // held and neither double-settles this record nor loses its
-              // own. A held call on a different entry is left in the field
-              // untouched: this nudge says nothing about it, and the
-              // completion joiner settles it in the ordinary way.
-              const heldWorkContinues = sess.jevWorkContinuesStampId;
-              const workContinuesIsThisEntry = heldWorkContinues !== null && heldWorkContinues.entryId === g.id;
-              if (workContinuesIsThisEntry) sess.jevWorkContinuesStampId = null;
               // The rest of this nudge's own bookkeeping is spent here for the
               // same reason as the floor. The region from the open-turn check
               // above to this point is synchronous, so both writes are made
@@ -8899,12 +8852,6 @@ export const register: Register = async (on, options) => {
                   action: "nudge_failed",
                   detail: `${g.id}: submit ${nudgeOutcome.how}, floor already spent: ${nudgeOutcome.reason}`.slice(0, 200),
                 });
-                // No nudge went out, so the captured record is restored,
-                // unless the await let a fresh call arm itself for this same
-                // entry meanwhile, which must not be overwritten.
-                if (workContinuesIsThisEntry && sess.jevWorkContinuesStampId === null) {
-                  sess.jevWorkContinuesStampId = heldWorkContinues;
-                }
               }
               if (nudgeOutcome.ok) {
                 // D1: increment nudge ledger (count only, no token estimate)
@@ -8917,15 +8864,6 @@ export const register: Register = async (on, options) => {
                   action: "nudge_sent",
                   detail: `${g.id}: idle ${idleDisplay}, nudged answers without a status line: ${unlinedAnswers}`,
                 });
-                // A nudge going out settles this entry's own pending
-                // continued_unprompted outcome as false: work did not
-                // continue on its own, since this session had to prompt it.
-                // Whichever of this write and the completion joiner's read
-                // fires first is the one that lands; the other finds
-                // nothing held for this record.
-                if (jevMode === "shadow" && workContinuesIsThisEntry) {
-                  shadowOutcome(hostOf($), heldWorkContinues!.stampId, "continued_unprompted", "false");
-                }
               }
             } else {
               // The decider said nudge and the floor held. This is the ordinary
@@ -9333,13 +9271,6 @@ export const register: Register = async (on, options) => {
     // list itself is not touched here: its entries leave it at turn.start,
     // one per turn the plugin opened.
     const wasNudged = currentTurnKind === "nudge";
-    // Section 4 (plan-health-from-the-record): captured before the reset
-    // below clears it, for continued_unprompted's true rule: unaccounted is
-    // what a turn reads when nothing the plugin queued (no nudge, delivery,
-    // proposal or plugin prompt) matched it, which combined with the
-    // channel-origin read below is "opened by nothing the plugin tracks and
-    // no channel message" - work continuing with nobody else acting first.
-    const wasUnaccounted = currentTurnKind === "unaccounted";
     // Section 4 (plan-health-from-the-record): captured before the resets
     // below clear both facts, so the scorer can read what this turn opened
     // as. A channel message or a delivered record carries no worker
@@ -9583,8 +9514,7 @@ export const register: Register = async (on, options) => {
     // takes no lead. The ASK: marker above is handled as it is whether or
     // not this line is present.
     // The closing text's status line, read once here: the lead below, the
-    // WORKING: clear, the nudge count and the lead_blocked outcome all take
-    // it from this one reading.
+    // WORKING: clear and the nudge count all take it from this one reading.
     const statusLine = readStatusLine(e.answer);
     // Whether the turn ended on a BLOCKED: or WAITING: lead, the reading the
     // record close and the compaction boundary below both take: on a lead the
@@ -9988,43 +9918,22 @@ export const register: Register = async (on, options) => {
       }
     }
 
-    // Section 5 (plan-health-from-the-record): the four shadow questions
-    // and their outcome joiners. Everything here writes journal lines and
-    // session memory and nothing else: no branch above or below reads a
-    // value from it, and the one decision it can push is the journal's own
-    // write-failure line.
+    // The plan health request and its one outcome joiner. Everything here
+    // writes journal lines and session memory and nothing else: no branch
+    // above or below reads a value from it, and the one decision it can push
+    // is the journal's own write-failure line.
     //
-    // Four joiners, in the order their facts are known. The origin of this
-    // turn settles the next_speaker outcome of the previous plan health call,
-    // whatever entry that call was on, and this same turn settles the
-    // continued_unprompted outcome of whichever call is still held, whatever
-    // entry that one was on too, true only where this turn opened
-    // unaccounted and not from a channel message - nothing the plugin
-    // tracks and no channel message acted first - and false on every other
-    // completed turn (a nudge, a delivery, a proposal, a plugin prompt or a
-    // channel message), where a nudge sent for the held record's own entry
-    // has not already settled it false first at the nudge-sending site.
-    // Every record held for an entry that has completed, been abandoned or
-    // left the tree is dropped, whichever entry this turn was on: no
-    // outcome it awaited is written, which the journal's readers tolerate.
-    // Then, for the entry this turn was on, each chapter_within outcome
-    // still held is settled true where the plan holder's Chapter count now
-    // stands above the count at its call, which covers a rise read on a
-    // sibling entry's turn, and false at the fifth turn on the entry
-    // without one. Last, on a completed turn on a plan entry, the four
-    // questions are asked over this turn's closing text and the entry's
-    // last few, and the lead_blocked outcome is written at once from the
-    // same first-line read Section 3 makes.
+    // The origin of this turn settles the next_speaker outcome of the
+    // previous plan health call, whatever entry that call was on. Every
+    // record held for an entry that has completed, been abandoned or left
+    // the tree is dropped, whichever entry this turn was on. Last, on a
+    // completed turn on a plan entry, block-owner is asked over this turn's
+    // closing text and the entry's last few.
     if (jevMode === "shadow") {
       const nextSpeakerStampId = sess.jevNextSpeakerStampId;
       if (nextSpeakerStampId !== null) {
         sess.jevNextSpeakerStampId = null;
         shadowOutcome(hostOf($), nextSpeakerStampId, "next_speaker", wasChannelOrigin ? "channel" : wasDelivery ? "delivery" : "neither");
-      }
-      const workContinuesHeld = sess.jevWorkContinuesStampId;
-      if (workContinuesHeld !== null) {
-        sess.jevWorkContinuesStampId = null;
-        shadowOutcome(hostOf($), workContinuesHeld.stampId, "continued_unprompted", wasUnaccounted && !wasChannelOrigin ? "true" : "false");
       }
       for (const heldId of [...sess.jevPlanHealth.keys()]) {
         const heldEntry = sess.state.goals.find((g) => g.id === heldId);
@@ -10033,26 +9942,10 @@ export const register: Register = async (on, options) => {
       if (turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
         const entryId = turnLeaf.id;
         const entryOver = turnLeaf.status === "complete" || turnLeaf.status === "abandoned";
-        const held = sess.jevPlanHealth.get(entryId);
-        const chaptersNow = planHolder?.chapterCount ?? 0;
-        if (held !== undefined) {
-          const stillWaiting: { stampId: string; turns: number; chapterCount: number }[] = [];
-          for (const pending of held.chapterWithin) {
-            const turns = pending.turns + 1;
-            if (chaptersNow > pending.chapterCount) {
-              shadowOutcome(hostOf($), pending.stampId, "chapter_within", "true");
-            } else if (turns >= CHAPTER_WITHIN_TURNS) {
-              shadowOutcome(hostOf($), pending.stampId, "chapter_within", "false");
-            } else {
-              stillWaiting.push({ stampId: pending.stampId, turns, chapterCount: pending.chapterCount });
-            }
-          }
-          held.chapterWithin = stillWaiting;
-        }
         if (!skipped && sess.isOwner && !entryOver) {
-          let record = held;
+          let record = sess.jevPlanHealth.get(entryId);
           if (record === undefined) {
-            record = { closingTexts: [], chapterWithin: [] };
+            record = { closingTexts: [] };
             sess.jevPlanHealth.set(entryId, record);
           }
           // The one cut of the closing text, which both the request's
@@ -10063,12 +9956,7 @@ export const register: Register = async (on, options) => {
           record.closingTexts.push(closingText);
           while (record.closingTexts.length > PLAN_HEALTH_RECENT_MAX) record.closingTexts.shift();
           const stampId = shadowAskPlanHealth(hostOf($), closingText, [...record.closingTexts], jevMode);
-          if (stampId !== null) {
-            record.chapterWithin.push({ stampId, turns: 0, chapterCount: chaptersNow });
-            sess.jevNextSpeakerStampId = stampId;
-            sess.jevWorkContinuesStampId = { stampId, entryId };
-            shadowOutcome(hostOf($), stampId, "lead_blocked", statusLine !== null && statusLine.state === "blocked" ? "true" : "false");
-          }
+          if (stampId !== null) sess.jevNextSpeakerStampId = stampId;
         }
       }
     }

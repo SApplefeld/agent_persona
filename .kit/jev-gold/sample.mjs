@@ -39,16 +39,35 @@ registerHooks({
 });
 // The one opening-text reading the plugin's turn-score state also applies,
 // and the one line guard its state applies to every value.
-const { turnOpeningText, kaizenLine } = await import("../../hooks/question-catalog.ts");
+const { turnOpeningText, kaizenLine, RETIRED_SET_IDS } = await import("../../hooks/question-catalog.ts");
 
-// Each question this sampler draws: the journal site that asks it, and the
-// oversample section 5's floor needs. The ids are the catalog's own, pinned
-// against hooks/question-catalog.ts by .kit/jev-gold-unit-test.mjs.
+// Each question this sampler draws and the other tools label, score and
+// replay: the journal site that asks it, and the oversample section 5's floor
+// needs. The ids are the catalog's own, pinned against
+// hooks/question-catalog.ts by .kit/jev-gold-unit-test.mjs.
 export const QUESTIONS = Object.freeze({
   "controller-decision": { site: "controller", oversample: null },
   "turn-score": { site: "turn-score", oversample: null },
   "block-owner": { site: "plan-health", oversample: { value: "operator", version: "v1", max: 60 } },
 });
+
+// The retired plan health questions, which the catalog does not ask and
+// whose calls the journal holds, each at the plan-health site with no
+// oversample.
+// This sampler admits them so their history can be drawn; they carry no
+// rubric, bar or replay, so the other tools, which read QUESTIONS, refuse
+// them.
+export const RETIRED_QUESTIONS = Object.freeze(Object.fromEntries(
+  RETIRED_SET_IDS.map((id) => [id, Object.freeze({ site: "plan-health", oversample: null })]),
+));
+
+// What this sampler draws for `question`: its QUESTIONS entry, or its
+// RETIRED_QUESTIONS entry, or null for an id it does not admit.
+export function sampleSpecOf(question) {
+  if (Object.hasOwn(QUESTIONS, question)) return QUESTIONS[question];
+  if (Object.hasOwn(RETIRED_QUESTIONS, question)) return RETIRED_QUESTIONS[question];
+  return null;
+}
 
 export const DEFAULT_SEED = 20260926;
 export const DEFAULT_N = 150;
@@ -460,7 +479,7 @@ export function turnProducedAnswer(turn, answerText) {
 // Every call in the journal, admitted into a candidate record for `question`
 // or counted under the first drop reason that applies.
 export function buildCandidates(journal, transcripts, question, split) {
-  const spec = QUESTIONS[question];
+  const spec = sampleSpecOf(question);
   if (!spec) throw new Error(`unknown question: ${question}`);
   const byFileAndStamp = indexCalls(journal.calls);
   const dropped = Object.fromEntries(DROP_REASONS.map((r) => [r, 0]));
@@ -672,7 +691,9 @@ function parseArgs(argv) {
     } else if (["question", "split", "out", "journal", "projects"].includes(name)) flags[name] = v;
     else throw new Error(`unknown flag: ${a}`);
   }
-  if (!flags.question || !QUESTIONS[flags.question]) throw new Error(`--question must be one of ${Object.keys(QUESTIONS).join(", ")}`);
+  if (!flags.question || sampleSpecOf(flags.question) === null) {
+    throw new Error(`--question must be one of ${[...Object.keys(QUESTIONS), ...Object.keys(RETIRED_QUESTIONS)].join(", ")}`);
+  }
   return flags;
 }
 
@@ -691,7 +712,7 @@ export function main(argv) {
   const journal = readJournal(journalRoot);
   const transcripts = indexTranscripts(projectsRoot);
   const { candidates, dropped, admitted } = buildCandidates(journal, transcripts, flags.question, flags.split);
-  const { records, oversampled, cap } = stratify(candidates, flags.n, flags.seed, QUESTIONS[flags.question].oversample);
+  const { records, oversampled, cap } = stratify(candidates, flags.n, flags.seed, sampleSpecOf(flags.question).oversample);
   const numbered = records.map((r) => ({ id: recordId(flags.question, r.stampId), ...r }));
   const seen = new Set();
   for (const r of numbered) {

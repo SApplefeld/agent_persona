@@ -45,6 +45,12 @@ const onSharedRecords = typeof scoreModule.onSharedRecords === "function"
   ? scoreModule.onSharedRecords
   : () => ({ shared: -1, groups: new Map([["v1", []], ["v2", []], ["v2.replay", []]]), baselineCounts: new Map() });
 import * as replayModule from "./jev-gold/replay.mjs";
+import * as sampleModule from "./jev-gold/sample.mjs";
+// Read off the namespaces, so a missing export reads as a failed check.
+const sampleSpecOf = typeof sampleModule.sampleSpecOf === "function" ? sampleModule.sampleSpecOf : () => null;
+const blockOwnerV2State = typeof replayModule.blockOwnerV2State === "function"
+  ? replayModule.blockOwnerV2State
+  : () => ({ ok: false, reason: "missing" });
 import {
   offeredOptionIds, REPLAYABLE_VERSIONS, replayRecord, replayAll, buildHost, main as replayMain,
 } from "./jev-gold/replay.mjs";
@@ -237,6 +243,37 @@ try {
     check("a plan-health call whose closing text is not the joined turn's is counted as an answer mismatch, not a lost transcript",
       bo.dropped.answer_mismatch === 1 && bo.dropped.no_transcript_turn === 0 && bo.candidates[0].at === "2026-01-01T10:00:06.000Z", bo.dropped);
     check("the last call of a persona at a site has no hindsight", bo.candidates[0].hindsight === null, bo.candidates[0].hindsight);
+
+    // The retired plan health questions. The journal holds their calls, so
+    // the sampler admits each id at the plan-health site; QUESTIONS, which
+    // the labeller, the scorer and the replay read, stays the three they
+    // take, so a retired id reaches none of those.
+    const retired = Array.isArray(catalog.RETIRED_SET_IDS) ? catalog.RETIRED_SET_IDS : [];
+    check("the sampler admits each retired plan health id at the plan-health site, with no oversample",
+      same([...retired].sort(), ["rounds-converging", "work-continues", "worker-blocked"])
+        && retired.every((id) => { const spec = sampleSpecOf(id); return spec !== null && spec.site === "plan-health" && spec.oversample === null; }),
+      retired.map((id) => [id, sampleSpecOf(id)]));
+    check("control: an id neither labelled nor retired is not admitted, and a labelled id is admitted as its QUESTIONS entry",
+      sampleSpecOf("no-such-question") === null && sampleSpecOf("block-owner") === QUESTIONS["block-owner"]);
+    check("no retired id is a labelled question, so the labeller, the scorer and the replay refuse it",
+      retired.length === 3 && retired.every((id) => !Object.hasOwn(QUESTIONS, id)), Object.keys(QUESTIONS));
+    const drawn = (question) => { try { return buildCandidates(journal, transcripts, question, "dev"); } catch (e) { return { error: e.message, admitted: -1, candidates: [], dropped: {} }; } };
+    const wb = drawn("worker-blocked");
+    check("a retired id's history is drawn: the plan-health call joins its worker-blocked answer, as v1",
+      wb.admitted === 1 && wb.candidates[0].jev.value === "0.2" && wb.candidates[0].jev.version === "v1"
+        && wb.candidates[0].at === bo.candidates[0].at && wb.candidates[0].stratum === "alpha|0.2", wb.error || wb.candidates[0]);
+    const rcDrawn = drawn("rounds-converging");
+    check("rounds-converging's history is drawn from the same call, its level as the value",
+      rcDrawn.admitted === 1 && rcDrawn.candidates[0].jev.value === "1" && rcDrawn.candidates[0].stampId === bo.candidates[0].stampId, rcDrawn.error || rcDrawn.candidates[0]);
+    const wcDrawn = drawn("work-continues");
+    check("work-continues is admitted as a question and draws nothing where no call carries its answer",
+      wcDrawn.error === undefined && wcDrawn.admitted === 0 && wcDrawn.dropped.no_answer >= 1, wcDrawn.error || wcDrawn.dropped);
+    const retiredOut = path.join(TMP, "sample-wb");
+    const retiredRun = run(SAMPLE, ["--question", "worker-blocked", "--journal", JOURNAL, "--projects", PROJECTS, "--out", retiredOut]);
+    const retiredLines = retiredRun.status === 0 ? readLines(path.join(retiredOut, "sample.jsonl")) : [];
+    check("sample.mjs takes a retired id on its command line and writes the drawn record",
+      retiredRun.status === 0 && retiredLines.length === 1 && retiredLines[0].question === "worker-blocked" && retiredLines[0].id.startsWith("wb-"),
+      retiredRun.status === 0 ? retiredLines.map((r) => r.id) : retiredRun.stderr);
 
     // Persona identity: one persona spelt in two cases, or under the alias
     // the sampler names, is one persona for the joins, the strata and the cap.
@@ -1544,20 +1581,50 @@ try {
         && nudgedResult.version === "v2",
       { sentTsState, version: nudgedResult.version });
 
+    // block-owner v2: asked alone over the record's own plan health state. A
+    // record journaled under v1, whose request carried four questions,
+    // replays over its own state bytes, which is the request the plugin
+    // sends for that state now.
     const boState = JSON.stringify({ closingText: "WAITING: a background suite is running", recentClosingTexts: ["a", "b"] });
-    let sentQuestionIds = null;
+    let sentBoBody = null;
     const captureAll = (url, init) => {
-      const body = JSON.parse(init.body);
-      sentQuestionIds = Object.keys(body.questions);
+      sentBoBody = JSON.parse(init.body);
       return choiceReply(null, (qid) => (qid === "block-owner" ? "self-resolving" : undefined))(url, init);
     };
-    const boResult = await replayRecord(stubHost(captureAll), "block-owner", "v1", { id: "b1", stampId: "s2", state: boState, haikuValue: null });
-    check("block-owner's replay sends the same four plan-health questions the plugin asks and keeps only its own answer",
-      same(sentQuestionIds.sort(), ["block-owner", "rounds-converging", "work-continues", "worker-blocked"]) &&
-      boResult.ok === true && boResult.value === "self-resolving" && boResult.version === "v1" && !("worker-blocked" in boResult), boResult);
+    const boV1Record = { id: "b1", stampId: "s2", state: boState, haikuValue: null, jev: { version: "v1", value: "operator", probabilities: {} } };
+    const boResult = await replayRecord(stubHost(captureAll), "block-owner", "v2", boV1Record);
+    check("block-owner's v2 replay of a v1-journaled record sends block-owner alone, over the record's own state bytes",
+      sentBoBody !== null && same(Object.keys(sentBoBody.questions), ["block-owner"]) && JSON.stringify(sentBoBody.state) === boState
+        && same(Object.keys(sentBoBody.questions["block-owner"].criteria), catalog.BLOCK_OWNER_OPTIONS)
+        && sentBoBody.questions["block-owner"].instructions === catalog.SHIPPED_QUESTIONS["block-owner"].instructions,
+      sentBoBody && { questions: Object.keys(sentBoBody.questions), state: sentBoBody.state });
+    check("block-owner's v2 replay keeps its answer and stamps the seam's own v2",
+      boResult.ok === true && boResult.value === "self-resolving" && boResult.version === "v2", boResult);
+    check("blockOwnerV2State rebuilds a well-formed record's state as the object its text serializes",
+      blockOwnerV2State(boV1Record).ok === true && JSON.stringify(blockOwnerV2State(boV1Record).state) === boState, blockOwnerV2State(boV1Record));
+
+    // The refusals: a record whose state the replay cannot prove is the
+    // plugin's bytes is written as a failure row, and nothing is sent. The
+    // well-formed record above is the withheld control.
+    const boRefusals = [
+      ["a state missing the recent list", JSON.stringify({ closingText: "x" }), "state_unparsed"],
+      ["a closing text that is not a string", JSON.stringify({ closingText: 7, recentClosingTexts: [] }), "state_unparsed"],
+      ["a recent list holding a non-string", JSON.stringify({ closingText: "x", recentClosingTexts: ["a", 2] }), "state_unparsed"],
+      ["a JSON null", "null", "state_unparsed"],
+      ["the two fields in the other order", JSON.stringify({ recentClosingTexts: ["x"], closingText: "x" }), "state_mismatch"],
+      ["a field the plugin does not write", JSON.stringify({ closingText: "x", recentClosingTexts: ["x"], extra: 1 }), "state_mismatch"],
+      ["JSON spaced as the plugin never writes it", '{"closingText": "x", "recentClosingTexts": ["x"]}', "state_mismatch"],
+    ];
+    for (const [label, state, reason] of boRefusals) {
+      let sent = 0;
+      const row = await replayRecord(stubHost(async (url, init) => { sent += 1; return choiceReply()(url, init); }), "block-owner", "v2",
+        { id: "b-ref", stampId: "s-ref", state, haikuValue: null });
+      check(`block-owner's replay refuses ${label} as ${reason}, writing a failure row and sending no request`,
+        row.ok === false && row.reason === reason && sent === 0 && blockOwnerV2State({ id: "b-ref", state }).reason === reason, { row, sent });
+    }
 
     let boErr = null;
-    try { await replayRecord(stubHost(choiceReply()), "block-owner", "v1", { id: "b2", stampId: "s3", state: "not json", haikuValue: null }); } catch (e) { boErr = e.message; }
+    try { await replayRecord(stubHost(choiceReply()), "block-owner", "v2", { id: "b2", stampId: "s3", state: "not json", haikuValue: null }); } catch (e) { boErr = e.message; }
     check("block-owner's replay refuses a state that is not the plan-health JSON, naming the record", boErr !== null && boErr.includes("b2"), boErr);
 
     // A failed call is written with its failure reason and is not scored:
@@ -1584,7 +1651,7 @@ try {
     const onRowLog = [];
     let partialErr = null;
     try {
-      await replayAll(stubHost(choiceReply()), "block-owner", "v1", [
+      await replayAll(stubHost(choiceReply()), "block-owner", "v2", [
         { id: "ok1", stampId: "sok1", state: JSON.stringify({ closingText: "WAITING: x", recentClosingTexts: [] }), haikuValue: null },
         { id: "bad1", stampId: "sbad1", state: "not json", haikuValue: null },
       ], { onRow: (row) => onRowLog.push(row.id) });
@@ -1597,8 +1664,8 @@ try {
       (await buildHost({}).getApiKey()) === undefined);
 
     // --- Version validation and stamping ---
-    check("REPLAYABLE_VERSIONS names, per question, the one version the catalog ships: controller-decision and turn-score at v2, block-owner at v1",
-      same(REPLAYABLE_VERSIONS, { "controller-decision": ["v2"], "turn-score": ["v2"], "block-owner": ["v1"] }), REPLAYABLE_VERSIONS);
+    check("REPLAYABLE_VERSIONS names, per question, the one version the catalog ships: all three at v2",
+      same(REPLAYABLE_VERSIONS, { "controller-decision": ["v2"], "turn-score": ["v2"], "block-owner": ["v2"] }), REPLAYABLE_VERSIONS);
     check("each replayable version is the version the catalog ships for that question",
       Object.entries(REPLAYABLE_VERSIONS).every(([q, versions]) => versions.length === 1 && versions[0] === catalog.SHIPPED_QUESTIONS[q]?.version),
       Object.keys(REPLAYABLE_VERSIONS).map((q) => [q, catalog.SHIPPED_QUESTIONS[q]?.version]));
@@ -1606,9 +1673,9 @@ try {
     const stateFile = path.join(TMP, "replay-state.jsonl");
     fs.writeFileSync(stateFile, JSON.stringify({ id: "x1", stampId: "s1" }) + "\n");
     let versionErr = null;
-    try { await replayMain(["--question", "block-owner", "--version", "v2", "--state-from", stateFile], {}); } catch (e) { versionErr = e.message; }
-    check("replay.mjs refuses a --version it cannot assemble, before touching the network",
-      versionErr !== null && versionErr.includes("v1"), versionErr);
+    try { await replayMain(["--question", "block-owner", "--version", "v1", "--state-from", stateFile], {}); } catch (e) { versionErr = e.message; }
+    check("replay.mjs refuses block-owner v1, whose wording the catalog does not ship, naming v2, before touching the network",
+      versionErr !== null && versionErr.includes("block-owner") && versionErr.includes("v2"), versionErr);
     let cdV1Err = null;
     try { await replayMain(["--question", "controller-decision", "--version", "v1", "--state-from", stateFile], {}); } catch (e) { cdV1Err = e.message; }
     check("replay.mjs refuses controller-decision v1, whose wording the catalog does not ship, naming v2",

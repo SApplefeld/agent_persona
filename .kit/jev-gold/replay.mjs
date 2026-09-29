@@ -14,7 +14,8 @@
 //
 // Each question replays the one version the catalog ships for it, read
 // through the same resolver and the same seam function the plugin calls:
-// block-owner at v1, over the record's own v1 state; turn-score at v2, over
+// block-owner at v2, asked alone over the record's own plan health state as
+// the plugin asks it (blockOwnerV2State); turn-score at v2, over
 // the state turnScoreStateText in hooks/question-catalog.ts builds from the
 // record's transcript fields; and controller-decision at v2, over the state
 // controllerStateText in the same file builds from the record's journaled
@@ -73,7 +74,7 @@ const {
   CONTROLLER_DECISION, CONTROLLER_LABELS, CONTROLLER_LABELS_WITH_SWITCH,
   controllerStateText, CONTROLLER_LAST_ANSWER_MAX, CONTROLLER_LAST_ANSWER_LABEL, CONTROLLER_PENDING_PLANS_LABEL, CONTROLLER_OPTIONS_LEAD, CONTROLLER_NO_ANSWER, SHIPPED_QUESTIONS, kaizenLine,
   TURN_SCORE, SCORER_LABELS, SCORER_LABELS_AFTER_NUDGE, TURN_SCORE_TOOL_FLAGS, turnScoreStateText, TURN_SCORE_PROMPT_MAX, TURN_SCORE_ANSWER_MAX,
-  BLOCK_OWNER, BLOCK_OWNER_OPTIONS, WORKER_BLOCKED, ROUNDS_CONVERGING, WORK_CONTINUES,
+  BLOCK_OWNER, BLOCK_OWNER_OPTIONS,
   PLAN_HEALTH_STATE_CLOSING, PLAN_HEALTH_STATE_RECENT,
   resolverOf,
 } = await import("../../hooks/question-catalog.ts");
@@ -88,7 +89,7 @@ const MODE = "shadow";
 export const REPLAYABLE_VERSIONS = Object.freeze({
   "controller-decision": Object.freeze(["v2"]),
   "turn-score": Object.freeze(["v2"]),
-  "block-owner": Object.freeze(["v1"]),
+  "block-owner": Object.freeze(["v2"]),
 });
 
 // --- The host ---
@@ -400,6 +401,48 @@ export function controllerV2State(record, options = shippedControllerOptions()) 
   return { ok: true, state };
 }
 
+// --- The block-owner v2 state, from a sampled record ---
+
+// The plan health state for one sampled record: the object the plugin's
+// request carried, rebuilt from the JSON text the record's call line holds,
+// which decision-seam.ts journals as the text of the state it sent. The
+// plugin builds that state from the entry's closing texts alone, and v2
+// changed the questions the request carries and not its state. So a record
+// journaled under v1, whose request carried the four plan health questions,
+// replays over its own state bytes with block-owner alone, which is the
+// request the plugin sends for that state now; the question set is the one
+// difference, and it is the v2 change itself. A record whose state is not
+// JSON throws, naming the record, since the sampler admits a plan-health
+// call only where its state parses and carries a closing text. Otherwise it
+// returns { ok: true, state }, or { ok: false, reason } for a record whose
+// state could not be the plugin's bytes, which the caller writes as a
+// failure and every figure excludes:
+//
+// - state_unparsed: the JSON does not carry `closingText` as a string and
+//   `recentClosingTexts` as a list of strings, the two fields the plugin
+//   writes, so there is no state of the plugin's shape to send.
+// - state_mismatch: the rebuilt state does not serialize to the journaled
+//   text byte for byte, so what the replay would send is not what the plugin
+//   sent.
+export function blockOwnerV2State(record) {
+  let parsed;
+  try {
+    parsed = JSON.parse(record.state);
+  } catch {
+    throw new Error(`record ${record.id}: state is not the plan-health JSON`);
+  }
+  const closing = parsed !== null && typeof parsed === "object" ? parsed[PLAN_HEALTH_STATE_CLOSING] : undefined;
+  const recent = parsed !== null && typeof parsed === "object" ? parsed[PLAN_HEALTH_STATE_RECENT] : undefined;
+  if (typeof closing !== "string" || !Array.isArray(recent) || !recent.every((t) => typeof t === "string")) {
+    return { ok: false, reason: STATE_UNPARSED, detail: "the journaled state does not carry the two plan health fields in the plugin's shape" };
+  }
+  const state = { [PLAN_HEALTH_STATE_CLOSING]: closing, [PLAN_HEALTH_STATE_RECENT]: recent };
+  if (JSON.stringify(state) !== record.state) {
+    return { ok: false, reason: STATE_MISMATCH, detail: "the rebuilt state is not the state the plugin journaled" };
+  }
+  return { ok: true, state };
+}
+
 // --- One record's replay ---
 
 // A row's `version` is the seam's own returned `questionVersion`, never the
@@ -429,15 +472,12 @@ function answerLine(record, requestedVersion, result) {
 // goes through `ask`, one Choice question over the v2 state controllerV2State
 // builds from the record and the v2 option set for the set its own call
 // offered, and turn-score the same way over the v2 state turnScoreV2State
-// builds from the record. block-owner goes
-// through `askAll`, the same four plan-health questions one turn's closing
-// text asks in production, since that is the request the plugin actually
-// sends and block-owner's answer among the four is the one this tool keeps;
-// the other three answers are read and dropped, unrecorded, since sections 3
-// to 5 retire the sites that would consume them and section 2 never does. A
-// record whose state is not the plan-health JSON is a sampler defect, not an
-// answer to score, and throws rather than being written as a seam failure it
-// never was.
+// builds from the record. block-owner goes through `askAll`, block-owner
+// alone over the plan health state blockOwnerV2State rebuilds from the
+// record, which is the request the plugin's turn end sends. A record whose
+// state is not the plan-health JSON is a sampler defect, not an answer to
+// score, and throws rather than being written as a seam failure it never
+// was.
 export async function replayRecord(host, question, version, record) {
   if (question === "controller-decision") {
     const optionIds = offeredOptionIds(question, record);
@@ -461,23 +501,10 @@ export async function replayRecord(host, question, version, record) {
     return answerLine(record, version, result);
   }
   if (question === "block-owner") {
-    let parsed;
-    try {
-      parsed = JSON.parse(record.state);
-    } catch {
-      throw new Error(`record ${record.id}: state is not the plan-health JSON`);
-    }
-    const asks = [
-      { questionSetId: WORKER_BLOCKED, primitive: "noul" },
-      { questionSetId: ROUNDS_CONVERGING, primitive: "score" },
-      { questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS },
-      { questionSetId: WORK_CONTINUES, primitive: "noul" },
-    ];
-    const state = {
-      [PLAN_HEALTH_STATE_CLOSING]: parsed[PLAN_HEALTH_STATE_CLOSING],
-      [PLAN_HEALTH_STATE_RECENT]: parsed[PLAN_HEALTH_STATE_RECENT],
-    };
-    const result = await askAll(host, asks, state, MODE, resolverOf(host));
+    const built = blockOwnerV2State(record);
+    if (!built.ok) return { id: record.id, stampId: record.stampId, version, ok: false, reason: built.reason, detail: built.detail };
+    const asks = [{ questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS }];
+    const result = await askAll(host, asks, built.state, MODE, resolverOf(host));
     if (!result.ok) return { id: record.id, stampId: record.stampId, version, ok: false, reason: result.reason, detail: result.detail };
     const answered = result.answers.find((a) => a.questionSetId === BLOCK_OWNER);
     if (!answered) return { id: record.id, stampId: record.stampId, version, ok: false, reason: "parse", detail: "no block-owner answer in the result" };
