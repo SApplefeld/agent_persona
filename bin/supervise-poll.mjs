@@ -135,7 +135,15 @@ export function readStoreFacts(storePath, persona) {
   const is = (action) => (x) => !!x && x.action === action;
   const root = newestDecision(decisions, is('root_complete'));
   facts.rootCompleteTs = ts(root);
-  facts.rootCompleteBackfilled = !!(root && typeof root.detail === 'string' && root.detail.includes('backfilled'));
+  // A backfilled root is the one legacy detail shape, `Root <id> marked
+  // complete - backfilled, work already done`, matched whole. A substring
+  // test would also flag a goal_done completion whose operator note carries
+  // the word. bin/supervise.sh's get_root_complete keeps the same suffix,
+  // and the natural-exit suite pins the two equal.
+  const BACKFILLED_SUFFIX = ' marked complete - backfilled, work already done';
+  const detail = root && typeof root.detail === 'string' ? root.detail : '';
+  facts.rootCompleteBackfilled = detail.startsWith('Root ') && detail.endsWith(BACKFILLED_SUFFIX)
+    && !/\s/.test(detail.slice(5, detail.length - BACKFILLED_SUFFIX.length));
   facts.shutdownRequestedTs = ts(newestDecision(decisions, is('shutdown_requested')));
   facts.parkRequestedTs = ts(newestDecision(decisions, is('park_requested')));
   facts.restartRequestedTs = ts(newestDecision(decisions, is('restart_requested')));

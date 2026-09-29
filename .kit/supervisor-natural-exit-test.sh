@@ -206,21 +206,22 @@ fi  # end of the survivor-kill unit block
 # whole suite: the stub wrote an empty detail and the supervisor read it as a
 # different decision.
 # --- Pin: the backfill literal, reader against the hooks ---
-# get_root_complete's node script is the one place bin/supervise.sh tests a
-# decision's detail with includes(); more than one match fails the pin below.
-READER_SUBSTR=$(sed -n "s/.*newest\.detail\.includes('\([^']*\)').*/\1/p" "$SUP")
-# Every root_complete detail literal in the hooks. The search for a detail
-# ends at the next `action:` line, so a root_complete whose detail is written
-# in another shape yields no detail at all rather than taking the following
-# decision's detail as its own.
-DETAILS=$(awk '
-  /action: "root_complete",/ { want = 1; next }
-  /action:/ { want = 0; next }
-  want && /detail: `/ {
-    s = $0; sub(/^[^`]*`/, "", s); sub(/`.*$/, "", s)
-    print s
-    want = 0
-  }' "$HOOKS")
+# The two readers of a backfilled root, get_root_complete in bin/supervise.sh
+# and the poll's rootCompleteBackfilled in bin/supervise-poll.mjs, each keep
+# the legacy detail's suffix as BACKFILLED_SUFFIX and match the whole line
+# with one rule. The pins below hold the two suffixes and rules equal.
+POLL="$ROOT/bin/supervise-poll.mjs"
+BF_RULE='!/\s/.test(detail.slice(5, detail.length - BACKFILLED_SUFFIX.length))'
+SUFFIX_SUP=$(sed -n "s/^[[:space:]]*const BACKFILLED_SUFFIX = '\([^']*\)';.*/\1/p" "$SUP")
+SUFFIX_POLL=$(sed -n "s/^[[:space:]]*const BACKFILLED_SUFFIX = '\([^']*\)';.*/\1/p" "$POLL")
+# Every root_complete detail literal in the hooks. The hooks write the
+# decision in one place, the completeRoot helper, which passes its detail
+# argument through, and each caller hands it a literal or a choice between
+# literals, template segments included. So the details are the literals on
+# each call line, read from the text after the call's opening parenthesis: one
+# per call, or two where a caller picks between them.
+DETAILS=$(grep 'await completeRoot(' "$HOOKS" \
+  | sed 's/^.*completeRoot(//' | grep -o '"[^"]*"\|`[^`]*`' | sed 's/^.//; s/.$//')
 # An old store's line: the detail of the backfilled root_complete the hook
 # wrote for work with no open goal before it logged untracked_work instead,
 # with its root id filled in. No writer produces it now, and a store written
@@ -229,26 +230,49 @@ DETAILS=$(awk '
 BACKSTOP_DETAIL='Root root-r1 marked complete - backfilled, work already done'
 
 if [ "$RUN_UNITS" = 1 ]; then
-[ -n "$READER_SUBSTR" ] && [ "$(printf '%s\n' "$READER_SUBSTR" | wc -l)" -eq 1 ]
-check "pin: exactly one backfill substring test is found in bin/supervise.sh ('$READER_SUBSTR')" "$?"
+[ -n "$SUFFIX_SUP" ] && [ "$(printf '%s\n' "$SUFFIX_SUP" | wc -l)" -eq 1 ] && [ "$SUFFIX_SUP" = "$SUFFIX_POLL" ] \
+  && [ "$(grep -cF "$BF_RULE" "$SUP")" -eq 1 ] && [ "$(grep -cF "$BF_RULE" "$POLL")" -eq 1 ]
+check "pin: bin/supervise.sh and bin/supervise-poll.mjs keep one backfilled suffix ('$SUFFIX_SUP') and one whole-line rule" "$?"
+case "$BACKSTOP_DETAIL" in "Root "*"$SUFFIX_SUP") R=0 ;; *) R=1 ;; esac
+check "pin: the legacy backfilled line the cases drive ends with that suffix" "$R"
 [ -n "$DETAILS" ]; check "pin: a root_complete detail is found in hooks/index.ts" "$?"
-# The awk above pairs a root_complete decision with the backtick detail line
-# inside that same decision. A decision whose detail is written in any other
-# shape yields no pair, so this count is what turns that silence into a
-# failure: it is the check that says every root_complete in the file was
-# actually examined by the pin below, rather than skipped unnoticed.
+# The read above sees only details handed to completeRoot as literals on the
+# call line. A second site writing the decision, or a caller whose detail is
+# not a literal on that line, would go unexamined, so these counts turn that
+# silence into a failure: the decision is written once, by the helper passing
+# its argument through, and every call line yields a literal.
 ROOT_COMPLETE_WRITES=$(grep -c 'action: "root_complete",' "$HOOKS")
-DETAIL_COUNT=$(printf '%s\n' "$DETAILS" | grep -c .)
-[ "$ROOT_COMPLETE_WRITES" -gt 0 ] && [ "$DETAIL_COUNT" -eq "$ROOT_COMPLETE_WRITES" ]
-check "pin: every root_complete decision in hooks/index.ts yielded a detail (${DETAIL_COUNT}/${ROOT_COMPLETE_WRITES})" "$?"
+HELPER_PASSES=$(awk '/const completeRoot = async/ { want = 1 } want && /action: "root_complete",/ { getline; if ($0 ~ /^[[:space:]]*detail,[[:space:]]*$/) print "yes"; exit }' "$HOOKS")
+CALLS=$(grep -c 'await completeRoot(' "$HOOKS")
+CALLS_WITH_LITERAL=$(grep 'await completeRoot(' "$HOOKS" | sed 's/^.*completeRoot(//' | grep -c '"[^"]*"\|`[^`]*`')
+[ "$ROOT_COMPLETE_WRITES" -eq 1 ] && [ "$HELPER_PASSES" = yes ] && [ "$CALLS" -gt 0 ] && [ "$CALLS_WITH_LITERAL" -eq "$CALLS" ]
+check "pin: root_complete is written once, by completeRoot passing its detail through, and every call yielded a literal (${CALLS_WITH_LITERAL}/${CALLS} calls, ${ROOT_COMPLETE_WRITES} write)" "$?"
+# Each detail is tried with every ${...} replaced twice: by a bare id, and by
+# the suffix itself, the worst an operator's goal_done note could carry.
 R=1
-if [ -n "$READER_SUBSTR" ] && [ -n "$DETAILS" ]; then
-  R=0
-  while IFS= read -r d; do
-    case "$d" in *"$READER_SUBSTR"*) R=1 ;; esac
-  done <<< "$DETAILS"
+if [ -n "$SUFFIX_SUP" ] && [ -n "$DETAILS" ]; then
+  printf '%s\n' "$DETAILS" | node -e '
+const BACKFILLED_SUFFIX = process.argv[1];
+const reads = (d) => d.startsWith("Root ") && d.endsWith(BACKFILLED_SUFFIX) && !/\s/.test(d.slice(5, d.length - BACKFILLED_SUFFIX.length));
+const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+const hit = lines.some((l) => reads(l.replace(/\$\{[^}]*\}/g, "id")) || reads(l.replace(/\$\{[^}]*\}/g, BACKFILLED_SUFFIX)));
+process.exit(hit ? 1 : 0);' "$SUFFIX_SUP"
+  R=$?
 fi
-check "pin: no root_complete detail in hooks/index.ts carries the reader's substring, so a completion the hooks write never reads as backfilled" "$R"
+check "pin: no root_complete detail in hooks/index.ts reads as backfilled, whatever a goal_done note carries" "$R"
+# The pins above read the readers' text. This one runs get_root_complete
+# itself, extracted from bin/supervise.sh, against two stores: the legacy
+# line reads 1, and a goal_done detail whose note carries the whole suffix
+# reads 0. A reader that does not parse prints nothing and fails both.
+BF_RUN="$TMP/bf-run"
+mkdir -p "$BF_RUN/legacy" "$BF_RUN/note"
+extract_supervisor_fn_alone get_root_complete "$BF_RUN/fn.sh"
+printf '{"P":{"decisions":[{"action":"root_complete","timestamp":5,"detail":"%s"}]}}' "$BACKSTOP_DETAIL" > "$BF_RUN/legacy/.agentic-personas.json"
+printf '{"P":{"decisions":[{"action":"root_complete","timestamp":5,"detail":"Root root-r1 marked complete by goal_done: backfilled the tests,%s"}]}}' "$SUFFIX_SUP" > "$BF_RUN/note/.agentic-personas.json"
+BF_LEGACY=$(RUNDIR="$BF_RUN" bash -c 'source "$1"; get_root_complete "$2" P' _ "$BF_RUN/fn.sh" "$BF_RUN/legacy")
+BF_NOTE=$(RUNDIR="$BF_RUN" bash -c 'source "$1"; get_root_complete "$2" P' _ "$BF_RUN/fn.sh" "$BF_RUN/note")
+[ "$BF_LEGACY" = "5 1" ] && [ "$BF_NOTE" = "5 0" ]
+check "pin: get_root_complete runs and reads the legacy line as backfilled and a goal_done note as not ('$BF_LEGACY' / '$BF_NOTE')" "$?"
 
 mark backfill-pins
 # --- Unit pins, run before any case drives a supervisor ---

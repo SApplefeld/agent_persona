@@ -2836,7 +2836,9 @@ if (!p) process.exit(1);
 const d = (p.decisions||[]).filter(x => x.action === 'root_complete');
 if (d.length === 0) process.exit(1);
 const newest = d[d.length - 1];
-const backfilled = (typeof newest.detail === 'string' && newest.detail.includes('backfilled')) ? '1' : '0';
+const BACKFILLED_SUFFIX = ' marked complete - backfilled, work already done';
+const detail = typeof newest.detail === 'string' ? newest.detail : '';
+const backfilled = (detail.startsWith('Root ') && detail.endsWith(BACKFILLED_SUFFIX) && !/\s/.test(detail.slice(5, detail.length - BACKFILLED_SUFFIX.length))) ? '1' : '0';
 console.log((newest.timestamp || 0) + ' ' + backfilled);
 " "$store" "$persona" 2>> "$RUNDIR/supervisor.err"
 }
