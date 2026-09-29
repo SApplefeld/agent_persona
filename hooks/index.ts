@@ -9973,8 +9973,9 @@ export const register: Register = async (on, options) => {
     // not stating a fork), and suppress a re-open of the identical question
     // this same node just closed (the D5b reask guard, driven through this
     // path now that it is the only path that opens an ask from the idle
-    // tick's own read of the goal).
-    if (!skipped && sess.isOwner && !sess.state.pendingAskId) {
+    // tick's own read of the goal). A subagent's completion opens none: its
+    // answer is the subagent's report, not a line the worker wrote.
+    if (!skipped && sess.isOwner && !completesSubagentLoop && !sess.state.pendingAskId) {
       const askMarkerMatch = e.answer.match(/^ASK:\s*(.+?\?\s*Recommend:\s*.+)$/im);
       if (askMarkerMatch) {
         // The outcome joiner for the ask marker. The first marker matched
@@ -10046,8 +10047,9 @@ export const register: Register = async (on, options) => {
     // The entry's status, the nudge count and the active entry are not
     // touched here, and a task entry's closing text sets no lead. An entry
     // already complete or abandoned at turn end (goal_done in the same turn)
-    // takes no lead. The ASK: marker above is handled as it is whether or
-    // not this line is present.
+    // takes no lead, and a subagent's completion neither sets nor clears one,
+    // since its answer is the subagent's report. The ASK: marker above is
+    // handled as it is whether or not this line is present.
     // The closing text's status line, read once here: the lead below, the
     // WORKING: clear and the nudge count all take it from this one reading.
     const statusLine = readStatusLine(e.answer);
@@ -10055,7 +10057,7 @@ export const register: Register = async (on, options) => {
     // record close and the compaction boundary below both take: on a lead the
     // open record is in flight and the turn end is not durable.
     const endedOnLead = statusLine !== null && statusLine.state !== "working";
-    if (!skipped && sess.isOwner && turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
+    if (!skipped && sess.isOwner && !completesSubagentLoop && turnLeaf && isPlanEntry(sess.state, turnLeaf)) {
       const leadLine = statusLine !== null && statusLine.state !== "working" ? { state: statusLine.state, reason: statusLine.reason } : null;
       const workingLine = statusLine !== null && statusLine.state === "working";
       const previous = turnLeaf.lead ?? null;
@@ -10656,8 +10658,9 @@ export const register: Register = async (on, options) => {
     // does the work and calls agentic_resolve inside the stamped turn, so the
     // reply is filed for a resolved record too and its resolution stays as it
     // is. A record delivered on its wait alone is never stamped, so it never
-    // matches here.
-    if (sess.isOwner) {
+    // matches here. A subagent's completion files nothing, whatever turn id it
+    // carries: its answer is the subagent's report, not the reply.
+    if (sess.isOwner && !completesSubagentLoop) {
       const persona = sess.persona;
       const store = commonsStoreOf($);
       const allRecords = await listInboxRecords(store, persona);
