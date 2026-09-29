@@ -425,6 +425,13 @@ export function controllerV2State(record, options = shippedControllerOptions()) 
 //   text byte for byte, so what the replay would send is not what the plugin
 //   sent.
 export function blockOwnerV2State(record) {
+  // The sampler resolves every admitted call's state to its text, so a state
+  // that is not a string is a sampler defect. JSON.parse would read a null
+  // state as the JSON null and refuse it as state_unparsed, which reads as a
+  // refused row rather than a broken sample.
+  if (typeof record.state !== "string") {
+    throw new Error(`record ${record.id}: state is not text, which the sampler writes for every record`);
+  }
   let parsed;
   try {
     parsed = JSON.parse(record.state);

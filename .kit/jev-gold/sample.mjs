@@ -14,6 +14,16 @@
 // record per sampled call, and counts.json, the admission and allocation
 // counts this script also prints.
 //
+//   node .kit/jev-gold/sample.mjs --question <id> --supplement-of <sample.jsonl>
+//     [--split dev] [--out <dir>] [--journal <dir>] [--projects <dir>]
+//
+// The supplement mode, for a question with an oversample (block-owner):
+// sample.jsonl holds every admitted call the oversample names that the held
+// sample.jsonl does not, each with `source: "supplement"`, and
+// population.json holds the admitted count and the oversample's count, which
+// score.mjs --population weighs by. --out defaults to
+// .kit/jev-gold/out/<question>-supplement.
+//
 // Reads only. Nothing here writes outside the output directory.
 
 import fs from "node:fs";
@@ -45,6 +55,10 @@ const { turnOpeningText, kaizenLine, RETIRED_SET_IDS } = await import("../../hoo
 // replay: the journal site that asks it, and the oversample section 5's floor
 // needs. The ids are the catalog's own, pinned against
 // hooks/question-catalog.ts by .kit/jev-gold-unit-test.mjs.
+//
+// block-owner's oversample and its supplement draw from v1 history: the
+// journal's v1 operator answers. The plugin journals block-owner as v2, so a
+// call journaled under v2 never joins either.
 export const QUESTIONS = Object.freeze({
   "controller-decision": { site: "controller", oversample: null },
   "turn-score": { site: "turn-score", oversample: null },
@@ -667,6 +681,63 @@ export function recordId(question, stampId) {
   return `${prefix}-${fnv1aHash(stampId).toString(16).padStart(8, "0")}`;
 }
 
+// --- The supplement ---
+
+// The `source` every supplement record carries, so a merged sample tells the
+// supplement apart from the seeded draw.
+export const SUPPLEMENT_SOURCE = "supplement";
+
+// The oversample of a question that has one, or a thrown error naming it.
+function oversampleOf(question) {
+  const spec = sampleSpecOf(question);
+  if (!spec || !spec.oversample) throw new Error(`${question} has no oversample, so it has no supplement or population`);
+  return spec.oversample;
+}
+
+const isOversampleHit = (oversample) => (c) => c.jev.value === oversample.value && c.jev.version === oversample.version;
+
+// The supplement to a held sample: every candidate the question's oversample
+// names, its value under its version, whose record id `heldIds` does not
+// hold, in `at` order, each with its record id and SUPPLEMENT_SOURCE. It
+// takes every such candidate, with no persona cap and no count cap, so gold
+// over the held sample and the supplement holds the whole oversample
+// population and a weighted read can count it at weight 1.
+export function supplementOf(question, candidates, heldIds) {
+  const hit = isOversampleHit(oversampleOf(question));
+  return candidates
+    .filter(hit)
+    .map((c) => ({ id: recordId(question, c.stampId), ...c, source: SUPPLEMENT_SOURCE }))
+    .filter((r) => !heldIds.has(r.id))
+    .sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : (x.stampId < y.stampId ? -1 : 1)));
+}
+
+// The population a design-weighted read needs: every admitted candidate on
+// the split, and those the question's oversample names.
+export function populationOf(question, split, candidates) {
+  const oversample = oversampleOf(question);
+  return {
+    question,
+    split,
+    value: oversample.value,
+    version: oversample.version,
+    total: candidates.length,
+    matching: candidates.filter(isOversampleHit(oversample)).length,
+  };
+}
+
+// The record ids of a held sample.jsonl. A line that does not parse fails the
+// run, since a torn held sample would put a held record into the supplement.
+function heldIdsOf(file) {
+  const ids = new Set();
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    const row = JSON.parse(line);
+    if (typeof row.id !== "string") throw new Error(`the held sample ${file} carries a line with no id`);
+    ids.add(row.id);
+  }
+  return ids;
+}
+
 // --- Counts ---
 
 export function countBy(records, keyOf) {
@@ -689,6 +760,7 @@ function parseArgs(argv) {
       if (!/^\d+$/.test(v)) throw new Error(`--${name} takes a whole number`);
       flags[name] = Number(v);
     } else if (["question", "split", "out", "journal", "projects"].includes(name)) flags[name] = v;
+    else if (name === "supplement-of") flags.supplementOf = v;
     else throw new Error(`unknown flag: ${a}`);
   }
   if (!flags.question || sampleSpecOf(flags.question) === null) {
@@ -702,6 +774,44 @@ export function homeDir(env = process.env) {
   return os.homedir();
 }
 
+// --supplement-of: writes the supplement to the held sample as sample.jsonl,
+// and the population counts as population.json beside it, and prints both
+// counts. The seeded draw, --n and --seed play no part.
+function supplementMain(flags, journalRoot, projectsRoot, out) {
+  oversampleOf(flags.question);
+  const outSample = path.join(out, "sample.jsonl");
+  if (path.resolve(outSample) === path.resolve(flags.supplementOf)) {
+    throw new Error(`--out ${out} would overwrite the held sample ${flags.supplementOf}`);
+  }
+  const heldIds = heldIdsOf(flags.supplementOf);
+  const journal = readJournal(journalRoot);
+  const transcripts = indexTranscripts(projectsRoot);
+  const { candidates, dropped, admitted } = buildCandidates(journal, transcripts, flags.question, flags.split);
+  const records = supplementOf(flags.question, candidates, heldIds);
+  const seen = new Set();
+  for (const r of records) {
+    if (seen.has(r.id)) throw new Error(`two supplement calls share the record id ${r.id}`);
+    seen.add(r.id);
+  }
+  const population = populationOf(flags.question, flags.split, candidates);
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(outSample, records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : ""));
+  fs.writeFileSync(path.join(out, "population.json"), JSON.stringify(population, null, 2) + "\n");
+  const counts = {
+    question: flags.question,
+    split: flags.split,
+    calls: journal.calls.length,
+    admitted,
+    dropped,
+    held: heldIds.size,
+    supplement: records.length,
+    population,
+    supplementByPersona: countBy(records, (r) => r.persona),
+  };
+  process.stdout.write(JSON.stringify(counts, null, 2) + "\n");
+  return 0;
+}
+
 export function main(argv) {
   const flags = parseArgs(argv);
   const home = homeDir();
@@ -709,6 +819,7 @@ export function main(argv) {
   const journalRoot = flags.journal || path.join(home, ".claude", "agentic-decisions");
   const projectsRoot = flags.projects || path.join(home, ".claude", "projects");
   const out = flags.out || path.join(here, "out", flags.question);
+  if (flags.supplementOf) return supplementMain(flags, journalRoot, projectsRoot, flags.out || path.join(here, "out", `${flags.question}-supplement`));
   const journal = readJournal(journalRoot);
   const transcripts = indexTranscripts(projectsRoot);
   const { candidates, dropped, admitted } = buildCandidates(journal, transcripts, flags.question, flags.split);

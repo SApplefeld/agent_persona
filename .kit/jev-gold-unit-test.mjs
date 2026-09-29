@@ -268,6 +268,67 @@ try {
     const wcDrawn = drawn("work-continues");
     check("work-continues is admitted as a question and draws nothing where no call carries its answer",
       wcDrawn.error === undefined && wcDrawn.admitted === 0 && wcDrawn.dropped.no_answer >= 1, wcDrawn.error || wcDrawn.dropped);
+
+    // The block-owner supplement: every candidate whose v1 answer is operator
+    // that a held sample does not carry, with no persona cap, and the
+    // population counts the design weighting reads.
+    const supplementOf = typeof sampleModule.supplementOf === "function" ? sampleModule.supplementOf : () => [];
+    const populationOf = typeof sampleModule.populationOf === "function" ? sampleModule.populationOf : () => null;
+    const cand = (stampId, persona, value, version, at) => ({ stampId, persona, at, jev: { version, value } });
+    const pool = [
+      cand("s-a1", "alpha", "operator", "v1", "2026-01-01T00:00:01.000Z"),
+      cand("s-a2", "alpha", "operator", "v1", "2026-01-01T00:00:05.000Z"),
+      cand("s-a3", "alpha", "operator", "v1", "2026-01-01T00:00:03.000Z"),
+      cand("s-a4", "alpha", "operator", "v1", "2026-01-01T00:00:04.000Z"),
+      cand("s-a5", "alpha", "operator", "v1", "2026-01-01T00:00:02.000Z"),
+      cand("s-b1", "beta", "operator", "v1", "2026-01-01T00:00:06.000Z"),
+      cand("s-b2", "beta", "operator", "v2", "2026-01-01T00:00:07.000Z"),
+      cand("s-b3", "beta", "self-resolving", "v1", "2026-01-01T00:00:08.000Z"),
+    ];
+    const heldIds = new Set([sampleModule.recordId("block-owner", "s-a1")]);
+    const supplement = supplementOf("block-owner", pool, heldIds);
+    check("the supplement is exactly the unheld v1 operator candidates, in time order, a v2 operator and a v1 non-operator left out",
+      same(supplement.map((r) => r.stampId), ["s-a5", "s-a3", "s-a4", "s-a2", "s-b1"]), supplement.map((r) => r.stampId));
+    check("each supplement record carries its record id and source supplement",
+      supplement.length === 5 && supplement.every((r) => r.id === sampleModule.recordId("block-owner", r.stampId) && r.source === "supplement"), supplement);
+    check("the supplement applies no persona cap: one persona holds four of five",
+      supplement.filter((r) => r.persona === "alpha").length === 4, supplement.map((r) => r.persona));
+    check("the population counts every candidate and those whose v1 answer is operator",
+      same(populationOf("block-owner", "dev", pool), { question: "block-owner", split: "dev", value: "operator", version: "v1", total: 8, matching: 6 }),
+      populationOf("block-owner", "dev", pool));
+    let noOversampleErr = null;
+    try { supplementOf("turn-score", pool, new Set()); } catch (e) { noOversampleErr = e.message; }
+    check("a question with no oversample has no supplement, and the refusal names it",
+      noOversampleErr !== null && noOversampleErr.includes("turn-score"), noOversampleErr);
+
+    // The same mode through the command, over the fixture journal, whose one
+    // admitted block-owner call is a v1 operator answer.
+    const supDir = path.join(TMP, "supplement");
+    fs.mkdirSync(supDir, { recursive: true });
+    const heldEmpty = path.join(supDir, "held-empty.jsonl");
+    fs.writeFileSync(heldEmpty, "");
+    const supOut = path.join(supDir, "out");
+    const supRun = run(SAMPLE, ["--question", "block-owner", "--supplement-of", heldEmpty, "--out", supOut, "--journal", JOURNAL, "--projects", PROJECTS]);
+    const supRows = supRun.status === 0 ? readLines(path.join(supOut, "sample.jsonl")) : [];
+    const supPopulation = supRun.status === 0 ? JSON.parse(fs.readFileSync(path.join(supOut, "population.json"), "utf8")) : null;
+    check("sample.mjs --supplement-of writes the unheld v1 operator call, stamped source supplement",
+      supRun.status === 0 && supRows.length === 1 && supRows[0].id === sampleModule.recordId("block-owner", bo.candidates[0].stampId)
+        && supRows[0].source === "supplement", supRun.stderr || supRows);
+    check("sample.mjs --supplement-of writes population.json beside the sample with the admitted and v1 operator counts",
+      same(supPopulation, { question: "block-owner", split: "dev", value: "operator", version: "v1", total: 1, matching: 1 }), supPopulation);
+    const heldIt = path.join(supDir, "held-it.jsonl");
+    fs.writeFileSync(heldIt, JSON.stringify({ id: sampleModule.recordId("block-owner", bo.candidates[0].stampId) }) + "\n");
+    const supOut2 = path.join(supDir, "out2");
+    const supRun2 = run(SAMPLE, ["--question", "block-owner", "--supplement-of", heldIt, "--out", supOut2, "--journal", JOURNAL, "--projects", PROJECTS]);
+    check("control: a held sample that carries the call leaves the supplement empty and the population unchanged",
+      supRun2.status === 0 && fs.readFileSync(path.join(supOut2, "sample.jsonl"), "utf8") === ""
+        && same(JSON.parse(fs.readFileSync(path.join(supOut2, "population.json"), "utf8")), supPopulation), supRun2.stderr);
+    const heldInOut = path.join(supDir, "same", "sample.jsonl");
+    fs.mkdirSync(path.dirname(heldInOut), { recursive: true });
+    fs.writeFileSync(heldInOut, "");
+    const supRun3 = run(SAMPLE, ["--question", "block-owner", "--supplement-of", heldInOut, "--out", path.dirname(heldInOut), "--journal", JOURNAL, "--projects", PROJECTS]);
+    check("the supplement refuses an --out that would overwrite the held sample",
+      supRun3.status === 2 && supRun3.stderr.includes("held sample"), supRun3);
     const retiredOut = path.join(TMP, "sample-wb");
     const retiredRun = run(SAMPLE, ["--question", "worker-blocked", "--journal", JOURNAL, "--projects", PROJECTS, "--out", retiredOut]);
     const retiredLines = retiredRun.status === 0 ? readLines(path.join(retiredOut, "sample.jsonl")) : [];
@@ -838,6 +899,41 @@ try {
       paddedLine.startsWith("bar: block-owner:recall:operator v1 met 1.000 over 41 on dev, coverage 0.977 over 43"), paddedLine);
     check("the top-probability and coverage floors are the spec's own 0.6 and 0.7",
       TOP_PROBABILITY_FLOOR === 0.6 && COVERAGE_FLOOR === 0.7);
+    // Block-owner v2 ships on these bars by the operator's ruling: precision
+    // on operator at the figure v2 reached, recall unchanged.
+    check("the block-owner operator bars are precision 0.52 and recall 0.75",
+      BARS["block-owner"].find((b) => b.key === "precision:operator").threshold === 0.52 &&
+      BARS["block-owner"].find((b) => b.key === "recall:operator").threshold === 0.75,
+      BARS["block-owner"].map((b) => [b.key, b.threshold]));
+
+    // Design-weighted operator figures. Hand-computed: population 20 total,
+    // 4 whose v1 answer is operator. The scored set holds the 2 such records
+    // (h1, h2), each weight 1, and 3 others (r1..r3), each weight
+    // (20 - 4) / 3 = 16/3. Gold and predicted:
+    //   h1 operator / operator: tp 1
+    //   h2 self-resolving / operator: fp 1
+    //   r1 operator / operator: tp 16/3
+    //   r2 operator / none: fn 16/3
+    //   r3 none / operator: fp 16/3
+    // precision = (1 + 16/3) / (1 + 16/3 + 1 + 16/3) = 19/38 = 0.5
+    // recall = (1 + 16/3) / (1 + 16/3 + 16/3) = 19/35
+    const weightedOperatorOf = typeof scoreModule.weightedOperatorOf === "function" ? scoreModule.weightedOperatorOf : () => null;
+    const wrec = (id, label, value) => ({ id, question: "block-owner", label, value, probabilities: {}, haikuValue: null, outcomes: [] });
+    const weightedRecords = [
+      wrec("h1", "operator", "operator"), wrec("h2", "self-resolving", "operator"),
+      wrec("r1", "operator", "operator"), wrec("r2", "operator", "none"), wrec("r3", "none", "operator"),
+    ];
+    const population = { question: "block-owner", split: "dev", value: "operator", version: "v1", total: 20, matching: 4 };
+    const weighted = weightedOperatorOf(weightedRecords, new Set(["h1", "h2"]), population);
+    check("design-weighted operator precision and recall read the hand-computed 0.5 and 19/35",
+      weighted !== null && Math.abs(weighted.precision - 0.5) < 1e-9 && Math.abs(weighted.recall - 19 / 35) < 1e-9
+        && weighted.n === 5 && weighted.hits === 2 && weighted.rest === 3 && Math.abs(weighted.restWeight - 16 / 3) < 1e-9, weighted);
+    check("control: at weight 1 throughout, the same records read the unweighted 0.5 and 2/3",
+      (() => { const w = weightedOperatorOf(weightedRecords, new Set(["h1", "h2"]), { ...population, total: 7 }); return w && Math.abs(w.precision - 0.5) < 1e-9 && Math.abs(w.recall - 2 / 3) < 1e-9; })());
+    const weightedLine = typeof scoreModule.weightedLine === "function" ? scoreModule.weightedLine("block-owner", "v2.replay", weighted, population) : "";
+    check("the weighted figures print as their own labelled line, never a bar: line",
+      weightedLine === "weighted: block-owner v2.replay operator precision 0.500 recall 0.543 over 5 (2 v1 operator at weight 1, 3 others at weight 5.333; population 20, 4 v1 operator)",
+      weightedLine);
 
     // --- The scorer's own join and CLI, over small on-disk files ---
     const scoreDir = path.join(TMP, "score-cli");
@@ -922,6 +1018,39 @@ try {
       replayCli.stdout.split("\n").filter((l) => l.startsWith("bar: ")).every((l) => /^bar: \S+ (v1|v1\.all|v1\.replay) (met|not met|n\/a)/.test(l))
         && replayCli.stdout.includes(" v1.all ") && replayCli.stdout.includes(" v1.replay "),
       replayCli.stdout.split("\n").filter((l) => l.startsWith("bar: ")));
+
+    // --population: the design-weighted operator line, over the hand-computed
+    // case above, through the command. h1 and h2 carry v1 operator answers;
+    // r1..r3 do not. The replay's answers are the case's predictions.
+    const weightedDir = path.join(TMP, "score-weighted");
+    fs.mkdirSync(weightedDir, { recursive: true });
+    const v1Answers = { h1: "operator", h2: "operator", r1: "none", r2: "none", r3: "self-resolving" };
+    fs.writeFileSync(path.join(weightedDir, "gold.jsonl"), weightedRecords.map((r) =>
+      JSON.stringify({ id: r.id, stampId: `s-${r.id}`, question: "block-owner", persona: "p", split: "dev", label: r.label, adjudicated: false, labels: {} })).join("\n") + "\n");
+    fs.writeFileSync(path.join(weightedDir, "sample.jsonl"), weightedRecords.map((r) =>
+      JSON.stringify({ id: r.id, stampId: `s-${r.id}`, jev: { version: "v1", value: v1Answers[r.id], probabilities: { [v1Answers[r.id]]: 0.9 } }, haikuValue: null, outcomes: [] })).join("\n") + "\n");
+    fs.writeFileSync(path.join(weightedDir, "replay.jsonl"), weightedRecords.map((r) =>
+      JSON.stringify({ id: r.id, version: "v2", ok: true, value: r.value, probabilities: { [r.value]: 0.9 } })).join("\n") + "\n");
+    fs.writeFileSync(path.join(weightedDir, "population.json"), JSON.stringify(population) + "\n");
+    const weightedCli = run(SCORE, ["--question", "block-owner", "--gold", path.join(weightedDir, "gold.jsonl"),
+      "--replay", path.join(weightedDir, "replay.jsonl"), "--population", path.join(weightedDir, "population.json")]);
+    const weightedLines = weightedCli.stdout.split("\n").filter((l) => l.startsWith("weighted: "));
+    check("score.mjs --population prints the weighted line for the replay, the v1 answer weighting each record",
+      weightedCli.status === 0 && weightedLines.includes("weighted: block-owner v2.replay operator precision 0.500 recall 0.543 over 5 (2 v1 operator at weight 1, 3 others at weight 5.333; population 20, 4 v1 operator)"),
+      weightedCli.stderr || weightedLines);
+    check("score.mjs --population prints the weighted line for the v1 baseline off the record's own answer",
+      weightedLines.includes("weighted: block-owner v1 operator precision 0.500 recall 0.086 over 5 (2 v1 operator at weight 1, 3 others at weight 5.333; population 20, 4 v1 operator)"),
+      weightedLines);
+    check("without --population, score.mjs prints no weighted line",
+      !run(SCORE, ["--question", "block-owner", "--gold", path.join(weightedDir, "gold.jsonl")]).stdout.includes("weighted: "));
+    const wrongPopulation = path.join(weightedDir, "population-ctl.json");
+    fs.writeFileSync(wrongPopulation, JSON.stringify({ ...population, question: "controller-decision" }) + "\n");
+    const wrongRun = run(SCORE, ["--question", "block-owner", "--gold", path.join(weightedDir, "gold.jsonl"), "--population", wrongPopulation]);
+    check("score.mjs refuses a population file drawn for another question",
+      wrongRun.status === 2 && wrongRun.stderr.includes("drawn for controller-decision"), wrongRun);
+    const noOversampleRun = run(SCORE, ["--question", "controller-decision", "--gold", path.join(scoreDir, "gold.jsonl"), "--population", path.join(weightedDir, "population.json")]);
+    check("score.mjs refuses --population for a question with no oversample",
+      noOversampleRun.status === 2 && noOversampleRun.stderr.includes("no oversample"), noOversampleRun);
     const shared = onSharedRecords(
       new Map([["v1", [{ id: "a" }, { id: "b" }, { id: "c" }]], ["v2", [{ id: "d" }, { id: "e" }]]]),
       new Map([["v2.replay", [{ id: "b" }, { id: "c" }, { id: "d" }]]]),
@@ -1626,6 +1755,17 @@ try {
     let boErr = null;
     try { await replayRecord(stubHost(choiceReply()), "block-owner", "v2", { id: "b2", stampId: "s3", state: "not json", haikuValue: null }); } catch (e) { boErr = e.message; }
     check("block-owner's replay refuses a state that is not the plan-health JSON, naming the record", boErr !== null && boErr.includes("b2"), boErr);
+    // A null state is a sampler defect, since the sampler resolves every
+    // admitted call's state to text. JSON.parse would read it as the JSON
+    // null and report state_unparsed, hiding the defect as a refused row.
+    let nullStateErr = null;
+    let nullStateSent = 0;
+    try {
+      await replayRecord(stubHost(async (url, init) => { nullStateSent += 1; return choiceReply()(url, init); }), "block-owner", "v2",
+        { id: "b-null", stampId: "s9", state: null, haikuValue: null });
+    } catch (e) { nullStateErr = e.message; }
+    check("block-owner's replay throws on a null state, naming the record as a sampler defect, and sends nothing",
+      nullStateErr !== null && nullStateErr.includes("b-null") && nullStateErr.includes("sampler") && nullStateSent === 0, nullStateErr);
 
     // A failed call is written with its failure reason and is not scored:
     // the seam's own closed reason rides straight through, with no answer.

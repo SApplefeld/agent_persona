@@ -106,10 +106,11 @@ export const SEGMENT_MAX = 64;
 //
 // The other four belong to the plan health call, each recording something
 // the plugin observed for itself after it. A `next_speaker` is what opened
-// the next turn: a channel message, a delivered record, or neither; the
-// plugin writes it against every plan health call, and it is block-owner's
-// outcome. The other three belong to the three retired plan health
-// questions, and nothing in the plugin writes them: a `lead_blocked` is
+// the next turn: a channel message, a delivered record, or neither. The
+// plugin writes it at the end of the next turn in the same session, so a
+// plan health call with no later turn in that session carries none. It is
+// block-owner's outcome. The other three belong to the three retired plan
+// health questions, and nothing in the plugin writes them: a `lead_blocked` is
 // whether the same turn's closing text opened with the worker's own BLOCKED:
 // lead, a `chapter_within` whether the entry's plan document gained a
 // Chapter within the next few turns on that entry, and a

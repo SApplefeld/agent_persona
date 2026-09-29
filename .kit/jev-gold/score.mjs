@@ -4,6 +4,7 @@
 //
 // Usage:
 //   node .kit/jev-gold/score.mjs --question <id> --gold <file> [--replay <file>]
+//     [--population <file>]
 //
 // --gold names gold.jsonl. sample.jsonl, which carries Jev's answer, Haiku's
 // value and the outcome lines, is read from the same directory: a gold id
@@ -22,6 +23,11 @@
 // over all of its own records is printed beside it as `<version>.all`. A
 // version token is one word, so a `bar:` line keeps its
 // `bar: <question> <version> ...` shape.
+//
+// --population names the population.json sample.mjs --supplement-of writes,
+// for a question with an oversample (block-owner). Each version then also
+// prints one `weighted:` line: operator precision and recall weighted back to
+// that population, as weightedOperatorOf states.
 //
 // Reads only. Nothing here writes anywhere.
 
@@ -366,8 +372,8 @@ export function aucOf(records, question, optionId, outcomeKind) {
 
 // --- Bars ---
 
-// One named place every bar's figures live, so the block-owner operator
-// count floor under operator review (40, may become 30) is one edit. Each
+// One named place every bar's figures live. The block-owner operator count
+// floor is 40, or 30 where the enlarged gold still falls short of 40. Each
 // bar reads a metric off the scorable, top-probability-filtered rows: the
 // whole-question accuracy, or one option's precision or recall.
 export const TOP_PROBABILITY_FLOOR = 0.6;
@@ -379,8 +385,8 @@ export const DEFAULT_RECALL_COUNT_FLOOR = 10;
 // gold holds at least ten of it"; section 4: "on each option the gold sample
 // holds at least ten of"). Below the floor, `evalBar` reads the bar as not
 // applicable rather than failed. block-owner's operator bars carry no such
-// clause; section 5 states their 40 (under review, may become 30) as a plain
-// floor, so they stay `not met` below it like the accuracy bars.
+// clause; their count floor is a plain floor, so they stay `not met` below
+// it like the accuracy bars.
 export const BARS = Object.freeze({
   // The controller's thresholds are the plan's amended bar: 0.83 accuracy
   // and 0.35 ask-operator recall, under which controller v2 shipped.
@@ -397,7 +403,9 @@ export const BARS = Object.freeze({
     { key: "recall:complete", metric: "recall", option: "complete", threshold: 0.6, countFloor: DEFAULT_RECALL_COUNT_FLOOR, conditional: true },
   ],
   "block-owner": [
-    { key: "precision:operator", metric: "precision", option: "operator", threshold: 0.75, countFloor: BLOCK_OWNER_OPERATOR_COUNT_FLOOR },
+    // Block-owner v2 ships on this bar by the operator's ruling: precision is
+    // the figure v2 reached, and recall keeps 0.75.
+    { key: "precision:operator", metric: "precision", option: "operator", threshold: 0.52, countFloor: BLOCK_OWNER_OPERATOR_COUNT_FLOOR },
     { key: "recall:operator", metric: "recall", option: "operator", threshold: 0.75, countFloor: BLOCK_OWNER_OPERATOR_COUNT_FLOOR },
   ],
 });
@@ -464,6 +472,74 @@ export function evalBar(bar, question, version, records, split) {
   return `bar: ${question}:${bar.key} ${version} ${met ? "met" : "not met"} ${printedFigure} over ${n} on ${split}${coverageSuffix}`;
 }
 
+// --- Design-weighted operator figures ---
+
+// A block-owner gold sample built from a seeded draw plus sample.mjs's
+// supplement holds every dev call whose v1 answer is operator and only a
+// share of the rest, so its raw operator precision and recall over-represent
+// v1 operator answers. This read weighs them back to the population
+// sample.mjs --supplement-of counts in population.json: a record whose v1
+// answer is operator weighs 1, and every other scored record weighs the
+// population's other calls divided by the scored set's other records.
+// `v1OperatorIds` names the records whose v1 answer is operator, read off the
+// journal join, so a replayed record keeps the weight its v1 answer set. The
+// prediction is the record's own value, which is the replay's where the
+// record was replayed. The read is over every scorable record, not the bar's
+// top-probability rows. Returns null where the scored set has no record.
+export function weightedOperatorOf(records, v1OperatorIds, population) {
+  const rows = scorable(records);
+  if (rows.length === 0) return null;
+  const hits = rows.filter((r) => v1OperatorIds.has(r.id)).length;
+  const rest = rows.length - hits;
+  const restWeight = rest === 0 ? 0 : (population.total - population.matching) / rest;
+  let tp = 0;
+  let fp = 0;
+  let fn = 0;
+  for (const r of rows) {
+    const w = v1OperatorIds.has(r.id) ? 1 : restWeight;
+    const gold = r.label === "operator";
+    const predicted = foldedValue("block-owner", r.value) === "operator";
+    if (gold && predicted) tp += w;
+    else if (gold) fn += w;
+    else if (predicted) fp += w;
+  }
+  return {
+    n: rows.length,
+    hits,
+    rest,
+    restWeight,
+    precision: tp + fp === 0 ? null : tp / (tp + fp),
+    recall: tp + fn === 0 ? null : tp / (tp + fn),
+  };
+}
+
+// The weighted read's own line, labelled `weighted:` so no reader of `bar:`
+// lines takes it for a bar.
+export function weightedLine(question, version, w, population) {
+  if (w === null) return `weighted: ${question} ${version} operator n/a over 0`;
+  const f = (x) => (x === null ? "n/a" : x.toFixed(3));
+  return `weighted: ${question} ${version} operator precision ${f(w.precision)} recall ${f(w.recall)} over ${w.n} ` +
+    `(${w.hits} v1 operator at weight 1, ${w.rest} others at weight ${w.restWeight.toFixed(3)}; ` +
+    `population ${population.total}, ${population.matching} v1 operator)`;
+}
+
+// Reads population.json and refuses one that is not the population of
+// `question`'s oversample, since a weighted read over another question's
+// counts would print figures that mean nothing.
+export function readPopulation(file, question) {
+  const p = JSON.parse(fs.readFileSync(file, "utf8"));
+  const oversample = QUESTIONS[question] ? QUESTIONS[question].oversample : null;
+  if (!oversample) throw new Error(`--population applies only to a question with an oversample; ${question} has no oversample`);
+  if (p.question !== question) throw new Error(`the population in ${file} is drawn for ${p.question}, not ${question}`);
+  if (p.value !== oversample.value || p.version !== oversample.version) {
+    throw new Error(`the population in ${file} counts ${p.value} under ${p.version}, not the oversample's ${oversample.value} under ${oversample.version}`);
+  }
+  if (!Number.isInteger(p.total) || !Number.isInteger(p.matching) || p.matching < 0 || p.matching > p.total) {
+    throw new Error(`the population in ${file} does not carry whole counts with matching at most total`);
+  }
+  return p;
+}
+
 // --- Report ---
 
 function formatConfusion(confusion) {
@@ -497,7 +573,7 @@ function formatBinLabel(b, isLast) {
   return isLast ? `[${b.low.toFixed(1)}, ${b.high.toFixed(1)}]` : `[${b.low.toFixed(1)}, ${b.high.toFixed(1)})`;
 }
 
-function formatOne(question, version, split, records) {
+function formatOne(question, version, split, records, weighting = null) {
   const lines = [];
   lines.push(`== ${question} ${version} (n=${records.length}) ==`);
   const acc = accuracyOf(records, question);
@@ -546,13 +622,18 @@ function formatOne(question, version, split, records) {
     }
   }
   for (const bar of BARS[question] || []) lines.push(evalBar(bar, question, version, records, split));
+  if (weighting !== null) {
+    lines.push(weightedLine(question, version, weightedOperatorOf(records, weighting.v1OperatorIds, weighting.population), weighting.population));
+  }
   return lines;
 }
 
-export function report(question, split, versionGroups) {
+// `weighting`, where given, is { population, v1OperatorIds }, and adds each
+// version's design-weighted operator line.
+export function report(question, split, versionGroups, weighting = null) {
   const lines = [];
   for (const version of [...versionGroups.keys()].sort()) {
-    lines.push(...formatOne(question, version, split, versionGroups.get(version)));
+    lines.push(...formatOne(question, version, split, versionGroups.get(version), weighting));
     lines.push("");
   }
   return lines.join("\n").replace(/\n+$/, "\n");
@@ -616,6 +697,7 @@ function parseArgs(argv) {
     if (a === "--question") flags.question = v;
     else if (a === "--gold") flags.gold = v;
     else if (a === "--replay") flags.replay = v;
+    else if (a === "--population") flags.population = v;
     else throw new Error(`unknown flag: ${a}`);
   }
   if (!flags.question || !QUESTIONS[flags.question]) throw new Error(`--question must be one of ${Object.keys(QUESTIONS).join(", ")}`);
@@ -630,6 +712,12 @@ export function main(argv) {
   const sample = sampleById(dir);
   const joined = joinGoldSample(flags.question, gold, sample);
   const split = splitOf(joined);
+  let weighting = null;
+  if (flags.population) {
+    const population = readPopulation(flags.population, flags.question);
+    const v1OperatorIds = new Set(joined.filter((r) => r.version === population.version && r.value === population.value).map((r) => r.id));
+    weighting = { population, v1OperatorIds };
+  }
   let groups = groupByVersion(joined);
   if (flags.replay) {
     const baseline = groups;
@@ -649,7 +737,7 @@ export function main(argv) {
     groups = restricted.groups;
     for (const [version, list] of baseline) groups.set(`${version}.all`, list);
   }
-  const text = report(flags.question, split, groups);
+  const text = report(flags.question, split, groups, weighting);
   process.stdout.write(text);
   return 0;
 }

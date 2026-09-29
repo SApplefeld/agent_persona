@@ -138,9 +138,8 @@ import {
   TURN_SCORE,
   MEMORY_KIND,
   PLAN_SWITCH_NO_MATCH,
-  BLOCK_OWNER,
-  BLOCK_OWNER_OPTIONS,
   PLAN_HEALTH_SET_IDS,
+  SHIPPED_QUESTIONS,
   PLAN_HEALTH_STATE_CLOSING,
   PLAN_HEALTH_STATE_RECENT,
   PROMOTABLE_SET_IDS,
@@ -492,11 +491,21 @@ function shadowAskPlanHealth(
   const persona = sess.persona;
   const session = sess.mySessionId;
   const stampId = newStampId(persona, session);
-  const asks: readonly QuestionAsk[] = [
-    { questionSetId: BLOCK_OWNER, primitive: "choice", optionIds: BLOCK_OWNER_OPTIONS },
-  ];
+  // PLAN_HEALTH_SET_IDS decides both the sets this request asks and the
+  // questionSet its call line journals. Each ask takes its primitive and
+  // option ids from the set's shipped catalog entry, and the seam resolves
+  // its wording through the catalog's resolver.
+  const asks: readonly QuestionAsk[] = PLAN_HEALTH_SET_IDS.map((questionSetId): QuestionAsk => {
+    const shipped = SHIPPED_QUESTIONS[questionSetId];
+    return shipped.primitive === "choice"
+      ? { questionSetId, primitive: "choice", optionIds: Object.keys(shipped.options) }
+      : { questionSetId, primitive: shipped.primitive };
+  });
   // The one state the request carries, whose fields a question names by
-  // their field names.
+  // their field names. The replay's byte-identity check in
+  // .kit/jev-gold/replay.mjs rebuilds this object from the journaled text and
+  // compares it byte for byte, so it holds while recentClosingTexts stays in
+  // the state and the two fields keep this order.
   const state = {
     [PLAN_HEALTH_STATE_CLOSING]: closingText,
     [PLAN_HEALTH_STATE_RECENT]: recentClosingTexts,
