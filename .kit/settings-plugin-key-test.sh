@@ -56,6 +56,11 @@ console.log("ARCH_DEV_PRESENT=" + (!dev ? "noid" : dev.architectPersona !== unde
 console.log("ARCH_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.architectPersona !== undefined ? 1 : 0) + ";");
 console.log("ARCH_DEV=" + (dev && dev.architectPersona !== undefined ? dev.architectPersona : "") + ";");
 console.log("ARCH_INSTALLED=" + (inst && inst.architectPersona !== undefined ? inst.architectPersona : "") + ";");
+// liaisonPersona has no default either, so it takes the same three-state reading.
+console.log("LIAISON_DEV_PRESENT=" + (!dev ? "noid" : dev.liaisonPersona !== undefined ? 1 : 0) + ";");
+console.log("LIAISON_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.liaisonPersona !== undefined ? 1 : 0) + ";");
+console.log("LIAISON_DEV=" + (dev && dev.liaisonPersona !== undefined ? dev.liaisonPersona : "") + ";");
+console.log("LIAISON_INSTALLED=" + (inst && inst.liaisonPersona !== undefined ? inst.liaisonPersona : "") + ";");
 console.log("ROSTER_DEV_PRESENT=" + (!dev ? "noid" : dev.fleetRoster !== undefined ? 1 : 0) + ";");
 console.log("ROSTER_INSTALLED_PRESENT=" + (!inst ? "noid" : inst.fleetRoster !== undefined ? 1 : 0) + ";");
 console.log("ROSTER_DEV=" + (dev && dev.fleetRoster !== undefined ? dev.fleetRoster : "") + ";");
@@ -117,6 +122,9 @@ case "$R" in *"COORD_DEV=coordinator;"*"COORD_INSTALLED=coordinator;"*) check "e
 # ARCHITECT_PERSONA, which is a fleet with no architect, and the key is left
 # out of both ids rather than written empty.
 case "$R" in *"ARCH_DEV_PRESENT=0;"*"ARCH_INSTALLED_PRESENT=0;"*) check "emitted: ARCHITECT_PERSONA unset leaves architectPersona out of both ids" 0 ;; *) check "emitted: ARCHITECT_PERSONA unset leaves architectPersona out of both ids (out=$R)" 1 ;; esac
+# The same leg for liaisonPersona, which has no default either: a fleet with no
+# liaison leaves the key out of both ids rather than writing it empty.
+case "$R" in *"LIAISON_DEV_PRESENT=0;"*"LIAISON_INSTALLED_PRESENT=0;"*) check "emitted: LIAISON_PERSONA unset leaves liaisonPersona out of both ids" 0 ;; *) check "emitted: LIAISON_PERSONA unset leaves liaisonPersona out of both ids (out=$R)" 1 ;; esac
 # Section 4: the same leg for jevMode. The run above set no JEV_MODE, and the
 # key is left out of both ids rather than written empty. Without this the
 # value assertions below pass against a file emitting "jevMode":"", which is a
@@ -444,6 +452,39 @@ RC=$?
 case "$RC:$ERR" in 0:*) check "emit_settings_json refuses ARCHITECT_PERSONA=default" 1 ;; *"ARCHITECT_PERSONA must not be 'default'"*) check "emit_settings_json refuses ARCHITECT_PERSONA=default" 0 ;; *) check "emit_settings_json refuses ARCHITECT_PERSONA=default (rc=$RC, err=$ERR)" 1 ;; esac
 [ ! -e "$TMP/arch-default.json" ]; check "a refused ARCHITECT_PERSONA leaves no settings file" "$?"
 
+# --- emit_settings_json writes liaisonPersona under both ids ---
+# The liaison seat's key takes the architect key's shape: written under both ids
+# only when set, exported for the caller, and held to the same name rule. The
+# name herald is withheld from every literal the emitter carries, so the value is
+# proven to travel rather than to be defaulted into place. This emit is also the
+# control for the absence leg above: the same inspect reads the key present here.
+run_lib PERSONA="keyprobe" ARCHITECT_PERSONA="vellum" LIAISON_PERSONA="herald" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/liaison.json"
+check "emit_settings_json exits 0 with a LIAISON_PERSONA set beside an architect" "$?"
+R=$(inspect "$TMP/liaison.json")
+case "$R" in *"SAME_OPTIONS=1"*"ARCH_DEV=vellum;"*"LIAISON_DEV_PRESENT=1;"*"LIAISON_INSTALLED_PRESENT=1;"*"LIAISON_DEV=herald;"*"LIAISON_INSTALLED=herald;"*) check "emitted: both ids carry the given liaisonPersona" 0 ;; *) check "emitted: both ids carry the given liaisonPersona (out=$R)" 1 ;; esac
+# The manifest declares every key a settings file hands the plugin, so the key
+# the emitter writes is read off the emitted file and looked up there.
+node -e '
+const fs = require("fs");
+const [root, file] = process.argv.slice(1);
+const cfg = JSON.parse(fs.readFileSync(root + "/.claude-plugin/plugin.json", "utf8")).userConfig || {};
+const opts = JSON.parse(fs.readFileSync(file, "utf8")).pluginConfigs["agentic-plugin"].options;
+const keys = Object.keys(opts).filter((k) => /^liaison/i.test(k));
+process.exit(keys.length === 1 && cfg[keys[0]] && cfg[keys[0]].type === "string" ? 0 : 1);
+' "$ROOT" "$TMP/liaison.json"
+check "the liaison key the emitter writes is declared as a string in .claude-plugin/plugin.json" "$?"
+LIAISON_VALUE=$(run_lib bash -c 'ARCHITECT_PERSONA="vellum"; LIAISON_PERSONA="herald"; source "$1/bin/agentic-common.sh" && emit_settings_json "$2" >/dev/null && bash -c '\''echo "$LIAISON_PERSONA"'\''' _ "$ROOT" "$TMP/exported5.json")
+[ "$LIAISON_VALUE" = "herald" ]; check "emit_settings_json exports the given LIAISON_PERSONA value ($LIAISON_VALUE)" "$?"
+LIAISON_VALUE=$(run_lib bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2" >/dev/null && bash -c '\''echo "${LIAISON_PERSONA+set}:[$LIAISON_PERSONA]"'\''' _ "$ROOT" "$TMP/exported6.json")
+[ "$LIAISON_VALUE" = "set:[]" ]; check "emit_settings_json exports an empty LIAISON_PERSONA when none is given ($LIAISON_VALUE)" "$?"
+# A liaison sends its briefs to the architect, so a fleet naming a liaison and
+# no architect is refused, the line naming both keys, and nothing is written.
+# The emit above, the same liaison beside an architect, is this case's control.
+ERR=$(run_lib PERSONA="keyprobe" LIAISON_PERSONA="herald" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/liaison-noarch.json" 2>&1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "emit_settings_json refuses LIAISON_PERSONA set with ARCHITECT_PERSONA unset" 1 ;; *"LIAISON_PERSONA 'herald'"*"ARCHITECT_PERSONA is unset"*"liaisonPersona needs architectPersona"*) check "emit_settings_json refuses LIAISON_PERSONA set with ARCHITECT_PERSONA unset, naming both keys" 0 ;; *) check "emit_settings_json refuses LIAISON_PERSONA set with ARCHITECT_PERSONA unset (rc=$RC, err=$ERR)" 1 ;; esac
+[ ! -e "$TMP/liaison-noarch.json" ]; check "a liaison refused for naming no architect leaves no settings file" "$?"
+
 # --- emit_settings_json exports COORDINATOR_PERSONA for the caller ---
 # The export lets a caller compare its own persona against the name it wrote
 # into coordinatorPersona without parsing the settings file.
@@ -698,6 +739,57 @@ check "emit_settings_json exits 0 for the no-architect round trip" "$?"
 OUT=$(read_arch "$TMP/arch-roundtrip-none.json" 1)
 [ -z "$OUT" ]; check "round trip: an emitted file naming no architect reads back as no architect (out=$OUT)" "$?"
 
+# --- read_settings_liaison_persona resolves under the architect read's rule ---
+# The provided-settings branch of bin/supervise.sh exports LIAISON_PERSONA from
+# this read. It shares one read with the architect key, so these cases pin that
+# the shared read is keyed on liaisonPersona and keeps the rule: the loaded id
+# alone, no default, "default" and a name outside the persona class refused
+# with the value named, a non-string refused, and a BOM stripped. The names
+# herald, courier and emissary are withheld from every literal the library
+# carries.
+read_liaison() {  # <file> <dev_mode>
+  run_lib bash -c 'source "$1/bin/agentic-common.sh" && read_settings_liaison_persona "$2" "$3"' _ "$ROOT" "$1" "$2" 2>&1
+}
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"architectPersona":"vellum","liaisonPersona":"herald"}}}}' > "$TMP/liaison-read.json"
+OUT=$(read_liaison "$TMP/liaison-read.json" 0)
+[ "$OUT" = "herald" ]; check "read_settings_liaison_persona prints the loaded id's liaisonPersona, not the architectPersona beside it (out=$OUT)" "$?"
+OUT=$(read_arch "$TMP/liaison-read.json" 0)
+[ "$OUT" = "vellum" ]; check "control: read_settings_architect_persona on the same file still prints the architectPersona (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"architectPersona":"vellum"}}}}' > "$TMP/liaison-nokey.json"
+OUT=$(read_liaison "$TMP/liaison-nokey.json" 1)
+[ -z "$OUT" ]; check "read_settings_liaison_persona resolves a missing liaisonPersona to no liaison, whatever architectPersona says (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"liaisonPersona":"courier"}},"agentic-plugin@agent-persona":{"options":{"liaisonPersona":"emissary"}}}}' > "$TMP/liaison-both.json"
+OUT=$(read_liaison "$TMP/liaison-both.json" 1)
+[ "$OUT" = "courier" ]; check "two ids with differing liaisonPersona: mode 1 prints the --plugin-dir id's value (out=$OUT)" "$?"
+OUT=$(read_liaison "$TMP/liaison-both.json" 0)
+[ "$OUT" = "emissary" ]; check "two ids with differing liaisonPersona: mode 0 prints the installed id's value (out=$OUT)" "$?"
+printf '﻿%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"liaisonPersona":"herald"}}}}' > "$TMP/liaison-bom.json"
+OUT=$(read_liaison "$TMP/liaison-bom.json" 1)
+[ "$OUT" = "herald" ]; check "read_settings_liaison_persona strips a leading BOM before parsing (out=$OUT)" "$?"
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"liaisonPersona":"default"}}}}' > "$TMP/liaison-default.json"
+ERR=$(read_liaison "$TMP/liaison-default.json" 1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "read_settings_liaison_persona refuses a liaisonPersona of default" 1 ;; *"read_settings_liaison_persona"*"liaisonPersona"*"must not be 'default'"*) check "read_settings_liaison_persona refuses a liaisonPersona of default, naming its own key" 0 ;; *) check "read_settings_liaison_persona refuses a liaisonPersona of default (rc=$RC err=$ERR)" 1 ;; esac
+for badname in 'herald.two' 'herald{x}'; do
+  node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({pluginConfigs:{"agentic-plugin":{options:{liaisonPersona:process.argv[2]}}}}))' "$TMP/liaison-outofclass.json" "$badname"
+  ERR=$(read_liaison "$TMP/liaison-outofclass.json" 1)
+  RC=$?
+  case "$RC:$ERR" in 0:*) check "read_settings_liaison_persona refuses a name outside the persona class ($badname)" 1 ;; *"'$badname'"*"letters, digits, underscore and hyphen"*) check "read_settings_liaison_persona refuses a name outside the persona class, naming it ($badname)" 0 ;; *) check "read_settings_liaison_persona refuses a name outside the persona class ($badname, rc=$RC err=$ERR)" 1 ;; esac
+done
+printf '%s' '{"pluginConfigs":{"agentic-plugin":{"options":{"liaisonPersona":7}}}}' > "$TMP/liaison-number.json"
+ERR=$(read_liaison "$TMP/liaison-number.json" 1)
+RC=$?
+case "$RC:$ERR" in 0:*) check "read_settings_liaison_persona refuses a liaisonPersona that is not a string" 1 ;; *"liaisonPersona"*"is not a string"*) check "read_settings_liaison_persona refuses a liaisonPersona that is not a string" 0 ;; *) check "read_settings_liaison_persona refuses a liaisonPersona that is not a string (rc=$RC err=$ERR)" 1 ;; esac
+# The emitted file is what the reader reads, in both load modes.
+run_lib PERSONA="keyprobe" ARCHITECT_PERSONA="vellum" LIAISON_PERSONA="herald" bash -c 'source "$1/bin/agentic-common.sh" && emit_settings_json "$2"' _ "$ROOT" "$TMP/liaison-roundtrip.json"
+check "emit_settings_json exits 0 for the liaison round trip" "$?"
+OUT=$(read_liaison "$TMP/liaison-roundtrip.json" 1)
+[ "$OUT" = "herald" ]; check "round trip: read_settings_liaison_persona reads back the emitted name under the --plugin-dir id (out=$OUT)" "$?"
+OUT=$(read_liaison "$TMP/liaison-roundtrip.json" 0)
+[ "$OUT" = "herald" ]; check "round trip: read_settings_liaison_persona reads back the emitted name under the installed id (out=$OUT)" "$?"
+OUT=$(read_liaison "$TMP/arch-roundtrip-none.json" 1)
+[ -z "$OUT" ]; check "round trip: an emitted file naming no liaison reads back as no liaison (out=$OUT)" "$?"
+
 # Shapes that cannot hold options are refused rather than repaired.
 for shape in '{"pluginConfigs":[]}' '{"pluginConfigs":{"agentic-plugin":"x"}}' '{"pluginConfigs":{"agentic-plugin":{"options":"x"}}}'; do
   for fn in ensure_settings_plugin_ids ensure_settings_arming; do
@@ -742,6 +834,17 @@ refused "emit_settings_json refuses an architect persona carrying a quote" "ARCH
 # One name for both seats builds two contradicting standing instructions into
 # one priming write, so the pair is refused where every other name check is.
 refused "emit_settings_json refuses one name for both the coordinator and the architect" "one persona cannot hold both seats" "$TMP/inj5.json" PERSONA="ok" COORDINATOR_PERSONA="vellum" ARCHITECT_PERSONA="vellum"
+# The liaison's name takes the architect's rule, each refusal attributed by the
+# rule that fired: the persona class, the default persona, and a name another
+# seat already holds, the collision naming both keys. Each case but the last
+# names an architect, so the no-architect refusal is not a second cause.
+refused "emit_settings_json refuses a liaison persona carrying a quote" "LIAISON_PERSONA 'x" "$TMP/inj6.json" PERSONA="ok" ARCHITECT_PERSONA="vellum" LIAISON_PERSONA='x"}}},"hooks":{"a":1'
+refused "emit_settings_json refuses LIAISON_PERSONA=default" "LIAISON_PERSONA must not be 'default'" "$TMP/inj7.json" PERSONA="ok" ARCHITECT_PERSONA="vellum" LIAISON_PERSONA="default"
+refused "emit_settings_json refuses one name for both the coordinator and the liaison" "LIAISON_PERSONA and COORDINATOR_PERSONA are both 'herald'; one persona cannot hold both seats" "$TMP/inj8.json" PERSONA="ok" COORDINATOR_PERSONA="herald" ARCHITECT_PERSONA="vellum" LIAISON_PERSONA="herald"
+# The coordinator's default name counts as held, since a launch naming none
+# still resolves it.
+refused "emit_settings_json refuses a liaison named for the coordinator's default" "LIAISON_PERSONA and COORDINATOR_PERSONA are both 'coordinator'" "$TMP/inj9.json" PERSONA="ok" ARCHITECT_PERSONA="vellum" LIAISON_PERSONA="coordinator"
+refused "emit_settings_json refuses one name for both the architect and the liaison" "LIAISON_PERSONA and ARCHITECT_PERSONA are both 'herald'; one persona cannot hold both seats" "$TMP/inj10.json" PERSONA="ok" ARCHITECT_PERSONA="herald" LIAISON_PERSONA="herald"
 
 # --- the persona character class is the same in both files that check it ---
 # bin/supervise.sh refuses a bad persona before sourcing the library, so it
@@ -868,6 +971,57 @@ case "$OUT" in *"both coordinatorPersona and architectPersona"*) check "the refu
 # rather than attributing either name to the launch environment.
 case "$OUT" in *"$TMP/rd-arch-same/settings.json resolves"*) check "the refusal names the settings file both names were read from" 0 ;; *) check "the refusal names the settings file both names were read from (out=$OUT)" 1 ;; esac
 grep -q "both coordinatorPersona and architectPersona" "$TMP/rd-arch-same/supervisor.log" && ! grep -q "LAUNCH" "$TMP/rd-arch-same/supervisor.log"; check "the refusal is in supervisor.log and nothing was launched" "$?"
+
+# --- liaisonPersona travels both branches of bin/supervise.sh ---
+# The emit branch, driven with the setting in the environment the way a roster
+# entry supplies it, reaches the gate and writes the key under both ids.
+mkdir -p "$TMP/rd-liaison"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" ARCHITECT_PERSONA=vellum LIAISON_PERSONA=herald \
+  bash "$SUP" "$TMP/wd" herald default --rundir "$TMP/rd-liaison" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "driven supervise.sh with LIAISON_PERSONA=herald stops at the gate (rc=$RC)" "$?"
+R=$(inspect "$TMP/rd-liaison/settings.json")
+case "$R" in *"LIAISON_DEV=herald;"*"LIAISON_INSTALLED=herald;"*) check "supervise.sh emits liaisonPersona into the settings file under both ids (out=$R)" 0 ;; *) check "supervise.sh emits liaisonPersona into the settings file under both ids (out=$R)" 1 ;; esac
+# The emit branch refuses a liaison naming the architect's seat, and nothing is
+# written or launched.
+mkdir -p "$TMP/rd-liaison-emit-same"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" ARCHITECT_PERSONA=herald LIAISON_PERSONA=herald \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-liaison-emit-same" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 1 ] && [ ! -e "$TMP/rd-liaison-emit-same/settings.json" ]; check "driven supervise.sh refuses LIAISON_PERSONA equal to ARCHITECT_PERSONA on the emit branch, writing no settings file (rc=$RC)" "$?"
+grep -q "LIAISON_PERSONA and ARCHITECT_PERSONA are both 'herald'" "$TMP/rd-liaison-emit-same/supervisor.log" && ! grep -q "LAUNCH" "$TMP/rd-liaison-emit-same/supervisor.log"; check "the emit-branch refusal names both seats in supervisor.log and nothing was launched" "$?"
+# The emit branch refuses a liaison on a fleet naming no architect, the log line
+# naming both keys. The rd-liaison emit above, with an architect, is its control.
+mkdir -p "$TMP/rd-liaison-emit-noarch"
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" LIAISON_PERSONA=herald   bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-liaison-emit-noarch" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 1 ] && [ ! -e "$TMP/rd-liaison-emit-noarch/settings.json" ]; check "driven supervise.sh refuses LIAISON_PERSONA with no ARCHITECT_PERSONA on the emit branch, writing no settings file (rc=$RC)" "$?"
+grep -q "LIAISON_PERSONA 'herald'.*ARCHITECT_PERSONA is unset.*liaisonPersona needs architectPersona" "$TMP/rd-liaison-emit-noarch/supervisor.log" && ! grep -q "LAUNCH" "$TMP/rd-liaison-emit-noarch/supervisor.log"; check "the emit-branch no-architect refusal names both keys in supervisor.log and nothing was launched" "$?"
+# The provided branch reads the name back from the file and refuses it where it
+# names a seat another key holds, each refusal naming the two keys, or where the
+# file names no architect beside it. Each file but the no-architect one names an
+# architect, so each refusal has one cause.
+mkdir -p "$TMP/rd-liaison-coord" "$TMP/rd-liaison-arch" "$TMP/rd-liaison-default" "$TMP/rd-liaison-noarch" "$TMP/rd-liaison-ok"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"coordinatorPersona":"tabard","architectPersona":"vellum","liaisonPersona":"tabard"}}}}' > "$TMP/rd-liaison-coord/settings.json"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"architectPersona":"tabard","liaisonPersona":"tabard"}}}}' > "$TMP/rd-liaison-arch/settings.json"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"architectPersona":"vellum","liaisonPersona":"default"}}}}' > "$TMP/rd-liaison-default/settings.json"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"liaisonPersona":"tabard"}}}}' > "$TMP/rd-liaison-noarch/settings.json"
+printf '%s' '{"pluginConfigs":{"agentic-plugin@agent-persona":{"options":{"architectPersona":"vellum","liaisonPersona":"tabard"}}}}' > "$TMP/rd-liaison-ok/settings.json"
+for pair in "rd-liaison-coord|both coordinatorPersona and liaisonPersona" "rd-liaison-arch|both architectPersona and liaisonPersona" "rd-liaison-default|could not read liaisonPersona" "rd-liaison-noarch|resolves liaisonPersona to 'tabard' while architectPersona is unset"; do
+  rd="${pair%%|*}"; token="${pair#*|}"
+  OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" \
+    bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/$rd" --no-channel 2>&1)
+  RC=$?
+  [ "$RC" -eq 1 ]; check "driven supervise.sh refuses the provided file in $rd (rc=$RC)" "$?"
+  case "$OUT" in *"$token"*) check "the $rd refusal names what refused it ($token)" 0 ;; *) check "the $rd refusal names what refused it ($token; out=$OUT)" 1 ;; esac
+  grep -qF "$token" "$TMP/$rd/supervisor.log" && ! grep -q "LAUNCH" "$TMP/$rd/supervisor.log"; check "the $rd refusal is in supervisor.log and nothing was launched" "$?"
+done
+# The control for the four: a provided file naming a liaison apart from both
+# other seats, beside a named architect, is read and the launch reaches the gate.
+OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home" \
+  bash "$SUP" "$TMP/wd" tester default --rundir "$TMP/rd-liaison-ok" --no-channel 2>&1)
+RC=$?
+[ "$RC" -eq 2 ]; check "control: a provided file naming a liaison apart from the other seats reaches the gate (rc=$RC)" "$?"
 
 # --- a coordinatorPersona outside the persona class refuses the launch ---
 # The plugin's own coordinatorPersona rule admits any string that is non-empty
@@ -1131,6 +1285,75 @@ for rd in rd-sp-emit rd-sp-provided; do
   R=$(inspect "$TMP/$rd/settings.json")
   case "$R" in *"MBX_DEV=$EXP_MBX;"*"MBX_INSTALLED=$EXP_MBX;"*"HBP_DEV=$EXP_HBP;"*"HBP_INSTALLED=$EXP_HBP;"*"SHB_DEV=$EXP_SHB;"*"SHB_INSTALLED=$EXP_SHB;"*) check "supervise.sh writes the three paths on $rd under both ids, absolute mixed form" 0 ;; *) check "supervise.sh writes the three paths on $rd under both ids (expected $EXP_MBX $EXP_HBP $EXP_SHB; out=$R)" 1 ;; esac
 done
+# --- The liaison working directory's permission template ---
+# The liaison runs on the default permission mode with this file as its
+# .claude/settings.json. The allow list marks the tools that run without
+# approval: a tool outside it is refused in the supervisor's print-mode launch,
+# save a Bash command the harness classes as read-only, and the deny list holds
+# even where an approval could be given. Three things about it are pinned. The allow set is the closed list
+# and nothing else, so a widening of what runs without approval reds. Every deny entry is anchored, because an unanchored
+# pattern is rooted at the working directory and never reaches the profile file
+# it names. And no allow entry grants Edit or Write outside the notes scratch
+# directory, since the working directory also holds files the next launch reads:
+# CLAUDE.md, .mcp.json and run/settings.json. LIAISON_TEMPLATE points the pin
+# at another copy of the file.
+LIAISON_TEMPLATE="${LIAISON_TEMPLATE:-$ROOT/docs/liaison-settings.template.json}"
+template_verdict() {  # <template file>
+  node -e '
+const fs = require("fs");
+let raw, t;
+try { raw = fs.readFileSync(process.argv[1], "utf8"); } catch (e) { console.log("UNREADABLE " + e.message); process.exit(0); }
+if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+try { t = JSON.parse(raw); } catch (e) { console.log("UNPARSEABLE " + e.message); process.exit(0); }
+const p = (t && t.permissions) || {};
+const allow = Array.isArray(p.allow) ? p.allow : [];
+const deny = Array.isArray(p.deny) ? p.deny : [];
+// A rule is Tool or Tool(argument); parsed returns the argument, or null for a
+// bare tool name or a shape that is not a rule.
+const argOf = (rule) => {
+  const open = rule.indexOf("(");
+  if (open < 0 || !rule.endsWith(")")) return null;
+  return rule.slice(open + 1, -1);
+};
+const closed = [
+  "mcp__plugin_relay_channel-relay__reply",
+  "mcp__agentic-plugin__agentic_say",
+  "mcp__agentic-plugin__agentic_inbox",
+  "mcp__agentic-plugin__agentic_resolve",
+  "mcp__agentic-plugin__goal_status",
+  "mcp__agentic-plugin__supervisor_shutdown",
+  "Read(./**)",
+  "Edit(./notes/**)",
+  "Bash(memq recall:*)",
+  "Bash(memq find:*)",
+  "Bash(memq get:*)",
+  "Bash(memq recent:*)",
+];
+console.log("ALLOW_EXTRA=" + JSON.stringify(allow.filter((a) => !closed.includes(a))) + ";");
+console.log("ALLOW_MISSING=" + JSON.stringify(closed.filter((c) => !allow.includes(c))) + ";");
+console.log("ALLOW_DUP=" + (allow.length !== new Set(allow).size ? 1 : 0) + ";");
+const anchored = (arg) => arg !== null && (arg.startsWith("~/") || arg.startsWith("./") || arg.startsWith("//"));
+console.log("DENY_COUNT=" + deny.length + ";");
+console.log("DENY_UNANCHORED=" + JSON.stringify(deny.filter((d) => !anchored(argOf(d)))) + ";");
+const isWrite = (a) => a === "Edit" || a === "Write" || a.startsWith("Edit(") || a.startsWith("Write(");
+const writes = allow.filter(isWrite);
+const inNotes = (arg) => arg !== null && arg.startsWith("./notes/") && !arg.includes("..");
+console.log("WRITE_GRANTS=" + writes.length + ";");
+console.log("WRITE_OUTSIDE=" + JSON.stringify(writes.filter((a) => !inNotes(argOf(a)))) + ";");
+' "$1"
+}
+# The three checks read shapes, so the instrument runs first against a fixture
+# withheld from the closed list that breaks each one: an extra and a missing
+# allow entry, an unanchored deny, and a bare Edit.
+printf '%s' '{"permissions":{"allow":["Read","Edit"],"deny":["Read(**/.ssh/**)"]}}' > "$TMP/template-bad.json"
+BAD_OUT=$(template_verdict "$TMP/template-bad.json")
+case "$BAD_OUT" in *"ALLOW_EXTRA=[\"Read\",\"Edit\"];"*) check "template control: the allow check speaks on an entry outside the closed list" 0 ;; *) check "template control: the allow check speaks on an entry outside the closed list ($BAD_OUT)" 1 ;; esac
+case "$BAD_OUT" in *"DENY_UNANCHORED=[\"Read(**/.ssh/**)\"];"*) check "template control: the anchor check speaks on an unanchored deny" 0 ;; *) check "template control: the anchor check speaks on an unanchored deny ($BAD_OUT)" 1 ;; esac
+case "$BAD_OUT" in *"WRITE_OUTSIDE=[\"Edit\"];"*) check "template control: the write check speaks on a bare Edit" 0 ;; *) check "template control: the write check speaks on a bare Edit ($BAD_OUT)" 1 ;; esac
+LIAISON_TEMPLATE_OUT=$(template_verdict "$LIAISON_TEMPLATE")
+case "$LIAISON_TEMPLATE_OUT" in *"ALLOW_EXTRA=[];"*"ALLOW_MISSING=[];"*"ALLOW_DUP=0;"*) check "template: the allow set is exactly the closed list ($LIAISON_TEMPLATE)" 0 ;; *) check "template: the allow set is exactly the closed list ($LIAISON_TEMPLATE: $LIAISON_TEMPLATE_OUT)" 1 ;; esac
+case "$LIAISON_TEMPLATE_OUT" in *"DENY_COUNT=0;"*) check "template: the deny list is present to read ($LIAISON_TEMPLATE_OUT)" 1 ;; *"DENY_UNANCHORED=[];"*) check "template: every deny entry is anchored at ~/, ./ or //" 0 ;; *) check "template: every deny entry is anchored at ~/, ./ or // ($LIAISON_TEMPLATE_OUT)" 1 ;; esac
+case "$LIAISON_TEMPLATE_OUT" in *"WRITE_GRANTS=0;"*) check "template: a write grant is present to read ($LIAISON_TEMPLATE_OUT)" 1 ;; *"WRITE_OUTSIDE=[];"*) check "template: no allow entry grants Edit or Write outside ./notes/" 0 ;; *) check "template: no allow entry grants Edit or Write outside ./notes/ ($LIAISON_TEMPLATE_OUT)" 1 ;; esac
 if [ "$failed" -eq 0 ]; then
   echo "settings-plugin-key-test.sh: PASS"
   exit 0

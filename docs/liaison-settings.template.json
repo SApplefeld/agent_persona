@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_relay_channel-relay__reply",
+      "mcp__agentic-plugin__agentic_say",
+      "mcp__agentic-plugin__agentic_inbox",
+      "mcp__agentic-plugin__agentic_resolve",
+      "mcp__agentic-plugin__goal_status",
+      "mcp__agentic-plugin__supervisor_shutdown",
+      "Read(./**)",
+      "Edit(./notes/**)",
+      "Bash(memq recall:*)",
+      "Bash(memq find:*)",
+      "Bash(memq get:*)",
+      "Bash(memq recent:*)"
+    ],
+    "deny": [
+      "Edit(./.claude/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.claude.json)",
+      "Read(~/.claude/kit-memory-db.json)",
+      "Read(~/.git-credentials)",
+      "Read(~/.config/gh/**)",
+      "Read(~/AppData/Roaming/GitHub CLI/**)",
+      "Read(~/AppData/Local/sapplefeld-channels/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.npmrc)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.kube/config)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.pfx)",
+      "Read(./**/*.key)",
+      "Read(./**/id_rsa)",
+      "Read(./**/id_ed25519)",
+      "Read(./**/.git-credentials)",
+      "Read(./**/.npmrc)"
+    ]
+  }
+}
