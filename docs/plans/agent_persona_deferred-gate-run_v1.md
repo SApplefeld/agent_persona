@@ -18,6 +18,8 @@ On 2026-09-29 the operator cleared this run again on the executing session's own
 
 Later on 2026-09-29 a full read found all six roster personas live, and the operator answered the widened ask on the same thread: "Go ahead and do Option 1." Option 1 was to stop all six now, run the live suites, and restart all six through the prepared waiter.
 
+On 2026-09-30 the first stop was voided by a waiter defect, recorded in interim board 11. The operator approved a second stop on the same thread: "Yes, please proceed."
+
 ## The gate policy
 
 This section owns the policy. The queued plans point here, and a Chapter that cites it cites this file.
@@ -320,3 +322,5 @@ Not a Chapter. The fleet stopped and restarted as planned, but the live suites d
 **Section 1 ledger row.** Live suites: `bash .kit/live-all.sh`, 00:25:13Z to 00:25:40Z, exit 10 from `live.exit`, no cases ran. Reason: refused on a live STEWARD claim 54 seconds old.
 
 **Next action.** On the operator's yes, register the waiter again. On `done`, read `live.exit` and write the live row.
+
+**Second stop approved.** The operator answered "Yes, please proceed." The waiter was registered again as `DeferredGate-LiveWaiter` with the file-based check. The resuming session follows board 10's next action.
