@@ -32282,7 +32282,7 @@ async function caseGl6_theSupervisorFactReadsTheSameOnBothPaths(clock) {
   check("gl6 fact: the poll reads restart_passive on the finished-root path", a.status === 0 && a.lines[0] === "restart_passive", a);
   check("gl6 fact: the poll's lines are the same on both paths", a.status === 0 && b.status === 0 && JSON.stringify(a.lines) === JSON.stringify(b.lines), { finished: a.lines, planner: b.lines });
   const backfilled = JSON.parse(finished.text);
-  for (const d of backfilled.default.decisions) if (d.action === "root_complete") d.detail = "backfilled root";
+  for (const d of backfilled.default.decisions) if (d.action === "root_complete") d.detail = "Root g-root marked complete - backfilled, work already done";
   const ctl = poll("backfilled", JSON.stringify(backfilled));
   check("gl6 fact control: the same store with a backfilled detail reads continue, so the reader reads the detail", ctl.status === 0 && ctl.lines[0] === "continue", ctl);
   rmSync(dir, { recursive: true, force: true });
