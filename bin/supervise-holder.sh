@@ -129,15 +129,21 @@ process.exit(ok ? 0 : 1);
 ' "$1" 2>/dev/null
 }
 
-# Whether one interrupt-request file's whole content is a request this holder
-# may relay: one JSON object whose keys are exactly id, at, by and reason,
-# where id is a short token of letters, digits and hyphens, at is a finite
-# number, by is a string of at most 64 characters and reason a string of at
-# most 200. The holder never relays this content itself; it only reads id and
-# reason from it, once valid, to build the control line and the log line
-# itself. Anything else, an array among it, is refused, logged and removed
-# unrelayed, as a malformed ask-request file is today.
-holder_interrupt_valid() {  # <file content>
+# Validates and extracts an interrupt-request file's content in one node
+# call: a valid request is one JSON object whose keys are exactly id, at, by
+# and reason, where id is a short token of letters, digits and hyphens, at is
+# a finite number, by is a string of at most 64 characters and reason a
+# string of at most 200. On a valid request, prints "<id>\t<reason>" and
+# exits 0; the reason has every C0 control, DEL, C1 control, and Unicode
+# line/paragraph separator (U+2028, U+2029) stripped, none of which JSON
+# forbids unescaped inside a string, and any of which would otherwise let a
+# single `log` call read as more than one line. On anything else, an array
+# among it, prints nothing and exits non-zero. The holder never relays this
+# content itself; it only reads id and reason from this call's own output, so
+# a spawn that exits 0 with truncated or absent stdout is caught below by the
+# same id shape this function itself checks, never by trusting this call's
+# exit code alone.
+holder_interrupt_relay() {  # <file content>
   node -e '
 let o;
 try { o = JSON.parse(process.argv[1]); } catch (e) { process.exit(1); }
@@ -148,22 +154,10 @@ const ok = o && typeof o === "object" && !Array.isArray(o)
   && typeof o.at === "number" && Number.isFinite(o.at)
   && typeof o.by === "string" && o.by.length <= 64
   && typeof o.reason === "string" && o.reason.length <= 200;
-process.exit(ok ? 0 : 1);
-' "$1" 2>/dev/null
-}
-
-# Reads id and reason out of an interrupt-request file's content already
-# proven valid by holder_interrupt_valid. Prints "<id>\t<reason>" with any
-# control character stripped from the reason, so the id built into the
-# control line is never quote- or brace-bearing (holder_interrupt_valid's
-# regex already guarantees that) and the reason logged through `log` never
-# splits the log line or injects a control character into it.
-holder_interrupt_fields() {  # <file content>
-  node -e '
-const o = JSON.parse(process.argv[1]);
-const reason = String(o.reason).replace(/[\x00-\x1f\x7f]/g, "");
+if (!ok) process.exit(1);
+const reason = o.reason.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, "");
 process.stdout.write(o.id + "\t" + reason + "\n");
-' "$1"
+' "$1" 2>/dev/null
 }
 
 # Whether the ask-request file holds exactly its first line and nothing after
@@ -511,11 +505,12 @@ if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
   GOAL_PENDING=1
 fi
 
-# The hold loop. It writes the held goal once the priming turn closes, relays a
-# final ask the supervisor drops in the ask-request file, and exits a few
-# seconds after the child's pid disappears. A signal ends it too: the default
-# TERM disposition exits, and the `sleep` below holds no copy of the pipe, so
-# the child sees end of input the moment this process dies.
+# The hold loop. It relays an interrupt the supervisor drops in the
+# interrupt-request file, writes the held goal once the priming turn closes,
+# relays a final ask the supervisor drops in the ask-request file, and exits
+# a few seconds after the child's pid disappears. A signal ends it too: the
+# default TERM disposition exits, and the `sleep` below holds no copy of the
+# pipe, so the child sees end of input the moment this process dies.
 #
 # The exit-on-death is armed by the child-pid file holding a valid pid rather
 # than by having seen that pid alive. The supervisor writes the file the instant
@@ -525,31 +520,50 @@ fi
 # for a child that died that fast, which blocks the supervisor's own `wait` on
 # the pipeline.
 while true; do
+  if [ -n "$INTERRUPT_REQUEST_FILE" ] && [ -f "$INTERRUPT_REQUEST_FILE" ]; then
+    # Checked, and written where it relays, before the goal-pending write
+    # below: an interrupt landing in the same poll as the priming turn's
+    # result line must reach the pipe first, never race the goal turn or
+    # kill it once it has already been sent.
+    #
+    # Taken off its path with one rename before anything reads it, so a
+    # well-formed request that lands behind it mid-poll is never deleted
+    # unserved: the rename leaves nothing at the original path for a fresh
+    # write to collide with, and this holder reads only its own private
+    # ".taken" copy from here on. A failed rename (the file already gone, a
+    # race with a departing writer) skips the interrupt for this poll; there
+    # is nothing to refuse or remove, and the next poll tries again.
+    if mv -f "$INTERRUPT_REQUEST_FILE" "$INTERRUPT_REQUEST_FILE.taken" 2>/dev/null; then
+      # The private copy is read exactly once, capped at 4097 bytes: a file
+      # over 4096 is refused unread, since this read never grows past the cap
+      # to find out how much more there is. `read -d ''` keeps every byte
+      # `head` hands it, trailing newline included, unlike a bare
+      # `$(head ...)` capture, which a command substitution would trim and so
+      # could undercount a file whose 4097th byte is itself a newline.
+      IFS= read -r -d '' interrupt_content < <(head -c 4097 "$INTERRUPT_REQUEST_FILE.taken" 2>/dev/null)
+      interrupt_bytes=$(LC_ALL=C printf '%s' "$interrupt_content" | wc -c)
+      interrupt_id=""
+      if [ "$interrupt_bytes" -le 4096 ] && interrupt_fields=$(holder_interrupt_relay "$interrupt_content"); then
+        interrupt_id="${interrupt_fields%%$'\t'*}"
+        interrupt_reason="${interrupt_fields#*$'\t'}"
+      fi
+      # holder_interrupt_relay already checked this id against the same
+      # rule; this is the pipe's own guard, so a spawn that exits 0 with
+      # truncated or empty stdout can never put an empty request_id on the
+      # pipe.
+      if [[ "$interrupt_id" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+        printf '{"type":"control_request","request_id":"%s","request":{"subtype":"interrupt"}}\n' "$interrupt_id"
+        log "relayed an interrupt id=$interrupt_id reason=$interrupt_reason"
+      else
+        log "the interrupt-request file did not hold one valid interrupt request; removed it unrelayed"
+      fi
+      rm -f "$INTERRUPT_REQUEST_FILE.taken"
+    fi
+  fi
   if [ "$GOAL_PENDING" -eq 1 ] && [ -f "$OUT" ] && grep -q '"type":"result"' "$OUT"; then
     goal_prompt_json "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING"
     log "priming turn completed; sent the goal prompt as its own turn"
     GOAL_PENDING=0
-  fi
-  if [ -n "$INTERRUPT_REQUEST_FILE" ] && [ -f "$INTERRUPT_REQUEST_FILE" ]; then
-    # A file over 4096 bytes is refused unread: it cannot be a request this
-    # supervisor wrote, whole, in one move, so it is never parsed at all.
-    interrupt_bytes=$(wc -c < "$INTERRUPT_REQUEST_FILE" 2>/dev/null) || interrupt_bytes=""
-    interrupt_ok=0
-    if [ -n "$interrupt_bytes" ] && [ "$interrupt_bytes" -le 4096 ]; then
-      interrupt_content=$(cat "$INTERRUPT_REQUEST_FILE" 2>/dev/null) && interrupt_ok=1
-    fi
-    if [ "$interrupt_ok" -eq 1 ] && holder_interrupt_valid "$interrupt_content"; then
-      interrupt_fields=$(holder_interrupt_fields "$interrupt_content")
-      interrupt_id="${interrupt_fields%%$'\t'*}"
-      interrupt_reason="${interrupt_fields#*$'\t'}"
-      # The control line is built here, by the holder itself, from nothing but
-      # the validated id; the file's content never reaches the pipe.
-      printf '{"type":"control_request","request_id":"%s","request":{"subtype":"interrupt"}}\n' "$interrupt_id"
-      log "relayed an interrupt id=$interrupt_id reason=$interrupt_reason"
-    else
-      log "the interrupt-request file did not hold one valid interrupt request; removed it unrelayed"
-    fi
-    rm -f "$INTERRUPT_REQUEST_FILE"
   fi
   if [ -f "$ASK_REQUEST_FILE" ]; then
     # One whole line is relayed. The supervisor writes the file whole and moves

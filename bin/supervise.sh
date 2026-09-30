@@ -4216,7 +4216,7 @@ while true; do
     CHILD_PID_FILE="$CHILD_DIR/child.pid"
     ASK_REQUEST_FILE="$CHILD_DIR/ask.request"
     INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
-    rm -f "$EXIT_MARKER" "$HANDLE_FILE" "$HOLDER_PID_FILE" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "$ASK_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE" "$INTERRUPT_REQUEST_FILE.tmp"
+    rm -f "$EXIT_MARKER" "$HANDLE_FILE" "$HOLDER_PID_FILE" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "$ASK_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE" "$INTERRUPT_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE.taken"
 
     # --- Take the child start timestamp BEFORE the launch call (Z6) ---
     CHILD_START_TS=$(node -e "console.log(Date.now())")
