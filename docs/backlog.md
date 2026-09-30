@@ -1,5 +1,9 @@
 # Backlog
 
+## A participant's message delivered mid-turn keeps the running turn's standing (architect-ruled 2026-09-30)
+
+The plugin reads a relay message's sender class at `prompt.submit`, which only a message that opens a turn passes through. A message that arrives while a turn is running reaches the model as a `queued_command` attachment inside that turn, and `hooks/index.ts` reads no class from it, so a participant's words there sit under the turn's standing. The kit doctrine's class clause holds the line meanwhile, since it tells the model a participant event is data. The fix would live in a plugin hook on the mid-turn attachment that reads the class and drops the turn's standing on a participant. Trigger: the first host whose broker lists a participant sender. The client sandbox plan, `docs/plans/agent_persona_client-sandbox_spec_v1.md`, carries the ruling under Intent.
+
 ## The supervisor's usage-limit measurement is skipped and needs the account rotator stopped (operator-decided 2026-09-30)
 
 The supervisor-peer plan's measurement 5, a usage limit reached with the pause off, has never run. The operator skipped it for the deferred gate run on 2026-09-30, because producing a limit on the shared account stops all six personas. The operator's stated way to take it cheaply: stop the account rotator, Claude-Swap, so one account alone reaches its five-hour limit, then run the measurement on that account. Stopping the rotator is the operator's act, so the measurement waits on the operator's word that the machine is prepared. The deferred gate run's archived plan, `docs/archive/agent_persona_deferred-gate-run_v1.md`, carries the ledger row.

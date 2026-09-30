@@ -45,7 +45,7 @@
 // naming the first and last record of the tail read and the version, then
 // "operator <hh:mm>: <text>" and "persona <hh:mm>: <text>" in file order, which
 // is time order, then "last words: <text>", then one count line for the whole
-// digest. A message whose channel tag names the participant class prints as
+// digest. A message whose channel tag reads as a participant's prints as
 // "participant <hh:mm>: <text>" in the same order, and counts as neither an
 // operator message nor a reply. An operator or participant line whose channel
 // tag names an author reads "<kind> <hh:mm>: <author>: <text>", the author
@@ -275,6 +275,8 @@ const TAG_ENTITIES = { quot: '"', amp: '&', lt: '<', gt: '>', apos: "'" };
  * followed by a line break or the end of the text, since the envelope puts
  * the message on the lines below: anything else after it on the tag's line is
  * text that broke the tag, such as an author value holding an unescaped '">'.
+ * The whole tag sits on one line: a line break inside an attribute value,
+ * between two pairs, or before the closing '>' breaks it.
  * Returns null where the text does not open with a whole tag. This is the rule
  * channelEnvelopeAttributes in hooks/index.ts applies, which a .mjs script
  * cannot import from TypeScript.
@@ -284,7 +286,7 @@ const TAG_ENTITIES = { quot: '"', amp: '&', lt: '<', gt: '>', apos: "'" };
 function channelTag(content) {
   const open = '<channel';
   if (!content.startsWith(open)) return null;
-  const pair = /\s+([A-Za-z_][\w.:-]*)="([^"]*)"/y;
+  const pair = /[ \t]+([A-Za-z_][\w.:-]*)="([^"\r\n]*)"/y;
   const attributes = [];
   let at = open.length;
   for (;;) {
@@ -294,7 +296,7 @@ function channelTag(content) {
     attributes.push([m[1], m[2].replace(/&(quot|amp|lt|gt|apos);/g, (_, name) => TAG_ENTITIES[name])]);
     at = pair.lastIndex;
   }
-  const close = /^\s*>(?:\r?\n|$)/.exec(content.slice(at));
+  const close = /^[ \t]*>(?:\r?\n|$)/.exec(content.slice(at));
   return close ? { attributes, end: at + close[0].length } : null;
 }
 
@@ -319,10 +321,10 @@ function taggedWords(content) {
  * Who sent a tagged record, by the rule channelSenderOf in hooks/index.ts
  * applies: a tag that does not parse whole, or that names sender_class more
  * than once, is a participant's with no author, since either shape can come
- * from author text the envelope did not escape. A whole tag with one
- * sender_class is a participant's where the value is exactly "participant"
- * and the operator's otherwise, and a whole tag with no sender_class is the
- * operator's. The author is the first author attribute's value, or ''.
+ * from author text the envelope did not escape. A whole tag with no
+ * sender_class, or with one whose value is exactly "operator", is the
+ * operator's; one with any other value is a participant's. The author is the
+ * first author attribute's value, or ''.
  * @param {string} content
  * @returns {{kind: 'operator'|'participant', author: string}}
  */
@@ -332,7 +334,7 @@ export function taggedSender(content) {
   if (!tag || classes.length > 1) return { kind: 'participant', author: '' };
   const author = tag.attributes.find(([name]) => name === 'author');
   return {
-    kind: classes.length === 1 && classes[0][1] === 'participant' ? 'participant' : 'operator',
+    kind: classes.length === 0 || classes[0][1] === 'operator' ? 'operator' : 'participant',
     author: author ? author[1] : '',
   };
 }

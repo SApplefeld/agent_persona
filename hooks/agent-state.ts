@@ -109,8 +109,8 @@ export interface GoalNode {
   askedBy?: string; // root only: the author the channel envelope named on the
                     // turn goal_create ran in. Absent where the root came from
                     // any other turn or the envelope named no author. The
-                    // value is sender-written text, cut to 64 characters at
-                    // write (ASKED_BY_MAX_CHARS in hooks/index.ts) and
+                    // value is sender-written text, cut at write to
+                    // ASKED_BY_MAX_CHARS in hooks/index.ts and
                     // unfolded, so any reader that puts it into a model's
                     // context folds it through bracketSafeText first.
   planningRounds: number; // root only: number of planning events

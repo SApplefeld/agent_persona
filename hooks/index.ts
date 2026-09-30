@@ -1709,10 +1709,11 @@ const OPERATOR_ORIGIN_KINDS: ReadonlySet<string> = new Set(["composer", "bridge"
 // envelope the harness wraps the message in:
 //   <channel source="..." chat_id="..." author="..." sender_class="...">
 // with the text on the lines below and </channel> closing it. A class of
-// exactly "participant" is a person in the thread with no authority. Every
-// other value, and an envelope with no class, is the operator's, so a broker
-// that writes no class keeps every channel turn's standing. The author is the
-// sender's name, or empty where the envelope names none.
+// exactly "operator", and an envelope with no class, is the operator's, so a
+// broker that writes no class keeps every channel turn's standing. Every other
+// class value, "participant" included, is a person in the thread with no
+// authority, so a value the plugin does not know fails toward none. The author
+// is the sender's name, or empty where the envelope names none.
 export type ChannelSender = { senderClass: "operator" | "participant"; author: string };
 const OPERATOR_SENDER: ChannelSender = { senderClass: "operator", author: "" };
 // The most characters of an author a goal root's askedBy stores, the width
@@ -1735,12 +1736,13 @@ function decodeEnvelopeAttribute(value: string): string {
 // whole only where that '>' ends its line, followed by a line break or the
 // end of the text, since the envelope puts the message on the lines below:
 // anything else after it on the tag's line is text that broke the tag, such
-// as an author value holding an unescaped '">'. A name given twice appears
-// twice.
+// as an author value holding an unescaped '">'. The whole tag sits on one
+// line: a line break inside an attribute value, between two pairs, or before
+// the closing '>' breaks it. A name given twice appears twice.
 function channelEnvelopeAttributes(text: string): Array<[string, string]> | null {
   const open = "<channel";
   if (!text.startsWith(open)) return null;
-  const pair = /\s+([A-Za-z_][\w.:-]*)="([^"]*)"/y;
+  const pair = /[ \t]+([A-Za-z_][\w.:-]*)="([^"\r\n]*)"/y;
   const attributes: Array<[string, string]> = [];
   let at = open.length;
   for (;;) {
@@ -1750,26 +1752,25 @@ function channelEnvelopeAttributes(text: string): Array<[string, string]> | null
     attributes.push([m[1], decodeEnvelopeAttribute(m[2])]);
     at = pair.lastIndex;
   }
-  return /^\s*>(?:\r?\n|$)/.test(text.slice(at)) ? attributes : null;
+  return /^[ \t]*>(?:\r?\n|$)/.test(text.slice(at)) ? attributes : null;
 }
 
 // The sender a channel prompt's envelope names. A text that does not open
-// with <channel reads as the operator's with no author. A text that opens with
-// <channel reads as a participant with no author where its tag does not parse
-// whole, its closing '>' ending the tag's line included, or where the tag
-// names sender_class more than once: either shape can
-// come from author text the envelope did not escape, so neither may decide
-// the class. A whole tag with one sender_class reads as a participant where
-// the value is exactly "participant" and as the operator otherwise, and a
-// whole tag with no sender_class reads as the operator. The author is the
-// first author attribute's value, or empty where the tag names none.
+// with <channel reads as the operator's with no author. A text that opens
+// with <channel reads as a participant with no author where its tag does not
+// parse whole, or where the tag names sender_class more than once: either
+// shape can come from author text the envelope did not escape, so neither may
+// decide the class. A whole tag with no sender_class, or with one whose value
+// is exactly "operator", reads as the operator; one with any other value reads
+// as a participant. The author is the first author attribute's value, or
+// empty where the tag names none.
 export function channelSenderOf(text: string): ChannelSender {
   if (!text.startsWith("<channel")) return OPERATOR_SENDER;
   const attributes = channelEnvelopeAttributes(text);
   const classes = attributes === null ? [] : attributes.filter(([name]) => name === "sender_class");
   if (attributes === null || classes.length > 1) return { senderClass: "participant", author: "" };
   return {
-    senderClass: classes.length === 1 && classes[0][1] === "participant" ? "participant" : "operator",
+    senderClass: classes.length === 0 || classes[0][1] === "operator" ? "operator" : "participant",
     author: attributes.find(([name]) => name === "author")?.[1] ?? "",
   };
 }

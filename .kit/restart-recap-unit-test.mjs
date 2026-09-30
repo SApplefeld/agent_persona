@@ -530,6 +530,31 @@ const cases = [
     ]);
     assert.equal(r.header.lastOperatorAt, null);
   }],
+  ['a class of exactly operator, or none, prints as the operator\'s, and every other class value, or a line break inside the tag, as a participant\'s', () => {
+    const paths = makeCase('class-values', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
+      operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'Exactly operator.', ' author="Ada" sender_class="operator"'),
+      operatorRecord(PREV, '2026-09-25T10:01:00.000Z', 'No class.', ' author="Ada"'),
+      operatorRecord(PREV, '2026-09-25T10:02:00.000Z', 'Capitals.', ' author="Bo" sender_class="Participant"'),
+      operatorRecord(PREV, '2026-09-25T10:03:00.000Z', 'Empty.', ' author="Bo" sender_class=""'),
+      operatorRecord(PREV, '2026-09-25T10:04:00.000Z', 'Guest.', ' author="Bo" sender_class="guest"'),
+      operatorRecord(PREV, '2026-09-25T10:05:00.000Z', 'Operator in capitals.', ' author="Bo" sender_class="Operator"'),
+      // The one-line rule: a line break between two pairs breaks the tag.
+      operatorRecord(PREV, '2026-09-25T10:06:00.000Z', 'Spanning.', ' author="Bo"\n sender_class="operator"'),
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const r = standard(paths);
+    assert.deepEqual(linesOf(r, 'operator'), ['operator 10:00: Ada: Exactly operator.', 'operator 10:01: Ada: No class.']);
+    assert.deepEqual(linesOf(r, 'participant').map((l) => l.slice(0, 'participant 10:00:'.length)),
+      ['participant 10:02:', 'participant 10:03:', 'participant 10:04:', 'participant 10:05:', 'participant 10:06:']);
+    assert.deepEqual(linesOf(r, 'participant').slice(0, 4), [
+      'participant 10:02: Bo: Capitals.',
+      'participant 10:03: Bo: Empty.',
+      'participant 10:04: Bo: Guest.',
+      'participant 10:05: Bo: Operator in capitals.',
+    ]);
+    assert.ok(!linesOf(r, 'participant')[4].includes('Bo: '), 'a broken tag names no author: ' + linesOf(r, 'participant')[4]);
+    assert.equal(r.header.lastOperatorAt, '2026-09-25T10:01:00.000Z');
+  }],
   ['a broken tag with no line break at all falls back to the words after its first \'>\'', () => {
     const paths = makeCase('broken-one-line', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
     const rec = operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'unused');
@@ -557,10 +582,11 @@ const cases = [
   ['an author is cut to RECAP_AUTHOR_CHARS, a cap of its own, and the words keep their RECAP_MESSAGE_CHARS', () => {
     const paths = makeCase('author-cap', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
     const words = 'W'.repeat(api().RECAP_MESSAGE_CHARS * 2);
-    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), JSON.stringify(operatorRecord(PREV, '2026-09-25T10:00:00.000Z', words, ' author="' + 'A'.repeat(300) + '"')) + '\n');
+    const cap = api().RECAP_AUTHOR_CHARS;
+    assert.ok(cap > 0 && cap < api().RECAP_MESSAGE_CHARS, 'the author cap is its own, smaller width: ' + cap);
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), JSON.stringify(operatorRecord(PREV, '2026-09-25T10:00:00.000Z', words, ' author="' + 'A'.repeat(cap * 3) + '"')) + '\n');
     const r = standard(paths);
-    assert.equal(api().RECAP_AUTHOR_CHARS, 64);
-    assert.deepEqual(linesOf(r, 'operator'), ['operator 10:00: ' + 'A'.repeat(64) + ': ' + 'W'.repeat(api().RECAP_MESSAGE_CHARS)]);
+    assert.deepEqual(linesOf(r, 'operator'), ['operator 10:00: ' + 'A'.repeat(cap) + ': ' + 'W'.repeat(api().RECAP_MESSAGE_CHARS)]);
   }],
   ['a queue-operation record, a file attachment, a tool result quoting a channel block after its own output, and a tagged record without the relay origin stamp admit nothing', () => {
     const paths = makeCase('not-carriers', { sessions: [PREV], store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });

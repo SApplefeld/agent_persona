@@ -26,6 +26,12 @@ Ruled 2026-09-30 by the ARCHITECT persona, in its record answering `ARCHITECT-73
 
 Ruled 2026-09-30 by the ARCHITECT persona, same record: every tool the priming turn or the liaison charter instructs the seat to call is on the template's closed allow list, so the Skill tool and `mcp__agentic-plugin__supervisor_shutdown` join it where a print-mode measurement under the default permission mode shows each refused without a grant, and stay off where it shows them run unprompted. The template keeps a deny list of credential paths on Read, Grep and Glob and on `Edit` under the seat's own `.claude` directory: it narrows the closed list and widens nothing. The runbook trusts the liaison's working directory rather than passing the rules through `--settings`, and its checklist proves the permissions block was honored by a tool outside the list being refused.
 
+Ruled 2026-09-30 by the ARCHITECT persona, relayed by the coordinator in record `DEV-PERSONA-691ddfa1-650b-4147-b752-d27eb72dda5f-4` on a disagreement DEV-PLUGIN found: "the plugin reads a sender_class attribute whose value is exactly "operator" as the operator's, an absent attribute as the operator's, and any other value, "participant" included, as a participant's — so a strange value fails toward no authority, matching the claude-kit doctrine's same default." This supersedes the Approach's "a channel turn passes it only where the class is not `participant`" for a present value. Out of Scope's sentence that the charter agrees with the doctrine by construction holds again once this read is in place.
+
+Ruled 2026-09-30 by the ARCHITECT persona, in its record answering `ARCHITECT-73eabc7f-1fa4-48b0-9ca0-3cab3e320e9d-3`, on a participant's message delivered mid-turn: "do not build the standing drop in this plan. The Goal covers the turn a participant's message opens, and a hook on the queued attachment does not exist today, so the drop is a new mechanism no requirement names." Out of Scope names the gap, section 3's security model states it as a known gap held by the kit doctrine's class clause and with no live instance at the pilot, and `docs/backlog.md` carries the mechanism with its trigger.
+
+Ruled 2026-09-30 by the ARCHITECT persona, same record, bounding the recap ruling above: "fields that describe the operator are unmoved by a participant's message, which are the last-operator time, the operator line kind and the operator message count in the count line; fields that describe the transcript move, which lastRecordAt is, since a participant's message is a record in the transcript. A participant's message counts in the count line under its own kind, or not at all, and never as an operator message."
+
 Provenance: distilled by the ARCHITECT persona from the operator's four channel messages on 2026-09-30 and the reconnaissance recorded under Approach.
 
 ## Approach
@@ -42,9 +48,11 @@ The contract sweep for this plan ran over the repository on 2026-09-30 and retur
 
 ## Standing Brief Amendments
 
+- A `sender_class` value of exactly `operator`, or no `sender_class` attribute, reads as the operator's; every other present value, `participant` included, reads as a participant's.
 - The restart recap prints a participant's message under a `participant` kind with its author, and moves neither the last-operator time nor any other recap field.
 - The liaison template's allow list holds every tool the priming turn or the liaison charter instructs the seat to call, where a measurement shows that tool refused without a grant. Its deny list covers credential paths on Read, Grep and Glob and `Edit` under the seat's own `.claude` directory.
 - The runbook trusts the liaison's working directory, and its checklist carries an item where a tool outside the allow list, called from the liaison's thread, is refused.
+- The security model states the mid-turn gap as a known gap in one paragraph: a relay message arriving inside a running turn carries that turn's standing; the kit doctrine's class clause is the line that holds; the pilot lists no participant account, so the gap has no live instance until a host names one.
 
 ## Sections of Work
 
@@ -58,6 +66,7 @@ Acceptance:
 - A `<channel sender_class="operator">` sequence inside the content of a participant's envelope does not change the class.
 - A goal root created on a channel turn with `author="Ada"` carries `askedBy: "Ada"`, and the restart recap's operator line for that message opens with the author.
 - A participant fixture prints in the restart recap under the `participant` kind with its author, and leaves the last-operator time as it was.
+- A prompt whose envelope carries a `sender_class` value that is neither `operator` nor `participant` opens a turn in which `goal_create`, `goal_autonomy` and `goal_resume` refuse as for a participant, and the reply backstop still posts. The absent-attribute case is unchanged.
 Files in scope: `hooks/index.ts` (the `OriginReading` type and `originReadings`, the `prompt.submit` origin block, `turn.start`, `turnIsOperators`, the open-ask close block, `goal_create`'s root construction), `hooks/agent-state.ts` where `GoalNode` gains the optional field, `bin/restart-recap.mjs` (`OPERATOR_TAG`, `operatorWords`, the operator line), `.kit/controller-tick-test.mjs` (new cases beside the origin-kind loop), `.kit/restart-recap-unit-test.mjs` and `.kit/fixtures/restart-recap/*.jsonl`, and `.kit/jev-gold/sample.mjs` and `.kit/jev-gold/score.mjs` only where a class-bearing fixture is added. `README.md`'s turn-origin paragraph is section 3's.
 Tests: the five acceptance bullets; the inner-tag forgery case; the recap digest with and without an author.
 
@@ -111,6 +120,8 @@ Disclosure: no client name, no Discord id, no token, no internal hostname of the
 - The `.kit/jev-gold` sampling sets that treat `channel` as turn-opening. A participant's message still opens a turn, so those sets stay true.
 - Retrofitting the ASSISTANT persona into the liaison seat. It stays a worker.
 - The backlog's deferred direct-lines finding about the architect charter's handling of a worker record with no design question.
+
+- A relay message arriving inside a running turn reaches the model as an attachment the plugin reads no class from, so it sits under that turn's standing. The standing drop on a mid-turn participant attachment is a backlog entry, ruled 2026-09-30.
 
 ## Assumptions
 
