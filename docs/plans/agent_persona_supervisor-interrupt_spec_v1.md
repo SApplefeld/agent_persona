@@ -143,3 +143,46 @@ Delta: measured 2026-09-30 on this machine, worktree D:/agent_persona-supervisor
 - The architect answered, reported and read from origin/main: turnStartedAt stays set through a harness rate-limit retry wait. It moves only at turn.start and turn.complete (hooks/index.ts:9566, :9575, :9870, deriveTurnStartedAt at :5261), and the heartbeat tick at :6462 republishes it without clearing it. That the retry happens inside the turn is inferred from the harness type docs, and Section 3 can confirm it by reading the heartbeat file during the observed wait. Residual, if the check is built: the published stamp can stay non-null for up to one heartbeat interval after a turn ends (comment at :9860), so for that one interval the check can still relay into a turn that just ended. It is bounded, and it is named rather than closed.
 - Operator's answer, 2026-09-30 on the relay: "option B is fine", conditional on A being unable to tell the targeted turn from a later one ("If that were possible, I would support option A"). The premise does not hold. The check compares the running turn's turnStartedAt with the request's at, so a turn started after the request reads as a different turn. The correction and a re-ask went back on the relay. Section 2 stays held until the operator confirms A or B.
 - Operator confirmed option A on the relay, 2026-09-30 ("Let's do A!"). It is recorded under Decisions and as a Standing Brief Amendment. It goes to the implementer as a follow-up once fix round 1 reports.
+
+### Chapter 2 - 2026-09-30
+Completed: 2. Tool and Supervisor Route the Request
+Implemented By: implementer-sonnet for the first build, fix round 1 with option A as its follow-up, and fix round 2. The docs edits, the controller-tick pin and round 3's sentence-pin fix were made inline in the main thread.
+Metrics: review rounds 3, closed claim-exit; provenance 5 spec-traceable, 3 fix-introduced, 0 new-requirement, rulings (0 refused, 1 declared, 1 asked); advisory: 9 findings, 8 fixed or covered, 1 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 1 (the operator's option A ask); consults 0
+Decisions / Surprises:
+- Section 2 open, fix rounds 1 and 2, the design stop and option A: each add-decision line is in `.kit/scratch/supervisor-interrupt/add-decisions-section-2.md`. The option A line reads: the relay reads the child heartbeat and relays only while turnStartedAt is at or before the request's at, otherwise it records the request served and logs INTERRUPT_SKIPPED once. It serves Urgent Messages and the operator's decision of 2026-09-30. It adds a mechanism, declared by that decision, of about 15 code lines and 40 test lines. Not building it lets a late relay end the urgent record's own turn.
+- Approval drift, two items. The Standing Brief Amendments block was added after approval: the stable-form pin bullet (scope adjudicator, accept-and-declare) and the option A relay rule (operator, 2026-09-30). The Decisions section gained the option A bullet, which supersedes Section 2's "no need to detect an idle child first".
+- Module added beyond the brief: `bin/supervise-heartbeat.mjs`. It exports `readChildHeartbeat`, moved out of `bin/supervise-poll.mjs`, which runs its CLI on load and so cannot be imported. `supervise-poll.mjs` now imports it, so the turn gate and the liveness verdict read the heartbeat through one reader.
+- Fix round 2 added `INTERRUPT_HANDLED_AT`, an in-memory per-child record of the request already relayed or skipped. A served-marker write that fails now retries only that write rather than relaying a second interrupt. The residual is named in the code: a successor supervisor adopting the child before the marker lands can act on the request once more. While the marker cannot be written, the log carries one INTERRUPT_FAILED line naming the relay or skip in place of INTERRUPT: or INTERRUPT_SKIPPED.
+- The tick suite's `s6 owner: twenty tools registered` pin had been red since `65ee6e3`, since fleet_interrupt makes 21 tools. It was re-pinned at twenty-one in fix round 1. The lesson is in memory as `a-change-to-a-shared-reader-owes-every-suite-that-pins-its-output`.
+- The implementer's round-1 tests carried 13 checks of the form `check "...$(cmd)..." "$?"`, which always pass because the substitution resets `$?`. All 13 were rewritten to capture the exit code first. A pre-existing instance at `.kit/supervisor-model-test.sh:1301` is outside this diff and is in `docs/backlog.md`.
+Failed approaches: none
+Assumptions:
+- (2026-09-30, section 2) The coordinator paragraph lands as sentences in `COORDINATOR_ROLE_INSTRUCTION`, since this repository carries no coordinator skill. Route (a), cited from interim board 1.
+Review Findings: review: adversarial, blind, security and performance at opus, Workflow at high effort, round 1; adversarial at sonnet, Workflow at high effort, rounds 2 and 3.
+- Round 1 Majors fixed: the supervisor test now drives the real poll loop for ADOPT and LAUNCH; one read of the request decides and writes; by and reason are cut to 64 and 200 on relay.
+- Round 1 Major declared: the wording pins, which became the first amendment.
+- Round 1 Major asked: a late relay could end the urgent record's own turn. The operator chose option A.
+- Round 2, verified in `bin/supervise.sh:2932-2971`: the served-marker re-relay (Major, fixed); the unchecked skip-branch marker write (rated Major, downgraded to Minor since its failure only repeats a log line, fixed); the uncut skip-path log fields (fixed); and the conversation pin passing an inverted sentence (fixed).
+- Round 3, APPROVED_WITH_CONCERNS: the new sentence pin refused two correct rewords. Fixed inline: "restart" is no longer refused, and the survival stem accepts keep, retain, preserv, intact, surviv and continu. Two reword controls were added. The old logic returns 1 on both and the new suite passes.
+- Advisory: the security Major (a false comment) is covered by the single-read fix. The performance Major (latency) is covered by the tool text now saying up to about 12 seconds at the default poll intervals. The upgrade-check substring skew is deferred to `docs/backlog.md`. The missing `by=` in the log is fixed.
+- Minors: the dispositions are in `.kit/scratch/supervisor-interrupt/minors-section-2.md`. Two were left with reasons: the old five-argument holder, which the README states, and the adoption-time `CHILD_START_TS`, which is intended.
+Stamps: adjudicated 16, stamped 3 (process-command-line-coverage-is-partial-on-neo-claude, which led to measuring coverage before the gate; operator-on-discord-cannot-read-plan-docs-or-code, which shaped the option A ask; a-trace-target-you-composed-cannot-check-your-own-work, which kept the review trace targets on the plan's own text). The other 13 bore on no choice here. Earlier in the section, a-change-to-a-shared-reader-owes-every-suite-that-pins-its-output was written and stamped.
+Gate: targeted lane plus the suites that pin the shared poll reader, measured 2026-09-30 on this machine at `581c0fe` plus fix round 2 uncommitted. Before the run, all 20 node, dotnet and testhost processes exposed a command line and none held over 150 MB. Logs are in `.kit/scratch/supervisor-interrupt/s2-gate-r3/`:
+- `fleet-status-unit-test.mjs` exit 0.
+- `tool-description-length-test.mjs` exit 0.
+- `injection-duplicate-test.mjs` exit 0.
+- `channel-reply-instruction-test.sh` exit 0. Re-run after round 3's pin fix: 179 OK, exit 0.
+- `supervisor-poll-unit-test.mjs` exit 0.
+- `supervisor-unit-test.mjs` exit 0.
+- tsc (`node /d/agent_persona/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json`) exit 0.
+- `supervisor-holder-test.sh` exit 0, 46 s.
+- `supervisor-model-test.sh` 319 OK, 0 FAIL, exit 0, 438 s.
+- `controller-tick-test.mjs` PASS, 0 failures, exit 0, 135 s.
+- `supervisor-natural-exit-test.sh --units` PASS, exit 0, 108 s.
+- Against interim board 2's baseline at `65ee6e3` (all nine exit 0, model suite 404 s): still exit 0. The model suite's added cases account for the 34 s. Controller-tick was red at `65ee6e3` on the tool-count pin and is green now.
+Test delta: added in `.kit/fleet-status-unit-test.mjs` 5 fleet_interrupt cases; in `.kit/supervisor-poll-unit-test.mjs` 7 reader cases; in `.kit/supervisor-model-test.sh` the extracted relay cases, the turn-gate cases, driven ADOPT and LAUNCH cases through the real loop, the skip case, the writer-reader case, the two unwritable-marker cases and the oversized skip-log case; in `.kit/channel-reply-instruction-test.sh` the fleet_interrupt pins, the inverted-sentence control and the two reword controls. One edited to stay green: the tick suite's tool count, twenty to twenty-one. None retired. Spawning tests added: the driven ADOPT and LAUNCH cases each spawn one supervisor loop with a fake child.
+Next: 3. Live Proof on the Real Stuck State
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-30 on this machine, worktree D:/agent_persona-supervisor-interrupt at 581c0fe, with fix round 2 and this Chapter uncommitted.
+
+    kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report

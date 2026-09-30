@@ -134,12 +134,14 @@ ROLE_RESTART_REPORT_CONTROL="report every use to the operator"
 # that sends the record with agentic_say after the interrupt. The tool name
 # alone joins the absence sweeps beside ROLE_RESTART_TOOL_CONTROL.
 ROLE_INTERRUPT_TOOL_CONTROL="fleet_interrupt"
-# The behavior a correct reword keeps, not the exact sentence, per the plan
-# doc's Standing Brief Amendment: "conversation" is what tells fleet_interrupt
-# apart from fleet_restart (which loses it), and the trigger is pinned on
-# fleet_status's own field names, which a reword cannot rephrase away without
-# also rewriting the tool it points at.
-ROLE_INTERRUPT_KEEP_CONTROL="conversation"
+# The sentence that tells fleet_interrupt apart from fleet_restart (which
+# loses the conversation) is pinned on its behavior rather than its exact
+# wording, per the plan doc's Standing Brief Amendment: a correct reword
+# passes, and only an inverted meaning reds. extract_fleet_interrupt_sentence
+# and fleet_interrupt_sentence_ok, defined below the instruction literals,
+# do the pinning; the trigger is pinned separately, on fleet_status's own
+# field names, which a reword cannot rephrase away without also rewriting the
+# tool it points at.
 ROLE_INTERRUPT_TURN_STATE_CONTROL="turnState"
 ROLE_INTERRUPT_TURN_RUNNING_CONTROL="turnRunningMs"
 ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL="heartbeatAgeMs"
@@ -457,6 +459,37 @@ STEER_ARCH_UNTAKEN_WHY_CONTROL="because the coordinator can see whether an archi
 failed=0
 check() {
   if [ "$2" = "0" ]; then echo "  OK: $1"; else echo "  FAIL: $1"; failed=1; fi
+}
+
+# Prints the sentence beginning at the first "fleet_interrupt" in <text>
+# through the following period, inclusive, so a pin reads one sentence
+# rather than the whole paragraph and stays blind to wording anywhere else
+# in the instruction. Empty where the marker is absent.
+extract_fleet_interrupt_sentence() {  # <text>
+  local text="$1" rest
+  case "$text" in
+    *fleet_interrupt*) ;;
+    *) return 0 ;;
+  esac
+  rest="${text#*fleet_interrupt}"
+  printf '%s' "fleet_interrupt${rest%%.*}."
+}
+
+# True where <sentence> says the conversation survives (a stem from the
+# keep, retain, preserve, intact, survive or continue family) and does not
+# say it is lost (no "lose"/"lost" stem). "restart" is not refused, since a
+# correct sentence can say the turn ends without one. This pins the behavior
+# the Standing Brief Amendment protects, not an exact phrase, so a correct
+# reword still passes; some positive claim of survival is still required,
+# or "ends its turn and wipes its conversation" would pass too.
+fleet_interrupt_sentence_ok() {  # <sentence>
+  case "$1" in
+    *lose*|*lost*) return 1 ;;
+  esac
+  case "$1" in
+    *keep*|*retain*|*preserv*|*intact*|*surviv*|*continu*) return 0 ;;
+  esac
+  return 1
 }
 
 # The whole text the priming write sends, which is what an absence case has to
@@ -1071,10 +1104,28 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_RESTART_TOOL_CONTROL"*"$ROLE_RESTART_REPORT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the restart lever is named, with every use reported to the operator" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the restart lever is named, with every use reported to the operator" 1 ;;
 esac
-case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_INTERRUPT_TOOL_CONTROL"*"$ROLE_INTERRUPT_KEEP_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the interrupt lever is named, ending the turn and keeping the conversation" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: the interrupt lever is named, ending the turn and keeping the conversation" 1 ;;
-esac
+# A withheld control: a planted inverted sentence must fail this pin before
+# the pin is trusted on the real instruction, per the silent-check rule.
+INVERTED_INTERRUPT_SENTENCE="fleet_interrupt ends another persona's running turn and loses its conversation."
+INVERTED_INTERRUPT_EXTRACTED=$(extract_fleet_interrupt_sentence "$INVERTED_INTERRUPT_SENTENCE")
+fleet_interrupt_sentence_ok "$INVERTED_INTERRUPT_EXTRACTED"
+CHECK_RC=$?
+[ "$CHECK_RC" -ne 0 ]
+check "interrupt-sentence pin control: a planted inverted sentence (loses its conversation) fails the pin" "$?"
+# The other direction: correct rewords, one naming a restart it denies, pass
+# the pin, so it reds on a changed meaning and not on a changed phrase.
+for REWORDED_INTERRUPT_SENTENCE in \
+  "fleet_interrupt ends another persona's running turn while its conversation continues unbroken." \
+  "fleet_interrupt ends another persona's running turn without a restart, and keeps its conversation."; do
+  fleet_interrupt_sentence_ok "$(extract_fleet_interrupt_sentence "$REWORDED_INTERRUPT_SENTENCE")"
+  CHECK_RC=$?
+  check "interrupt-sentence pin control: a correct reword passes the pin ($REWORDED_INTERRUPT_SENTENCE)" "$CHECK_RC"
+done
+
+FLEET_INTERRUPT_SENTENCE=$(extract_fleet_interrupt_sentence "${COORDINATOR_ROLE_INSTRUCTION:-}")
+fleet_interrupt_sentence_ok "$FLEET_INTERRUPT_SENTENCE"
+CHECK_RC=$?
+check "persona matches COORDINATOR_PERSONA: the fleet_interrupt sentence says the conversation is kept, not lost ($FLEET_INTERRUPT_SENTENCE)" "$CHECK_RC"
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_INTERRUPT_TURN_STATE_CONTROL"*"$ROLE_INTERRUPT_TURN_RUNNING_CONTROL"*"$ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL"*"$ROLE_INTERRUPT_REPORT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the interrupt trigger is stated in fleet_status's own fields, with every use reported to the operator" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the interrupt trigger is stated in fleet_status's own fields, with every use reported to the operator" 1 ;;

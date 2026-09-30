@@ -2260,6 +2260,24 @@ EOF4
   case "$OUT" in *"LOG="*"INTERRUPT: turn started exactly at the request"*) true ;; *) false ;; esac
   CHECK_RC=$?
   check "turnStartedAt equal to at relays (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+
+  # Fix round 2: the skip path's log line is bounded. get_interrupt_request
+  # strips control characters from by and reason but, before this fix, never
+  # cut their length, so an oversized by or reason written straight into the
+  # run directory could log unboundedly on a skip. No heartbeat file exists
+  # here, so the turn gate skips ("no heartbeat file at all"), and the
+  # INTERRUPT_SKIPPED line is read for by and reason cut to 64 and 200, the
+  # same bounds write_interrupt_relay applies on the relay path.
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  OVERSIZED_BY=$(node -e 'console.log("b".repeat(300))')
+  OVERSIZED_REASON=$(node -e 'console.log("r".repeat(500))')
+  write_interrupt_fixture "$IR_RD/interrupt.request" 5000 "$OVERSIZED_BY" "$OVERSIZED_REASON"
+  OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  EXPECT_BY=$(node -e 'console.log("b".repeat(64))')
+  EXPECT_REASON=$(node -e 'console.log("r".repeat(200))')
+  case "$OUT" in *"LOG="*"INTERRUPT_SKIPPED: $EXPECT_REASON (child-1, by=$EXPECT_BY, turn started none)"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "an oversized by and reason on the skip path are cut to 64 and 200 in the log line (out=$(printf '%s' "$OUT" | tr '\n' '|' | head -c 400))" "$CHECK_RC"
 fi
 
 # --- The coordinator's interrupt relay, through the real poll loop ---
@@ -2325,6 +2343,69 @@ check "interrupt adopt: a turn that starts after the request relays nothing and 
 sleep 1.5
 [ "$(grep -c 'INTERRUPT_SKIPPED: turn moved on before this landed' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; check "interrupt adopt: across several more polls the skip is still logged exactly once" "$?"
 [ "$(grep -c ' INTERRUPT: ' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 2 ]; check "interrupt adopt: the skipped request never adds a third relay to the log" "$?"
+
+# Fix round 2: a served-marker write that fails must never cause a second
+# relay. Turning $IA_DIR/child-1/interrupt.served into a directory makes the
+# write fail the way a permissions problem would; this needs the real,
+# persistent loop rather than the extraction-based fixture above, since the
+# in-memory INTERRUPT_HANDLED_AT record this fix adds lives for the
+# supervisor process's whole life, and the fixture drives a fresh process per
+# poll. A fresh heartbeat puts a turn running again, so this request relays.
+# The served-write failure means only INTERRUPT_FAILED ever logs for it
+# (INTERRUPT: logs only on a served write that lands), so a second relay is
+# read off the child's own interrupt.request file instead: nothing here
+# plays the holder's part to take that file off its path, so a second relay
+# would overwrite it with a freshly minted id, which the first relay's id,
+# read right after the sole INTERRUPT_FAILED line, must never change into.
+node -e 'const now = Date.now(); require("fs").writeFileSync(process.argv[1], JSON.stringify({ sessionId: "sess-ia", lastSeen: now, turnStartedAt: now }))' "$IA_DIR/heartbeat.json"
+rm -f "$IA_DIR/child-1/interrupt.served"
+mkdir -p "$IA_DIR/child-1/interrupt.served"
+IA_UNWRITABLE_AT=$(node -e 'console.log(Date.now())')
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Number(process.argv[2]), by: "coordinator", reason: "served marker unwritable" }))' "$IA_DIR/interrupt.request" "$IA_UNWRITABLE_AT"
+wait_for_line "$IA_DIR/supervisor.log" 'INTERRUPT_FAILED:.*served marker could not be written' 100; IA_UNWRITABLE_FAILED=$?
+check "interrupt adopt: a relay whose served marker cannot be written still writes the child's interrupt.request and logs one INTERRUPT_FAILED line (failed=$IA_UNWRITABLE_FAILED)" "$IA_UNWRITABLE_FAILED"
+IA_UNWRITABLE_ID1=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).id) } catch (e) { console.log("NONE") }' "$IA_DIR/child-1/interrupt.request")
+[ "$IA_UNWRITABLE_ID1" != "NONE" ]; check "interrupt adopt: the relayed file carries a minted id despite the unwritable marker (id=$IA_UNWRITABLE_ID1)" "$?"
+sleep 1.5
+IA_UNWRITABLE_ID2=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).id) } catch (e) { console.log("NONE") }' "$IA_DIR/child-1/interrupt.request")
+[ "$IA_UNWRITABLE_ID1" = "$IA_UNWRITABLE_ID2" ]; check "interrupt adopt: across several more polls with the marker still unwritable, the relayed id is unchanged, so there is no second relay (id1=$IA_UNWRITABLE_ID1, id2=$IA_UNWRITABLE_ID2)" "$?"
+[ "$(grep -c 'INTERRUPT_FAILED:.*served marker could not be written' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; check "interrupt adopt: across several more polls INTERRUPT_FAILED for this request is still logged exactly once" "$?"
+
+# Once the marker is writable again, a later poll writes it (retrying only
+# that write) and relays nothing new.
+rmdir "$IA_DIR/child-1/interrupt.served" 2>/dev/null
+sleep 1.5
+[ -f "$IA_DIR/child-1/interrupt.served" ] && [ "$(cat "$IA_DIR/child-1/interrupt.served" 2>/dev/null)" = "$IA_UNWRITABLE_AT" ]
+CHECK_RC=$?
+check "interrupt adopt: once the marker is writable again, a later poll writes it (served=$(cat "$IA_DIR/child-1/interrupt.served" 2>/dev/null || echo NONE))" "$CHECK_RC"
+IA_UNWRITABLE_ID3=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).id) } catch (e) { console.log("NONE") }' "$IA_DIR/child-1/interrupt.request")
+[ "$IA_UNWRITABLE_ID3" = "$IA_UNWRITABLE_ID1" ]; check "interrupt adopt: writing the marker late relays nothing new (same id throughout: $IA_UNWRITABLE_ID1 -> $IA_UNWRITABLE_ID3)" "$?"
+
+# Fix round 2: the skip branch's marker write is checked too, with the same
+# once-per-request discipline the relay path has. A heartbeat whose turn
+# starts after this new request triggers the skip decision; the marker is a
+# directory again, so its write fails the same way. INTERRUPT_SKIPPED, like
+# INTERRUPT: above, logs only on the poll whose served-marker write lands,
+# so while the marker stays broken only INTERRUPT_FAILED logs, once; the
+# skip decision leaves no other trace to read since nothing is written to
+# the child's own directory on this path, unlike a relay.
+IA_SKIP_REQUEST_AT=$(node -e 'console.log(Date.now())')
+IA_SKIP_TURN_AFTER=$((IA_SKIP_REQUEST_AT + 60000))
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ sessionId: "sess-ia", lastSeen: Date.now(), turnStartedAt: Number(process.argv[2]) }))' "$IA_DIR/heartbeat.json" "$IA_SKIP_TURN_AFTER"
+rm -f "$IA_DIR/child-1/interrupt.served"
+mkdir -p "$IA_DIR/child-1/interrupt.served"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Number(process.argv[2]), by: "coordinator", reason: "skip with marker unwritable" }))' "$IA_DIR/interrupt.request" "$IA_SKIP_REQUEST_AT"
+wait_for_line "$IA_DIR/supervisor.log" 'INTERRUPT_FAILED:.*was skipped, but its served marker could not be written' 100; IA_SKIP_UNWRITABLE_FAILED=$?
+check "interrupt adopt: a skip decision whose served marker cannot be written logs one INTERRUPT_FAILED line (failed=$IA_SKIP_UNWRITABLE_FAILED)" "$IA_SKIP_UNWRITABLE_FAILED"
+[ "$(grep -c 'INTERRUPT_SKIPPED: skip with marker unwritable' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 0 ]; check "interrupt adopt: INTERRUPT_SKIPPED does not log while the marker stays unwritable, since its own record never lands" "$?"
+sleep 1.5
+[ "$(grep -c 'INTERRUPT_FAILED:.*was skipped, but its served marker could not be written' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; check "interrupt adopt: across several more polls INTERRUPT_FAILED for the skip path is still logged exactly once, not once per poll" "$?"
+rmdir "$IA_DIR/child-1/interrupt.served" 2>/dev/null
+sleep 1.5
+[ -f "$IA_DIR/child-1/interrupt.served" ] && [ "$(cat "$IA_DIR/child-1/interrupt.served" 2>/dev/null)" = "$IA_SKIP_REQUEST_AT" ]
+CHECK_RC=$?
+check "interrupt adopt: once the marker is writable again, the skipped request's served marker finally lands (served=$(cat "$IA_DIR/child-1/interrupt.served" 2>/dev/null || echo NONE))" "$CHECK_RC"
+[ "$(grep -c 'INTERRUPT_SKIPPED: skip with marker unwritable' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 0 ]; check "interrupt adopt: the late-written marker still logs nothing new, since the retry is silent by design" "$?"
 
 kill -TERM "$IA_SUP" 2>/dev/null; wait "$IA_SUP" 2>/dev/null
 kill "$IA_PID" 2>/dev/null; wait "$IA_PID" 2>/dev/null

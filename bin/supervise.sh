@@ -2806,10 +2806,13 @@ if (at !== null) console.log(Math.floor(at));
 # (bin/supervise-interrupt-request.mjs), so the two paths cannot disagree on
 # what a request is. Prints "<at>\t<by>\t<reason>" on one line where the
 # parser reads a request, nothing where it reads none. by and reason are cut
-# to nothing here; they are stripped of every C0 control, DEL, C1 control and
-# Unicode line/paragraph separator so the caller's own log calls, which carry
-# this line's fields as plain bash arguments, can never be split into more
-# than one line by either field. Called once per poll, on every running
+# to 64 and 200 characters here, the same bounds write_interrupt_relay
+# applies, so a request the skip path never re-reads through that writer
+# still logs a bounded reason; they are then stripped of every C0 control,
+# DEL, C1 control and Unicode line/paragraph separator so the caller's own
+# log calls, which carry this line's fields as plain bash arguments, can
+# never be split into more than one line by either field. Called once per
+# poll, on every running
 # child, launched or adopted, to decide whether to relay or to skip. The
 # existence check ahead of the spawn is the common case, no file at all,
 # answered without paying for a node start.
@@ -2820,9 +2823,11 @@ import { pathToFileURL } from 'node:url';
 const { readInterruptRequest } = await import(pathToFileURL(process.argv[1]).href);
 const req = readInterruptRequest(process.argv[2], Date.now());
 if (req === null) process.exit(0);
+const by = req.by.slice(0, 64);
+const reason = req.reason.slice(0, 200);
 const sep = String.fromCharCode(0x2028) + String.fromCharCode(0x2029);
 const strip = (s) => s.replace(new RegExp('[\\\\x00-\\\\x1f\\\\x7f-\\\\x9f' + sep + ']', 'g'), '');
-console.log(Math.floor(req.at) + String.fromCharCode(9) + strip(req.by) + String.fromCharCode(9) + strip(req.reason));
+console.log(Math.floor(req.at) + String.fromCharCode(9) + strip(by) + String.fromCharCode(9) + strip(reason));
 " "$PLUGIN_DIR/bin/supervise-interrupt-request.mjs" "$RUNDIR" 2>> "$RUNDIR/supervisor.err"
 }
 
@@ -2925,10 +2930,25 @@ process.stdout.write(strip(by) + String.fromCharCode(9) + strip(reason) + String
 # write_final_ask's FINAL_ASK_ID, writes the child's own interrupt-request
 # file by write-then-rename so the holder never reads a half-written file,
 # records the served time only on a write that lands, and logs the relay
-# with its reason and requester. A relay that fails, whether the write, the
-# rename or the served-marker write, is logged INTERRUPT_FAILED once for this
-# request_at rather than once per poll, since every later poll retries the
-# same request until the served marker finally lands.
+# with its reason and requester.
+#
+# INTERRUPT_HANDLED_AT is this supervisor's own in-memory record of the
+# request_at it already relayed or already skipped for this child, set the
+# moment that decision is taken (the relay's mv landing, or the skip itself),
+# before either one's own served-marker write is attempted. A later poll that
+# finds the served-marker write still missing, because that write itself
+# failed, reads request_at against this record rather than against the turn
+# gate again: a match means the decision already happened, so this poll
+# retries only the served-marker write, checked, and neither relays nor
+# skips nor logs a second time. Without this record, a served-marker write
+# that keeps failing would look unhandled on every poll, relaying the
+# request again each time, which can land on the turn after the one the
+# coordinator meant. The residual: a successor supervisor that adopts this
+# child before the marker lands carries no such memory (it is process-local,
+# never written to disk), and can relay or skip the same request once more.
+# A relay or skip whose served-marker write fails is logged INTERRUPT_FAILED
+# once for this request_at rather than once per poll, since every later poll
+# retries only that write until it finally lands.
 relay_interrupt_request() {
   local request_fields request_at by reason served_at turn_started fields id
   request_fields=$(get_interrupt_request)
@@ -2945,10 +2965,23 @@ relay_interrupt_request() {
   fi
   [ -z "$served_at" ] || [ "$request_at" -gt "$served_at" ] || return 0
 
+  if [ "${INTERRUPT_HANDLED_AT:-}" = "$request_at" ]; then
+    # Already relayed or already skipped by an earlier poll on this
+    # supervisor; only the served marker failed to land. Retry just that
+    # write, checked, with nothing relayed or skipped and nothing re-logged.
+    printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served" 2>>"$RUNDIR/supervisor.err"
+    return 0
+  fi
+
   turn_started=$(get_child_turn_started)
   if [ -z "$turn_started" ] || [ "$turn_started" -gt "$request_at" ]; then
-    printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served"
-    log "INTERRUPT_SKIPPED: $reason (child-$CHILD_INDEX, by=$by, turn started ${turn_started:-none})"
+    INTERRUPT_HANDLED_AT="$request_at"
+    if printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served" 2>>"$RUNDIR/supervisor.err"; then
+      log "INTERRUPT_SKIPPED: $reason (child-$CHILD_INDEX, by=$by, turn started ${turn_started:-none})"
+    elif [ "${INTERRUPT_FAIL_LOGGED_AT:-}" != "$request_at" ]; then
+      log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX was skipped, but its served marker could not be written; the next poll retries only the marker write"
+      INTERRUPT_FAIL_LOGGED_AT="$request_at"
+    fi
     return 0
   fi
 
@@ -2958,10 +2991,11 @@ relay_interrupt_request() {
      && mv -f "$INTERRUPT_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE" 2>>"$RUNDIR/supervisor.err"; then
     by="${fields%%$'\t'*}"
     reason="${fields#*$'\t'}"
+    INTERRUPT_HANDLED_AT="$request_at"
     if printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served" 2>>"$RUNDIR/supervisor.err"; then
       log "INTERRUPT: $reason (child-$CHILD_INDEX, id=$id, by=$by)"
     elif [ "${INTERRUPT_FAIL_LOGGED_AT:-}" != "$request_at" ]; then
-      log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX (id=$id) relayed, but its served marker could not be written; the next poll retries the same relay"
+      log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX (id=$id) relayed, but its served marker could not be written; the next poll retries only the marker write"
       INTERRUPT_FAIL_LOGGED_AT="$request_at"
     fi
   elif [ "${INTERRUPT_FAIL_LOGGED_AT:-}" != "$request_at" ]; then
@@ -4207,6 +4241,12 @@ FINAL_ASK_SEQ=0
 # How many interrupts this supervisor has relayed, which numbers each
 # interrupt's id the same way.
 INTERRUPT_SEQ=0
+# The request_at of the interrupt this child's polls have already relayed or
+# already skipped, this supervisor's own in-memory record so a served-marker
+# write that keeps failing retries only that write rather than relaying or
+# skipping the same request again. Set in relay_interrupt_request as soon as
+# that decision is taken, and cleared per child beside INTERRUPT_FAIL_LOGGED_AT.
+INTERRUPT_HANDLED_AT=""
 
 # Where the harness keeps its transcripts, and the launch directory that names
 # the child's project under it. The poll derives the transcript from these and
@@ -4559,6 +4599,11 @@ while true; do
   # is named once rather than on every poll. A fresh child's relay history is
   # its own.
   INTERRUPT_FAIL_LOGGED_AT=""
+  # The request_at this child's polls have already relayed or already
+  # skipped, so a standing served-marker failure retries only that write
+  # rather than relaying or skipping the same request again. A fresh child's
+  # relay history is its own.
+  INTERRUPT_HANDLED_AT=""
   # The liveness state this child's polls carry from one to the next, since
   # the poll process is fresh every poll: the stream's size as last seen and
   # the moment it last changed, on this supervisor's clock, and the time of
