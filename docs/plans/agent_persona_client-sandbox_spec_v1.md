@@ -125,3 +125,11 @@ Disclosure: no client name, no Discord id, no token, no internal hostname of the
 - `docs/archive/agent_persona_direct-lines-to-architect_v1.md`: the worker-to-architect line the liaison's brief travels on.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-30
+
+- Section 1: first-green commit 243227e. Review round 1 (adversarial, blind, security, all fable) returned one correctness Critical: author text could change the class read, since the harness's attribute escaping is unverified. Fix round 1 is with the section 1 implementer: an opening tag that does not parse whole, or names sender_class twice, reads as participant; a whole tag with no class still reads as operator. Held: the blind lens's Major that the restart recap labels a participant's words as an operator line, awaiting the scope adjudicator. Kept on evidence: the ask close's origin-kind rule, since `.claude/types/claude-code.d.ts:7559-7566` says the engine stamps a keyboard prompt composer.
+- Section 2: implementer building the liaison seat, uncommitted in this worktree.
+- Gate baseline at 764c87c on this worktree: tick suite exit 0 (6,206 checks), recap exit 0 (34 passed), settings key exit 0, priming instruction exit 0, injection duplicate exit 0, holder exit 0, tsc exit 0.
+- Arrived mid-run: the supervisor interrupt plan, copied to branch plan/supervisor-interrupt at 5fc62b9 and queued in the goal tree behind this plan, on the coordinator's routing of the operator's approval.
+- Next: section 1 re-review after the fix round; section 2 verification and review on its return.
