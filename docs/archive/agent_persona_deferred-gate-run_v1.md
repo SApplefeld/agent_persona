@@ -87,7 +87,7 @@ Files in scope: this plan document, `docs/README.md`.
 ## Operator Verification
 
 1. The run in Section 1 holds the box for at least one whole gate. The operator chooses when it starts, since that is the cost this policy was written to move. The outcome that holds the work: after Section 3, a whole gate on the trunk is green or every red is filed with its cause.
-2. Rule on the supervisor-peer plan's measurement 5, which drives the account all six personas share into its usage limit. The run recommends skipping it. An answer to run it reopens this plan as a new round.
+2. Rule on the supervisor-peer plan's measurement 5, which drives the account all six personas share into its usage limit. The run recommends skipping it. An answer to run it reopens this plan as a new round. Decided 2026-09-30: skipped, on the operator's word on the relay thread. The measurement needs the account rotator, Claude-Swap, stopped first, so one account reaches its five-hour limit without exhausting the rest, and the operator could not prepare the machine for that. `docs/backlog.md` carries the measurement as its own entry.
 3. Review and approve pull requests 130 and 129, the tick-suite fixture fix and the parallel runner fix, each armed to merge on approval, and this plan's own pull request. The trunk's tick suite stays red on the `gl6` control until 130 merges.
 
 ## Open Questions

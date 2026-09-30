@@ -1,5 +1,9 @@
 # Backlog
 
+## The supervisor's usage-limit measurement is skipped and needs the account rotator stopped (operator-decided 2026-09-30)
+
+The supervisor-peer plan's measurement 5, a usage limit reached with the pause off, has never run. The operator skipped it for the deferred gate run on 2026-09-30, because producing a limit on the shared account stops all six personas. The operator's stated way to take it cheaply: stop the account rotator, Claude-Swap, so one account alone reaches its five-hour limit, then run the measurement on that account. Stopping the rotator is the operator's act, so the measurement waits on the operator's word that the machine is prepared. The deferred gate run's archived plan, `docs/archive/agent_persona_deferred-gate-run_v1.md`, carries the ledger row.
+
 ## The controller question reads most stalls as a plain nudge (found 2026-09-28)
 
 Controller v2 shipped on the Jev question quality plan at the operator's lowered bar, 0.840 accuracy and 0.367 ask-operator recall on dev, but it still reads 19 of 31 gold stalls as a plain nudge at high confidence. The two clusters are a worker working off the objective the state names and a worker waiting on another session rather than on its own dispatched work, and the option descriptions already name both. Remedy: decompose the stall read, for example a separate question or a state fact on whether the last answer works on the named objective and whom it waits on, then replay against the same gold with `.kit/jev-gold/replay.mjs` and `score.mjs`. The plan's Chapters 4 and 5 carry the figures.
