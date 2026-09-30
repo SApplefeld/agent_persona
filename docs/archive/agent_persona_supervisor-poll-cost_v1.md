@@ -69,3 +69,7 @@ Lanes: `node .kit/supervisor-poll-unit-test.mjs`, 24 passed, 0 failed, exit 0. T
 Not covered by any run: a rate-limited child, a restart on a hung child, and a relaunch, each through the real script. The unit test covers the reader's side of each. The deferred gate's cases `g`, `i`, `o`, `p`, `t` and `u` cover the script's side.
 
 Next: merge, then the operator restarts each supervisor at a moment of their choosing. Commit model in effect: Branch-and-PR.
+
+### End-run results - 2026-09-30
+
+Not a Chapter. This plan deferred its whole gate, and the natural-exit cases `(g)`, `(i)`, `(o)`, `(p)`, `(t)` and `(u)` that cover its script's side to `docs/plans/agent_persona_deferred-gate-run_v1.md`, whose Section 1 ran them on SCOTT-CLAUDE and whose Chapter 1 carries the per-suite table. The natural-exit suite ran whole on `4557c7e` with 326 OK and 5 FAIL, and 335 OK and 0 FAIL once the run's two fixes were in. The five failures were three `root_complete` detail pins, broken by the goal-levels plan's `64e8f2a` and fixed in pull request 127, and two `(pkdu)` checks, a test defect the supervisor-peer plan's `ec2e415` exposed, fixed in pull request 128. The four live suites `.kit/live-all.sh` runs passed on `c777ceb` with every persona stopped, and `.kit/live-stopprocesstree-test.sh` passed with 38 checks and 0 failed. Those six cases passed every check in both whole natural-exit runs. The whole gate's offline lanes have run in every trunk whole gate since, the newest recorded in `docs/archive/agent_persona_jev-question-quality_spec_v1.md` Chapter 8.
