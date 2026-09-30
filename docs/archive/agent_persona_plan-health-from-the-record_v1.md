@@ -699,3 +699,7 @@ Gate: whole gate, the enumerated offline roster at `.kit/scratch/plan-health/ros
 Next: none, the plan is Complete
 Commit Model: Branch-and-PR
 Delta: 2026-09-21 on SCOTT-CLAUDE, worktree at the closing tree before the archive; the reading `node <plugin-root>/scripts/kit-size.js report --repo D:/agent_persona` prints the empty-corpus line recorded at Chapter 6, unchanged
+
+### End-run results - 2026-09-30
+
+Not a Chapter. This plan deferred the natural-exit suite and the `live-` suites, deferred per the 2026-09-18 policy at each of its gates to `docs/plans/agent_persona_deferred-gate-run_v1.md`, whose Section 1 ran them on SCOTT-CLAUDE and whose Chapter 1 carries the per-suite table. The natural-exit suite ran whole on `4557c7e` with 326 OK and 5 FAIL, and 335 OK and 0 FAIL once the run's two fixes were in. The five failures were three `root_complete` detail pins, broken by the goal-levels plan's `64e8f2a` and fixed in pull request 127, and two `(pkdu)` checks, a test defect the supervisor-peer plan's `ec2e415` exposed, fixed in pull request 128. The four live suites `.kit/live-all.sh` runs passed on `c777ceb` with every persona stopped, and `.kit/live-stopprocesstree-test.sh` passed with 38 checks and 0 failed. The `budget` live suite of that time was retired before this run and has no result here.
