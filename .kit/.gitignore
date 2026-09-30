@@ -12,6 +12,8 @@
 !/supervisor-poll-unit-test.mjs
 !/supervisor-turnstate-unit-test.mjs
 !/live-restartrequest-test.sh
+!/live-interrupt-ratelimit-test.sh
+!/live-interrupt-ratelimit-stub.mjs
 !/assert-decisions.js
 !/roadmap-test.md
 !/live-operator-test.sh

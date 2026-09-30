@@ -186,3 +186,27 @@ Commit Model: Branch-and-PR
 Delta: measured 2026-09-30 on this machine, worktree D:/agent_persona-supervisor-interrupt at 581c0fe, with fix round 2 and this Chapter uncommitted.
 
     kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+
+### Chapter 3 - 2026-09-30
+Completed: 3. Live Proof on the Real Stuck State
+Implemented By: implementer-opus. The README residual and test-list edits were made inline in the main thread.
+Metrics: review rounds 1, closed claim-exit; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- Confirmed: the stdin interrupt ends a turn parked in the harness's rate-limit retry wait. A local stub answered every request with a 429 and a four-hour reset. The child logged `api_retry` records with `error_status` 429 and a `retry_delay_ms` near 14,399,000, the stream's form of the retry countdown. It was interrupted inside that wait. The turn's `result` (subtype `error_during_execution`) landed 52 to 66 ms after the holder's relay across three runs, against a 5 s pass line. This settles the Decisions bullet "The rate-limit case is the operator's strong expectation, not yet a fact", and What Is Known bullet 3.
+- Confirmed: the conversation survives. A follow-up through the ask path sent a request whose history carries the goal prompt's codeword after two `[Request interrupted by user]` markers. The follow-up text itself holds no codeword.
+- Confirmed, per the second amendment: the heartbeat's `turnStartedAt` stays set through the retry wait. The supervisor logged `INTERRUPT:` and no `INTERRUPT_SKIPPED:` in every case.
+- Found, a product residual now stated in README: the child writes its heartbeat once per `heartbeatMs`, 30 s by default (`hooks/index.ts:5235`, written only from the periodic tick at `:6408-6414`). A request in about the first interval of a turn therefore finds no turn and is skipped. The implementer's first run hit this 4 s into a wait. A turn stuck long enough to need an interrupt is past the window, so no code change. README's turn-gate paragraph names it beside the end-of-turn residual. Its stale "the next poll tries again" sentence was narrowed to fix round 2's behavior.
+- Added beyond the brief, each serving the section's pass line: the script waits for the heartbeat to name the parked turn before writing the request; it records the process tree and tears down by pid and creation time; and `.kit/.gitignore` gains two allow lines so the two new files are tracked. The priming turn is interrupted too, since with a stub that answers nothing it is the only way the goal turn starts.
+- Machine note, reported to the operator: the throwaway child's session start printed that this machine's kit memory sync is standing down pending a kit-doctor fix run. It was not touched.
+Failed approaches: the implementer's first run wrote the request 4 s into the wait and was skipped, as above. It shaped the heartbeat wait.
+Assumptions:
+- (2026-09-30, section 3) The proof is a kept script outside `.kit/live-all.sh`, so it is repeatable but is not a gate suite. Route (b), declared.
+Review Findings: review: adversarial at sonnet, Workflow at high effort, round 1. APPROVED, no findings at any severity. The reviewer checked the evidence against each claim: the retry wait at request time, the relay-to-result times, the codeword placement and the INTERRUPT line. It also checked that every script assertion has a failing branch, and that teardown is pid and creation-time scoped with a withheld control.
+Stamps: adjudicated 0 new since Chapter 2's pass, stamped 0.
+Gate: targeted lane, the live proof itself, on this machine at `1cba63d` plus this section's uncommitted files. No foreign runner was on the pre-run poll, with 20 of 20 heavy-named processes readable. Implementer runs A and B: exit 0, relay to result 55/57 ms and 52/66 ms. Main-thread run C: `.kit/live-interrupt-ratelimit-test.sh` PASS, exit 0 read from `.kit/scratch/supervisor-interrupt/s3-runC/run.exit`, relay to result 55 and 60 ms, no survivors after teardown against 12 alive and 3 matched before it. No product file changed, so the section's own suites were not re-run. The finishing gate runs them all.
+Test delta: added `.kit/live-interrupt-ratelimit-test.sh` and `.kit/live-interrupt-ratelimit-stub.mjs`, live and outside `.kit/live-all.sh`. None retired or edited. Spawning tests added: one throwaway supervisor, holder and `claude` child per run, plus the stub.
+Next: finishing pass
+Commit Model: Branch-and-PR
+Delta: measured 2026-09-30 on this machine, worktree D:/agent_persona-supervisor-interrupt at 1cba63d, with this section's files and Chapter uncommitted.
+
+    kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
