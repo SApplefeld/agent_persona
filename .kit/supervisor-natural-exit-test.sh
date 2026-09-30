@@ -75,9 +75,11 @@ elif [ "${1:-}" = "--cases" ]; then
   [ -n "$*" ] || { echo "ERROR: --cases needs at least one case name" >&2; exit 2; }
 fi
 # True when the named driven case is in this process's share of the suite.
+# A case this process owns lifts the check suppression a skipped drive left
+# behind, so a case gated directly by `if want` reports its own checks.
 want() {
-  [ -z "$WANT_CASES" ] && return 0
-  case "$WANT_CASES" in *" $1 "*) return 0 ;; *) return 1 ;; esac
+  [ -z "$WANT_CASES" ] && { SKIP_CASE=0; return 0; }
+  case "$WANT_CASES" in *" $1 "*) SKIP_CASE=0; return 0 ;; *) return 1 ;; esac
 }
 
 # The extractor and the closure walker are shared with the other suite that
@@ -1539,8 +1541,9 @@ drive() {
   # A case outside this process's share is not run, and every check that
   # follows it is suppressed until the next driven case begins. The checks a
   # case makes before its own drive (that an injected copy parses, that an
-  # anchor appears once) do not depend on the run and are left to run here, so
-  # they are covered by every process rather than by exactly one.
+  # anchor appears once) do not depend on the run, but they are suppressed like
+  # the rest, so each runs only in the process that owns the nearest driven
+  # case above it. A check before the first driven case runs in every process.
   # The assertions after a skipped case still run, and this suite runs under
   # `set -u`, so they are given a harmless state to read rather than the
   # previous case's. An empty log makes every `grep -q` fail and a zero rc

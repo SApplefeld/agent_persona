@@ -4,7 +4,7 @@
 #
 # Why this exists: the suite's cost is its driven supervisor runs, which are
 # flat at roughly seventy seconds each with no slow one left to fix. Serial,
-# that is about forty minutes, which is long enough that an edit to
+# that is about thirty minutes, which is long enough that an edit to
 # bin/supervise.sh cannot be checked in one sitting.
 #
 # Each process makes its own temp root, so the stub directory a case writes
@@ -17,14 +17,16 @@
 # unit-block process, so the process count is width plus one.
 #
 # The default is 1, meaning two processes, and that is a measurement rather
-# than a guess. On this box, serially the suite takes 39 minutes and passes
-# 218 checks with none failing. Two processes take 31 and pass with none
-# failing. Four take 35, which is barely better than serial, and fail 11
-# checks: case (aa) hits the suite's own 420-second per-run bound and returns
-# rc 124, and the crash-limit and sweep cases miss timing they would otherwise
-# make. So the box runs out of room somewhere between two and four, and wider
-# trades wall clock for exactly the flaky reds this suite already suffers.
-# Raise the width only with a measurement beside it.
+# than a guess. On this box the suite takes about 32 minutes serially and
+# about 30 across two processes, with none failing. Two processes print one
+# check more than serial: the setup check before the first case runs in both.
+# The only four-process figures are over a schedule of 22 cases, and no width
+# above 1 is measured over the whole suite: four processes took 35 minutes and
+# failed 11 checks, case (aa) hitting the suite's own 420-second per-run bound
+# with rc 124 and the crash-limit and sweep cases missing timing they would
+# otherwise make. So the box runs out of room somewhere between two and four,
+# and wider trades wall clock for exactly the flaky reds this suite already
+# suffers. Raise the width only with a measurement beside it.
 #
 # For iterative work the bigger win is not this script at all. A single case
 # runs in well under a minute:
@@ -34,21 +36,89 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUITE="$HERE/supervisor-natural-exit-test.sh"
 WIDTH="${1:-1}"
+case "$WIDTH" in
+  ''|0*|*[!0-9]*) echo "ERROR: width must be a whole number above zero with no leading zero, got '$WIDTH'" >&2; exit 2 ;;
+esac
 
-# The driven cases, slowest first, from the suite's own printed profile. Groups
-# are filled round-robin over this order, which is the usual greedy way to
-# balance jobs of known length. When the profile's order changes materially,
-# update this line from it rather than guessing.
-ORDER="o p s x u y v r j ab ac h g k aa a t i c b b2 f e"
+# Every driven case the suite defines, read from the suite itself so a case
+# added later is scheduled without an edit here. A case is a name the suite
+# passes to `drive`, or a name it gates with `if want`. Each case is one slot
+# of the schedule. A top-level `if want` opens a gate that its top-level `fi`
+# closes, and a `drive` or `if want` indented inside an open gate joins that
+# gate's slot, since it runs only in a process that owns the gate's case.
+# Every other line that uses `drive` or `want` as a word, a quoted name or a
+# chained call among them, stops the run, as does a suite that yields no case,
+# since either would otherwise print a PASS over part of the suite. The one
+# exception is the call `drive` itself makes on its own argument.
+SLOTS=$(set -o pipefail
+  tr -d '\r' < "$SUITE" | awk '
+    /^[[:space:]]*#/ { next }
+    /^fi([[:space:];]|$)/ { gate = 0; next }
+    /^[[:space:]]*if ! want "\$name"; then$/ { next }
+    !/(^[[:space:]]*|[;&|(][[:space:]]*|(if|then|elif|while|until|do|!)[[:space:]]+)(drive|want)([[:space:]]|$)/ { next }
+    /^drive[[:space:]]+[A-Za-z0-9_]+([[:space:]]|$)/ {
+      n = $0; sub(/^drive[[:space:]]+/, "", n); sub(/[[:space:]].*$/, "", n)
+      if (!(n in seen)) { seen[n] = 1; slot[++k] = n }
+      gate = 0
+      next
+    }
+    /^[[:space:]]+drive[[:space:]]+[A-Za-z0-9_]+([[:space:]]|$)/ {
+      n = $0; sub(/^[[:space:]]+drive[[:space:]]+/, "", n); sub(/[[:space:]].*$/, "", n)
+      if (!(n in seen)) { seen[n] = 1; if (gate) slot[gate] = slot[gate] "," n; else slot[++k] = n }
+      next
+    }
+    /^if want[[:space:]]+[A-Za-z0-9_]+;/ {
+      n = $0; sub(/^if want[[:space:]]+/, "", n); sub(/;.*$/, "", n)
+      if (!(n in seen)) { seen[n] = 1; slot[++k] = n }
+      for (i = 1; i <= k; i++) if (("," slot[i] ",") ~ ("," n ",")) gate = i
+      next
+    }
+    gate && /^[[:space:]]+if want[[:space:]]+[A-Za-z0-9_]+;/ {
+      n = $0; sub(/^[[:space:]]+if want[[:space:]]+/, "", n); sub(/;.*$/, "", n)
+      if (!(n in seen)) { seen[n] = 1; slot[gate] = slot[gate] "," n }
+      next
+    }
+    { print "ERROR: unreadable case line: " $0 > "/dev/stderr"; bad = 1 }
+    END { if (bad) exit 3; for (i = 1; i <= k; i++) print slot[i] }')
+if [ $? -ne 0 ] || [ -z "$SLOTS" ]; then
+  echo "ERROR: the driven cases could not be read from $SUITE" >&2
+  exit 2
+fi
+NSLOTS=$(echo $SLOTS | wc -w)
+if [ "$WIDTH" -gt "$NSLOTS" ]; then
+  echo "ERROR: width $WIDTH is more than the $NSLOTS case slots the suite has" >&2
+  exit 2
+fi
+
+# A balancing hint: known cases, slowest first, from the suite's own printed
+# profile. Groups are filled round-robin over the schedule, which is the usual
+# greedy way to balance jobs of known length. A name here the suite no longer
+# defines is dropped, and a suite case missing here runs after the listed ones.
+# When the profile's order changes materially, update this line from it rather
+# than guessing.
+ORDER="o p s x u y v r j ab ac h g k aa a t i c b b2 e"
+
+SCHEDULE=""
+for c in $ORDER; do
+  for s in $SLOTS; do
+    case ",$s," in *",$c,"*)
+      case " $SCHEDULE " in *" $s "*) ;; *) SCHEDULE="$SCHEDULE $s" ;; esac ;;
+    esac
+  done
+done
+for s in $SLOTS; do
+  case " $SCHEDULE " in *" $s "*) ;; *) SCHEDULE="$SCHEDULE $s" ;; esac
+done
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-# Round-robin the cases into WIDTH groups.
+# Round-robin the slots into WIDTH groups, a slot's cases staying together.
+GRP=()
 i=0
-for c in $ORDER; do
+for s in $SCHEDULE; do
   g=$(( i % WIDTH ))
-  eval "GROUP_$g=\"\${GROUP_$g:-} $c\""
+  GRP[g]="${GRP[g]:-} ${s//,/ }"
   i=$(( i + 1 ))
 done
 
@@ -62,7 +132,7 @@ started="units"
 
 g=0
 while [ "$g" -lt "$WIDTH" ]; do
-  eval "cases=\$GROUP_$g"
+  cases=${GRP[g]}
   # shellcheck disable=SC2086
   bash "$SUITE" --cases $cases > "$OUT/g$g.out" 2>&1 &
   echo $! > "$OUT/g$g.pid"
