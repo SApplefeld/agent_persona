@@ -926,3 +926,10 @@ Assumptions: assumed 2026-09-20 (route (a)): the plan is archived to `docs/archi
 
 Next: none. The plan is Complete.
 Commit Model: Branch-and-PR
+
+### End-run results - 2026-09-30
+
+Not a Chapter. `docs/plans/agent_persona_deferred-gate-run_v1.md` Section 1 ran what this plan deferred to it, on SCOTT-CLAUDE.
+
+- **Section 2's live child launch: met.** A real `claude -p` child ran under `bin/supervise.sh` with `--no-channel` under the scratch persona `peerprobe`, on trunk `c777ceb` with the installed plugin identical to it but for line endings. The command was `bash .kit/scratch/deferred-gate/measure/d/bin/supervise.sh <workdir> peerprobe bypassPermissions --rundir <rundir> --no-channel --prompt "$(cat turn1.prompt)"`, from a scratch `bin/` copy whose holder differs from trunk only in which ask-request lines it relays. The priming turn it answered is the one the holder writes before any of those. Its first `result` in `child-1/stdout.jsonl` reads `"Ready."`, one line, so the trimmed skill-load and steer strings assemble into one priming turn the child answers.
+- **The deferred suites.** The natural-exit and live suites ran and are green once the run's two fixes were in. The deferred gate run's Chapter 1 carries the table.

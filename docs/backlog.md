@@ -1031,3 +1031,19 @@ Remedy: after its checks, the case stops its own first supervisor and holder by 
 `kill_holder` in `bin/supervise.sh` discards the holder kill's result with `|| true`. `stop_child` then logs `STOP[<label>]: input closed (eof_closed)` whatever happened. So when the holder kill fails, the log claims a closed input, and the next line a reader sees is the EOF grace expiring 60 seconds later. The deferred gate run's saved log for case `(pkdu)` on trunk `4557c7e` shows exactly that pair. The adversarial review of `fix/pkdu-holder-injection` found it.
 
 Remedy: `kill_holder` returns the kill's result, and `stop_child` logs "input close unverified" when it fails. The stop's own verdict is unchanged, since the EOF, TERM and KILL rungs and the snapshot check already decide it.
+
+## The steward holds the Coordinator seat without a registry entry (found 2026-09-30)
+
+The steward-architect plan's Section 4 acceptance asks for a registry entry under `~/.claude/coordinator/<machine>/registry/` whose `Name:` is the Coordinator seat and whose `Session:` is the steward child. None exists. The registry directory holds no entry at all, and the machine board records "no `/role` takeovers". The steward child does hold the seat in practice: the board names it as the Coordinator and logs its reconciliation passes.
+
+The cause is that the registry has one writer. The kit role skill writes `registry/<session-id>.md` only in its `/role` takeover ritual (`skills/role/SKILL.md:15` and `:62` in the kit). The plugin sends the steward only the `[RECONCILE]` prompt (`hooks/index.ts:4348`), which runs the reconciliation pass and never a takeover. The remedy is one of two, and the operator chooses: have the steward take the seat with `/role` once per launch, or retire that acceptance leg as a check the design never meant to meet.
+
+## The natural-exit suite leaves a test shell and a heartbeat loop running (found 2026-09-30)
+
+After each whole run of `.kit/supervisor-natural-exit-test.sh`, one `bash` process running the suite script is left alive with no parent. It holds one `node -e` loop that rewrites a `.agentic-heartbeat.json` under the run's `mktemp` directory every two seconds for the persona `natexit`. The two whole runs on 2026-09-29 left one pair each, started 22:27Z and 23:36Z, and all four processes were killed by hand on 2026-09-30. This pair is separate from the `(nf)` entry above, which names a `bin/supervise.sh` and its holder.
+
+The loop is case `(ne)`'s, the only heartbeat loop in the suite writing under `$NE/wd` (`.kit/supervisor-natural-exit-test.sh:2379`). The case starts it inside a background subshell that records the `node` pid in `$NE/hb.pid` and kills it only after its own `sleep 130`, and the case's cleanup signals that subshell, `kill "$NE_HB"`, rather than the `node` pid. Case `(nh)` at `:2497` has the same shape with `$NH_HB`. That the loop is `(ne)`'s is confirmed from its path. Why both the subshell and its `node` outlived the cleanup is not confirmed, since a subshell that survived the TERM would have killed `node` itself after 130 seconds. The remedy holds either way: each case's cleanup kills the pid in its `hb.pid` file, then the subshell.
+
+## No live run proves the harness accepts a submit made right after a completion (found 2026-09-30)
+
+The inbox-drain plan assumed, at its Assumptions entry of 2026-09-24 (`docs/archive/agent_persona_inbox-drain_v1.md:275`), that this is proven on the deferred live gate and in its Operator Verification, because the tick suite's fake submit settles at once. The deferred gate run ran the live suites green on `c777ceb`, but none of them was read for this behavior, and that plan sat outside the gate policy's stated scope. So the claim is still unproven on a real harness. Proving it takes one live run that ends a turn and submits a queued inbox record in the same controller tick, reading from the child's output that the second turn ran.
