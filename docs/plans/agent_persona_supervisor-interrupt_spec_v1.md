@@ -28,6 +28,10 @@ The persona's stdin is the pipe `bin/supervise-holder.sh` writes. Today the hold
 - **Inferred, not confirmed:** the interrupt also cancels the harness's rate-limit retry wait, the exact state ARCHITECT was stuck in. The retry loop logged `retryInMs` countdowns under `source: request_retry`. Section 3 owns proving this.
 - **Inferred:** the `still_queued` field means queued user messages survive the interrupt and run next. That is what makes the urgent-message case work with no new delivery mechanism.
 
+## Standing Brief Amendments
+
+- Tests that check the coordinator's role instruction or a tool's result text pin each on stable forms: the tool's name, and the behavior each sentence states. They do not pin an exact prose phrase that a correct rewording would change.
+
 ## Section 1: Holder Relays an Interrupt
 
 **Model:** sonnet
@@ -127,3 +131,10 @@ Commit Model: Branch-and-PR
 Delta: measured 2026-09-30 on this machine, worktree D:/agent_persona-supervisor-interrupt at a79b3bb, with the close-pass edit and the Chapter uncommitted.
 
     kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+
+### Interim board 2 - 2026-09-30
+- Section 2 stage: first-green commit 65ee6e3 pushed. Review round 1 (adversarial, blind, security, performance at opus, Workflow at high) returned, and fix round 1 is dispatched to the section's sonnet implementer, resumed with its context. It covers the driven poll-loop case, the single-read relay, the holder-bound cut, and the Minors on the list at `.kit/scratch/supervisor-interrupt/minors-section-2.md`.
+- Held, design stop: the blind lens's Major that a late relay can end the urgent record's own turn. The proposed mechanism relays only while the child heartbeat's turnStartedAt shows a turn begun at or before the request's at. The scope adjudicator ruled ASK, recommending the check gated on Section 3's live proof that a rate-limit wait still relays. The ask went to the operator on the relay with option A recommended. The architect was asked whether turnStartedAt is set during a rate-limit wait, and the coordinator was notified. Section 2 does not close until the operator answers, and the fix round is barred from the turn-state check meanwhile.
+- Adopted: the adversarial lens's wording-pin Major, ruled accept-and-declare by the scope adjudicator, is now the one bullet in Standing Brief Amendments. This is approval drift, recorded here and to be recorded again in Chapter 2.
+- Gate baseline for Section 2's lanes, at 65ee6e3 on a clean worktree with no foreign runner at the poll: all nine suites exit 0, the model suite at 404 s and the holder suite at 48 s.
+- Next: adjudicate fix round 1's report, then round 2 at sonnet. Build the turn check or not per the operator's answer, then close Section 2 and start Section 3.
