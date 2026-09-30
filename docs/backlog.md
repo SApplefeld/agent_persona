@@ -1021,11 +1021,13 @@ Remedy: its own effort, with its own plan. Pick the hooks whose behavior an engi
 
 ## The natural-exit suite's case (nf) leaves its first supervisor and holder running (found 2026-09-29)
 
-Each whole run of `.kit/supervisor-natural-exit-test.sh` leaves two processes behind: the `bin/supervise.sh` that case `(nf)` starts through `sup_bg`, and its `bin/supervise-holder.sh`. Both keep running after the suite deletes their temp root. They also pin the worktree they ran from, so `git worktree remove` fails with "Permission denied". The deferred gate run's two whole runs, at 22:03Z and 23:12Z on 2026-09-29, each left one such pair, and both were killed by hand.
+Each whole run of `.kit/supervisor-natural-exit-test.sh` leaves two processes behind: the `bin/supervise.sh` that case `(nf)` starts through `sup_bg`, and its `bin/supervise-holder.sh`. Both keep running after the suite deletes their temp root. They also pin the worktree they ran from, so `git worktree remove` fails with "Permission denied". The deferred gate run's two whole runs, at 22:03Z and 23:12Z on 2026-09-29, each left one such pair, and both were killed by hand. The supervisor interrupt branch's baseline run on 2026-09-30 left the same shape under its temp root's `nf/` directory: the supervisor, its holder, a helper bash and a node process, alive 25 minutes after the suite exited 0. They were stopped by hand. Case `(nf)` is the suspected source from that path, and no trace to the exact line was made.
 
 The cause is inferred, not confirmed. `sup_bg` records `$!` from `env -i ... bash supervise.sh &`, which is the `env` process. Under MSYS that wrapper likely does not exec into bash, so the case's `kill -TERM "$NF_SUP1"` does not reach the supervisor. The holder outlives a supervisor stop by design. Confirming takes one `(nf)` run with the process list read before and after its TERM.
 
-Remedy: after its checks, the case stops its own first supervisor and holder by the pids its run directory records, ticks-matched as `kill_leaked_survivors` does. Then it asserts both are gone. The other `sup_bg` callers should be checked for the same shape.
+Remedy: the suite records the pid of every supervisor it launches, and kills that set from an EXIT trap, whatever path the run exits by. So a failing case cannot skip the cleanup. The case's own holder is stopped by the pid its run directory records, ticks-matched as `kill_leaked_survivors` does.
+
+Pin: the suite's last step lists the processes whose command line carries the run's own temp path, and fails the run if any remain. That listing is the withheld control that proves the trap ran.
 
 ## A failed holder kill still logs "input closed" (found 2026-09-29)
 

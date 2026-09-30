@@ -135,9 +135,10 @@ process.exit(ok ? 0 : 1);
 # a finite number, by is a string of at most 64 characters and reason a
 # string of at most 200. On a valid request, prints "<id>\t<reason>" and
 # exits 0; the reason has every C0 control, DEL, C1 control, and Unicode
-# line/paragraph separator (U+2028, U+2029) stripped, none of which JSON
-# forbids unescaped inside a string, and any of which would otherwise let a
-# single `log` call read as more than one line. On anything else, an array
+# line/paragraph separator (U+2028, U+2029) stripped. A C0 control reaches the
+# parsed reason only through an escape such as \n, and the other three may sit
+# in the file unescaped; any of them would otherwise let a single `log` call
+# read as more than one line. On anything else, an array
 # among it, prints nothing and exits non-zero. The holder never relays this
 # content itself; it only reads id and reason from this call's own output, so
 # a spawn that exits 0 with truncated or absent stdout is caught below by the
