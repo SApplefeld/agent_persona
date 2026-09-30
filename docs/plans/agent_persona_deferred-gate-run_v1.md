@@ -324,3 +324,24 @@ Not a Chapter. The fleet stopped and restarted as planned, but the live suites d
 **Next action.** On the operator's yes, register the waiter again. On `done`, read `live.exit` and write the live row.
 
 **Second stop approved.** The operator answered "Yes, please proceed." The waiter was registered again as `DeferredGate-LiveWaiter` with the file-based check. The resuming session follows board 10's next action.
+
+### Interim board 12 - 2026-09-30
+
+Not a Chapter. The live half of Section 1 has run and is green. What remains of Section 1 is the supervisor-peer measurements, which need no fleet stop.
+
+**The second stop worked.** The waiter wrote every shutdown request at 02:51:56Z. STEWARD's task was the last to stop, and its claim aged past the 90-second bound at 02:58:37Z, when the file-based refuse check passed on 2 stores read. The waiter restarted all six personas from 03:11:25Z, logged each task Running at 03:12:29Z, and wrote `done`. A read at 03:12Z shows all six `AgentPersona-*` tasks Running. `stop.result` reads `stopped`.
+
+**Live ledger.** Measured on trunk `c777ceb`, the main checkout clean but for the untracked `.claude/worktrees/`, with every persona stopped for the `live-all.sh` row. There is no baseline to diff against, per board 6.
+
+| Suite | Command | Wall clock | Exit | Pass / fail | Failing cases |
+|---|---|---|---|---|---|
+| Live suites | `bash .kit/live-all.sh`, profile `short`, engine 2.1.283 | 02:58:37Z to 03:11:24Z, 13 min | 0, from `live/live.exit` | 4 suites / 0 failures: goaltree, commons, operator, restartrequest | none |
+| Stop process tree | `bash .kit/live-stopprocesstree-test.sh`, beside the restarted fleet | 03:13:28Z to 03:19:26Z, 6 min | 0, from `live/spt.exit` | 38 checks / 0 failed, from the suite's own total line | none |
+
+`live-all.sh` runs the four suites its `ALL_SUITES` line names. The fifth live suite states at its line 40 that it holds no persona claim and that `live-all.sh` does not run it, so it ran separately beside the fleet.
+
+**Two leaked processes from the natural-exit runs were cleaned up.** Two `supervisor-natural-exit-test.sh` shells, started at 22:27Z and 23:36Z on 2026-09-29 inside this plan's two whole runs, were still alive with no parent. Each held one `node` loop stamping a heartbeat file under a `D:/Temp/tmp.*/ne/wd/` scratch directory for persona `natexit`. All four processes were killed. That leak is the `(nf)` case already filed to `docs/backlog.md` at board 9.
+
+**Remaining Section 1 work.** The supervisor-peer measurements: its Section 1 measurements 2, 4 and 5, and its Section 3 closing measurement. The fleet's six mailboxes hold no probe records, so no production data stands in for them.
+
+**Next action.** Take the measurements, record them in the supervisor-peer plan, and write the Section 1 Chapter.
