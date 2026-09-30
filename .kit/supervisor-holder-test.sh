@@ -64,11 +64,15 @@ process.exit(o.type === "user" && o.message.content[0].text.startsWith("[SUPERVI
 ASK_FN=$(sed -n '/^final_ask_json() {$/,/^}$/p' "$SCRIPT" | tr -d '\r')
 ASK_TEXT_LINE=$(grep -m1 '^SUPERVISOR_ASK_TEXT="' "$SCRIPT" | tr -d '\r')
 VALID_FN=$(sed -n '/^holder_ask_valid() {/,/^}$/p' "$HOLDER" | tr -d '\r')
-[ -n "$ASK_FN" ] && [ -n "$ASK_TEXT_LINE" ] && [ -n "$VALID_FN" ]
-check "final_ask_json, SUPERVISOR_ASK_TEXT and holder_ask_valid are found in their scripts" "$?"
+INTERRUPT_VALID_FN=$(sed -n '/^holder_interrupt_valid() {/,/^}$/p' "$HOLDER" | tr -d '\r')
+INTERRUPT_FIELDS_FN=$(sed -n '/^holder_interrupt_fields() {/,/^}$/p' "$HOLDER" | tr -d '\r')
+[ -n "$ASK_FN" ] && [ -n "$ASK_TEXT_LINE" ] && [ -n "$VALID_FN" ] && [ -n "$INTERRUPT_VALID_FN" ] && [ -n "$INTERRUPT_FIELDS_FN" ]
+check "final_ask_json, SUPERVISOR_ASK_TEXT, holder_ask_valid, holder_interrupt_valid and holder_interrupt_fields are found in their scripts" "$?"
 eval "$ASK_TEXT_LINE"
 eval "$ASK_FN"
 eval "$VALID_FN"
+eval "$INTERRUPT_VALID_FN"
+eval "$INTERRUPT_FIELDS_FN"
 ASK_LINE=$(final_ask_json 9)
 printf '%s' "$ASK_LINE" | node -e 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); process.exit(o.message.content[0].text.startsWith("[SUPERVISOR-ASK id=9] ") ? 0 : 1)' 2>/dev/null
 check "the real final_ask_json output is one JSON line whose text opens [SUPERVISOR-ASK id=9]" "$?"
@@ -106,11 +110,13 @@ process.stdout.write(out);
 # --- Case 1: priming, the goal held until the result line, the ask relay, and
 #     exit on the child's death ---
 D="$TMP/c1"; mkdir -p "$D"
-sleep 30 & C1_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C1_CHILD"
+# 120 s: Case 1 now also drives the interrupt-relay and refusal checks below,
+# so the watched pid must outlive the whole case, not just the ask checks.
+sleep 120 & C1_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C1_CHILD"
 echo "$C1_CHILD" > "$D/child.pid"
 printf 'do the operator task' > "$D/goal"
 PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
-  bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "$D/goal" \
+  bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "$D/goal" "$D/interrupt.request" \
   > "$D/stdout" 2> "$D/err" &
 C1_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C1_HOLDER"
 
@@ -196,6 +202,77 @@ done
 [ "$(grep -c 'removed it unrelayed' "$D/err")" -eq "$REFUSALS" ]; CHECK_RC=$?; check "each refused ask-request file is named in the holder's log (refusals=$(grep -c 'removed it unrelayed' "$D/err") of $REFUSALS)" "$CHECK_RC"
 [ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -eq 1 ]; check "the valid ask was relayed exactly once" "$?"
 
+# A second request file, interrupt.request, beside ask.request: on finding
+# one, the holder builds the fixed control line itself and never relays the
+# file's own content. interrupt_content builds a fixture directly, since
+# nothing in this section writes the request file the way final_ask_json
+# writes the ask (that is Section 2's fleet_interrupt tool).
+interrupt_content() {  # <id> <at> <by> <reason>
+  node -e 'console.log(JSON.stringify({id:process.argv[1],at:Number(process.argv[2]),by:process.argv[3],reason:process.argv[4]}))' "$1" "$2" "$3" "$4"
+}
+VALID_INTERRUPT=$(interrupt_content "itr-1" "1700000000000" "coord" "the child is stuck")
+EXPECT_CONTROL_LINE='{"type":"control_request","request_id":"itr-1","request":{"subtype":"interrupt"}}'
+
+holder_interrupt_valid "$VALID_INTERRUPT"; check "holder_interrupt_valid accepts a well-formed interrupt request" "$?"
+
+printf '%s' "$VALID_INTERRUPT" > "$D/interrupt.request"
+wait_for 60 grep -q 'control_request' "$D/stdout"
+[ "$(grep -Fc "$EXPECT_CONTROL_LINE" "$D/stdout")" -eq 1 ]; check "the holder relays a valid interrupt request as exactly the fixed control line, byte for byte" "$?"
+wait_for 30 test ! -e "$D/interrupt.request"
+check "the holder removes the interrupt-request file after relaying it" "$([ ! -e "$D/interrupt.request" ] && echo 0 || echo 1)"
+[ "$(grep -c '^supervise-holder child-1: relayed an interrupt id=itr-1 reason=the child is stuck$' "$D/err")" -eq 1 ]; check "the holder logs the relayed interrupt with its id and reason" "$?"
+
+# A reason carrying control characters is stripped before it is logged, so the
+# log line stays whole: a raw newline in the reason would otherwise split the
+# `log` line the holder writes.
+ERR_LINES_BEFORE=$(grep -c . "$D/err")
+CTRL_INTERRUPT=$(interrupt_content "itr-2" "1700000000001" "coord" "$(printf 'line one\nline two')")
+printf '%s' "$CTRL_INTERRUPT" > "$D/interrupt.request"
+wait_for 60 grep -q 'request_id":"itr-2"' "$D/stdout"
+wait_for 30 test ! -e "$D/interrupt.request"
+wait_for 30 sh -c "[ \"\$(grep -c . '$D/err')\" -gt $ERR_LINES_BEFORE ]"
+[ "$(($(grep -c . "$D/err") - ERR_LINES_BEFORE))" -eq 1 ]; check "a reason with control characters is logged on exactly one line" "$?"
+
+# Each malformed interrupt-request file yields nothing on the pipe and is
+# removed: not JSON, an oversized id (65 characters), a file with an extra
+# key, a file missing a key, an id with a character outside the rule, a
+# non-numeric at, a reason over 200 characters, a JSON array, and a file over
+# 4096 bytes. Every case but the oversized file is refused by the validator
+# directly too; the oversized file is refused unread, before the validator
+# ever sees it, exactly as a malformed ask-request file is refused today.
+mutate_interrupt() {  # <mutation>
+  case "$1" in
+    not_json) printf 'not json at all' ;;
+    oversized_id) interrupt_content "$(printf 'a%.0s' $(seq 1 65))" "1700000000000" "coord" "reason" ;;
+    extra_key) node -e 'const o=JSON.parse(process.argv[1]); o.extra=1; process.stdout.write(JSON.stringify(o))' "$VALID_INTERRUPT" ;;
+    missing_key) node -e 'const o=JSON.parse(process.argv[1]); delete o.by; process.stdout.write(JSON.stringify(o))' "$VALID_INTERRUPT" ;;
+    bad_id_char) interrupt_content 'itr_1' "1700000000000" "coord" "reason" ;;
+    non_numeric_at) node -e 'const o=JSON.parse(process.argv[1]); o.at="soon"; process.stdout.write(JSON.stringify(o))' "$VALID_INTERRUPT" ;;
+    long_reason) interrupt_content "itr-1" "1700000000000" "coord" "$(printf 'a%.0s' $(seq 1 201))" ;;
+    array) printf '[1,2,3]' ;;
+  esac
+}
+INT_REFUSALS=0
+for mutation in not_json oversized_id extra_key missing_key bad_id_char non_numeric_at long_reason array; do
+  INT_REFUSALS=$((INT_REFUSALS + 1))
+  content=$(mutate_interrupt "$mutation")
+  ! holder_interrupt_valid "$content"; check "holder_interrupt_valid refuses the deviation $mutation" "$?"
+  printf '%s' "$content" > "$D/interrupt.request"
+  wait_for 30 test ! -e "$D/interrupt.request"
+done
+INT_REFUSALS=$((INT_REFUSALS + 1))
+node -e 'process.stdout.write(JSON.stringify({id:"itr-1",at:1700000000000,by:"coord",reason:"x".repeat(4090)}))' > "$D/interrupt.request"
+wait_for 30 test ! -e "$D/interrupt.request"
+[ ! -e "$D/interrupt.request" ]; check "the holder removes every malformed interrupt-request file" "$?"
+! grep -q 'control_request' "$D/stdout" || [ "$(grep -Fc "$EXPECT_CONTROL_LINE" "$D/stdout")" -eq 1 ]
+check "no malformed interrupt-request file reaches the pipe" "$?"
+[ "$(grep -c 'did not hold one valid interrupt request; removed it unrelayed' "$D/err")" -eq "$INT_REFUSALS" ]; CHECK_RC=$?; check "each refused interrupt-request file is named in the holder's log (refusals=$(grep -c 'did not hold one valid interrupt request; removed it unrelayed' "$D/err") of $INT_REFUSALS)" "$CHECK_RC"
+
+# The existing ask relay's own behavior is unaffected by the interrupt file
+# beside it: the id-9 ask relayed above is still the only ask-shaped line on
+# the pipe.
+[ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -eq 1 ]; check "the ask relay's own line count is unchanged by the interrupt-request handling" "$?"
+
 # The child's pid disappears; the holder exits within a few seconds.
 kill "$C1_CHILD" 2>/dev/null
 wait_for 60 sh -c "! kill -0 $C1_HOLDER 2>/dev/null"
@@ -270,6 +347,31 @@ for C4_CASE in abc:2 0:2 1:1 0.5:0.5; do
   [ "$C4_GOT" = "$C4_WANT" ]; CHECK_RC=$?
   check "SUPERVISOR_HOLDER_POLL_S=$C4_IN: the holder's poll sleeps $C4_WANT seconds (got ${C4_GOT:-none})" "$CHECK_RC"
 done
+
+# --- Case 5: a five-argument launch, the old shape, still starts, still
+#     relays an ask, and ignores an interrupt-request file beside it ---
+# `${6:-}` reads empty with no sixth argument, so INTERRUPT_REQUEST_FILE stays
+# unset and the interrupt check in the hold loop never runs.
+D="$TMP/c5"; mkdir -p "$D"
+sleep 30 & C5_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C5_CHILD"
+echo "$C5_CHILD" > "$D/child.pid"
+PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
+  bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" \
+  > "$D/stdout" 2> "$D/err" &
+C5_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C5_HOLDER"
+wait_for 50 test -s "$D/holder.pid"
+check "a five-argument launch still starts the holder" "$([ -s "$D/holder.pid" ] && echo 0 || echo 1)"
+printf '%s\n' "$ASK_LINE" > "$D/ask.request"
+wait_for 60 grep -q 'SUPERVISOR-ASK id=9' "$D/stdout"
+check "a five-argument launch still relays an ask from the ask-request file" "$([ "$(grep -c 'SUPERVISOR-ASK id=9' "$D/stdout")" -ge 1 ] && echo 0 || echo 1)"
+printf '%s' "$VALID_INTERRUPT" > "$D/interrupt.request"
+# No sixth argument means no interrupt-request path to watch: give the poll
+# loop several cycles (poll is 1 s), then confirm the file was never touched
+# and no control line reached the pipe.
+i=0
+while [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+check "a five-argument launch ignores an interrupt-request file beside it (left in place, nothing relayed)" "$([ -e "$D/interrupt.request" ] && ! grep -q 'control_request' "$D/stdout" && echo 0 || echo 1)"
+kill "$C5_CHILD" 2>/dev/null
 
 echo
 if [ "$failed" = "0" ]; then

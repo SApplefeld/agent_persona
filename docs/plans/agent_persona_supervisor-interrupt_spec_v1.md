@@ -1,6 +1,6 @@
 # Supervisor Interrupt for a Stuck Persona Turn
 
-**Status:** Approved by the operator 2026-09-30, routed to the plugin worker through the Steward
+**Status:** In Progress
 **Repository:** agent_persona (`D:\agent_persona`)
 **Commit Model:** Branch-and-PR
 **Author:** ASSISTANT, 2026-09-30
@@ -79,4 +79,27 @@ No new mechanism. To break in with something critical, the coordinator calls `fl
 
 ## Chapters
 
-_None yet._
+### Interim board 1 - 2026-09-30
+
+Run started by DEV-PERSONA on branch `plan/supervisor-interrupt`, worktree `D:/agent_persona-supervisor-interrupt`, base `5fc62b9`. Status header changed from "Approved by the operator 2026-09-30, routed to the plugin worker through the Steward" to "In Progress" on starting.
+
+Sections run in order 1, 2, 3, since sections 1 and 2 both touch `bin/supervise.sh` and `bin/supervise-holder.sh`.
+
+Intake gap check, each answer declared (route b) or cited (route a), dated 2026-09-30:
+
+- Section 1: the holder takes the interrupt file's path as a new sixth positional argument, read as `${6:-}`, so a five-argument launch watches nothing. `bin/supervise.sh`'s launch line passes `$CHILD_DIR/interrupt.request` and the launch-time `rm -f` clears it and its `.tmp`.
+- Section 1: a valid file parses whole as one JSON object whose keys are exactly `id`, `at`, `by` and `reason`. `id` matches `^[A-Za-z0-9-]{1,64}$`, `at` is a finite number, `by` is a string of at most 64 characters, and `reason` is a string of at most 200. A file over 4096 bytes is refused unread. The file is removed in every case.
+- Section 1: the holder checks the interrupt file before the ask file on each poll. It logs each relay to stderr as it logs everything, with the id and the reason stripped of control characters.
+- Section 2: `fleet_interrupt` clones `fleet_restart`'s registration (owner tier) and the four gates the spec names. It carries no fifteen-minute interval refusal, since the spec lists four gates and one request is served once. The reason is trimmed and cut at 200, and the file is one write of `{at, by, reason}` as `fleet_restart` writes.
+- Section 2: the supervisor reads the run-directory file through a new `bin/supervise-interrupt-request.mjs`, cloned from `bin/supervise-restart-request.mjs` with the same rejection rules. It mints the id as `$SUPERVISOR_START_MS-int-<seq>`, the shape `write_final_ask` uses (`bin/supervise.sh:3066`). It writes `{id, at, by, reason}` to `interrupt.request.tmp` and moves it into place.
+- Section 2: the served time is kept as `<child dir>/interrupt.served`, holding the served `at`, so a supervisor that adopts a running child does not serve its predecessor's request again. It relays only where `at` is newer than both the child's start and the served value. It serves launched and adopted children alike.
+- Section 2: the coordinator paragraph lands as sentences in `COORDINATOR_ROLE_INSTRUCTION` beside the `fleet_restart` sentence (`bin/supervise-holder.sh:277`), since this repository carries no coordinator skill and that instruction is where the coordinator persona learns its fleet levers. The injection ledger and the role-instruction pins move with it.
+- Section 2: README.md, `docs/architecture.md` and `docs/security-model.md` gain the tool and the request file where they describe `fleet_restart`, written in the main thread.
+- Section 3: the request is written into a throwaway run directory in the exact shape `fleet_interrupt` writes, rather than through the tool. The tool's gate needs a session holding the coordinator persona, which on this machine is the live Steward, and section 2's unit test pins the tool's write.
+- Section 3: the throwaway supervisor runs from this worktree with `--dev`, set up the way `.kit/live-restartrequest-test.sh` sets up, against a local stub with a dummy key, so it spends nothing and touches no fleet store. The stub records every request body. The follow-up prompt's request carrying the first prompt's codeword in its message history is the proof the conversation is intact, since a stub that refuses every request cannot produce a real answer.
+
+Old contract: a holder launched by a supervisor older than this change never watches the interrupt file, and a child loads `fleet_interrupt` only once the installed plugin is updated. Both need a relaunch after install, which the close-out names.
+
+Baseline, measured 2026-09-30 on this machine at `5fc62b9`, clean worktree, no foreign runner on the pre-run poll, each lane's exit code read from its own run: `supervisor-holder-test.sh` 0 (26 s), `channel-reply-instruction-test.sh` 0 (5 s), `settings-plugin-key-test.sh` 0 (33 s), `fleet-status-unit-test.mjs` 0 (2 s), `injection-duplicate-test.mjs` 0, `tool-description-length-test.mjs` 0, `supervisor-unit-test.mjs` 0, `supervisor-poll-unit-test.mjs` 0 (4 s), `supervisor-natural-exit-test.sh` 0 (1,948 s). Logs in `.kit/scratch/supervisor-interrupt/baseline/`.
+
+Next action: section 1 dispatch to implementer-sonnet once the baseline returns.

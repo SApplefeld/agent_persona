@@ -4215,7 +4215,8 @@ while true; do
     HOLDER_PID_FILE="$CHILD_DIR/holder.pid"
     CHILD_PID_FILE="$CHILD_DIR/child.pid"
     ASK_REQUEST_FILE="$CHILD_DIR/ask.request"
-    rm -f "$EXIT_MARKER" "$HANDLE_FILE" "$HOLDER_PID_FILE" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "$ASK_REQUEST_FILE.tmp"
+    INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
+    rm -f "$EXIT_MARKER" "$HANDLE_FILE" "$HOLDER_PID_FILE" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "$ASK_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE" "$INTERRUPT_REQUEST_FILE.tmp"
 
     # --- Take the child start timestamp BEFORE the launch call (Z6) ---
     CHILD_START_TS=$(node -e "console.log(Date.now())")
@@ -4286,7 +4287,7 @@ while true; do
     COORDINATOR_PERSONA="${COORDINATOR_PERSONA:-}" ARCHITECT_PERSONA="${ARCHITECT_PERSONA:-}" \
     CHILD_INDEX="$CHILD_INDEX" SUPERVISOR_HOLDER_POLL_S="${SUPERVISOR_HOLDER_POLL_S:-2}" \
       bash "$PLUGIN_DIR/bin/supervise-holder.sh" \
-        "$HOLDER_PID_FILE" "$OUT" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "${PROMPT_FILE:-}" \
+        "$HOLDER_PID_FILE" "$OUT" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "${PROMPT_FILE:-}" "$INTERRUPT_REQUEST_FILE" \
         2>> "$RUNDIR/supervisor.err" \
       | { child_wrapper "$EXIT_MARKER" env "${CHANNEL_ENV[@]}" claude -p --input-format stream-json --output-format stream-json --verbose \
           "${PLUGIN_DIR_ARGS[@]}" \

@@ -6,8 +6,10 @@
 # process's own stdout is the child's stdin. It writes the priming turn to the
 # pipe, waits for that turn's result line in the child's stdout and writes the
 # goal where one was given, then holds the pipe open. While it holds, it relays
-# the final ask the supervisor drops in the ask-request file, exits a few
-# seconds after the child's pid disappears, and exits when it is signaled.
+# the final ask the supervisor drops in the ask-request file, relays an
+# interrupt the supervisor drops in the interrupt-request file as a fixed
+# control line it builds itself, exits a few seconds after the child's pid
+# disappears, and exits when it is signaled.
 #
 # The supervisor stops the child by killing this process (the pipe-close phase):
 # closing this process's stdout is the end of input the child reads to exit. So
@@ -31,6 +33,9 @@
 #
 # Usage: supervise-holder.sh <holder-pid-file> <child-stdout> <child-pid-file>
 #                            <ask-request-file> <goal-prompt-file|"">
+#                            [interrupt-request-file]
+# The sixth argument is read as `${6:-}`, so a five-argument launch, the old
+# shape, watches no interrupt-request file at all.
 # The supervisor exports PERSONA, NO_CHANNEL, COORDINATOR_PERSONA,
 # ARCHITECT_PERSONA and CHILD_INDEX for the priming text and the log lines, and
 # SUPERVISOR_HOLDER_POLL_S for the hold cadence.
@@ -41,6 +46,7 @@ OUT="$2"
 CHILD_PID_FILE="$3"
 ASK_REQUEST_FILE="$4"
 PROMPT_FILE="$5"
+INTERRUPT_REQUEST_FILE="${6:-}"
 
 # Record this process's own MSYS pid at once. The launching pipeline's `$!` is
 # the child, the pipeline's last stage, so the supervisor cannot read this
@@ -121,6 +127,43 @@ const ok = sameKeys(block, ["type", "text"]) && block.type === "text"
   && typeof block.text === "string" && block.text.startsWith("[SUPERVISOR-ASK id=");
 process.exit(ok ? 0 : 1);
 ' "$1" 2>/dev/null
+}
+
+# Whether one interrupt-request file's whole content is a request this holder
+# may relay: one JSON object whose keys are exactly id, at, by and reason,
+# where id is a short token of letters, digits and hyphens, at is a finite
+# number, by is a string of at most 64 characters and reason a string of at
+# most 200. The holder never relays this content itself; it only reads id and
+# reason from it, once valid, to build the control line and the log line
+# itself. Anything else, an array among it, is refused, logged and removed
+# unrelayed, as a malformed ask-request file is today.
+holder_interrupt_valid() {  # <file content>
+  node -e '
+let o;
+try { o = JSON.parse(process.argv[1]); } catch (e) { process.exit(1); }
+const keys = ["id", "at", "by", "reason"];
+const ok = o && typeof o === "object" && !Array.isArray(o)
+  && Object.keys(o).length === keys.length && keys.every((k) => k in o)
+  && typeof o.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(o.id)
+  && typeof o.at === "number" && Number.isFinite(o.at)
+  && typeof o.by === "string" && o.by.length <= 64
+  && typeof o.reason === "string" && o.reason.length <= 200;
+process.exit(ok ? 0 : 1);
+' "$1" 2>/dev/null
+}
+
+# Reads id and reason out of an interrupt-request file's content already
+# proven valid by holder_interrupt_valid. Prints "<id>\t<reason>" with any
+# control character stripped from the reason, so the id built into the
+# control line is never quote- or brace-bearing (holder_interrupt_valid's
+# regex already guarantees that) and the reason logged through `log` never
+# splits the log line or injects a control character into it.
+holder_interrupt_fields() {  # <file content>
+  node -e '
+const o = JSON.parse(process.argv[1]);
+const reason = String(o.reason).replace(/[\x00-\x1f\x7f]/g, "");
+process.stdout.write(o.id + "\t" + reason + "\n");
+' "$1"
 }
 
 # Whether the ask-request file holds exactly its first line and nothing after
@@ -486,6 +529,27 @@ while true; do
     goal_prompt_json "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING"
     log "priming turn completed; sent the goal prompt as its own turn"
     GOAL_PENDING=0
+  fi
+  if [ -n "$INTERRUPT_REQUEST_FILE" ] && [ -f "$INTERRUPT_REQUEST_FILE" ]; then
+    # A file over 4096 bytes is refused unread: it cannot be a request this
+    # supervisor wrote, whole, in one move, so it is never parsed at all.
+    interrupt_bytes=$(wc -c < "$INTERRUPT_REQUEST_FILE" 2>/dev/null) || interrupt_bytes=""
+    interrupt_ok=0
+    if [ -n "$interrupt_bytes" ] && [ "$interrupt_bytes" -le 4096 ]; then
+      interrupt_content=$(cat "$INTERRUPT_REQUEST_FILE" 2>/dev/null) && interrupt_ok=1
+    fi
+    if [ "$interrupt_ok" -eq 1 ] && holder_interrupt_valid "$interrupt_content"; then
+      interrupt_fields=$(holder_interrupt_fields "$interrupt_content")
+      interrupt_id="${interrupt_fields%%$'\t'*}"
+      interrupt_reason="${interrupt_fields#*$'\t'}"
+      # The control line is built here, by the holder itself, from nothing but
+      # the validated id; the file's content never reaches the pipe.
+      printf '{"type":"control_request","request_id":"%s","request":{"subtype":"interrupt"}}\n' "$interrupt_id"
+      log "relayed an interrupt id=$interrupt_id reason=$interrupt_reason"
+    else
+      log "the interrupt-request file did not hold one valid interrupt request; removed it unrelayed"
+    fi
+    rm -f "$INTERRUPT_REQUEST_FILE"
   fi
   if [ -f "$ASK_REQUEST_FILE" ]; then
     # One whole line is relayed. The supervisor writes the file whole and moves
