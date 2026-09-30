@@ -339,62 +339,73 @@ const VALID_CONTROLLER_OVERRIDE = {
     ["the named version file is missing", "the named version file is missing", (h) => {
       h.fsMap.set(activePathOf(CONTROLLER_DECISION), JSON.stringify({ version: "v9" }));
     }],
+    // A valid file at the shipped label and one below it. The control after
+    // this table admits the same file at a label above it.
+    ["active.json's version has a leading zero", "active.json names no v<N> version label", (h) => {
+      plant(h, CONTROLLER_DECISION, "v03", VALID_CONTROLLER_OVERRIDE);
+    }],
+    ["active.json names the shipped version", "active.json names a version not above the shipped v2", (h) => {
+      plant(h, CONTROLLER_DECISION, "v2", VALID_CONTROLLER_OVERRIDE);
+    }],
+    ["active.json names a version below the shipped one", "active.json names a version not above the shipped v2", (h) => {
+      plant(h, CONTROLLER_DECISION, "v1", VALID_CONTROLLER_OVERRIDE);
+    }],
     ["the version file is not JSON", "the version file is not JSON", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", "{ not json");
+      plant(h, CONTROLLER_DECISION, "v3", "{ not json");
     }],
     ["the version file is a JSON scalar", "the version file is not an object", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", "\"a string\"");
+      plant(h, CONTROLLER_DECISION, "v3", "\"a string\"");
     }],
     ["the version file is an array", "the version file is not an object", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", "[]");
+      plant(h, CONTROLLER_DECISION, "v3", "[]");
     }],
     ["the primitive is not choice", "the override is not a choice", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, primitive: "noul" });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, primitive: "noul" });
     }],
     ["the primitive is absent", "the override is not a choice", (h) => {
       const { primitive, ...rest } = VALID_CONTROLLER_OVERRIDE;
-      plant(h, CONTROLLER_DECISION, "v2", rest);
+      plant(h, CONTROLLER_DECISION, "v3", rest);
     }],
     ["the instruction is empty", "the override has an empty instruction", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, instructions: "" });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, instructions: "" });
     }],
     ["the instruction is whitespace only", "the override has an empty instruction", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, instructions: "   \n\t " });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, instructions: "   \n\t " });
     }],
     ["the instruction is not a string", "the override has an empty instruction", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, instructions: { text: "x" } });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, instructions: { text: "x" } });
     }],
     ["there is no options map", "the override has no options map", (h) => {
       const { options, ...rest } = VALID_CONTROLLER_OVERRIDE;
-      plant(h, CONTROLLER_DECISION, "v2", rest);
+      plant(h, CONTROLLER_DECISION, "v3", rest);
     }],
     ["options is an array", "the override has no options map", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options: ["nudge", "pause"] });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options: ["nudge", "pause"] });
     }],
     ["an option description is a number", "the override has an option description that is not a string or null", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options: { ...VALID_CONTROLLER_OVERRIDE.options, nudge: 1 } });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options: { ...VALID_CONTROLLER_OVERRIDE.options, nudge: 1 } });
     }],
     ["there is one option", `the override has fewer than ${MIN_OPTIONS} options`, (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options: { nudge: "only one" } });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options: { nudge: "only one" } });
     }],
     ["there are no options", `the override has fewer than ${MIN_OPTIONS} options`, (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options: {} });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options: {} });
     }],
     ["there are more than 255 options", `the override has more than ${MAX_OPTIONS} options`, (h) => {
       const options = {};
       for (let i = 0; i < MAX_OPTIONS + 1; i++) options[`opt-${i}`] = `option ${i}`;
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options });
     }],
     ["a fixed set's override drops an option id", "the override's option ids differ from the shipped set", (h) => {
       const { switch: dropped, ...options } = VALID_CONTROLLER_OVERRIDE.options;
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options });
     }],
     ["a fixed set's override adds an option id", "the override's option ids differ from the shipped set", (h) => {
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options: { ...VALID_CONTROLLER_OVERRIDE.options, escalate: "new" } });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options: { ...VALID_CONTROLLER_OVERRIDE.options, escalate: "new" } });
     }],
     ["a fixed set's override renames an option id", "the override's option ids differ from the shipped set", (h) => {
       const { nudge, ...rest } = VALID_CONTROLLER_OVERRIDE.options;
-      plant(h, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options: { ...rest, poke: nudge } });
+      plant(h, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options: { ...rest, poke: nudge } });
     }],
   ];
   for (const [label, reason, setup] of refusals) {
@@ -410,10 +421,10 @@ const VALID_CONTROLLER_OVERRIDE = {
   // The control: the same override, unmodified, is admitted. Without it every
   // case above could be passing because the plant never landed.
   const hc = harness();
-  plant(hc, CONTROLLER_DECISION, "v2", VALID_CONTROLLER_OVERRIDE);
+  plant(hc, CONTROLLER_DECISION, "v3", VALID_CONTROLLER_OVERRIDE);
   const rc = await settle(resolverOf(fakeHostOf(hc))(CONTROLLER_DECISION));
   check("Test 5 control: the unmodified override these cases start from is admitted",
-    rc.resolved && rc.value.overrideRefused === null && rc.value.version === "v2", rc);
+    rc.resolved && rc.value.overrideRefused === null && rc.value.version === "v3", rc);
 
   // The plan switch is exempt from the option-id pin, since its ids are the
   // caller's pending plan ids rather than the catalog's.
@@ -446,7 +457,7 @@ const VALID_CONTROLLER_OVERRIDE = {
   // override of a set the catalog does own, so the case above passes because
   // the set is exempt rather than because the floor stopped working.
   const hp2 = harness();
-  plant(hp2, TURN_SCORE, "v2", {
+  plant(hp2, TURN_SCORE, "v3", {
     primitive: "choice",
     instructions: "override turn score, one option",
     options: { "on-goal": "only one" },
@@ -503,12 +514,12 @@ const VALID_CONTROLLER_OVERRIDE = {
     ["no override at all", () => resolverOf(fakeHostOf(harness()))(CONTROLLER_DECISION)],
     ["a refused override", () => {
       const h = harness();
-      plant(h, CONTROLLER_DECISION, "v2", { primitive: "noul", instructions: "x", options: { a: null, b: null } });
+      plant(h, CONTROLLER_DECISION, "v3", { primitive: "noul", instructions: "x", options: { a: null, b: null } });
       return resolverOf(fakeHostOf(h))(CONTROLLER_DECISION);
     }],
     ["an admitted override", () => {
       const h = harness();
-      plant(h, CONTROLLER_DECISION, "v2", VALID_CONTROLLER_OVERRIDE);
+      plant(h, CONTROLLER_DECISION, "v3", VALID_CONTROLLER_OVERRIDE);
       return resolverOf(fakeHostOf(h))(CONTROLLER_DECISION);
     }],
     ["an unknown question set", () => resolverOf(fakeHostOf(harness()))("no-such-question")],
@@ -542,16 +553,16 @@ const VALID_CONTROLLER_OVERRIDE = {
   }
   // A read that rejects where exists said the file is there, both files.
   const h2 = harness();
-  h2.fsMap.set(activePathOf(CONTROLLER_DECISION), JSON.stringify({ version: "v2" }));
+  h2.fsMap.set(activePathOf(CONTROLLER_DECISION), JSON.stringify({ version: "v3" }));
   const host2 = fakeHostOf(h2);
   host2.readFile = () => Promise.reject(new Error("EACCES"));
   const r2 = await settle(resolverOf(host2)(CONTROLLER_DECISION));
   check('Test 6: an active.json read that rejects resolves with reason "active.json could not be read"',
     r2.resolved && r2.value.overrideRefused === "active.json could not be read", r2.resolved ? r2.value.overrideRefused : r2);
   const h3 = harness();
-  plant(h3, CONTROLLER_DECISION, "v2", VALID_CONTROLLER_OVERRIDE);
+  plant(h3, CONTROLLER_DECISION, "v3", VALID_CONTROLLER_OVERRIDE);
   const host3 = fakeHostOf(h3);
-  host3.readFile = (p) => (p.endsWith("v2.json") ? Promise.reject(new Error("EACCES")) : h3.fake.fs.read(p));
+  host3.readFile = (p) => (p.endsWith("v3.json") ? Promise.reject(new Error("EACCES")) : h3.fake.fs.read(p));
   const r3 = await settle(resolverOf(host3)(CONTROLLER_DECISION));
   check('Test 6: a version file read that rejects resolves with reason "the version file could not be read"',
     r3.resolved && r3.value.overrideRefused === "the version file could not be read", r3.resolved ? r3.value.overrideRefused : r3);
@@ -559,24 +570,24 @@ const VALID_CONTROLLER_OVERRIDE = {
   // its own, so a read that resolves with something other than text is a shape
   // this module meets rather than only a fake's.
   const h4 = harness();
-  h4.fsMap.set(activePathOf(CONTROLLER_DECISION), JSON.stringify({ version: "v2" }));
+  h4.fsMap.set(activePathOf(CONTROLLER_DECISION), JSON.stringify({ version: "v3" }));
   const host4 = fakeHostOf(h4);
-  host4.readFile = () => Promise.resolve({ version: "v2" });
+  host4.readFile = () => Promise.resolve({ version: "v3" });
   const r4 = await settle(resolverOf(host4)(CONTROLLER_DECISION));
   check('Test 6: an active.json read that resolves with a non-string is "active.json is not text"',
     r4.resolved && r4.value.overrideRefused === "active.json is not text", r4.resolved ? r4.value.overrideRefused : r4);
   const h5 = harness();
-  plant(h5, CONTROLLER_DECISION, "v2", VALID_CONTROLLER_OVERRIDE);
+  plant(h5, CONTROLLER_DECISION, "v3", VALID_CONTROLLER_OVERRIDE);
   const host5 = fakeHostOf(h5);
-  host5.readFile = (p) => (p.endsWith("v2.json") ? Promise.resolve(42) : h5.fake.fs.read(p));
+  host5.readFile = (p) => (p.endsWith("v3.json") ? Promise.resolve(42) : h5.fake.fs.read(p));
   const r5 = await settle(resolverOf(host5)(CONTROLLER_DECISION));
   check('Test 6: a version file read that resolves with a non-string is "the version file is not text"',
     r5.resolved && r5.value.overrideRefused === "the version file is not text", r5.resolved ? r5.value.overrideRefused : r5);
   // fileExists answering with something other than true is not a file.
   const h6 = harness();
-  plant(h6, CONTROLLER_DECISION, "v2", VALID_CONTROLLER_OVERRIDE);
+  plant(h6, CONTROLLER_DECISION, "v3", VALID_CONTROLLER_OVERRIDE);
   const host6 = fakeHostOf(h6);
-  host6.fileExists = (p) => (p.endsWith("v2.json") ? Promise.resolve("yes") : h6.fake.fs.exists(p));
+  host6.fileExists = (p) => (p.endsWith("v3.json") ? Promise.resolve("yes") : h6.fake.fs.exists(p));
   const r6 = await settle(resolverOf(host6)(CONTROLLER_DECISION));
   check('Test 6: a version file whose existence check answers a non-true value is "the named version file is missing"',
     r6.resolved && r6.value.overrideRefused === "the named version file is missing", r6.resolved ? r6.value.overrideRefused : r6);
@@ -621,7 +632,7 @@ const VALID_CONTROLLER_OVERRIDE = {
   // 8b: a refused override's wording never reaches a request. The refusal
   // rule here is the option-id pin, asserted by name on the result.
   const h2 = harness();
-  plant(h2, CONTROLLER_DECISION, "v2", { ...VALID_CONTROLLER_OVERRIDE, options: { ...VALID_CONTROLLER_OVERRIDE.options, escalate: "new" } });
+  plant(h2, CONTROLLER_DECISION, "v3", { ...VALID_CONTROLLER_OVERRIDE, options: { ...VALID_CONTROLLER_OVERRIDE.options, escalate: "new" } });
   h2.setHttpResponse(response(answerBody(CONTROLLER_DECISION, "nudge")));
   const r2 = await settle(ask(fakeHostOf(h2), CONTROLLER_DECISION, CONTROLLER_LABELS, STATE, "shadow", "nudge", resolverOf(fakeHostOf(h2))));
   const sent2 = JSON.parse(h2.httpCalls[0].init.body);

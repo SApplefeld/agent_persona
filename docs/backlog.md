@@ -12,10 +12,6 @@ Commands, run from the repository root: `node .kit/jev-gold/sample.mjs --questio
 
 The decision this feeds: whether a question is proposed for `jevLive` under a plan of its own. A bar met on `holdout` after being met on `dev` is the ground for that plan; a bar unmet on `holdout` after being met on `dev` reopens the question's wording. The plan's README Bars subsection carries each question's current bar.
 
-## An operator override can reuse a shipped version label (found 2026-09-29)
-
-`resolverOf` in `hooks/question-catalog.ts` admits an override whose `active.json` names the shipped version, such as `v2` for `controller-decision`, `turn-score` or `block-owner`. Its answers then journal under the shipped label, and `score.mjs` reads the two wordings, the shipped default and the override, as one version when it groups records by `questionVersion`. The Jev question quality plan left this out, since the override layer's mechanics are out of scope there. Remedy: refuse an override whose version label is equal to or below the shipped question's own version.
-
 ## Drop recentClosingTexts from the plan-health state at block-owner's next version (found 2026-09-29)
 
 `recentClosingTexts`, up to five closing texts of 1,000 characters each, still leaves the machine in every `plan-health` request, and no shipped question reads it: `block-owner`'s v2 instructions and options read `closingText` alone. `.kit/controller-tick-test.mjs`'s replay pin checks the request byte for byte against the plugin's own, so dropping the field is a wire change. Remedy: drop it together with `block-owner`'s next version and that version's own replay pin, rather than as a same-version edit, since the byte-identity check depends on the field as it stands.
