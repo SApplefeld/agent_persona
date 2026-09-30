@@ -304,3 +304,19 @@ Not a Chapter. The operator approved stopping all six personas, recorded in the 
 **The live half starts now.** The waiter `.kit/scratch/deferred-gate/live-waiter.ps1` runs as the one-shot task `DeferredGate-LiveWaiter`. It stops this session with the fleet. Its markers land under `.kit/scratch/deferred-gate/live/` in this worktree: `waiter.log`, `stop.result`, `live-all.log`, `live.exit` and `done`.
 
 **Next action, for the session that resumes after the restart.** Read `done`, `stop.result` and `live.exit`. Confirm all six `AgentPersona-*` tasks are Running again. Then write the live row into the Section 1 table, trace any red under Section 2, and take the supervisor-peer measurements Section 1 names if the window allows. If `done` is absent, read `waiter.log` for where it stopped, and restart any persona still held with `Start-Persona.ps1 -Release` and `Start-ScheduledTask`.
+
+### Interim board 11 - 2026-09-30
+
+Not a Chapter. The fleet stopped and restarted as planned, but the live suites did not run. The cause is a defect in the waiter, now fixed, and a second stop needs the operator's word.
+
+**What happened.** The waiter stopped all six personas by 00:25:13Z, STEWARD last after about five minutes. `.kit/live-all.sh` then exited 10, its refuse code, 27 seconds in, read from `live/live.exit`. Its log reads `refuse-check FAIL: live persona claim in .../agentic-plugin_agent-persona-54422876af67.json: persona:STEWARD (age 54s)`. The waiter restarted all six, and all six `AgentPersona-*` tasks read Running at 00:26:45Z.
+
+**Cause: the waiter's own pre-check passed on a mangled path.** It ran the refuse check as a `bash -c` string from Windows PowerShell 5.1, which re-quotes embedded double quotes when it calls a native program. The installed store's path arrived with `[@]` appended, the check skipped it as absent, and it passed after reading one store. Had it read correctly, it would have waited the extra seconds for STEWARD's claim to age past the 90-second bound. Board 7's control ran the snippet from a different shell, so it never exercised the task's invocation.
+
+**Evidence.** Against the live fleet at 00:27Z, under `powershell.exe`, the inline snippet exits 0 reading one store, and the same check run from a file exits 1 naming `persona:ARCHITECT (age 13s)`. The probe is `.kit/scratch/deferred-gate/refuse-probe.ps1`.
+
+**Fix.** The check now lives in `.kit/scratch/deferred-gate/refuse-check.sh`, and the waiter calls it as a file. The patched waiter parses under PowerShell 5.1 with zero errors.
+
+**Section 1 ledger row.** Live suites: `bash .kit/live-all.sh`, 00:25:13Z to 00:25:40Z, exit 10 from `live.exit`, no cases ran. Reason: refused on a live STEWARD claim 54 seconds old.
+
+**Next action.** On the operator's yes, register the waiter again. On `done`, read `live.exit` and write the live row.
