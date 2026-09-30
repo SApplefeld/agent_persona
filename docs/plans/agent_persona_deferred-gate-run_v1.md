@@ -16,6 +16,8 @@ The operator armed execution on 2026-09-19, naming this plan in a `/kit-goal` in
 
 On 2026-09-29 the operator cleared this run again on the executing session's own relay thread: "You're cleared to do all of them in whatever order you recommend, and the box is quiet except for you, so you can run the deferred test whenever you prefer". That is the window Operator Verification item 1 reserves to the operator. The live suites still need every plugin-loaded session closed, this one and the `STEWARD` seat included, so stopping those two went to the operator as its own ask.
 
+Later on 2026-09-29 a full read found all six roster personas live, and the operator answered the widened ask on the same thread: "Go ahead and do Option 1." Option 1 was to stop all six now, run the live suites, and restart all six through the prepared waiter.
+
 ## The gate policy
 
 This section owns the policy. The queued plans point here, and a Chapter that cites it cites this file.
@@ -294,3 +296,11 @@ The nine extra passes over the trunk's 326 are the five fixed checks and four ne
 **Pull requests.** 125 merged as `ad4d089`. 126 has main merged in, with its archive conflict resolved and its gates re-run green. 127 and 128 are open. All three have auto-merge armed and wait on the operator's review.
 
 **Next action.** On the operator's yes, commit and push everything, then register the waiter and run the live half. Without it, the live half holds.
+
+### Interim board 10 - 2026-09-29
+
+Not a Chapter. The operator approved stopping all six personas, recorded in the Dispatch Authorization. Pull requests 126, 127 and 128 have merged, so the trunk is `c777ceb`, and the main checkout the waiter runs `.kit/live-all.sh` from was fast-forwarded to it.
+
+**The live half starts now.** The waiter `.kit/scratch/deferred-gate/live-waiter.ps1` runs as the one-shot task `DeferredGate-LiveWaiter`. It stops this session with the fleet. Its markers land under `.kit/scratch/deferred-gate/live/` in this worktree: `waiter.log`, `stop.result`, `live-all.log`, `live.exit` and `done`.
+
+**Next action, for the session that resumes after the restart.** Read `done`, `stop.result` and `live.exit`. Confirm all six `AgentPersona-*` tasks are Running again. Then write the live row into the Section 1 table, trace any red under Section 2, and take the supervisor-peer measurements Section 1 names if the window allows. If `done` is absent, read `waiter.log` for where it stopped, and restart any persona still held with `Start-Persona.ps1 -Release` and `Start-ScheduledTask`.
