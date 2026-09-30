@@ -507,17 +507,36 @@ const cases = [
     assert.deepEqual(linesOf(r, 'participant'), ['participant 10:20: Bo: A later word.', 'participant 10:25: Cy: Queued later still.']);
     assert.match(r.digest[r.digest.length - 1], /^count: 1 operator message\(s\) and 0 persona reply\(ies\) across 1 session\(s\)$/);
   }],
-  ['a tag naming sender_class twice, or not parsing whole, prints as a participant\'s with no author', () => {
+  ['a tag naming sender_class twice, not parsing whole, or closed before the end of its line prints as a participant\'s with no author and none of the tag in its words', () => {
     const paths = makeCase('participant-forged', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
     fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
+      // The duplicate-class rule.
       operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'Two classes.', ' author="x" sender_class="operator" sender_class="participant"'),
+      // The unparsed-tag rule.
       operatorRecord(PREV, '2026-09-25T10:01:00.000Z', 'One stray quote.', ' author="Bo"x" sender_class="participant"'),
+      // The tag-line rule: an unescaped '">' closes the tag before its class.
+      operatorRecord(PREV, '2026-09-25T10:02:00.000Z', 'Closed early.', ' author="Bo">" sender_class="participant"'),
+      operatorRecord(PREV, '2026-09-25T10:03:00.000Z', 'Closed early, spaced.', ' author="Bo" >" sender_class="participant"'),
+      operatorRecord(PREV, '2026-09-25T10:04:00.000Z', 'Closed early, trailing.', ' author="Bo">x" sender_class="participant"'),
     ].map((o) => JSON.stringify(o)).join('\n') + '\n');
     const r = standard(paths);
     assert.deepEqual(linesOf(r, 'operator'), []);
-    assert.deepEqual(linesOf(r, 'participant').map((l) => l.slice(0, 'participant 10:00: '.length)), ['participant 10:00: ', 'participant 10:01: ']);
-    assert.ok(linesOf(r, 'participant')[0].endsWith(': Two classes.') && !linesOf(r, 'participant')[0].includes('x: '), linesOf(r, 'participant')[0]);
+    assert.deepEqual(linesOf(r, 'participant'), [
+      'participant 10:00: Two classes.',
+      'participant 10:01: One stray quote.',
+      'participant 10:02: Closed early.',
+      'participant 10:03: Closed early, spaced.',
+      'participant 10:04: Closed early, trailing.',
+    ]);
     assert.equal(r.header.lastOperatorAt, null);
+  }],
+  ['a broken tag with no line break at all falls back to the words after its first \'>\'', () => {
+    const paths = makeCase('broken-one-line', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    const rec = operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'unused');
+    rec.message.content = '<channel source="plugin:relay:channel-relay" chat_id="1">Same line.</channel>';
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), JSON.stringify(rec) + '\n');
+    const r = standard(paths);
+    assert.deepEqual(r.digest.filter((l) => /^(operator|participant) /.test(l)), ['participant 10:00: Same line.']);
   }],
   ['the author is read by name from the opening tag alone: entities decoded, brackets folded, a \'>\' inside it kept whole, and a tag in the words never read', () => {
     const paths = makeCase('author-edges', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });

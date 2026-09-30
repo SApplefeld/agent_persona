@@ -49,8 +49,8 @@
 // "participant <hh:mm>: <text>" in the same order, and counts as neither an
 // operator message nor a reply. An operator or participant line whose channel
 // tag names an author reads "<kind> <hh:mm>: <author>: <text>", the author
-// cut to RECAP_AUTHOR_CHARS. hh:mm is UTC. A session whose last record is older than --since prints as
-// one line naming its age and nothing else.
+// cut to RECAP_AUTHOR_CHARS. hh:mm is UTC. A session whose last record is
+// older than --since prints as one line naming its age and nothing else.
 //
 // What the digest admits. An operator message is a user record whose content
 // is a string opening the relay's channel tag, or, for a message that arrived
@@ -95,8 +95,8 @@ import { projectKey, transcriptPathsFor } from './supervise-liveness.mjs';
 
 export const RECAP_TAIL_BYTES = 2 * 1024 * 1024;
 export const RECAP_MESSAGE_CHARS = 400;
-// The most characters of an author an operator line carries, a cap of its
-// own so an author cannot double a line's budget.
+// The most characters of an author a channel line carries, operator or
+// participant, a cap of its own so an author cannot double a line's budget.
 export const RECAP_AUTHOR_CHARS = 64;
 export const RECAP_DIGEST_CHARS = 6000;
 export const DEFAULT_SESSIONS = 2;
@@ -269,9 +269,13 @@ const TAG_ENTITIES = { quot: '"', amp: '&', lt: '<', gt: '>', apos: "'" };
 /**
  * The opening channel tag of a tagged record: its attributes as [name, value]
  * pairs in the order the tag gives them, and the index just past its closing
- * '>'. The tag is read as a run of name="value" pairs, so a '>' inside a
- * quoted value does not end it; a name given twice appears twice. Returns
- * null where the text does not open with a whole tag. This is the rule
+ * '>' and the line break after it. The tag is read as a run of name="value"
+ * pairs, so a '>' inside a quoted value does not end it; a name given twice
+ * appears twice. The tag is whole only where its closing '>' ends its line,
+ * followed by a line break or the end of the text, since the envelope puts
+ * the message on the lines below: anything else after it on the tag's line is
+ * text that broke the tag, such as an author value holding an unescaped '">'.
+ * Returns null where the text does not open with a whole tag. This is the rule
  * channelEnvelopeAttributes in hooks/index.ts applies, which a .mjs script
  * cannot import from TypeScript.
  * @param {string} content
@@ -290,15 +294,24 @@ function channelTag(content) {
     attributes.push([m[1], m[2].replace(/&(quot|amp|lt|gt|apos);/g, (_, name) => TAG_ENTITIES[name])]);
     at = pair.lastIndex;
   }
-  const close = /^\s*>/.exec(content.slice(at));
+  const close = /^\s*>(?:\r?\n|$)/.exec(content.slice(at));
   return close ? { attributes, end: at + close[0].length } : null;
 }
 
-// The words in a tagged record, without the tag around them.
+// The words in a tagged record, without the tag around them. Where the tag
+// does not parse whole, the words are what follows its first line break, so
+// no fragment of the broken tag reaches the digest; a record with no line
+// break at all falls back to what follows its first '>'.
 function taggedWords(content) {
   const tag = channelTag(content);
-  const open = tag ? tag.end - 1 : content.indexOf('>');
-  const body = open >= 0 ? content.slice(open + 1) : '';
+  let body;
+  if (tag) {
+    body = content.slice(tag.end);
+  } else {
+    const lineBreak = content.indexOf('\n');
+    const open = lineBreak >= 0 ? lineBreak : content.indexOf('>');
+    body = open >= 0 ? content.slice(open + 1) : '';
+  }
   return body.replace(/<\/channel>\s*$/, '');
 }
 
@@ -313,7 +326,7 @@ function taggedWords(content) {
  * @param {string} content
  * @returns {{kind: 'operator'|'participant', author: string}}
  */
-function taggedSender(content) {
+export function taggedSender(content) {
   const tag = channelTag(content);
   const classes = tag ? tag.attributes.filter(([name]) => name === 'sender_class') : [];
   if (!tag || classes.length > 1) return { kind: 'participant', author: '' };
