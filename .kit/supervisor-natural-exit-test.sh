@@ -1539,8 +1539,9 @@ drive() {
   # A case outside this process's share is not run, and every check that
   # follows it is suppressed until the next driven case begins. The checks a
   # case makes before its own drive (that an injected copy parses, that an
-  # anchor appears once) do not depend on the run and are left to run here, so
-  # they are covered by every process rather than by exactly one.
+  # anchor appears once) do not depend on the run, but they are suppressed like
+  # the rest, so each runs only in the process that owns the nearest driven
+  # case above it.
   # The assertions after a skipped case still run, and this suite runs under
   # `set -u`, so they are given a harmless state to read rather than the
   # previous case's. An empty log makes every `grep -q` fail and a zero rc

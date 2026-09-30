@@ -17,9 +17,9 @@
 # unit-block process, so the process count is width plus one.
 #
 # The default is 1, meaning two processes, and that is a measurement rather
-# than a guess. On this box, serially the suite takes 39 minutes and passes
-# 218 checks with none failing. Two processes take 31 and pass with none
-# failing. Four take 35, which is barely better than serial, and fail 11
+# than a guess. On this box, serially the suite takes about 32 minutes and
+# passes 335 checks with none failing. Two processes take about 31 and pass
+# 337, since the setup check before the first case runs in each. Four take 35, which is barely better than serial, and fail 11
 # checks: case (aa) hits the suite's own 420-second per-run bound and returns
 # rc 124, and the crash-limit and sweep cases miss timing they would otherwise
 # make. So the box runs out of room somewhere between two and four, and wider
@@ -35,18 +35,41 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SUITE="$HERE/supervisor-natural-exit-test.sh"
 WIDTH="${1:-1}"
 
-# The driven cases, slowest first, from the suite's own printed profile. Groups
-# are filled round-robin over this order, which is the usual greedy way to
-# balance jobs of known length. When the profile's order changes materially,
-# update this line from it rather than guessing.
-ORDER="o p s x u y v r j ab ac h g k aa a t i c b b2 f e"
+# Every driven case the suite defines, read from the suite itself so a case
+# added later is scheduled without an edit here. A case is a name the suite
+# passes to `drive`, or a name it gates directly with `if want`. A suite that
+# yields no case stops the run, since running nothing would print a PASS.
+CASES=$(set -o pipefail
+  tr -d '\r' < "$SUITE" \
+    | sed -nE 's/^[[:space:]]*(drive|if want)[[:space:]]+([a-z0-9]+)([[:space:];].*)?$/\2/p' \
+    | awk '!seen[$0]++')
+if [ $? -ne 0 ] || [ -z "$CASES" ]; then
+  echo "ERROR: no driven case could be read from $SUITE" >&2
+  exit 2
+fi
+
+# A balancing hint: known cases, slowest first, from the suite's own printed
+# profile. Groups are filled round-robin over the schedule, which is the usual
+# greedy way to balance jobs of known length. A name here the suite no longer
+# defines is dropped, and a suite case missing here runs after the listed ones.
+# When the profile's order changes materially, update this line from it rather
+# than guessing.
+ORDER="o p s x u y v r j ab ac h g k aa a t i c b b2 e"
+
+SCHEDULE=""
+for c in $ORDER; do
+  case " $(echo $CASES) " in *" $c "*) SCHEDULE="$SCHEDULE $c" ;; esac
+done
+for c in $CASES; do
+  case " $ORDER " in *" $c "*) ;; *) SCHEDULE="$SCHEDULE $c" ;; esac
+done
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
 # Round-robin the cases into WIDTH groups.
 i=0
-for c in $ORDER; do
+for c in $SCHEDULE; do
   g=$(( i % WIDTH ))
   eval "GROUP_$g=\"\${GROUP_$g:-} $c\""
   i=$(( i + 1 ))
