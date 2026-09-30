@@ -2798,6 +2798,92 @@ if (at !== null) console.log(Math.floor(at));
 " "$PLUGIN_DIR/bin/supervise-restart-request.mjs" "$RUNDIR" 2>> "$RUNDIR/supervisor.err"
 }
 
+# --- Helper: read the interrupt request the coordinator left in the run
+# directory ---
+# The coordinator's fleet_interrupt tool writes <rundir>/interrupt.request the
+# same way fleet_restart writes restart.request: one file in this persona's
+# own run directory, read through the parser the poll would import
+# (bin/supervise-interrupt-request.mjs), so the two paths cannot disagree on
+# what a request is. Prints its timestamp, or nothing where the parser reads
+# no request. Called once per poll, on every running child, launched or
+# adopted, to decide whether to relay.
+get_interrupt_request() {
+  node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+const { readInterruptRequest } = await import(pathToFileURL(process.argv[1]).href);
+const req = readInterruptRequest(process.argv[2], Date.now());
+if (req !== null) console.log(Math.floor(req.at));
+" "$PLUGIN_DIR/bin/supervise-interrupt-request.mjs" "$RUNDIR" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: write the coordinator's interrupt request into the child's own
+# interrupt-request file ---
+# Usage: write_interrupt_relay <id>
+# Re-reads <rundir>/interrupt.request through the same parser
+# get_interrupt_request reads, so the object this writes is the request that
+# decided to relay rather than a second, possibly different, read; and writes
+# it whole, with the id this poll minted, to "$INTERRUPT_REQUEST_FILE.tmp" -
+# the caller moves it into place so the holder never reads a half-written
+# file. by and reason never reach a bash variable: id is the only argument
+# handed across the shell boundary, and the JSON is built and written inside
+# this one node call. Prints "<by>\t<reason>" on success, for the caller's log
+# line alone, with every C0 control, DEL, C1 control and Unicode line/
+# paragraph separator stripped from both fields first, the same strip the
+# holder's own relay applies before it logs a reason, so neither field can
+# split that one log line into more than one. Exits non-zero and writes
+# nothing where the reader now finds no request at all (the request was
+# cleared or overwritten between the read that triggered this call and this
+# one).
+write_interrupt_relay() {
+  local id="$1"
+  node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+const { readInterruptRequest } = await import(pathToFileURL(process.argv[1]).href);
+const req = readInterruptRequest(process.argv[2], Date.now());
+if (req === null) process.exit(1);
+fs.writeFileSync(process.argv[3], JSON.stringify({ id: process.argv[4], at: req.at, by: req.by, reason: req.reason }) + String.fromCharCode(10));
+const sep = String.fromCharCode(0x2028) + String.fromCharCode(0x2029);
+const strip = (s) => s.replace(new RegExp('[\\\\x00-\\\\x1f\\\\x7f-\\\\x9f' + sep + ']', 'g'), '');
+process.stdout.write(strip(req.by) + String.fromCharCode(9) + strip(req.reason) + String.fromCharCode(10));
+" "$PLUGIN_DIR/bin/supervise-interrupt-request.mjs" "$RUNDIR" "$INTERRUPT_REQUEST_FILE.tmp" "$id" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: relay the coordinator's interrupt request to the running child,
+# once ---
+# Called on every poll of a running child, launched or adopted, right after
+# run_child_poll. A request older than CHILD_START_TS is one this child
+# predates and never acts on; a request no newer than
+# "$CHILD_DIR/interrupt.served" is one an earlier poll, by this supervisor or
+# by one that adopted this same child, already relayed, so a supervisor that
+# adopts a running child never re-sends its predecessor's request. On a newer
+# request, mints an id shaped like write_final_ask's FINAL_ASK_ID, writes the
+# child's own interrupt-request file by write-then-rename so the holder never
+# reads a half-written file, records the served time only on a write that
+# lands, and logs the relay. Where the write or the rename fails, the served
+# marker is left unwritten, so the next poll retries the same request.
+relay_interrupt_request() {
+  local request_at served_at fields id
+  request_at=$(get_interrupt_request)
+  [ -n "$request_at" ] || return 0
+  [ "$request_at" -gt "$CHILD_START_TS" ] || return 0
+  served_at=""
+  if [ -s "$CHILD_DIR/interrupt.served" ]; then
+    served_at=$(cat "$CHILD_DIR/interrupt.served" 2>/dev/null)
+    case "$served_at" in ''|*[!0-9]*) served_at="" ;; esac
+  fi
+  [ -z "$served_at" ] || [ "$request_at" -gt "$served_at" ] || return 0
+  INTERRUPT_SEQ=$((INTERRUPT_SEQ + 1))
+  id="$SUPERVISOR_START_MS-int-$INTERRUPT_SEQ"
+  if fields=$(write_interrupt_relay "$id") \
+     && mv -f "$INTERRUPT_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE" 2>>"$RUNDIR/supervisor.err"; then
+    printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served"
+    log "INTERRUPT: ${fields#*$'\t'} (child-$CHILD_INDEX, id=$id)"
+  else
+    log "INTERRUPT: the request at $request_at for child-$CHILD_INDEX (id=$id) could not be written; the next poll retries"
+  fi
+}
+
 # --- Helper: read the newest root_complete decision's timestamp AND
 # whether it was backfilled, in one read ---
 # v2 Section 0 item 1: a root_complete decision whose own detail text says
@@ -3693,6 +3779,7 @@ gate_stage_child() {
   HOLDER_PID_FILE="$CHILD_DIR/holder.pid"
   CHILD_PID_FILE="$CHILD_DIR/child.pid"
   ASK_REQUEST_FILE="$CHILD_DIR/ask.request"
+  INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
   CHILD_SESSION_ID="$4"
   HOLDER_LAUNCH_PID="$5"
   HOLDER_WINPID="$6"
@@ -3730,7 +3817,7 @@ gate_drop_child_globals() {
   HOLDER_LAUNCH_PID=""; HOLDER_WINPID=""; HOLDER_TICKS=""; HOLDER_OWN_LAUNCH=""
   CHILD_ADOPTED=""; CHILD_SESSION_ID=""
   HANDLE_FILE=""; EXIT_MARKER=""; CHILD_DIR=""; OUT=""; ERR=""; DEBUG=""
-  HOLDER_PID_FILE=""; CHILD_PID_FILE=""; ASK_REQUEST_FILE=""
+  HOLDER_PID_FILE=""; CHILD_PID_FILE=""; ASK_REQUEST_FILE=""; INTERRUPT_REQUEST_FILE=""
   LAUNCHED_AT=""; CHILD_START_TS=""
   LAST_STOP_SNAPSHOT=""; POLL_LIVENESS=""
   CHILD_TREE_MSYS_PIDS=""; CHILD_TREE_WINPIDS=""; CHILD_TREE_SEEN_WINPIDS=""
@@ -4031,6 +4118,9 @@ RESTART_TIMES=()  # array of timestamps for rolling-hour budget
 SUPERVISOR_START_MS=$(node -e "console.log(Date.now())")
 # How many final asks this supervisor has written, which numbers each ask's id.
 FINAL_ASK_SEQ=0
+# How many interrupts this supervisor has relayed, which numbers each
+# interrupt's id the same way.
+INTERRUPT_SEQ=0
 
 # Where the harness keeps its transcripts, and the launch directory that names
 # the child's project under it. The poll derives the transcript from these and
@@ -4425,6 +4515,11 @@ while true; do
     # run_child_poll is the one place the poll process is called, shared with
     # the pre-launch gate's adoption verdict.
     run_child_poll
+
+    # The coordinator's interrupt request, checked every poll independent of
+    # this poll's own reading: an interrupt is orthogonal to liveness, so a
+    # poll whose liveness read failed still relays a standing request.
+    relay_interrupt_request
 
     # The liveness state and the shutdown ask carried to the next poll, taken
     # only from a poll that ran: a failed one says nothing about the stream or

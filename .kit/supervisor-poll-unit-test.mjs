@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const pollPath = resolve(here, '../bin/supervise-poll.mjs');
 const requestModulePath = resolve(here, '../bin/supervise-restart-request.mjs');
+const interruptRequestModulePath = resolve(here, '../bin/supervise-interrupt-request.mjs');
 const root = fs.mkdtempSync(join(os.tmpdir(), 'supervise-poll-'));
 
 // The restart-request parser, imported rather than spawned: it is a pure
@@ -32,6 +33,22 @@ try {
 const parser = () => {
   if (typeof readRestartRequest !== 'function') throw new Error('the parser did not import: ' + (requestImportError && requestImportError.message));
   return readRestartRequest;
+};
+
+// The interrupt-request parser, the sibling bin/supervise.sh's own
+// get_interrupt_request imports the same way (bin/supervise-interrupt-
+// request.mjs), tested here beside the restart parser since this is the
+// suite that already tests supervise-restart-request.mjs.
+let readInterruptRequest = null;
+let interruptRequestImportError = null;
+try {
+  ({ readInterruptRequest } = await import(pathToFileURL(interruptRequestModulePath).href));
+} catch (e) {
+  interruptRequestImportError = e;
+}
+const interruptParser = () => {
+  if (typeof readInterruptRequest !== 'function') throw new Error('the interrupt parser did not import: ' + (interruptRequestImportError && interruptRequestImportError.message));
+  return readInterruptRequest;
 };
 
 const PERSONA = 'dev';
@@ -673,6 +690,58 @@ const cases = [
     const now = Date.now();
     fs.writeFileSync(join(dir, 'restart.request'), JSON.stringify({ at: now + 600000, by: 'coordinator', reason: 'stuck' }));
     assert.equal(parser()(dir, now), null);
+  }],
+
+  // The interrupt-request parser: the same rejections as the restart reader
+  // above, plus the returned by and reason, which readInterruptRequest
+  // carries and readRestartRequest does not.
+  ['interrupt parser control: a well-formed request returns at, by and reason', () => {
+    const dir = join(root, 'interrupt-parse-ok');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(join(dir, 'interrupt.request'), JSON.stringify({ at: now - 1000, by: 'coordinator', reason: 'stuck' }));
+    assert.deepEqual(interruptParser()(dir, now), { at: now - 1000, by: 'coordinator', reason: 'stuck' });
+  }],
+  ['interrupt parser: by and reason absent from an otherwise valid request read as empty strings', () => {
+    const dir = join(root, 'interrupt-parse-noby');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(join(dir, 'interrupt.request'), JSON.stringify({ at: now - 1000 }));
+    assert.deepEqual(interruptParser()(dir, now), { at: now - 1000, by: '', reason: '' });
+  }],
+  ['interrupt parser: by and reason that are not strings read as empty strings, with at still read', () => {
+    const dir = join(root, 'interrupt-parse-badtypes');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(join(dir, 'interrupt.request'), JSON.stringify({ at: now - 1000, by: 42, reason: ['stuck'] }));
+    assert.deepEqual(interruptParser()(dir, now), { at: now - 1000, by: '', reason: '' });
+  }],
+  ['interrupt parser: a missing file reads as no request', () => {
+    const dir = join(root, 'interrupt-parse-missing');
+    fs.mkdirSync(dir, { recursive: true });
+    assert.equal(interruptParser()(dir, Date.now()), null);
+  }],
+  ['interrupt parser: a file that is not JSON reads as no request, with no throw', () => {
+    const dir = join(root, 'interrupt-parse-garbage');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, 'interrupt.request'), '{"at": 17');
+    assert.equal(interruptParser()(dir, Date.now()), null);
+  }],
+  ['interrupt parser: JSON that is not an object, or an object with no numeric at, reads as no request', () => {
+    const dir = join(root, 'interrupt-parse-shape');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    for (const body of ['null', '[1]', '5', JSON.stringify({ by: 'coordinator' }), JSON.stringify({ at: String(now - 1000) })]) {
+      fs.writeFileSync(join(dir, 'interrupt.request'), body);
+      assert.equal(interruptParser()(dir, now), null, 'body ' + body);
+    }
+  }],
+  ['interrupt parser: an at ten minutes ahead of the clock reads as no request', () => {
+    const dir = join(root, 'interrupt-parse-future');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(join(dir, 'interrupt.request'), JSON.stringify({ at: now + 600000, by: 'coordinator', reason: 'stuck' }));
+    assert.equal(interruptParser()(dir, now), null);
   }],
 ];
 

@@ -2046,6 +2046,131 @@ RL_DETACH_LINE=$(grep -n 'DETACH child-2' "$RL_LOG" 2>/dev/null | head -1 | cut 
 [ "$RL_RELAUNCHED" -eq 0 ] && grep -q 'EXIT child-1 code=0 (sweep_relaunch)' "$RL_LOG" && [ "$RL_READY" -eq 0 ] && [ "$RL_RC" -eq 143 ] && [ -n "$RL_VERDICT" ] && [ -n "$RL_LIVE_LINE" ] && [ -n "$RL_DETACH_LINE" ] && [ "$RL_LIVE_LINE" -lt "$RL_DETACH_LINE" ] && grep -q "DETACH child-2: .*(verdict $RL_VERDICT)" "$RL_LOG" && ! grep -q 'CLEANUP: stopping child-2' "$RL_LOG" && [ "$RL_ALIVE" -eq 0 ]; CHECK_RC=$?
 check "relaunch signal control: after the same sweep and relaunch, a TERM after child-2's first poll detaches on child-2's own reading, the verdict the DETACH line names being the one its LIVENESS line logged (verdict=${RL_VERDICT:-none} ready=$RL_READY rc=$RL_RC alive=$RL_ALIVE, log=$(tr '\n' '|' < "$RL_LOG" 2>/dev/null | tail -c 1500))" "$CHECK_RC"
 
+# --- The coordinator's interrupt relay ---
+# get_interrupt_request, write_interrupt_relay and relay_interrupt_request are
+# extracted from bin/supervise.sh and driven directly against a fixture run
+# directory and child directory, the same way this suite already drives
+# refresh_child_tree and note_liveness_poll above: no claude child is
+# spawned, since none of these three functions reads one, only files a
+# fixture writes ahead of the call. holder_interrupt_relay is extracted from
+# bin/supervise-holder.sh for the one writer-reader case, so the file the
+# writer produces is checked against the holder's own validator rather than a
+# copy of its rule typed here. The served and request files persist on disk
+# between calls, so "several polls" is several fresh invocations of the
+# extracted relay_interrupt_request, which is what the real poll loop's
+# separate calls amount to as well: nothing but INTERRUPT_SEQ, which only
+# numbers an id, is process-local state.
+HOLDER="$HERE/../bin/supervise-holder.sh"
+LOG_SNIPPET=$(sed -n '/^log() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+GET_INTERRUPT_SNIPPET=$(sed -n '/^get_interrupt_request() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+WRITE_INTERRUPT_SNIPPET=$(sed -n '/^write_interrupt_relay() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+RELAY_INTERRUPT_SNIPPET=$(sed -n '/^relay_interrupt_request() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+HOLDER_INTERRUPT_VALIDATOR_SNIPPET=$(sed -n '/^holder_interrupt_relay() {/,/^}$/p' "$HOLDER" | tr -d '\r')
+[ -n "$LOG_SNIPPET" ] && [ -n "$GET_INTERRUPT_SNIPPET" ] && [ -n "$WRITE_INTERRUPT_SNIPPET" ] && [ -n "$RELAY_INTERRUPT_SNIPPET" ] && [ -n "$HOLDER_INTERRUPT_VALIDATOR_SNIPPET" ]
+check "get_interrupt_request, write_interrupt_relay, relay_interrupt_request and holder_interrupt_relay are found in their scripts" "$?"
+
+if [ -n "$RELAY_INTERRUPT_SNIPPET" ]; then
+  IR_PLUGIN_DIR="$HERE/.."
+  # One poll: writes the driver script, runs it as its own process against the
+  # fixture run/child directories the caller seeded, and prints the log, the
+  # served marker and the request file's content so the caller's assertions
+  # read all three.
+  interrupt_poll() {  # <rundir> <childdir> <child-start-ts>
+    local script="$TMP/interrupt-poll.sh"
+    printf '%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$LOG_SNIPPET" "$GET_INTERRUPT_SNIPPET" "$WRITE_INTERRUPT_SNIPPET" "$RELAY_INTERRUPT_SNIPPET" > "$script"
+    cat >> "$script" <<'EOF2'
+PLUGIN_DIR="$1"
+RUNDIR="$2"
+CHILD_DIR="$3"
+INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
+CHILD_START_TS="$4"
+CHILD_INDEX=1
+INTERRUPT_SEQ=0
+SUPERVISOR_START_MS=9999
+LOG="$RUNDIR/supervisor.log"
+: > "$LOG"
+relay_interrupt_request
+echo "LOG=$(cat "$LOG" 2>/dev/null)"
+echo "SERVED=$(cat "$CHILD_DIR/interrupt.served" 2>/dev/null || echo NONE)"
+echo "REQFILE=$(cat "$INTERRUPT_REQUEST_FILE" 2>/dev/null || echo NONE)"
+EOF2
+    bash "$script" "$IR_PLUGIN_DIR" "$1" "$2" "$3"
+  }
+  write_interrupt_fixture() {  # <path> <at> <by> <reason>
+    node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Number(process.argv[2]), by: process.argv[3], reason: process.argv[4] }))' \
+      "$1" "$2" "$3" "$4"
+  }
+
+  IR_RD="$TMP/interrupt-rd"
+  IR_CD="$IR_RD/child-1"
+  mkdir -p "$IR_CD"
+  write_interrupt_fixture "$IR_RD/interrupt.request" 500 coordinator "stuck before the child started"
+  OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT" in *"LOG="*"INTERRUPT:"*) false ;; *) true ;; esac
+  check "a request older than the child's start relays nothing (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$?"
+  [ ! -e "$IR_CD/interrupt.served" ]; check "a request older than the child's start writes no served marker" "$?"
+
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_interrupt_fixture "$IR_RD/interrupt.request" 1500 coordinator "stuck on a tool call"
+  OUT1=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  OUT2=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  OUT3=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  # log() both echoes a line to stdout and appends it to the log file, so raw
+  # stdout for a relaying poll carries the line twice: once from that direct
+  # echo, once from this driver's own "LOG=$(cat ...)" line. Counting against
+  # the LOG= marker reads the persisted log file's own content once per poll,
+  # which is what the real supervisor.log would show.
+  N=0
+  for one_poll_out in "$OUT1" "$OUT2" "$OUT3"; do
+    case "$one_poll_out" in *"LOG="*"INTERRUPT: stuck on a tool call"*) N=$((N + 1)) ;; esac
+  done
+  [ "$N" -eq 1 ]; check "one relay across several polls of the same request (relayed $N times)" "$?"
+  case "$OUT1" in *"SERVED=1500"*) true ;; *) false ;; esac
+  check "the served marker carries the relayed request's own at (out=$(printf '%s' "$OUT1" | tr '\n' '|'))" "$?"
+  case "$OUT1" in *'REQFILE={"id":"9999-int-1","at":1500,"by":"coordinator","reason":"stuck on a tool call"}'*) true ;; *) false ;; esac
+  check "the child's interrupt.request carries id, at, by and reason whole (out=$(printf '%s' "$OUT1" | tr '\n' '|'))" "$?"
+
+  write_interrupt_fixture "$IR_RD/interrupt.request" 2000 coordinator "a second, later ask"
+  OUT4=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT4" in *"INTERRUPT: a second, later ask"*"SERVED=2000"*) true ;; *) false ;; esac
+  check "a second request with a later at relays again (out=$(printf '%s' "$OUT4" | tr '\n' '|'))" "$?"
+
+  # An adopted child: the served marker already holds the standing request's
+  # own at, the shape a supervisor that adopts a running child its
+  # predecessor already relayed to leaves behind.
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_interrupt_fixture "$IR_RD/interrupt.request" 3000 coordinator "already relayed before this supervisor adopted"
+  printf '%s' 3000 > "$IR_CD/interrupt.served"
+  OUT5=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT5" in *"LOG="*"INTERRUPT:"*) false ;; *) true ;; esac
+  check "adopting a child whose interrupt.served already holds the request's at relays nothing (out=$(printf '%s' "$OUT5" | tr '\n' '|'))" "$?"
+  case "$OUT5" in *"REQFILE=NONE"*) true ;; *) false ;; esac
+  check "adopting a child whose interrupt.served already holds the request's at writes no child-side request file (out=$(printf '%s' "$OUT5" | tr '\n' '|'))" "$?"
+
+  # Writer-reader: the file write_interrupt_relay produces passes the
+  # holder's own validator, holder_interrupt_relay, extracted above the same
+  # way .kit/supervisor-holder-test.sh extracts it.
+  if [ -n "$HOLDER_INTERRUPT_VALIDATOR_SNIPPET" ]; then
+    rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+    write_interrupt_fixture "$IR_RD/interrupt.request" 4000 coordinator "writer-reader pin"
+    WR_SCRIPT="$TMP/interrupt-writer-reader.sh"
+    printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$WRITE_INTERRUPT_SNIPPET" "$HOLDER_INTERRUPT_VALIDATOR_SNIPPET" > "$WR_SCRIPT"
+    cat >> "$WR_SCRIPT" <<'EOF3'
+PLUGIN_DIR="$1"
+RUNDIR="$2"
+INTERRUPT_REQUEST_FILE="$3"
+write_interrupt_relay "9999-int-wr"
+content=$(cat "$INTERRUPT_REQUEST_FILE.tmp")
+echo "CONTENT=$content"
+holder_interrupt_relay "$content" >/dev/null
+echo "VALIDATOR_RC=$?"
+EOF3
+    WROUT=$(bash "$WR_SCRIPT" "$IR_PLUGIN_DIR" "$IR_RD" "$IR_CD/interrupt.request")
+    case "$WROUT" in *"VALIDATOR_RC=0"*) true ;; *) false ;; esac
+    check "the writer's output passes the holder's own interrupt validator (out=$(printf '%s' "$WROUT" | tr '\n' '|'))" "$?"
+  fi
+fi
+
 # --- The channel log sweep ---
 # sweep_channel_log_segments is extracted and run as written, through the find
 # on PATH, against real directories whose files carry real modification times,
