@@ -31,6 +31,7 @@ The persona's stdin is the pipe `bin/supervise-holder.sh` writes. Today the hold
 ## Standing Brief Amendments
 
 - Tests that check the coordinator's role instruction or a tool's result text pin each on stable forms: the tool's name, and the behavior each sentence states. They do not pin an exact prose phrase that a correct rewording would change.
+- The supervisor relays an interrupt only while the child's heartbeat shows a turn running whose turnStartedAt is at or before the request's at. Otherwise it records the request served without relaying it, and logs a distinct INTERRUPT_SKIPPED line. The relay's comment names the residual: for up to one heartbeat interval after a turn ends, the published stamp can still show that turn. Section 3 reads the child's heartbeat file during the observed rate-limit wait, and shows the interrupt is still relayed there.
 
 ## Section 1: Holder Relays an Interrupt
 
@@ -78,6 +79,7 @@ No new mechanism. To break in with something critical, the coordinator calls `fl
 
 ## Decisions
 
+- **The interrupt targets the turn that was running when it was asked for** (decided 2026-09-30 by the operator, option A). The coordinator calls fleet_interrupt, then agentic_say, and the relay can land up to one supervisor poll plus one holder poll later. A turn that started after the request is then a different turn, often the urgent record's own, so the supervisor skips it. This supersedes Section 2's "no need to detect an idle child first" for the relay decision.
 - **No automatic interrupts in v1** (decided 2026-09-30 by the operator). The supervisor never sends an interrupt on its own. Automatic triggers may come later, once a use case is found. The manual tool covers the rate-limit case that prompted this plan.
 - **The rate-limit case is the operator's strong expectation, not yet a fact.** Pressing Escape in an interactive session is known to break the harness's rate-limit wait. The operator strongly suspects the stream-json interrupt does the same. Section 3 settles it.
 
@@ -138,3 +140,6 @@ Delta: measured 2026-09-30 on this machine, worktree D:/agent_persona-supervisor
 - Adopted: the adversarial lens's wording-pin Major, ruled accept-and-declare by the scope adjudicator, is now the one bullet in Standing Brief Amendments. This is approval drift, recorded here and to be recorded again in Chapter 2.
 - Gate baseline for Section 2's lanes, at 65ee6e3 on a clean worktree with no foreign runner at the poll: all nine suites exit 0, the model suite at 404 s and the holder suite at 48 s.
 - Next: adjudicate fix round 1's report, then round 2 at sonnet. Build the turn check or not per the operator's answer, then close Section 2 and start Section 3.
+- The architect answered, reported and read from origin/main: turnStartedAt stays set through a harness rate-limit retry wait. It moves only at turn.start and turn.complete (hooks/index.ts:9566, :9575, :9870, deriveTurnStartedAt at :5261), and the heartbeat tick at :6462 republishes it without clearing it. That the retry happens inside the turn is inferred from the harness type docs, and Section 3 can confirm it by reading the heartbeat file during the observed wait. Residual, if the check is built: the published stamp can stay non-null for up to one heartbeat interval after a turn ends (comment at :9860), so for that one interval the check can still relay into a turn that just ended. It is bounded, and it is named rather than closed.
+- Operator's answer, 2026-09-30 on the relay: "option B is fine", conditional on A being unable to tell the targeted turn from a later one ("If that were possible, I would support option A"). The premise does not hold. The check compares the running turn's turnStartedAt with the request's at, so a turn started after the request reads as a different turn. The correction and a re-ask went back on the relay. Section 2 stays held until the operator confirms A or B.
+- Operator confirmed option A on the relay, 2026-09-30 ("Let's do A!"). It is recorded under Decisions and as a Standing Brief Amendment. It goes to the implementer as a follow-up once fix round 1 reports.
