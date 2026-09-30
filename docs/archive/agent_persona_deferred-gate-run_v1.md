@@ -1,6 +1,6 @@
 # Deferred gate run
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-18
 
@@ -64,7 +64,7 @@ Files in scope: whichever files a fix touches, named in the Chapter; `docs/backl
 ### 3. Close
 Model: sonnet
 
-Flip this plan to Complete, write the close-out Chapter, and move it to `docs/archive/` as the curating-docs skill states, with its `docs/README.md` line. The close-out states that the gate policy has ended and that plans armed after this one gate as the executing-work skill states. It also records the operator's ruling on the supervisor-peer plan's measurement 5, the usage-limit measurement, in that plan and here.
+Flip this plan to Complete, write the close-out Chapter, and move it to `docs/archive/` as the curating-docs skill states, with its `docs/README.md` line. The close-out states that the gate policy has ended and that plans armed after this one gate as the executing-work skill states. It also records the operator's ruling on the supervisor-peer plan's measurement 5, the usage-limit measurement, in that plan and here, or, where the operator has not answered by the close, carries it as an operator-pending item there and here.
 
 Acceptance: the plan sits in `docs/archive/` at Complete; `docs/README.md` names it there; the close-out Chapter carries the ending sentence.
 
@@ -87,6 +87,8 @@ Files in scope: this plan document, `docs/README.md`.
 ## Operator Verification
 
 1. The run in Section 1 holds the box for at least one whole gate. The operator chooses when it starts, since that is the cost this policy was written to move. The outcome that holds the work: after Section 3, a whole gate on the trunk is green or every red is filed with its cause.
+2. Rule on the supervisor-peer plan's measurement 5, which drives the account all six personas share into its usage limit. The run recommends skipping it. An answer to run it reopens this plan as a new round.
+3. Review and approve pull requests 130 and 129, the tick-suite fixture fix and the parallel runner fix, each armed to merge on approval, and this plan's own pull request. The trunk's tick suite stays red on the `gl6` control until 130 merges.
 
 ## Open Questions
 
@@ -96,6 +98,7 @@ Files in scope: this plan document, `docs/README.md`.
 
 - `docs/archive/agent_persona_steward-architect_v1.md`, `docs/archive/agent_persona_context-budget-removal_v1.md`, `docs/archive/agent_persona_lean-injection_v1.md`, `docs/archive/agent_persona_supervisor-peer_v1.md`: the plans this policy covers.
 - `README.md`, Test Coverage: which suites are live and which are offline.
+- `docs/archive/agent_persona_upgrade-check-and-restart-recap_spec_v1.md`: the policy covered its live suites by the operator's ruling of 2026-09-27, and its results block records their run.
 
 ## Chapters
 
@@ -436,3 +439,23 @@ Gate: the parallel natural-exit runner, whole, at width 1 on the fix tree, 2026-
 Next: 3. Close
 Commit Model: Branch-and-PR
 Delta: read 2026-09-30 at 06:08Z on SCOTT-CLAUDE against the plan worktree; this project is outside the kit's measured roots, as Chapter 1's reading printed.
+
+### Chapter 3 - 2026-09-30
+Completed: 3. Close
+Implemented By: main session, with the finishing pass's qa-verifier, final adversarial reviewer, scope adjudicator and docs-curator dispatched
+Metrics: review rounds 1 in the finishing pass, closed major-closed; provenance 0 Criticals and 2 spec-traceable Majors, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused, both advisory lenses waived; NEEDS_CONTEXT 0; escalations none; consults 0
+Recap: Goal, verbatim: "When this is done, every test run the gate policy below deferred has run once against the trunk after the last queued plan merges, every red from that run is traced to the plan that caused it, and each is fixed or filed with its cause named. The policy is then lifted, and plans armed after this one gate as the executing-work skill states. It matters because four plans are landing on `hooks/index.ts` and `bin/supervise.sh` without the runs that prove them together, so this run is the only place their combined behavior is read before the fleet relies on it."; What the tree does now: every test the operator's policy of 2026-09-18 held back has run once on the merged trunk, the long natural-exit supervisor suite, its parallel runner, the four live suites that need every persona stopped, and the stop-process-tree suite among them, and each result is written into all twenty-two plans that deferred a run here; the one test that could not honestly run, driving the shared account into its usage limit, waits on the operator; every failure the run found is fixed, filed with its cause, or, for one intermittent failure, filed with its cause still open; the fixes are two merged pull requests, 127 for three stale pins and 128 for a test-injection defect, and two open ones, 129 so the parallel runner can no longer skip test cases and 130 for a test fixture that pull request 127 left out of step; test comments no longer describe the policy as in force; Refinements during the run: Section 1's text widened to every run a covered plan deferred and to the archived paths of two moved plans; Section 1 recorded results in eighteen further plans that applied the policy on their own, after round 3's scope ruling was withdrawn in round 4; Section 3's text widened to carry the measurement 5 ruling, then to carry it as operator-pending where unanswered at close; the Standing Brief Amendments block gained the gl6 fixture correction and the non-suite backlog filings, both declared by the finishing goal read; case (r) moved from flake to filed, cause unconfirmed, on the final review; the operator approved stopping all six personas twice on 2026-09-29 and 2026-09-30; Operator-pending, in order: review and approve pull request 130, review and approve pull request 129, rule on measurement 5, review and approve this plan's pull request
+Decisions / Surprises:
+- Section 3 open (2026-09-30): flips the plan to Complete, writes this Chapter, archives the plan with its index line and runs the second whole gate; serves Section 3's text and acceptance; adds no mechanism; size one Chapter and a handful of index and pointer edits; not building it leaves the policy nominally in force and the plan unarchived.
+- **Measurement 5 is carried as operator-pending, not ruled.** The operator was asked on 2026-09-30 whether to skip the usage-limit measurement, with a recommendation to skip it, and had not answered at close. Finishing-work holds that an item only the operator can move does not hold a plan open, so Section 3's text now carries it as an operator-pending item where unanswered; an answer to run it reopens this plan as a new round.
+- **The finishing gate found a red this plan's own fix caused**, the tick suite's `gl6` control, fixed in pull request 130 and recorded in Chapter 2.
+- **The advisory reviews were waived on both predicates.** The plan branch's 24 changed files against `c777ceb` are markdown plan records, the backlog and the index, with no code, script, hook, config or machine-read frontmatter, and no section names an audience outside the operator's own sessions. The two fix branches carry their own advisory reviews, recorded in Chapter 2. The three test-comment edits the goal read asked for landed after that listing and are comments only.
+- **Drift adjudicated, five items, all deviations, none a stop.** D1: the backlog and index described the gate run as still to come; the curator's edits there stand. D2: `README.md` does not document the parallel runner or the suite's `--units` and `--cases` flags; left, the runner's own header documents them. D3: the backlog's natural-exit cost entry carries figures from a smaller suite; left for that entry's owner, since the drift predates this effort. D4: fixes added checks inside existing suites, which the Out of Scope bar on new tests does not reach, since each pins its own fix. D5: Section 1's loader rule has no marker of its own and no foreign-runner poll preceded its first two runs, both declared in Chapter 1. Library hygiene: the plan's 97 citations inside archived plans keep its old path, as immutable history; the live references in `docs/README.md` and `docs/backlog.md` now point at the archive; the Related section now links the upgrade-check plan.
+- **The goal read asked one thing of the operator**: the parallel runner rewrite, which no acceptance bullet names; it ships as its own pull request, 129, so the operator's review of that pull request is the ruling.
+Failed approaches: none in this section.
+Assumptions: none
+Review Findings: review: qa-verifier, one whole offline gate, 27 of 28 suites green and the tick suite red, fixed in pull request 130; final adversarial at fable, Workflow (high), over the three branches, 1 Major re-dispositioned (case (r) moved from flake to filed with its remedy reordered so a sweep defect cannot be hidden) and 3 Minors fixed, two on pull request 129 and one in Chapter 2; `goal read: 3 built-but-unasked (0 refused, 2 declared, 1 asked), 1 asked-but-unbuilt`, the unbuilt item being the policy's lift, whose three stale test comments are rewritten; advisory lenses waived, evidence above; docs-curator's five drift items adjudicated above. No incident: each finishing round's tree-state bracket showed only this session's own edits.
+Stamps: adjudicated 1, stamped 1 (`pr-ready-mark-is-the-reviewers-after-verification`, at Chapter 2); none surfaced since.
+Gate: the handoff whole gate, run by the main session over the plan worktree after the archive, the pointer repoints and the index refresh, on SCOTT-CLAUDE from 2026-09-30T07:25:52Z to 07:39:20Z, beside the six live personas and the stray process named in Chapter 1, each exit code read from its own marker under `.kit/scratch/deferred-gate/finishing/gate2/`: tsc exit 0; 28 offline lanes, 27 exit 0 and `.kit/controller-tick-test.mjs` exit 1 on its one `gl6 fact control` failure, which pull request 130 fixes on its own branch and which this branch does not carry; the contention lane, `bash .kit/live-all.sh`, exit 10, refusing on a live STEWARD claim 4 seconds old, the honest reading beside a live fleet. Against the finishing pass's first whole gate, the QA verifier's run over the same 28 lanes before the archive: baseline 1 failing {gl6 fact control} → still 1 failing {gl6 fact control}, no other lane changed. On pull request 130's branch the tick suite exits 0 with 0 failures (Chapter 2). The natural-exit suite, its parallel runner and the live suites are this plan's own Section 1 ledger, not re-run here. Test delta for this section: none added, none retired; three test-file comments edited, pinning nothing.
+Next: none, the plan is complete. The gate policy of 2026-09-18 has ended, and plans armed after this one gate as the executing-work skill states.
+Commit Model: Branch-and-PR
