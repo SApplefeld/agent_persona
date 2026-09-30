@@ -34,8 +34,8 @@
     {
       "name": "LIAISON_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 1427,
-      "words": 247
+      "chars": 1541,
+      "words": 267
     },
     {
       "name": "SUPERVISOR_MAILBOX_INSTRUCTION",

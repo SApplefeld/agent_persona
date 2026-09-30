@@ -1287,9 +1287,11 @@ for rd in rd-sp-emit rd-sp-provided; do
 done
 # --- The liaison working directory's permission template ---
 # The liaison runs on the default permission mode with this file as its
-# .claude/settings.json, and a tool outside its allow list is refused. Three
-# things about it are pinned. The allow set is the closed list and nothing else,
-# so a widening reds. Every deny entry is anchored, because an unanchored
+# .claude/settings.json. The allow list marks the tools that need no approval: a
+# tool outside it is put to the thread as an approval prompt through the relay
+# channel, and the deny list is the only hard stop, since a deny beats an
+# approval. Three things about it are pinned. The allow set is the closed list
+# and nothing else, so a widening of what runs without approval reds. Every deny entry is anchored, because an unanchored
 # pattern is rooted at the working directory and never reaches the profile file
 # it names. And no allow entry grants Edit or Write outside the notes scratch
 # directory, since the working directory also holds files the next launch reads:

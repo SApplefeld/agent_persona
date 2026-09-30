@@ -22,6 +22,7 @@
       "Read(~/.git-credentials)",
       "Read(~/.config/gh/**)",
       "Read(~/AppData/Roaming/GitHub CLI/**)",
+      "Read(~/AppData/Local/sapplefeld-channels/**)",
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Read(~/.npmrc)",
