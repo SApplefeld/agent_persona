@@ -517,8 +517,9 @@ export function controllerStateText(
 export const OVERRIDE_DIR = ".claude/agentic-questions";
 // The one path segment that comes from outside this repository. Held to a
 // v<N> label so a version string can carry no separator and no parent
-// traversal into the path built from it.
-const VERSION_LABEL = /^v[0-9]{1,9}$/;
+// traversal into the path built from it. No leading zero, so one version
+// has one label: v03 and v3 would journal as two versions of one number.
+const VERSION_LABEL = /^v[1-9][0-9]{0,8}$/;
 
 // What the catalog needs from the host: the home directory and two reads.
 export type CatalogHost = Pick<PluginHost, "getHome" | "readFile" | "fileExists">;
@@ -692,6 +693,13 @@ export function resolverOf(host: CatalogHost): QuestionResolver {
     }
     const version = active.version.trim();
     if (!VERSION_LABEL.test(version)) return fallback(shipped, "active.json names no v<N> version label");
+    // An override's label must be above the shipped question's own. At or
+    // below it, the override's answers would journal under a label a shipped
+    // wording already carries, and a scorer grouping by version would read the
+    // two wordings as one question.
+    if (Number(version.slice(1)) <= Number(shipped.version.slice(1))) {
+      return fallback(shipped, `active.json names a version not above the shipped ${shipped.version}`);
+    }
 
     const versionPath = joined(dir, `${version}.json`);
     let versionExists: unknown;
