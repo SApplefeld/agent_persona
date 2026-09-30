@@ -2044,13 +2044,21 @@ grep -q 'SHUTDOWN_REQUEST: .*present at launch' "$LOG"; check "(sd) the next lau
 # against a supervisor whose tree kill never confirms anything dead. A relaunch
 # here would put the next child beside a process still holding the persona
 # claim, which is the failure the natural-exit sweep exists to prevent.
+#
+# The injection fails every kill but the holder's. kill_holder closes the
+# child's input through the same function, so failing it too would turn every
+# stop these cases drive into the EOF grace and a TERM, and a survivor that
+# ends on its own inside that wait would read as killed. The holder's call is
+# pinned below, since the exemption keys on its exact argument.
 KILL_ANCHORS=$(grep -c '^kill_process_snapshot() {$' "$SUP")
 [ "$KILL_ANCHORS" -eq 1 ]; check "(r) the kill function the injection keys on appears once in bin/supervise.sh (found $KILL_ANCHORS)" "$?"
-if [ "$KILL_ANCHORS" -eq 1 ]; then
+HOLDER_KILLS=$(grep -c '^    kill_process_snapshot "\$HOLDER_WINPID,\$HOLDER_TICKS" || true$' "$SUP")
+[ "$HOLDER_KILLS" -eq 1 ]; check "(r) the holder kill the injection exempts appears once in bin/supervise.sh (found $HOLDER_KILLS)" "$?"
+if [ "$KILL_ANCHORS" -eq 1 ] && [ "$HOLDER_KILLS" -eq 1 ]; then
   mkdir -p "$TMP/injectkill/bin"
   cp "$ROOT"/bin/*.sh "$ROOT"/bin/*.mjs "$TMP/injectkill/bin/"
   awk '{ print }
-       /^kill_process_snapshot\(\) \{$/ { print "  log \"STOP: injected kill failure\"; return 1" }' "$SUP" > "$TMP/injectkill/bin/supervise.sh"
+       /^kill_process_snapshot\(\) \{$/ { print "  if [ \"$1\" != \"${HOLDER_WINPID:-},${HOLDER_TICKS:-}\" ]; then log \"STOP: injected kill failure\"; return 1; fi" }' "$SUP" > "$TMP/injectkill/bin/supervise.sh"
   SUP_OVERRIDE="$TMP/injectkill/bin/supervise.sh"
   drive r "survivor,shutdown" 6
   SUP_OVERRIDE=""
@@ -2139,11 +2147,21 @@ if [ "$KILL_ANCHORS" -eq 1 ]; then
   SUP_OVERRIDE=""
   PKDU_PAIR=$(grep -E '^[0-9]+,[0-9]+$' "$TMP/pkdu/survivor.snapshot" 2>/dev/null | head -1)
   [ -n "$PKDU_PAIR" ]; check "(pkdu) setup: the stub left a process behind and recorded it as pid and start ticks (${PKDU_PAIR:-none})" "$?"
+  # The survivor is a 90-second sleep, so on a slow box it can end inside the
+  # stop's retries and read as killed. Still alive once the supervisor has
+  # exited means it outlived every retry, so the exit code turns on it.
+  PKDU_ALIVE=""
+  [ -n "$PKDU_PAIR" ] && PKDU_ALIVE=$(check_snapshot_survivors "$PKDU_PAIR")
+  [ -n "$PKDU_ALIVE" ]; check "(pkdu) setup: the survivor is still alive after the supervisor exits, so it outlived every stop retry" "$?"
   grep -q 'injected kill failure' "$LOG"; check "(pkdu) setup: the injected kill ran and reported failure" "$?"
   PKDU_SP=$(grep -n 'STOP_PARK: park_requested' "$LOG" | head -n 1 | cut -d: -f1)
   PKDU_EXIT1=$(grep -n 'EXIT child-1 code=' "$LOG" | head -n 1 | cut -d: -f1)
   [ -n "$PKDU_SP" ] && [ -n "$PKDU_EXIT1" ] && [ "$PKDU_SP" -lt "$PKDU_EXIT1" ]; check "(pkdu) child-1's EXIT line follows the STOP_PARK line, so the stop was the decide path's (lines $PKDU_SP < $PKDU_EXIT1)" "$?"
   ! grep -q 'EXIT child-1 code=[0-9]* (natural)' "$LOG"; check "(pkdu) no natural-exit EXIT line for child-1" "$?"
+  # The survivor sleeps 90 seconds, so a stop that waits out the EOF grace can
+  # read it gone on its own. The holder kill closing the input is what keeps
+  # the verdict on the survivor.
+  ! grep -q 'STOP\[stop_park\]: EOF grace expired' "$LOG"; check "(pkdu) setup: the stop closed the input and never waited out the EOF grace" "$?"
   grep -q 'EXIT child-1: a process from this child is alive or unverifiable despite every stop retry' "$LOG"; check "(pkdu) the exit line names what the stop could not clear" "$?"
   [ "$RC" -eq 5 ]; check "(pkdu) the supervisor exits 5 rather than reporting the park as honored (rc=$RC)" "$?"
   [ "$LAUNCHES" -eq 1 ]; check "(pkdu) no second child launches (stub launches=$LAUNCHES)" "$?"
