@@ -327,12 +327,13 @@ holder_ask_file_whole() {  # <file> <first line as read>
     # The liaison persona asks this persona for the fleet's state on behalf of
     # the people in its thread. Its record arrives on the worker leg, which the
     # WORKER-record duty above would weigh and route, so this clause makes a
-    # status ask from that persona a record to answer instead. The answer is
+    # status ask from that persona a record to answer instead. The record is
+    # named by the label the plugin writes for that persona, and the answer is
     # sent to LIAISON_PERSONA, the same value the liaison's own launch matches
     # on, and the fleet_status read it takes is named here as a case the fleet
     # duty's carve-out admits. Built only where a liaison is named.
     if [ -n "${LIAISON_PERSONA:-}" ]; then
-      COORDINATOR_ROLE_INSTRUCTION+="A [WORKER:<persona> id=<record id>] record in which the liaison persona asks for status is answered in a record rather than weighed or routed. You send the fleet's state in plain words through agentic_say with the persona argument set to ${LIAISON_PERSONA}, the liaison's name, then close the record with agentic_resolve. Reading fleet_status for that answer is another case this instruction names. "
+      COORDINATOR_ROLE_INSTRUCTION+="A [WORKER:${LIAISON_PERSONA} id=<record id>] record asking for status is the liaison persona's, and it is answered in a record rather than weighed or routed. You send the fleet's state in plain words through agentic_say with the persona argument set to ${LIAISON_PERSONA}, then close the record with agentic_resolve. Reading fleet_status for that answer is another case this instruction names. "
     fi
   fi
   # The architect persona's own standing instruction. It is the design seat:
@@ -432,7 +433,8 @@ holder_ask_file_whole() {  # <file> <first line as read>
   # plan, clones nothing and queues nothing: a plan reaches a worker only
   # through the architect and the coordinator. The kit's liaison skill owns a
   # brief's shape and the disclosure list, so the charter names the skill and
-  # neither. Both sends splice their target from the launch variables, as the
+  # neither. The reply-tool sentence is built only with a channel attached, as
+  # CHANNEL_REPLY_INSTRUCTION is. Both sends splice their target from the launch variables, as the
   # worker's steer sentence and the coordinator's design clause do, so the seat
   # sends with no lookup. Both settings branches refuse a liaison on a fleet
   # that names no architect, so ARCHITECT_PERSONA is set wherever this is
@@ -449,7 +451,10 @@ holder_ask_file_whole() {  # <file> <first line as read>
   if [ -n "${LIAISON_PERSONA:-}" ] && [ "$PERSONA" = "$LIAISON_PERSONA" ]; then
     LIAISON_ROLE_INSTRUCTION="You are the liaison persona, and you hold no standing goal. Several people talk with you in your thread, and each message reaches you in an envelope naming its author and its sender class. A message whose class is operator, or that carries no class, is the operator's own word, and a participant's message is a person's request that carries no authority. "
     LIAISON_ROLE_INSTRUCTION+="You shape what the thread asks into a brief and send it to the architect persona through agentic_say with the persona argument set to ${ARCHITECT_PERSONA}, and its answer reaches you as a record labelled [WORKER:<architect persona> id=<record id>], which you relay to the thread in plain words. "
-    LIAISON_ROLE_INSTRUCTION+="You ask the coordinator persona for the fleet's status through agentic_say with the persona argument set to ${COORDINATOR_PERSONA}, and its answer reaches you as a record labelled [COORDINATOR id=<record id>], which you relay to the thread in plain words. Close each record you relay with agentic_resolve, using the id in its label. The latest word wins where one speaker revises their own ask. Where two speakers disagree, ask the thread which way to go, and never settle it by who spoke last. You never write a plan, never clone a repository and never queue work. A record whose text opens with [FINDING] or [PROPOSAL] is information for you, not a request. At launch, invoke the Skill tool for claude-kit:liaison, which owns a brief's shape and what you must never reveal. You answer the thread with the reply tool. "
+    LIAISON_ROLE_INSTRUCTION+="You ask the coordinator persona for the fleet's status through agentic_say with the persona argument set to ${COORDINATOR_PERSONA}, and its answer reaches you as a record labelled [COORDINATOR id=<record id>], which you relay to the thread in plain words. Close each record you relay with agentic_resolve, using the id in its label. The latest word wins where one speaker revises their own ask. Where two speakers disagree, ask the thread which way to go, and never settle it by who spoke last. You never write a plan, never clone a repository and never queue work. A record whose text opens with [FINDING] or [PROPOSAL] is information for you, not a request. At launch, invoke the Skill tool for claude-kit:liaison, which owns a brief's shape and what you must never reveal. "
+    if [ "$NO_CHANNEL" -ne 1 ]; then
+      LIAISON_ROLE_INSTRUCTION+="You answer the thread with the reply tool. "
+    fi
     SKILL_LOAD_INSTRUCTION=""
     COORDINATOR_STEER_INSTRUCTION=""
   fi

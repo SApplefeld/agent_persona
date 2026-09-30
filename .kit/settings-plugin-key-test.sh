@@ -1285,6 +1285,73 @@ for rd in rd-sp-emit rd-sp-provided; do
   R=$(inspect "$TMP/$rd/settings.json")
   case "$R" in *"MBX_DEV=$EXP_MBX;"*"MBX_INSTALLED=$EXP_MBX;"*"HBP_DEV=$EXP_HBP;"*"HBP_INSTALLED=$EXP_HBP;"*"SHB_DEV=$EXP_SHB;"*"SHB_INSTALLED=$EXP_SHB;"*) check "supervise.sh writes the three paths on $rd under both ids, absolute mixed form" 0 ;; *) check "supervise.sh writes the three paths on $rd under both ids (expected $EXP_MBX $EXP_HBP $EXP_SHB; out=$R)" 1 ;; esac
 done
+# --- The liaison working directory's permission template ---
+# The liaison runs on the default permission mode with this file as its
+# .claude/settings.json, and a tool outside its allow list is refused. Three
+# things about it are pinned. The allow set is the closed list and nothing else,
+# so a widening reds. Every deny entry is anchored, because an unanchored
+# pattern is rooted at the working directory and never reaches the profile file
+# it names. And no allow entry grants Edit or Write outside the notes scratch
+# directory, since the working directory also holds files the next launch reads:
+# CLAUDE.md, .mcp.json and run/settings.json. LIAISON_TEMPLATE points the pin
+# at another copy of the file.
+LIAISON_TEMPLATE="${LIAISON_TEMPLATE:-$ROOT/docs/liaison-settings.template.json}"
+template_verdict() {  # <template file>
+  node -e '
+const fs = require("fs");
+let raw, t;
+try { raw = fs.readFileSync(process.argv[1], "utf8"); } catch (e) { console.log("UNREADABLE " + e.message); process.exit(0); }
+if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+try { t = JSON.parse(raw); } catch (e) { console.log("UNPARSEABLE " + e.message); process.exit(0); }
+const p = (t && t.permissions) || {};
+const allow = Array.isArray(p.allow) ? p.allow : [];
+const deny = Array.isArray(p.deny) ? p.deny : [];
+// A rule is Tool or Tool(argument); parsed returns the argument, or null for a
+// bare tool name or a shape that is not a rule.
+const argOf = (rule) => {
+  const open = rule.indexOf("(");
+  if (open < 0 || !rule.endsWith(")")) return null;
+  return rule.slice(open + 1, -1);
+};
+const closed = [
+  "mcp__plugin_relay_channel-relay__reply",
+  "mcp__agentic-plugin__agentic_say",
+  "mcp__agentic-plugin__agentic_inbox",
+  "mcp__agentic-plugin__agentic_resolve",
+  "mcp__agentic-plugin__goal_status",
+  "mcp__agentic-plugin__supervisor_shutdown",
+  "Read(./**)",
+  "Edit(./notes/**)",
+  "Bash(memq recall:*)",
+  "Bash(memq find:*)",
+  "Bash(memq get:*)",
+  "Bash(memq recent:*)",
+];
+console.log("ALLOW_EXTRA=" + JSON.stringify(allow.filter((a) => !closed.includes(a))) + ";");
+console.log("ALLOW_MISSING=" + JSON.stringify(closed.filter((c) => !allow.includes(c))) + ";");
+console.log("ALLOW_DUP=" + (allow.length !== new Set(allow).size ? 1 : 0) + ";");
+const anchored = (arg) => arg !== null && (arg.startsWith("~/") || arg.startsWith("./") || arg.startsWith("//"));
+console.log("DENY_COUNT=" + deny.length + ";");
+console.log("DENY_UNANCHORED=" + JSON.stringify(deny.filter((d) => !anchored(argOf(d)))) + ";");
+const isWrite = (a) => a === "Edit" || a === "Write" || a.startsWith("Edit(") || a.startsWith("Write(");
+const writes = allow.filter(isWrite);
+const inNotes = (arg) => arg !== null && arg.startsWith("./notes/") && !arg.includes("..");
+console.log("WRITE_GRANTS=" + writes.length + ";");
+console.log("WRITE_OUTSIDE=" + JSON.stringify(writes.filter((a) => !inNotes(argOf(a)))) + ";");
+' "$1"
+}
+# The three checks read shapes, so the instrument runs first against a fixture
+# withheld from the closed list that breaks each one: an extra and a missing
+# allow entry, an unanchored deny, and a bare Edit.
+printf '%s' '{"permissions":{"allow":["Read","Edit"],"deny":["Read(**/.ssh/**)"]}}' > "$TMP/template-bad.json"
+BAD_OUT=$(template_verdict "$TMP/template-bad.json")
+case "$BAD_OUT" in *"ALLOW_EXTRA=[\"Read\",\"Edit\"];"*) check "template control: the allow check speaks on an entry outside the closed list" 0 ;; *) check "template control: the allow check speaks on an entry outside the closed list ($BAD_OUT)" 1 ;; esac
+case "$BAD_OUT" in *"DENY_UNANCHORED=[\"Read(**/.ssh/**)\"];"*) check "template control: the anchor check speaks on an unanchored deny" 0 ;; *) check "template control: the anchor check speaks on an unanchored deny ($BAD_OUT)" 1 ;; esac
+case "$BAD_OUT" in *"WRITE_OUTSIDE=[\"Edit\"];"*) check "template control: the write check speaks on a bare Edit" 0 ;; *) check "template control: the write check speaks on a bare Edit ($BAD_OUT)" 1 ;; esac
+LIAISON_TEMPLATE_OUT=$(template_verdict "$LIAISON_TEMPLATE")
+case "$LIAISON_TEMPLATE_OUT" in *"ALLOW_EXTRA=[];"*"ALLOW_MISSING=[];"*"ALLOW_DUP=0;"*) check "template: the allow set is exactly the closed list ($LIAISON_TEMPLATE)" 0 ;; *) check "template: the allow set is exactly the closed list ($LIAISON_TEMPLATE: $LIAISON_TEMPLATE_OUT)" 1 ;; esac
+case "$LIAISON_TEMPLATE_OUT" in *"DENY_COUNT=0;"*) check "template: the deny list is present to read ($LIAISON_TEMPLATE_OUT)" 1 ;; *"DENY_UNANCHORED=[];"*) check "template: every deny entry is anchored at ~/, ./ or //" 0 ;; *) check "template: every deny entry is anchored at ~/, ./ or // ($LIAISON_TEMPLATE_OUT)" 1 ;; esac
+case "$LIAISON_TEMPLATE_OUT" in *"WRITE_GRANTS=0;"*) check "template: a write grant is present to read ($LIAISON_TEMPLATE_OUT)" 1 ;; *"WRITE_OUTSIDE=[];"*) check "template: no allow entry grants Edit or Write outside ./notes/" 0 ;; *) check "template: no allow entry grants Edit or Write outside ./notes/ ($LIAISON_TEMPLATE_OUT)" 1 ;; esac
 if [ "$failed" -eq 0 ]; then
   echo "settings-plugin-key-test.sh: PASS"
   exit 0
