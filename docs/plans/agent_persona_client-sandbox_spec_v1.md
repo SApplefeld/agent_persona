@@ -1,6 +1,6 @@
 # The sender class on a channel turn, the liaison seat and the client sandbox runbook
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-30
 
