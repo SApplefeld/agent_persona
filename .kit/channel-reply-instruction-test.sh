@@ -1822,7 +1822,7 @@ done
 # The final ask's line, written by the real final_ask_json out of the script,
 # in the same user-turn shape goal_prompt_json writes (the form the child
 # already accepts for its goal), with the marker and the id at the head of the
-# text. The natural-exit suite reads it off a stub's input at the end-run;
+# text. The natural-exit suite reads it off a stub's input in its driven cases;
 # this reads the helper's own output here.
 ASK_FN=$(sed -n '/^final_ask_json() {$/,/^}$/p' "$SCRIPT")
 ASK_TEXT_LINE=$(grep -m1 '^SUPERVISOR_ASK_TEXT="' "$SCRIPT")

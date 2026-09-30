@@ -358,3 +358,10 @@ Deferred under the gate policy of 2026-09-18 and named deferred rather than pass
 **Next.** Nothing. This plan has one section, it is built, gated and reviewed, and this Chapter closes it. What remains is not this plan's work: the deferred suites run under `docs/plans/agent_persona_deferred-gate-run_v1.md`, and the operator's own verification of the installed copy after the merge.
 
 **Commit model.** Branch-and-PR, on branch `context-budget-removal`. This Chapter, the finishing pass's fixes and the archive move land together, ahead of the pull request.
+
+### End-run results - 2026-09-30
+
+Not a Chapter. `docs/plans/agent_persona_deferred-gate-run_v1.md` Section 1 ran what this plan deferred to it, on SCOTT-CLAUDE.
+
+- **The natural-exit cases this plan reasoned and did not run pass.** Cases `(i)`, `(j)`, `(k)` and `(x)` passed every check in both whole runs of `.kit/supervisor-natural-exit-test.sh`: 16 OK lines and no FAIL line for the four cases in each log, on `4557c7e` and again on the tree carrying the run's two fixes. The reasoning about the hung restart path holds.
+- **The deferred suites.** The natural-exit suite ran 326 OK and 5 FAIL on `4557c7e`, none of the failures in this plan's cases, and 335 OK and 0 FAIL once the run's two fixes were in. The four live suites `.kit/live-all.sh` runs ran on `c777ceb` with every persona stopped, all green, and the fifth, `.kit/live-stopprocesstree-test.sh`, ran 38 checks and 0 failed beside the fleet. The deferred gate run's Chapter 1 carries the table.

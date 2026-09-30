@@ -612,3 +612,7 @@ Delta: measured 2026-09-26T14:37:36Z on SCOTT-CLAUDE in the autonomy-dial worktr
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### End-run results - 2026-09-30
+
+Not a Chapter. This plan deferred the live suites and the natural-exit suites to `docs/plans/agent_persona_deferred-gate-run_v1.md`, whose Section 1 ran them on SCOTT-CLAUDE and whose Chapter 1 carries the per-suite table. The natural-exit suite ran whole on `4557c7e` with 326 OK and 5 FAIL, and 335 OK and 0 FAIL once the run's two fixes were in. The five failures were three `root_complete` detail pins, broken by the goal-levels plan's `64e8f2a` and fixed in pull request 127, and two `(pkdu)` checks, a test defect the supervisor-peer plan's `ec2e415` exposed, fixed in pull request 128. The four live suites `.kit/live-all.sh` runs passed on `c777ceb` with every persona stopped, and `.kit/live-stopprocesstree-test.sh` passed with 38 checks and 0 failed. No failure was in a case this plan added.
