@@ -212,13 +212,19 @@ const cases = [
     assert.equal(r.action, 'restart_passive');
   }],
   ['a backfilled root_complete is not a completion: continue', () => {
-    const r = run('root-backfilled', { store: store(decision('root_complete', START + 5, 'backfilled root')) });
+    const r = run('root-backfilled', { store: store(decision('root_complete', START + 5, 'Root root-r1 marked complete - backfilled, work already done')) });
     assert.equal(r.action, 'continue');
+  }],
+  // A goal_done note is the operator's text and may carry the word. Only the
+  // whole legacy line reads as backfilled, so this is a real completion.
+  ['a goal_done note carrying the word backfilled is still a completion: restart_passive', () => {
+    const r = run('root-note', { store: store(decision('root_complete', START + 5, 'Root root-r1 marked complete by goal_done: backfilled the tests, marked complete - backfilled, work already done')) });
+    assert.equal(r.action, 'restart_passive');
   }],
   ['the newest root_complete is the one read, not the first', () => {
     const r = run('root-newest', { store: store(
       decision('root_complete', START + 5, 'goal done'),
-      decision('root_complete', START + 9, 'backfilled root')) });
+      decision('root_complete', START + 9, 'Root root-r1 marked complete - backfilled, work already done')) });
     assert.equal(r.action, 'continue');
   }],
   ['restart_requested newer than the child start: restart_passive, named as requested', () => {
