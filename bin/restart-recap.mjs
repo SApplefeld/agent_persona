@@ -38,23 +38,27 @@
 //     "activeGoal": true | false | null }
 // sessions names the sessions whose transcripts were read, oldest first as
 // the digest prints them. lastRecordAt and lastOperatorAt are the newest
-// across every session read.
+// across every session read; lastOperatorAt reads operator messages only.
 // activeGoal is true where the persona's entry names an active goal, false
 // where it names none, and null where the store or the entry cannot be read.
 // The lines after it are the digest, oldest session first: a session line
 // naming the first and last record of the tail read and the version, then
 // "operator <hh:mm>: <text>" and "persona <hh:mm>: <text>" in file order, which
-// is time order, an operator line reading "operator <hh:mm>: <author>: <text>"
-// where its channel tag names an author, then "last words: <text>", then one
-// count line for the whole
-// digest. hh:mm is UTC. A session whose last record is older than --since
-// prints as one line naming its age and nothing else.
+// is time order, then "last words: <text>", then one count line for the whole
+// digest. A message whose channel tag names the participant class prints as
+// "participant <hh:mm>: <text>" in the same order, and counts as neither an
+// operator message nor a reply. An operator or participant line whose channel
+// tag names an author reads "<kind> <hh:mm>: <author>: <text>", the author
+// cut to RECAP_AUTHOR_CHARS. hh:mm is UTC. A session whose last record is older than --since prints as
+// one line naming its age and nothing else.
 //
 // What the digest admits. An operator message is a user record whose content
 // is a string opening the relay's channel tag, or, for a message that arrived
 // while a turn was running, a queued_command attachment whose prompt opens it,
 // each bearing the harness's relay origin stamp. Every such record prints, so
-// the same text sent twice prints twice. A persona session is headless,
+// the same text sent twice prints twice. Its tag decides whether it prints as
+// an operator's or a participant's, by the rule taggedSender states. A
+// persona session is headless,
 // so every user record without that tag is text a program submitted: the
 // supervisor's priming turn, a prompt the plugin injected, a coordinator or
 // worker record delivered as a turn, a tool result. A reply is the relay
@@ -91,6 +95,9 @@ import { projectKey, transcriptPathsFor } from './supervise-liveness.mjs';
 
 export const RECAP_TAIL_BYTES = 2 * 1024 * 1024;
 export const RECAP_MESSAGE_CHARS = 400;
+// The most characters of an author an operator line carries, a cap of its
+// own so an author cannot double a line's budget.
+export const RECAP_AUTHOR_CHARS = 64;
 export const RECAP_DIGEST_CHARS = 6000;
 export const DEFAULT_SESSIONS = 2;
 export const DEFAULT_SINCE_HOURS = 48;
@@ -255,50 +262,66 @@ function isoOf(record) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-// The five entities the harness escapes attribute text with, decoded in one
+// The five XML entities this reader decodes in an attribute value, in one
 // pass so a decoded '&' never starts a second decode.
 const TAG_ENTITIES = { quot: '"', amp: '&', lt: '<', gt: '>', apos: "'" };
 
 /**
- * The opening channel tag of a tagged record: its attributes by name and the
- * index just past its closing '>'. The tag is read as a run of name="value"
- * pairs, so a '>' inside a quoted value does not end it and attribute order
- * does not matter; a name given twice keeps its first value. Returns null
- * where the text does not open with a whole tag. This is the rule
+ * The opening channel tag of a tagged record: its attributes as [name, value]
+ * pairs in the order the tag gives them, and the index just past its closing
+ * '>'. The tag is read as a run of name="value" pairs, so a '>' inside a
+ * quoted value does not end it; a name given twice appears twice. Returns
+ * null where the text does not open with a whole tag. This is the rule
  * channelEnvelopeAttributes in hooks/index.ts applies, which a .mjs script
  * cannot import from TypeScript.
  * @param {string} content
- * @returns {{attributes: Map<string,string>, end: number}|null}
+ * @returns {{attributes: [string, string][], end: number}|null}
  */
 function channelTag(content) {
   const open = '<channel';
   if (!content.startsWith(open)) return null;
   const pair = /\s+([A-Za-z_][\w.:-]*)="([^"]*)"/y;
-  const attributes = new Map();
+  const attributes = [];
   let at = open.length;
   for (;;) {
     pair.lastIndex = at;
     const m = pair.exec(content);
     if (!m) break;
-    if (!attributes.has(m[1])) attributes.set(m[1], m[2].replace(/&(quot|amp|lt|gt|apos);/g, (_, name) => TAG_ENTITIES[name]));
+    attributes.push([m[1], m[2].replace(/&(quot|amp|lt|gt|apos);/g, (_, name) => TAG_ENTITIES[name])]);
     at = pair.lastIndex;
   }
   const close = /^\s*>/.exec(content.slice(at));
   return close ? { attributes, end: at + close[0].length } : null;
 }
 
-// The operator's words in a tagged record, without the tag around them.
-function operatorWords(content) {
+// The words in a tagged record, without the tag around them.
+function taggedWords(content) {
   const tag = channelTag(content);
   const open = tag ? tag.end - 1 : content.indexOf('>');
   const body = open >= 0 ? content.slice(open + 1) : '';
   return body.replace(/<\/channel>\s*$/, '');
 }
 
-// The author the tag of a tagged record names, or '' where it names none.
-function operatorAuthor(content) {
+/**
+ * Who sent a tagged record, by the rule channelSenderOf in hooks/index.ts
+ * applies: a tag that does not parse whole, or that names sender_class more
+ * than once, is a participant's with no author, since either shape can come
+ * from author text the envelope did not escape. A whole tag with one
+ * sender_class is a participant's where the value is exactly "participant"
+ * and the operator's otherwise, and a whole tag with no sender_class is the
+ * operator's. The author is the first author attribute's value, or ''.
+ * @param {string} content
+ * @returns {{kind: 'operator'|'participant', author: string}}
+ */
+function taggedSender(content) {
   const tag = channelTag(content);
-  return (tag && tag.attributes.get('author')) || '';
+  const classes = tag ? tag.attributes.filter(([name]) => name === 'sender_class') : [];
+  if (!tag || classes.length > 1) return { kind: 'participant', author: '' };
+  const author = tag.attributes.find(([name]) => name === 'author');
+  return {
+    kind: classes.length === 1 && classes[0][1] === 'participant' ? 'participant' : 'operator',
+    author: author ? author[1] : '',
+  };
 }
 
 /**
@@ -356,12 +379,14 @@ export function sessionDigest(records) {
     if (typeof r.version === 'string' && r.version) version = r.version;
     if (r.isSidechain === true) continue;
     // Every carrier is its own message. The tag names no message id, so the
-    // same text twice in a session is the operator writing it twice, and both
-    // print and both move lastOperatorAt.
+    // same text twice in a session is the sender writing it twice, and both
+    // print. Only an operator's message moves lastOperatorAt; a participant's
+    // prints under its own kind and moves nothing.
     const tagged = operatorCarrier(r);
     if (tagged !== null) {
-      lines.push({ kind: 'operator', at, text: operatorWords(tagged), author: operatorAuthor(tagged) });
-      if (at && (lastOperatorAt === null || at > lastOperatorAt)) lastOperatorAt = at;
+      const sender = taggedSender(tagged);
+      lines.push({ kind: sender.kind, at, text: taggedWords(tagged), author: sender.author });
+      if (sender.kind === 'operator' && at && (lastOperatorAt === null || at > lastOperatorAt)) lastOperatorAt = at;
       continue;
     }
     const message = r.message && typeof r.message === 'object' ? r.message : null;
@@ -571,10 +596,12 @@ export function recap(flags, opts = {}) {
     counted += 1;
     entries.push({ text: 'session ' + s.id + ': tail from ' + s.firstAt + ' to ' + s.lastAt + ', version ' + (digestText(s.version, VERSION_CHARS) || 'unknown'), message: false });
     for (const l of s.lines) {
+      // A participant's message is neither an operator message nor a persona
+      // reply, so it counts in neither.
       if (l.kind === 'operator') operators += 1;
-      else replies += 1;
-      // An operator line whose tag named an author opens its words with them.
-      const author = l.author ? digestText(l.author) : '';
+      else if (l.kind === 'persona') replies += 1;
+      // A channel line whose tag named an author opens its words with them.
+      const author = l.author ? digestText(l.author, RECAP_AUTHOR_CHARS) : '';
       entries.push({ text: l.kind + ' ' + hhmm(l.at) + ': ' + (author ? author + ': ' : '') + digestText(l.text), message: true });
     }
     entries.push({ text: 'last words: ' + (s.lastWords === null ? '(none)' : digestText(s.lastWords)), message: false });

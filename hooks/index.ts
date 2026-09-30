@@ -1716,44 +1716,53 @@ const OPERATOR_ORIGIN_KINDS: ReadonlySet<string> = new Set(["composer", "bridge"
 type ChannelSender = { senderClass: "operator" | "participant"; author: string };
 const OPERATOR_SENDER: ChannelSender = { senderClass: "operator", author: "" };
 
-// The five entities the harness escapes attribute text with, decoded in one
+// The five XML entities this reader decodes in an attribute value, in one
 // pass so a decoded "&" never starts a second decode.
 const ENVELOPE_ENTITIES: Readonly<Record<string, string>> = { quot: '"', amp: "&", lt: "<", gt: ">", apos: "'" };
 function decodeEnvelopeAttribute(value: string): string {
   return value.replace(/&(quot|amp|lt|gt|apos);/g, (_, name: string) => ENVELOPE_ENTITIES[name]);
 }
 
-// The attributes of the channel envelope's opening tag, by name, or null
-// where the text does not open with a whole one. Only a tag at the very start
-// of the text is read: a <channel sequence anywhere later is the message's own
-// content, which the sender wrote. The tag is read as a run of name="value"
-// pairs up to its closing '>', so a '>' inside a quoted value does not end
-// it, and attribute order does not matter. A name given twice keeps its first
-// value.
-function channelEnvelopeAttributes(text: string): Map<string, string> | null {
+// The attributes of the channel envelope's opening tag as name and value
+// pairs in the order the tag gives them, or null where the text does not open
+// with a whole one. Only a tag at the very start of the text is read: a
+// <channel sequence anywhere later is the message's own content, which the
+// sender wrote. The tag is read as a run of name="value" pairs up to its
+// closing '>', so a '>' inside a quoted value does not end it. A name given
+// twice appears twice.
+function channelEnvelopeAttributes(text: string): Array<[string, string]> | null {
   const open = "<channel";
   if (!text.startsWith(open)) return null;
   const pair = /\s+([A-Za-z_][\w.:-]*)="([^"]*)"/y;
-  const attributes = new Map<string, string>();
+  const attributes: Array<[string, string]> = [];
   let at = open.length;
   for (;;) {
     pair.lastIndex = at;
     const m = pair.exec(text);
     if (!m) break;
-    if (!attributes.has(m[1])) attributes.set(m[1], decodeEnvelopeAttribute(m[2]));
+    attributes.push([m[1], decodeEnvelopeAttribute(m[2])]);
     at = pair.lastIndex;
   }
   return /^\s*>/.test(text.slice(at)) ? attributes : null;
 }
 
 // The sender a channel prompt's envelope names. A text that does not open
-// with a whole envelope tag reads as the operator's with no author.
+// with <channel reads as the operator's with no author. A text that opens with
+// <channel reads as a participant with no author where its tag does not parse
+// whole, or where the tag names sender_class more than once: either shape can
+// come from author text the envelope did not escape, so neither may decide
+// the class. A whole tag with one sender_class reads as a participant where
+// the value is exactly "participant" and as the operator otherwise, and a
+// whole tag with no sender_class reads as the operator. The author is the
+// first author attribute's value, or empty where the tag names none.
 function channelSenderOf(text: string): ChannelSender {
+  if (!text.startsWith("<channel")) return OPERATOR_SENDER;
   const attributes = channelEnvelopeAttributes(text);
-  if (attributes === null) return OPERATOR_SENDER;
+  const classes = attributes === null ? [] : attributes.filter(([name]) => name === "sender_class");
+  if (attributes === null || classes.length > 1) return { senderClass: "participant", author: "" };
   return {
-    senderClass: attributes.get("sender_class") === "participant" ? "participant" : "operator",
-    author: attributes.get("author") ?? "",
+    senderClass: classes.length === 1 && classes[0][1] === "participant" ? "participant" : "operator",
+    author: attributes.find(([name]) => name === "author")?.[1] ?? "",
   };
 }
 

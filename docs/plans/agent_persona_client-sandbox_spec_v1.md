@@ -22,6 +22,10 @@ Alternatives refused. Reading an absent class as participant: it fails safe on p
 
 Rulings after the spec shipped: amended 2026-09-30 on a finding the kit plan's section 1 review raised and the coordinator routed back: section 2 now states that the liaison charter splices the architect's and the coordinator's persona names into its two `agentic_say` sentences, and that a liaison launch naming no architect is refused.
 
+Ruled 2026-09-30 by the ARCHITECT persona, in its record answering `ARCHITECT-73eabc7f-1fa4-48b0-9ca0-3cab3e320e9d-1`: a participant's message prints in the restart recap under a `participant` kind with its author, and moves neither the last-operator time nor any other recap field; nothing else in the recap changes, since a participant's message has no standing and must not misstate when the operator last spoke.
+
+Ruled 2026-09-30 by the ARCHITECT persona, same record: every tool the priming turn or the liaison charter instructs the seat to call is on the template's closed allow list, so the Skill tool and `mcp__agentic-plugin__supervisor_shutdown` join it where a print-mode measurement under the default permission mode shows each refused without a grant, and stay off where it shows them run unprompted. The template keeps a deny list of credential paths on Read, Grep and Glob and on `Edit` under the seat's own `.claude` directory: it narrows the closed list and widens nothing. The runbook trusts the liaison's working directory rather than passing the rules through `--settings`, and its checklist proves the permissions block was honored by a tool outside the list being refused.
+
 Provenance: distilled by the ARCHITECT persona from the operator's four channel messages on 2026-09-30 and the reconnaissance recorded under Approach.
 
 ## Approach
@@ -36,6 +40,12 @@ The runbook is a document for the operator, written from the code as built and t
 
 The contract sweep for this plan ran over the repository on 2026-09-30 and returned 137 surfaces under seven headings: the operator-origin gate and its predicate; the ask and autonomy paths that read it; the architect-seat siblings a liaison key mirrors; the record routing, which needs no change; the recap and author text; the docs; and the tests, the controller tick suite's bare `kind: "channel"` fixtures among them. Every surface it returned is in a section's Files in scope below or under Out of Scope. The sweep's return is the architect's scratch, not a shipped artifact; the Files in scope lists are its product.
 
+## Standing Brief Amendments
+
+- The restart recap prints a participant's message under a `participant` kind with its author, and moves neither the last-operator time nor any other recap field.
+- The liaison template's allow list holds every tool the priming turn or the liaison charter instructs the seat to call, where a measurement shows that tool refused without a grant. Its deny list covers credential paths on Read, Grep and Glob and `Edit` under the seat's own `.claude` directory.
+- The runbook trusts the liaison's working directory, and its checklist carries an item where a tool outside the allow list, called from the liaison's thread, is refused.
+
 ## Sections of Work
 
 ### 1. The sender class and author on a channel turn
@@ -47,6 +57,7 @@ Acceptance:
 - A prompt with no `sender_class` attribute reads as the operator's, and every existing channel fixture in `.kit/controller-tick-test.mjs` passes unchanged.
 - A `<channel sender_class="operator">` sequence inside the content of a participant's envelope does not change the class.
 - A goal root created on a channel turn with `author="Ada"` carries `askedBy: "Ada"`, and the restart recap's operator line for that message opens with the author.
+- A participant fixture prints in the restart recap under the `participant` kind with its author, and leaves the last-operator time as it was.
 Files in scope: `hooks/index.ts` (the `OriginReading` type and `originReadings`, the `prompt.submit` origin block, `turn.start`, `turnIsOperators`, the open-ask close block, `goal_create`'s root construction), `hooks/agent-state.ts` where `GoalNode` gains the optional field, `bin/restart-recap.mjs` (`OPERATOR_TAG`, `operatorWords`, the operator line), `.kit/controller-tick-test.mjs` (new cases beside the origin-kind loop), `.kit/restart-recap-unit-test.mjs` and `.kit/fixtures/restart-recap/*.jsonl`, and `.kit/jev-gold/sample.mjs` and `.kit/jev-gold/score.mjs` only where a class-bearing fixture is added. `README.md`'s turn-origin paragraph is section 3's.
 Tests: the five acceptance bullets; the inner-tag forgery case; the recap digest with and without an author.
 

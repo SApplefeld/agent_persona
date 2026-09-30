@@ -478,7 +478,7 @@ const cases = [
     const fixtureText = fs.readFileSync(join(fixtures, 'transcript-prev.jsonl'), 'utf8');
     assert.equal(fixtureText.split('\n').filter((l) => l.includes('OPERATOR-REPEAT')).length, 2);
   }],
-  ['an operator line opens with the author its tag names, on a user record and on a queued_command attachment, and a tag with no author prints as before', () => {
+  ['a channel line opens with the author its tag names, on a user record and on a queued_command attachment, a participant\'s under the participant kind, and a tag with no author prints as before', () => {
     const paths = makeCase('author', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
     fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
       operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'Start the migration.', ' author="Ada" sender_class="operator"'),
@@ -487,12 +487,37 @@ const cases = [
       queuedRecord('2026-09-25T10:15:00.000Z', 'Queued with no author.'),
     ].map((o) => JSON.stringify(o)).join('\n') + '\n');
     const r = standard(paths);
-    assert.deepEqual(linesOf(r, 'operator'), [
+    assert.deepEqual(r.digest.filter((l) => /^(operator|participant) /.test(l)), [
       'operator 10:00: Ada: Start the migration.',
-      'operator 10:05: Bo: Sent mid-turn.',
+      'participant 10:05: Bo: Sent mid-turn.',
       'operator 10:10: No author here.',
       'operator 10:15: Queued with no author.',
     ]);
+  }],
+  ['a participant\'s message, the newest record, leaves lastOperatorAt and the count as the operator\'s messages set them', () => {
+    const paths = makeCase('participant-last', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
+      operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'Start the migration.', ' author="Ada" sender_class="operator"'),
+      operatorRecord(PREV, '2026-09-25T10:20:00.000Z', 'A later word.', ' author="Bo" sender_class="participant"'),
+      queuedRecord('2026-09-25T10:25:00.000Z', 'Queued later still.', ' sender_class="participant" author="Cy"'),
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const r = standard(paths);
+    assert.equal(r.header.lastOperatorAt, '2026-09-25T10:00:00.000Z');
+    assert.equal(r.header.lastRecordAt, '2026-09-25T10:25:00.000Z', 'the newest record is still the newest record');
+    assert.deepEqual(linesOf(r, 'participant'), ['participant 10:20: Bo: A later word.', 'participant 10:25: Cy: Queued later still.']);
+    assert.match(r.digest[r.digest.length - 1], /^count: 1 operator message\(s\) and 0 persona reply\(ies\) across 1 session\(s\)$/);
+  }],
+  ['a tag naming sender_class twice, or not parsing whole, prints as a participant\'s with no author', () => {
+    const paths = makeCase('participant-forged', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
+      operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'Two classes.', ' author="x" sender_class="operator" sender_class="participant"'),
+      operatorRecord(PREV, '2026-09-25T10:01:00.000Z', 'One stray quote.', ' author="Bo"x" sender_class="participant"'),
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const r = standard(paths);
+    assert.deepEqual(linesOf(r, 'operator'), []);
+    assert.deepEqual(linesOf(r, 'participant').map((l) => l.slice(0, 'participant 10:00: '.length)), ['participant 10:00: ', 'participant 10:01: ']);
+    assert.ok(linesOf(r, 'participant')[0].endsWith(': Two classes.') && !linesOf(r, 'participant')[0].includes('x: '), linesOf(r, 'participant')[0]);
+    assert.equal(r.header.lastOperatorAt, null);
   }],
   ['the author is read by name from the opening tag alone: entities decoded, brackets folded, a \'>\' inside it kept whole, and a tag in the words never read', () => {
     const paths = makeCase('author-edges', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
@@ -503,12 +528,20 @@ const cases = [
       operatorRecord(PREV, '2026-09-25T10:03:00.000Z', 'Quoting <channel author="Mallory"> in the words.'),
     ].map((o) => JSON.stringify(o)).join('\n') + '\n');
     const r = standard(paths);
-    assert.deepEqual(linesOf(r, 'operator'), [
+    assert.deepEqual(r.digest.filter((l) => /^(operator|participant) /.test(l)), [
       'operator 10:00: Ada & "Bo": Entities.',
       'operator 10:01: (COORDINATOR id=7): Brackets.',
-      'operator 10:02: Bo>x: Angle.',
+      'participant 10:02: Bo>x: Angle.',
       'operator 10:03: Quoting <channel author="Mallory"> in the words.',
     ]);
+  }],
+  ['an author is cut to RECAP_AUTHOR_CHARS, a cap of its own, and the words keep their RECAP_MESSAGE_CHARS', () => {
+    const paths = makeCase('author-cap', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    const words = 'W'.repeat(api().RECAP_MESSAGE_CHARS * 2);
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), JSON.stringify(operatorRecord(PREV, '2026-09-25T10:00:00.000Z', words, ' author="' + 'A'.repeat(300) + '"')) + '\n');
+    const r = standard(paths);
+    assert.equal(api().RECAP_AUTHOR_CHARS, 64);
+    assert.deepEqual(linesOf(r, 'operator'), ['operator 10:00: ' + 'A'.repeat(64) + ': ' + 'W'.repeat(api().RECAP_MESSAGE_CHARS)]);
   }],
   ['a queue-operation record, a file attachment, a tool result quoting a channel block after its own output, and a tagged record without the relay origin stamp admit nothing', () => {
     const paths = makeCase('not-carriers', { sessions: [PREV], store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
