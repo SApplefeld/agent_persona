@@ -3,8 +3,8 @@
 #
 # bin/supervise-holder.sh holds a supervised child's stdin pipe. This suite
 # drives it with its stdout piped into a plain file and a plain `sleep` as the
-# child pid it watches, so nothing here stands in for a Claude child and the
-# gate policy allows it to run. It pins that the holder writes the priming turn,
+# child pid it watches, so nothing here stands in for a Claude child. It pins
+# that the holder writes the priming turn,
 # waits for the priming turn's result line before writing the goal, relays the
 # final ask the supervisor drops in the ask-request file and removes it, exits a
 # few seconds after the watched pid disappears, exits when it is signaled, and

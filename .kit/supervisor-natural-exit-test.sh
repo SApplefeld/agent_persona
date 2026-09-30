@@ -2269,10 +2269,9 @@ fi
 
 # --- Section 5: the holder launch, detach and adoption ---
 # These cases drive the real bin/supervise.sh under the holder launch shape.
-# They launch a stub child, so under the operator's gate policy they are
-# DEFERRED: written and bash -n-clean here, run at the end-run. They orchestrate
-# the supervisor in the background (rather than through drive(), which runs it to
-# completion) so a signal can reach it mid-run.
+# They launch a stub child and orchestrate the supervisor in the background
+# (rather than through drive(), which runs it to completion) so a signal can
+# reach it mid-run.
 #
 # sup_bg launches a supervisor in the background on a given case directory,
 # sharing the workdir and rundir across a case's two supervisors so the second
