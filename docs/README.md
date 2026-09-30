@@ -7,7 +7,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_client-sandbox_spec_v1.md` (Ready, four sections, Branch-and-PR; authored 2026-09-30 by the ARCHITECT persona on the operator's word over its channel) reads the sender class and author the Discord broker now writes on a channel envelope, so a participant's message opens a turn that starts no effort while an operator's or an unclassed one keeps today's standing; adds the liaison seat beside the coordinator and architect seats, with its roster key, charter and a permission-prompting settings template; states both in the security model and the README; and carries the runbook the operator provisions a client's sandbox host from. Second of three companion plans, after the broker's `channels_client-sandbox_spec_v1.md` and before the kit's `claude-kit_liaison-seat_spec_v1.md`.
 
 ## Archived plans
 
