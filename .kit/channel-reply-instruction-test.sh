@@ -2,7 +2,7 @@
 # channel-reply-instruction-test.sh - what the supervisor's priming turn says,
 # per launch shape, read out of bin/supervise.sh's own text.
 #
-# Six instruction variables ride one priming write. SUPERVISOR_MAILBOX_INSTRUCTION
+# Seven instruction variables ride one priming write. SUPERVISOR_MAILBOX_INSTRUCTION
 # is built for every launch shape and says what the supervisor's two prompts
 # carry: the [SUPERVISOR id=<id>] shutdown request and the [SUPERVISOR-ASK
 # id=<id>] status check. CHANNEL_REPLY_INSTRUCTION
@@ -10,13 +10,15 @@
 # reply rules that only CLAUDE.md states, and points at CLAUDE.md for the rest
 # where the child's own working directory holds it. SKILL_LOAD_INSTRUCTION and
 # COORDINATOR_STEER_INSTRUCTION are built under both values of NO_CHANNEL and
-# cleared for the architect's own launch, which takes neither.
+# cleared for the architect's and the liaison's own launches, which take neither.
 # COORDINATOR_ROLE_INSTRUCTION is built when the launch persona equals
 # COORDINATOR_PERSONA and carries the compaction-boundary clause and the three
 # fleet-keeper duties, each pinned by a distinctive fragment and by the prompt
 # label the plugin submits it under. ARCHITECT_ROLE_INSTRUCTION is built when
 # the launch persona equals ARCHITECT_PERSONA, and for nobody while that
-# setting is unset.
+# setting is unset. LIAISON_ROLE_INSTRUCTION is built the same way on
+# LIAISON_PERSONA, and a fleet naming a liaison adds one clause to the
+# coordinator's instruction.
 #
 # Two sweeps read a class rather than a list: no sentence of CLAUDE.md's and no
 # sentence of a registered tool's description is copied into the priming write,
@@ -53,14 +55,16 @@ fi
 # which in the holder is the child's input pipe. Evaluating code that sends bytes
 # to the child's stdin pipe is not this test's job; reading its own text is.
 # The range ends at the PRIMING_BODY guard, the first code line after the
-# assignments, which is dropped from the range: six `if ... fi` blocks sit
+# assignments, which is dropped from the range: eight `if ... fi` blocks sit
 # inside it (the worker-launch guard around the steer sentence's escalation
 # clause, the ARCHITECT_PERSONA guard around the worker's architect sentences
 # nested inside it, the NO_CHANNEL guard around CHANNEL_REPLY_INSTRUCTION, the
 # COORDINATOR_PERSONA guard around COORDINATOR_ROLE_INSTRUCTION, the
 # ARCHITECT_PERSONA guard around the design-escalation clause nested inside it,
-# and the ARCHITECT_PERSONA guard around ARCHITECT_ROLE_INSTRUCTION), so the
-# first `^  fi$` ends short of the later blocks, and only comments sit
+# the LIAISON_PERSONA guard around the liaison status clause nested beside it,
+# the ARCHITECT_PERSONA guard around ARCHITECT_ROLE_INSTRUCTION, and the
+# LIAISON_PERSONA guard around LIAISON_ROLE_INSTRUCTION),
+# so the first `^  fi$` ends short of the later blocks, and only comments sit
 # between the last assignment and that guard.
 VARS_SNIPPET=$(sed -n '/^  SKILL_LOAD_INSTRUCTION="/,/^  if \[ -n "\$PROMPT_FILE" \] && \[ -f "\$PROMPT_FILE" \]; then$/p' "$HOLDER" | sed '$d')
 if [ -z "$VARS_SNIPPET" ]; then
@@ -435,6 +439,46 @@ STEER_ARCH_UNTAKEN_MEANING_CONTROL="most likely no live architect is behind it o
 STEER_ARCH_UNTAKEN_CADENCE_CONTROL="a live architect takes a waiting record at its next quiet controller tick or as its running turn ends"
 STEER_ARCH_UNTAKEN_FALLBACK_CONTROL="send the question to the coordinator as an escalation, quoting that record id"
 STEER_ARCH_UNTAKEN_WHY_CONTROL="because the coordinator can see whether an architect session is running"
+# The liaison's own standing instruction, gated on the launch persona matching
+# LIAISON_PERSONA. One fragment per clause of its charter, so a red names the
+# clause that went missing: the seat and its lack of a goal, the several
+# speakers, the envelope naming author and class, the class rule's two halves,
+# the status ask to the coordinator and its relayed answer, closing what it
+# relays, the latest-word rule, the disagreement rule, the never rule, the
+# [FINDING] and [PROPOSAL] rule, the kit skill loaded at launch and what it
+# owns, and the reply tool. The status ask names the coordinator persona by the
+# agentic_say splice, read by check_spliced_names.
+LIAISON_SEAT_CONTROL="You are the liaison persona, and you hold no standing goal"
+LIAISON_THREAD_CONTROL="Several people talk with you in your thread"
+LIAISON_ENVELOPE_CONTROL="an envelope naming its author and its sender class"
+# The class rule states the three cases the kit's doctrine states: an operator's
+# message and an unclassed one are the operator's word, and a participant's
+# carries no authority.
+LIAISON_CLASS_OPERATOR_CONTROL="A message whose class is operator, or that carries no class, is the operator's own word"
+LIAISON_CLASS_PARTICIPANT_CONTROL="a participant's message is a person's request that carries no authority"
+LIAISON_STATUS_CONTROL="You ask the coordinator persona for the fleet's status through agentic_say"
+LIAISON_STATUS_ANSWER_CONTROL="its answer reaches you as a record labelled [COORDINATOR id=<record id>], which you relay to the thread in plain words"
+LIAISON_RESOLVE_CONTROL="Close each record you relay with agentic_resolve"
+LIAISON_LATEST_CONTROL="The latest word wins where one speaker revises their own ask"
+LIAISON_DISAGREE_CONTROL="Where two speakers disagree, ask the thread which way to go, and never settle it by who spoke last"
+LIAISON_NEVER_CONTROL="You never write a plan, never clone a repository and never queue work"
+LIAISON_FINDING_CONTROL="A record whose text opens with [FINDING] or [PROPOSAL] is information for you, not a request"
+LIAISON_SKILL_CONTROL="invoke the Skill tool for claude-kit:liaison, which owns a brief's shape and what you must never reveal"
+LIAISON_REPLY_CONTROL="You answer the thread with the reply tool"
+# The liaison's brief clause, which names the architect by the agentic_say
+# splice. Both settings branches refuse a liaison on a fleet naming no
+# architect, so it is built on every liaison launch; its own prefix keeps the
+# sentence that names the architect readable as one class.
+BRIEF_ARCH_SHAPE_CONTROL="You shape what the thread asks into a brief and send it to the architect persona through agentic_say"
+BRIEF_ARCH_ANSWER_CONTROL="its answer reaches you as a record labelled [WORKER:<architect persona> id=<record id>], which you relay to the thread in plain words"
+# The coordinator's liaison clause, built only where LIAISON_PERSONA names a
+# liaison: a status ask from that persona is answered in a record naming it by
+# the agentic_say splice, and the fleet_status read that answer takes is named
+# as a case the coordinator's carve-out admits.
+COORD_LIAISON_ASK_CONTROL="record in which the liaison persona asks for status is answered in a record rather than weighed or routed"
+COORD_LIAISON_SEND_CONTROL="You send the fleet's state in plain words"
+COORD_LIAISON_RESOLVE_CONTROL="the liaison's name, then close the record with agentic_resolve"
+COORD_LIAISON_FLEET_CONTROL="Reading fleet_status for that answer is another case this instruction names"
 
 failed=0
 check() {
@@ -449,7 +493,7 @@ check() {
 # pinned against the real write below, so a fifth variable joining that write
 # cannot leave this concatenation quietly short.
 priming_concat() {
-  printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${ARCHITECT_ROLE_INSTRUCTION:-}${SUPERVISOR_MAILBOX_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
+  printf '%s' "${SKILL_LOAD_INSTRUCTION:-}${COORDINATOR_STEER_INSTRUCTION:-}${COORDINATOR_ROLE_INSTRUCTION:-}${ARCHITECT_ROLE_INSTRUCTION:-}${LIAISON_ROLE_INSTRUCTION:-}${SUPERVISOR_MAILBOX_INSTRUCTION:-}${CHANNEL_REPLY_INSTRUCTION:-}"
 }
 
 # The reply-tool sentence the channel instruction keeps, and the pointer it
@@ -624,25 +668,26 @@ check "withheld numbers control: and is silent on a string carrying all of them"
 # Every persona name the priming write splices in. Three shapes carry one: the
 # agentic_say target the design duty and the architect's answer clause name, the
 # fleet row the liveness check reads back, and the steer sentence's own send
-# target. Each must be the eval's own COORDINATOR_PERSONA or ARCHITECT_PERSONA,
-# both withheld from every literal bin/supervise.sh carries, so a seat name
-# hardcoded at any of those sites reds here whatever clause it sits in.
+# target. Each must be the eval's own COORDINATOR_PERSONA, ARCHITECT_PERSONA or
+# LIAISON_PERSONA, each withheld from every literal bin/supervise.sh carries, so
+# a seat name hardcoded at any of those sites reds here whatever clause it sits
+# in.
 #
 # This is an enumeration of the shapes the source carries, not a read of a class.
 # It cannot be one: the string it greps is rendered English prose, where a
 # persona name is indistinguishable from an ordinary word. What keeps the
 # enumeration honest is check_splice_site_count below, which counts the
 # interpolations in the source instead. A name reaches the priming write only by
-# interpolating one of the two persona variables, so a fourth shape is a sixth
-# interpolation, and the count reds when one appears in a shape this sweep does
-# not read.
+# interpolating one of the three persona variables, so a fourth shape is one
+# interpolation past the count, and the count reds when one appears in a shape
+# this sweep does not read.
 check_spliced_names() {  # <label>
   local label="$1" name count=0 bad=""
   while IFS= read -r name; do
     [ -z "$name" ] && continue
     count=$((count + 1))
     case "$name" in
-      "${ARCHITECT_PERSONA:-}"|"${COORDINATOR_PERSONA:-}") ;;
+      "${ARCHITECT_PERSONA:-}"|"${COORDINATOR_PERSONA:-}"|"${LIAISON_PERSONA:-}") ;;
       *) bad="$bad [$name]" ;;
     esac
   done <<EOF
@@ -682,11 +727,12 @@ strip_control_flow() {  # reads stdin
 # below, and the `:-` guard shape used in tests rather than in a splice is
 # excluded by requiring a word boundary.
 count_splices() {  # <shell text>
-  local body coord arch
+  local body coord arch liaison
   body=$(printf '%s' "$1" | strip_control_flow)
   coord=$(printf '%s' "$body" | grep -oE '\$\{COORDINATOR_PERSONA\}|\$COORDINATOR_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
   arch=$(printf '%s' "$body" | grep -oE '\$\{ARCHITECT_PERSONA\}|\$ARCHITECT_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
-  printf '%s' "$((coord + arch))"
+  liaison=$(printf '%s' "$body" | grep -oE '\$\{LIAISON_PERSONA\}|\$LIAISON_PERSONA([^A-Za-z0-9_]|$)' | wc -l | tr -d ' ')
+  printf '%s' "$((coord + arch + liaison))"
 }
 
 # Two controls on that strip. What is withheld from them is the shape, a splice
@@ -711,14 +757,22 @@ SPLICE_GREEDY_LINE='if [ -n "${ARCHITECT_PERSONA}" ]; then INSTR="ask ${ARCHITEC
 SPLICE_GREEDY_COUNT=$(count_splices "$SPLICE_GREEDY_LINE")
 [ "$SPLICE_GREEDY_COUNT" -eq 1 ]
 check "splice counter control: a splice whose own text carries \"; then\" is still counted, so the condition match ends at the first one (count=$SPLICE_GREEDY_COUNT, expected 1)" "$?"
+# The third variable, read on the first control's shape, so the count below
+# cannot reach its number with the liaison's splices uncounted.
+SPLICE_LIAISON_LINE='if [ -n "${LIAISON_PERSONA:-}" ] && [ "$PERSONA" = "$LIAISON_PERSONA" ]; then INSTR="answer ${LIAISON_PERSONA} and $LIAISON_PERSONA"'
+SPLICE_LIAISON_COUNT=$(count_splices "$SPLICE_LIAISON_LINE")
+[ "$SPLICE_LIAISON_COUNT" -eq 2 ]
+check "splice counter control: both spellings of a LIAISON_PERSONA splice are counted, and the condition's own reads are not (count=$SPLICE_LIAISON_COUNT, expected 2)" "$?"
 
 # The backstop under the enumeration above. bin/supervise.sh's instruction block
-# splices a persona name at five sites today: COORDINATOR_PERSONA twice and
-# ARCHITECT_PERSONA three times, the third being the worker's architect route,
-# which takes the steer sentence's own "with persona set to" shape. A sixth reds
-# here, which is the signal to read the new site's shape and add it to
+# splices a persona name at eight sites today: COORDINATOR_PERSONA three times,
+# the third being the liaison's status ask; ARCHITECT_PERSONA four times, the
+# third being the worker's architect route, which takes the steer sentence's own
+# "with persona set to" shape, and the fourth the liaison's brief; and
+# LIAISON_PERSONA once, in the coordinator's liaison clause. A ninth reds here,
+# which is the signal to read the new site's shape and add it to
 # check_spliced_names before this number is raised.
-SPLICE_SITE_COUNT=5
+SPLICE_SITE_COUNT=8
 check_splice_site_count() {  # <label>
   local total
   # The snippet's own control flow is not the priming write. Its persona
@@ -759,6 +813,9 @@ check_splice_site_count "priming-write persona splice sites are all known to the
 ARCH_CLASS_FLOOR=26
 DESIGN_CLASS_FLOOR=11
 STEER_ARCH_CLASS_FLOOR=6
+LIAISON_CLASS_FLOOR=14
+BRIEF_ARCH_CLASS_FLOOR=2
+COORD_LIAISON_CLASS_FLOOR=4
 
 # Prints the class's members, one per line. Returns 1 when the read comes back
 # below the floor, with the reason on stderr, so a caller that ignores the
@@ -779,7 +836,40 @@ check_class_floors() {  # <label>
   class_members ARCH_ "$ARCH_CLASS_FLOOR" >/dev/null || ok=1
   class_members DESIGN_ "$DESIGN_CLASS_FLOOR" >/dev/null || ok=1
   class_members STEER_ARCH_ "$STEER_ARCH_CLASS_FLOOR" >/dev/null || ok=1
+  class_members LIAISON_ "$LIAISON_CLASS_FLOOR" >/dev/null || ok=1
+  class_members BRIEF_ARCH_ "$BRIEF_ARCH_CLASS_FLOOR" >/dev/null || ok=1
+  class_members COORD_LIAISON_ "$COORD_LIAISON_CLASS_FLOOR" >/dev/null || ok=1
   check "$1" "$ok"
+}
+
+# The three liaison families, read as classes in both directions by one pair of
+# helpers: present member by member on the launch that builds the family, and
+# absent from every launch that must not carry it. The presence half is the
+# control for the absence half, the same class read run against an instance
+# known to hold every member.
+check_class_present() {  # <prefix> <floor> <label> <text>
+  local v missing="" members rc=0
+  members=$(class_members "$1" "$2") || rc=1
+  for v in $members; do
+    case "$4" in
+      *"${!v}"*) ;;
+      *) missing="$missing $v" ;;
+    esac
+  done
+  [ -z "$missing" ] && [ "$rc" -eq 0 ]
+  check "$3 (missing:${missing:- none})" "$?"
+}
+
+check_class_absent() {  # <prefix> <floor> <label> <text>
+  local v leaked="" members rc=0
+  members=$(class_members "$1" "$2") || rc=1
+  for v in $members; do
+    case "$4" in
+      *"${!v}"*) leaked="$leaked $v" ;;
+    esac
+  done
+  [ -z "$leaked" ] && [ "$rc" -eq 0 ]
+  check "$3 (leaked:${leaked:- none})" "$?"
 }
 
 # The worker's architect sentences, read as a class in both directions: absent
@@ -879,7 +969,7 @@ check "removed routing control: and is silent on a string carrying none of them"
 # Run once, before any sweep leans on either class. It is the instrument check
 # the sweeps cannot make for themselves: a sweep that reports its own short read
 # reds, but only at a site something happened to call.
-check_class_floors "all three charter-fragment classes read at or above their floors"
+check_class_floors "all six charter-fragment classes read at or above their floors"
 
 check_no_charter_fragment() {  # <label>
   local v leaked="" concat members rc=0
@@ -962,13 +1052,24 @@ case "$GOAL_WRITE" in
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the architect role instruction" 0 ;;
   *) check "the goal-prompt write does not carry the architect role instruction" 1 ;;
 esac
-# The absence cases read the six variables priming_concat joins, so the write
-# itself is pinned to exactly those six in exactly that order. A seventh
+# The liaison's own instruction rides that same priming write, after the
+# architect's.
+case "$PRIMING_WRITE" in
+  *LIAISON_ROLE_INSTRUCTION*) check "the priming write carries the liaison role instruction" 0 ;;
+  *) check "the priming write carries the liaison role instruction" 1 ;;
+esac
+case "$GOAL_WRITE" in
+  *LIAISON_ROLE_INSTRUCTION*) check "the goal-prompt write does not carry the liaison role instruction" 1 ;;
+  *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the liaison role instruction" 0 ;;
+  *) check "the goal-prompt write does not carry the liaison role instruction" 1 ;;
+esac
+# The absence cases read the seven variables priming_concat joins, so the write
+# itself is pinned to exactly those seven in exactly that order. An eighth
 # instruction variable added to the write reds here rather than passing through
 # an absence case that never looks at it.
 PRIMING_VARS=$(printf '%s\n' "$PRIMING_WRITE" | grep -oE '\$[A-Z_]+' | grep -vE '^\$PRIMING_BODY$' | tr '\n' ' ')
-[ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $ARCHITECT_ROLE_INSTRUCTION $SUPERVISOR_MAILBOX_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
-check "the priming write joins exactly the six instruction variables the absence cases read" $?
+[ "$PRIMING_VARS" = '$SKILL_LOAD_INSTRUCTION $COORDINATOR_STEER_INSTRUCTION $COORDINATOR_ROLE_INSTRUCTION $ARCHITECT_ROLE_INSTRUCTION $LIAISON_ROLE_INSTRUCTION $SUPERVISOR_MAILBOX_INSTRUCTION $CHANNEL_REPLY_INSTRUCTION ' ]
+check "the priming write joins exactly the seven instruction variables the absence cases read, in splice order (read: $PRIMING_VARS)" $?
 case "$GOAL_WRITE" in
   *SUPERVISOR_MAILBOX_INSTRUCTION*) check "the goal-prompt write does not carry the supervisor mailbox sentence" 1 ;;
   *GOAL_PROMPT_FRAMING*) check "the goal-prompt write does not carry the supervisor mailbox sentence" 0 ;;
@@ -1818,6 +1919,133 @@ for shape in "0 worker lead warden" "1 default lead warden" "0 lead lead warden"
     *) check "mailbox sentence (NO_CHANNEL=$1, persona $2): the ask label and its one-line answer reach the priming write" 1 ;;
   esac
 done
+
+# --- The liaison seat ---
+# LIAISON_ROLE_INSTRUCTION is gated on LIAISON_PERSONA the way the architect's
+# charter is gated on ARCHITECT_PERSONA, and the coordinator's liaison clause is
+# gated on the same setting. The name herald is withheld from every literal
+# bin/supervise-holder.sh carries, so the gate is proven on the comparison and
+# each splice on the setting. Every case below sets LIAISON_PERSONA through this
+# helper, and the block unsets it at its end for whatever follows.
+liaison_eval() {  # <NO_CHANNEL> <PERSONA> <COORDINATOR_PERSONA> <ARCHITECT_PERSONA> <LIAISON_PERSONA>
+  unset CHANNEL_REPLY_INSTRUCTION SKILL_LOAD_INSTRUCTION COORDINATOR_STEER_INSTRUCTION COORDINATOR_ROLE_INSTRUCTION ARCHITECT_ROLE_INSTRUCTION LIAISON_ROLE_INSTRUCTION SUPERVISOR_MAILBOX_INSTRUCTION
+  NO_CHANNEL="$1"; PERSONA="$2"; COORDINATOR_PERSONA="$3"; ARCHITECT_PERSONA="$4"; LIAISON_PERSONA="$5"
+  eval "$VARS_SNIPPET"
+}
+
+# The liaison's own launch on a fleet naming an architect, channel attached.
+liaison_eval 0 herald quill vellum herald
+check_class_present LIAISON_ "$LIAISON_CLASS_FLOOR" "persona matches LIAISON_PERSONA: every clause of the liaison charter is built" "${LIAISON_ROLE_INSTRUCTION:-}"
+check_class_present BRIEF_ARCH_ "$BRIEF_ARCH_CLASS_FLOOR" "persona matches LIAISON_PERSONA, ARCHITECT_PERSONA set: the brief clause is built" "${LIAISON_ROLE_INSTRUCTION:-}"
+# Each send names its target from the setting, read adjacently so the other
+# send's splice cannot satisfy it. The comma belongs to the literal.
+case "${LIAISON_ROLE_INSTRUCTION:-}" in
+  *"$BRIEF_ARCH_SHAPE_CONTROL with $SAY_PERSONA_ARG_CONTROL $ARCHITECT_PERSONA,"*) check "persona matches LIAISON_PERSONA: the brief goes to the ARCHITECT_PERSONA name itself" 0 ;;
+  *) check "persona matches LIAISON_PERSONA: the brief goes to the ARCHITECT_PERSONA name itself" 1 ;;
+esac
+case "${LIAISON_ROLE_INSTRUCTION:-}" in
+  *"$LIAISON_STATUS_CONTROL with $SAY_PERSONA_ARG_CONTROL $COORDINATOR_PERSONA,"*) check "persona matches LIAISON_PERSONA: the status ask goes to the COORDINATOR_PERSONA name itself" 0 ;;
+  *) check "persona matches LIAISON_PERSONA: the status ask goes to the COORDINATOR_PERSONA name itself" 1 ;;
+esac
+check_spliced_names "persona matches LIAISON_PERSONA: every persona name in the priming write comes from the settings"
+# The two worker sentences this seat does not take, cleared to the empty string
+# rather than unset, since the priming write splices both under `set -u`.
+[ -z "${COORDINATOR_STEER_INSTRUCTION:-}" ] && [ -n "${COORDINATOR_STEER_INSTRUCTION+set}" ]
+check "persona matches LIAISON_PERSONA: the coordinator-steer sentence is cleared to the empty string" "$?"
+[ -z "${SKILL_LOAD_INSTRUCTION:-}" ] && [ -n "${SKILL_LOAD_INSTRUCTION+set}" ]
+check "persona matches LIAISON_PERSONA: the worker skill-load sentence is cleared to the empty string" "$?"
+case "$(priming_concat)" in
+  *"claude-kit:executing-work"*|*"$STEER_UNVERIFIED_ACT_CONTROL"*) check "persona matches LIAISON_PERSONA: neither worker sentence reaches any part of the priming write" 1 ;;
+  *) check "persona matches LIAISON_PERSONA: neither worker sentence reaches any part of the priming write" 0 ;;
+esac
+check_no_charter_fragment "persona matches LIAISON_PERSONA: no architect charter clause reaches the priming write"
+check_no_steer_arch_fragment "persona matches LIAISON_PERSONA: no worker architect sentence reaches the priming write" "$(priming_concat)"
+# DESIGN_ read as a class alone: the liaison's own sends carry the agentic_say
+# literal check_no_design_clause_fragment also reads.
+check_class_absent DESIGN_ "$DESIGN_CLASS_FLOOR" "persona matches LIAISON_PERSONA: no design-escalation fragment reaches the priming write" "$(priming_concat)"
+check_class_absent COORD_LIAISON_ "$COORD_LIAISON_CLASS_FLOOR" "persona matches LIAISON_PERSONA: the coordinator's liaison clause does not reach the liaison" "$(priming_concat)"
+[ -z "${COORDINATOR_ROLE_INSTRUCTION:-}" ] && [ -z "${ARCHITECT_ROLE_INSTRUCTION:-}" ]
+check "persona matches LIAISON_PERSONA: the coordinator and architect role instructions are both empty" "$?"
+case "$(priming_concat)" in
+  *"$MAILBOX_SHUTDOWN_LABEL_CONTROL"*"$MAILBOX_ASK_LABEL_CONTROL"*"$REPLY_TOOL_CONTROL"*) check "persona matches LIAISON_PERSONA: the mailbox sentence and the channel instruction still reach the priming write" 0 ;;
+  *) check "persona matches LIAISON_PERSONA: the mailbox sentence and the channel instruction still reach the priming write" 1 ;;
+esac
+check_no_claude_md_sentence "persona matches LIAISON_PERSONA: no CLAUDE.md rule is copied into the priming write" "$(priming_concat)"
+check_no_tool_contract "persona matches LIAISON_PERSONA: no tool's own contract sentence is copied into the priming write" "$(priming_concat)"
+
+# The charter is NO_CHANNEL-independent, like every other part of the write.
+liaison_eval 1 herald quill vellum herald
+check_class_present LIAISON_ "$LIAISON_CLASS_FLOOR" "channel not attached, persona matches LIAISON_PERSONA: every clause of the liaison charter is built" "${LIAISON_ROLE_INSTRUCTION:-}"
+
+# The two names reach the charter from the launch variables alone: the block
+# the holder evaluates reads no settings file, so the seat sends a brief with no
+# lookup at run time. The eval above is the presence half, since each name was
+# read there adjacent to its send.
+# Control: the same patterns speak on a line that reads the file the supervisor
+# hands the child, shaped as the supervisor reads it.
+case '  LIAISON_PERSONA="$(read_settings_liaison_persona "$SETTINGS_FILE" 1)"' in
+  *read_settings*|*settings.json*|*pluginConfigs*) check "settings-read control: the pattern speaks on a line that reads the settings file" 0 ;;
+  *) check "settings-read control: the pattern speaks on a line that reads the settings file" 1 ;;
+esac
+case "$VARS_SNIPPET" in
+  *read_settings*|*settings.json*|*pluginConfigs*) check "the priming block reads no settings file, so every spliced name comes from a launch variable" 1 ;;
+  *) check "the priming block reads no settings file, so every spliced name comes from a launch variable" 0 ;;
+esac
+
+# LIAISON_PERSONA unset builds the charter for nobody, the very name a liaison
+# launch would carry included, and that launch keeps both worker sentences.
+liaison_eval 0 herald quill vellum ""
+[ -z "${LIAISON_ROLE_INSTRUCTION:-}" ]
+check "LIAISON_PERSONA unset: the liaison role instruction is empty for the persona a liaison launch would carry" "$?"
+check_class_absent LIAISON_ "$LIAISON_CLASS_FLOOR" "LIAISON_PERSONA unset: no liaison charter clause reaches any part of the priming write" "$(priming_concat)"
+check_class_absent BRIEF_ARCH_ "$BRIEF_ARCH_CLASS_FLOOR" "LIAISON_PERSONA unset: no liaison brief clause reaches any part of the priming write" "$(priming_concat)"
+case "${SKILL_LOAD_INSTRUCTION:-}|${COORDINATOR_STEER_INSTRUCTION:-}" in
+  *"$SKILL_LOAD_CONTROL"*"|"*"$STEER_LABEL_CONTROL"*) check "LIAISON_PERSONA unset: that launch keeps the skill-load and steer sentences" 0 ;;
+  *) check "LIAISON_PERSONA unset: that launch keeps the skill-load and steer sentences" 1 ;;
+esac
+
+# A fleet naming a liaison, read from every other seat. None of them takes any
+# part of the charter, and each one's whole priming text is the text it gets on
+# a fleet that names no liaison, so the setting reaches no seat but the
+# liaison's and the coordinator's. The no-liaison text is taken first under the
+# same shape, which is the control that the comparison reads a built write.
+for shape in "0 worker quill vellum" "1 worker quill vellum" "0 vellum quill vellum" "1 default quill vellum"; do
+  eval "set -- $shape"
+  liaison_eval "$1" "$2" "$3" "$4" ""
+  WITHOUT_LIAISON=$(priming_concat)
+  liaison_eval "$1" "$2" "$3" "$4" herald
+  [ -z "${LIAISON_ROLE_INSTRUCTION:-}" ]
+  check "LIAISON_PERSONA set, persona $2 (NO_CHANNEL=$1, architect '${4}'): the liaison role instruction is empty" "$?"
+  check_class_absent LIAISON_ "$LIAISON_CLASS_FLOOR" "LIAISON_PERSONA set, persona $2 (NO_CHANNEL=$1, architect '${4}'): no liaison charter clause reaches the priming write" "$(priming_concat)"
+  check_class_absent BRIEF_ARCH_ "$BRIEF_ARCH_CLASS_FLOOR" "LIAISON_PERSONA set, persona $2 (NO_CHANNEL=$1, architect '${4}'): no liaison brief clause reaches the priming write" "$(priming_concat)"
+  [ -n "$WITHOUT_LIAISON" ] && [ "$(priming_concat)" = "$WITHOUT_LIAISON" ]
+  check "LIAISON_PERSONA set, persona $2 (NO_CHANNEL=$1, architect '${4}'): the whole priming text is the text a fleet naming no liaison gives it" "$?"
+done
+
+# The coordinator on a fleet naming a liaison takes one clause more and nothing
+# else: every other variable of its write is the text it gets with no liaison,
+# and its own instruction is that text with the clause appended.
+for arch in vellum; do
+  liaison_eval 0 quill quill "$arch" ""
+  check_class_absent COORD_LIAISON_ "$COORD_LIAISON_CLASS_FLOOR" "LIAISON_PERSONA unset, coordinator (architect '$arch'): the liaison clause is not built" "${COORDINATOR_ROLE_INSTRUCTION:-}"
+  ROLE_WITHOUT="${COORDINATOR_ROLE_INSTRUCTION:-}"
+  REST_WITHOUT="${SKILL_LOAD_INSTRUCTION:-}|${COORDINATOR_STEER_INSTRUCTION:-}|${ARCHITECT_ROLE_INSTRUCTION:-}|${LIAISON_ROLE_INSTRUCTION:-}|${SUPERVISOR_MAILBOX_INSTRUCTION:-}|${CHANNEL_REPLY_INSTRUCTION:-}"
+  liaison_eval 0 quill quill "$arch" herald
+  check_class_present COORD_LIAISON_ "$COORD_LIAISON_CLASS_FLOOR" "LIAISON_PERSONA set, coordinator (architect '$arch'): every fragment of the liaison clause is built" "${COORDINATOR_ROLE_INSTRUCTION:-}"
+  case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
+    *"$SAY_PERSONA_ARG_CONTROL $LIAISON_PERSONA,"*) check "LIAISON_PERSONA set, coordinator (architect '$arch'): the answer goes to the LIAISON_PERSONA name itself" 0 ;;
+    *) check "LIAISON_PERSONA set, coordinator (architect '$arch'): the answer goes to the LIAISON_PERSONA name itself" 1 ;;
+  esac
+  check_spliced_names "LIAISON_PERSONA set, coordinator (architect '$arch'): every persona name in the priming write comes from the settings"
+  ADDED="${COORDINATOR_ROLE_INSTRUCTION#"$ROLE_WITHOUT"}"
+  [ -n "$ROLE_WITHOUT" ] && [ "$ADDED" != "${COORDINATOR_ROLE_INSTRUCTION:-}" ] && [ -n "$ADDED" ]
+  check "LIAISON_PERSONA set, coordinator (architect '$arch'): its instruction is the no-liaison instruction with a clause appended" "$?"
+  check_class_present COORD_LIAISON_ "$COORD_LIAISON_CLASS_FLOOR" "LIAISON_PERSONA set, coordinator (architect '$arch'): the appended text is the liaison clause" "$ADDED"
+  [ "${SKILL_LOAD_INSTRUCTION:-}|${COORDINATOR_STEER_INSTRUCTION:-}|${ARCHITECT_ROLE_INSTRUCTION:-}|${LIAISON_ROLE_INSTRUCTION:-}|${SUPERVISOR_MAILBOX_INSTRUCTION:-}|${CHANNEL_REPLY_INSTRUCTION:-}" = "$REST_WITHOUT" ]
+  check "LIAISON_PERSONA set, coordinator (architect '$arch'): every other variable of its write is unchanged" "$?"
+  check_class_absent LIAISON_ "$LIAISON_CLASS_FLOOR" "LIAISON_PERSONA set, coordinator (architect '$arch'): no liaison charter clause reaches the coordinator" "$(priming_concat)"
+done
+unset LIAISON_PERSONA
 
 # The final ask's line, written by the real final_ask_json out of the script,
 # in the same user-turn shape goal_prompt_json writes (the form the child

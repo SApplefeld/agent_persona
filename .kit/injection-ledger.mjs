@@ -352,11 +352,12 @@ function literalOfTemplateChain(chainSrc, owner, allowedIdentifiers = []) {
 // count sets the number here in the same commit, which is the declared-
 // growth rule applied to the shape as well as to the size.
 const INSTRUCTION_ASSIGNMENT_COUNTS = {
-  SKILL_LOAD_INSTRUCTION: 2,
-  COORDINATOR_STEER_INSTRUCTION: 4,
+  SKILL_LOAD_INSTRUCTION: 3,
+  COORDINATOR_STEER_INSTRUCTION: 5,
   CHANNEL_REPLY_INSTRUCTION: 2,
-  COORDINATOR_ROLE_INSTRUCTION: 5,
+  COORDINATOR_ROLE_INSTRUCTION: 6,
   ARCHITECT_ROLE_INSTRUCTION: 2,
+  LIAISON_ROLE_INSTRUCTION: 4,
   SUPERVISOR_MAILBOX_INSTRUCTION: 1,
 };
 const INSTRUCTION_NAMES = Object.keys(INSTRUCTION_ASSIGNMENT_COUNTS);
@@ -418,9 +419,9 @@ function extractHolderInstructions(src) {
   // Two bare shapes stay legal because neither bends the sum. An empty init
   // followed by one conditional value is how most of these variables are
   // built, and replacing an empty string is the same operation as appending
-  // to it. An empty clear (`NAME=""` in the architect's block, which takes
-  // neither the skill-load nor the steer sentence) contributes nothing to the
-  // sum either way.
+  // to it. An empty clear (`NAME=""` in the architect's and the liaison's
+  // blocks, each of which takes neither the skill-load nor the steer sentence)
+  // contributes nothing to the sum either way.
   const collected = new Map(INSTRUCTION_NAMES.map((n) => [n, []]));
   const assignRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)(\+?)=\s*"([^\n]*)"\s*$/;
   for (let i = 0; i < lines.length; i += 1) {
@@ -440,11 +441,12 @@ function extractHolderInstructions(src) {
     // Every assignment and += continuation found for this name, in source
     // order, concatenated: an empty init followed by one conditional real
     // value yields the real value; a base assignment followed by
-    // conditional += clauses (COORDINATOR_ROLE_INSTRUCTION's fleet, seat and
-    // architect-routing clauses) yields their sum, which is this variable's
-    // worst-case content across every launch shape. A later `NAME=""` that
-    // clears a variable for one launch shape (the architect's, which takes
-    // neither the skill-load nor the steer sentence) adds nothing to that sum,
+    // conditional += clauses (COORDINATOR_ROLE_INSTRUCTION's fleet, seat,
+    // architect-routing and liaison-status clauses) yields their sum, which is
+    // this variable's worst-case content across every launch shape. A later
+    // `NAME=""` that clears a variable for one launch shape (the architect's or
+    // the liaison's, neither of which takes the skill-load or the steer
+    // sentence) adds nothing to that sum,
     // so the worst case still reads the shape that carries the text. The only
     // other reassignment shape, a later bare assignment carrying text, would
     // break that reading and the collector above refuses it.

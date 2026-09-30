@@ -22,14 +22,20 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 8989,
-      "words": 1591
+      "chars": 9370,
+      "words": 1651
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
       "chars": 7212,
       "words": 1275
+    },
+    {
+      "name": "LIAISON_ROLE_INSTRUCTION",
+      "file": "bin/supervise-holder.sh",
+      "chars": 1427,
+      "words": 247
     },
     {
       "name": "SUPERVISOR_MAILBOX_INSTRUCTION",
