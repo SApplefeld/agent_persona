@@ -2063,27 +2063,33 @@ check "relaunch signal control: after the same sweep and relaunch, a TERM after 
 HOLDER="$HERE/../bin/supervise-holder.sh"
 LOG_SNIPPET=$(sed -n '/^log() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
 GET_INTERRUPT_SNIPPET=$(sed -n '/^get_interrupt_request() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
+GET_TURN_STARTED_SNIPPET=$(sed -n '/^get_child_turn_started() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
 WRITE_INTERRUPT_SNIPPET=$(sed -n '/^write_interrupt_relay() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
 RELAY_INTERRUPT_SNIPPET=$(sed -n '/^relay_interrupt_request() {/,/^}$/p' "$SCRIPT" | tr -d '\r')
 HOLDER_INTERRUPT_VALIDATOR_SNIPPET=$(sed -n '/^holder_interrupt_relay() {/,/^}$/p' "$HOLDER" | tr -d '\r')
-[ -n "$LOG_SNIPPET" ] && [ -n "$GET_INTERRUPT_SNIPPET" ] && [ -n "$WRITE_INTERRUPT_SNIPPET" ] && [ -n "$RELAY_INTERRUPT_SNIPPET" ] && [ -n "$HOLDER_INTERRUPT_VALIDATOR_SNIPPET" ]
-check "get_interrupt_request, write_interrupt_relay, relay_interrupt_request and holder_interrupt_relay are found in their scripts" "$?"
+[ -n "$LOG_SNIPPET" ] && [ -n "$GET_INTERRUPT_SNIPPET" ] && [ -n "$GET_TURN_STARTED_SNIPPET" ] && [ -n "$WRITE_INTERRUPT_SNIPPET" ] && [ -n "$RELAY_INTERRUPT_SNIPPET" ] && [ -n "$HOLDER_INTERRUPT_VALIDATOR_SNIPPET" ]
+check "get_interrupt_request, get_child_turn_started, write_interrupt_relay, relay_interrupt_request and holder_interrupt_relay are found in their scripts" "$?"
 
 if [ -n "$RELAY_INTERRUPT_SNIPPET" ]; then
   IR_PLUGIN_DIR="$HERE/.."
   # One poll: writes the driver script, runs it as its own process against the
   # fixture run/child directories the caller seeded, and prints the log, the
   # served marker and the request file's content so the caller's assertions
-  # read all three.
+  # read all three. CHILD_HEARTBEAT is $RUNDIR/heartbeat.json, the same fixed
+  # path bin/supervise.sh itself derives, so a fixture written under the
+  # caller's own rundir is what the turn gate reads.
   interrupt_poll() {  # <rundir> <childdir> <child-start-ts>
     local script="$TMP/interrupt-poll.sh"
-    printf '%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$LOG_SNIPPET" "$GET_INTERRUPT_SNIPPET" "$WRITE_INTERRUPT_SNIPPET" "$RELAY_INTERRUPT_SNIPPET" > "$script"
+    printf '%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$LOG_SNIPPET" "$GET_INTERRUPT_SNIPPET" "$GET_TURN_STARTED_SNIPPET" "$WRITE_INTERRUPT_SNIPPET" > "$script"
+    printf '%s\n' "$RELAY_INTERRUPT_SNIPPET" >> "$script"
     cat >> "$script" <<'EOF2'
 PLUGIN_DIR="$1"
 RUNDIR="$2"
 CHILD_DIR="$3"
+CHILD_HEARTBEAT="$RUNDIR/heartbeat.json"
 INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
 CHILD_START_TS="$4"
+CHILD_SESSION_ID=""
 CHILD_INDEX=1
 INTERRUPT_SEQ=0
 SUPERVISOR_START_MS=9999
@@ -2100,6 +2106,13 @@ EOF2
     node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Number(process.argv[2]), by: process.argv[3], reason: process.argv[4] }))' \
       "$1" "$2" "$3" "$4"
   }
+  # <path> <turnStartedAt>, "" for a turn open with no start recorded (null),
+  # unwritten entirely for "no heartbeat file at all" (the caller just never
+  # calls this).
+  write_heartbeat_fixture() {  # <path> <turnStartedAt-or-empty>
+    node -e 'const raw = process.argv[2]; const turnStartedAt = raw === "" ? null : Number(raw); require("fs").writeFileSync(process.argv[1], JSON.stringify({ sessionId: "", lastSeen: Date.now(), turnStartedAt }))' \
+      "$1" "$2"
+  }
 
   IR_RD="$TMP/interrupt-rd"
   IR_CD="$IR_RD/child-1"
@@ -2107,10 +2120,15 @@ EOF2
   write_interrupt_fixture "$IR_RD/interrupt.request" 500 coordinator "stuck before the child started"
   OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
   case "$OUT" in *"LOG="*"INTERRUPT:"*) false ;; *) true ;; esac
-  check "a request older than the child's start relays nothing (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$?"
+  CHECK_RC=$?
+  check "a request older than the child's start relays nothing (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
   [ ! -e "$IR_CD/interrupt.served" ]; check "a request older than the child's start writes no served marker" "$?"
 
+  # The turn gate: a turn running since well before either request this pair
+  # of cases writes, so both still relay exactly as they did before the gate
+  # existed.
   rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_heartbeat_fixture "$IR_RD/heartbeat.json" 100
   write_interrupt_fixture "$IR_RD/interrupt.request" 1500 coordinator "stuck on a tool call"
   OUT1=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
   OUT2=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
@@ -2126,14 +2144,17 @@ EOF2
   done
   [ "$N" -eq 1 ]; check "one relay across several polls of the same request (relayed $N times)" "$?"
   case "$OUT1" in *"SERVED=1500"*) true ;; *) false ;; esac
-  check "the served marker carries the relayed request's own at (out=$(printf '%s' "$OUT1" | tr '\n' '|'))" "$?"
+  CHECK_RC=$?
+  check "the served marker carries the relayed request's own at (out=$(printf '%s' "$OUT1" | tr '\n' '|'))" "$CHECK_RC"
   case "$OUT1" in *'REQFILE={"id":"9999-int-1","at":1500,"by":"coordinator","reason":"stuck on a tool call"}'*) true ;; *) false ;; esac
-  check "the child's interrupt.request carries id, at, by and reason whole (out=$(printf '%s' "$OUT1" | tr '\n' '|'))" "$?"
+  CHECK_RC=$?
+  check "the child's interrupt.request carries id, at, by and reason whole (out=$(printf '%s' "$OUT1" | tr '\n' '|'))" "$CHECK_RC"
 
   write_interrupt_fixture "$IR_RD/interrupt.request" 2000 coordinator "a second, later ask"
   OUT4=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
   case "$OUT4" in *"INTERRUPT: a second, later ask"*"SERVED=2000"*) true ;; *) false ;; esac
-  check "a second request with a later at relays again (out=$(printf '%s' "$OUT4" | tr '\n' '|'))" "$?"
+  CHECK_RC=$?
+  check "a second request with a later at relays again (out=$(printf '%s' "$OUT4" | tr '\n' '|'))" "$CHECK_RC"
 
   # An adopted child: the served marker already holds the standing request's
   # own at, the shape a supervisor that adopts a running child its
@@ -2143,9 +2164,11 @@ EOF2
   printf '%s' 3000 > "$IR_CD/interrupt.served"
   OUT5=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
   case "$OUT5" in *"LOG="*"INTERRUPT:"*) false ;; *) true ;; esac
-  check "adopting a child whose interrupt.served already holds the request's at relays nothing (out=$(printf '%s' "$OUT5" | tr '\n' '|'))" "$?"
+  CHECK_RC=$?
+  check "adopting a child whose interrupt.served already holds the request's at relays nothing (out=$(printf '%s' "$OUT5" | tr '\n' '|'))" "$CHECK_RC"
   case "$OUT5" in *"REQFILE=NONE"*) true ;; *) false ;; esac
-  check "adopting a child whose interrupt.served already holds the request's at writes no child-side request file (out=$(printf '%s' "$OUT5" | tr '\n' '|'))" "$?"
+  CHECK_RC=$?
+  check "adopting a child whose interrupt.served already holds the request's at writes no child-side request file (out=$(printf '%s' "$OUT5" | tr '\n' '|'))" "$CHECK_RC"
 
   # Writer-reader: the file write_interrupt_relay produces passes the
   # holder's own validator, holder_interrupt_relay, extracted above the same
@@ -2159,7 +2182,7 @@ EOF2
 PLUGIN_DIR="$1"
 RUNDIR="$2"
 INTERRUPT_REQUEST_FILE="$3"
-write_interrupt_relay "9999-int-wr"
+write_interrupt_relay "9999-int-wr" "4000"
 content=$(cat "$INTERRUPT_REQUEST_FILE.tmp")
 echo "CONTENT=$content"
 holder_interrupt_relay "$content" >/dev/null
@@ -2167,9 +2190,190 @@ echo "VALIDATOR_RC=$?"
 EOF3
     WROUT=$(bash "$WR_SCRIPT" "$IR_PLUGIN_DIR" "$IR_RD" "$IR_CD/interrupt.request")
     case "$WROUT" in *"VALIDATOR_RC=0"*) true ;; *) false ;; esac
-    check "the writer's output passes the holder's own interrupt validator (out=$(printf '%s' "$WROUT" | tr '\n' '|'))" "$?"
+    CHECK_RC=$?
+    check "the writer's output passes the holder's own interrupt validator (out=$(printf '%s' "$WROUT" | tr '\n' '|'))" "$CHECK_RC"
   fi
+
+  # Writer-reader, oversized fields: the holder refuses by over 64 characters
+  # and reason over 200, so the writer's own cut to those same bounds is what
+  # keeps an oversized request file passing the holder's validator, not
+  # something the validator forgives on its own.
+  if [ -n "$HOLDER_INTERRUPT_VALIDATOR_SNIPPET" ]; then
+    rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+    node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: 4500, by: "coordinator-".repeat(10), reason: "y".repeat(300) }))' "$IR_RD/interrupt.request"
+    WR2_SCRIPT="$TMP/interrupt-writer-reader-oversized.sh"
+    printf '%s\n%s\n%s\n' "$STUB_OPTIONS" "$WRITE_INTERRUPT_SNIPPET" "$HOLDER_INTERRUPT_VALIDATOR_SNIPPET" > "$WR2_SCRIPT"
+    cat >> "$WR2_SCRIPT" <<'EOF4'
+PLUGIN_DIR="$1"
+RUNDIR="$2"
+INTERRUPT_REQUEST_FILE="$3"
+write_interrupt_relay "9999-int-wr2" "4500"
+content=$(cat "$INTERRUPT_REQUEST_FILE.tmp")
+echo "CONTENT=$content"
+holder_interrupt_relay "$content" >/dev/null
+echo "VALIDATOR_RC=$?"
+EOF4
+    WR2OUT=$(bash "$WR2_SCRIPT" "$IR_PLUGIN_DIR" "$IR_RD" "$IR_CD/interrupt.request")
+    case "$WR2OUT" in *'"by":"coordinator-coordinator-coordinator-coordinator-coordinator-coor"'*) true ;; *) false ;; esac
+    CHECK_RC=$?
+    check "the writer cuts an oversized by to 64 characters before writing (out=$(printf '%s' "$WR2OUT" | tr '\n' '|' | head -c 300))" "$CHECK_RC"
+    case "$WR2OUT" in *"VALIDATOR_RC=0"*) true ;; *) false ;; esac
+    CHECK_RC=$?
+    check "the written file still passes the holder's own interrupt validator once by and reason are cut to its own bounds (out=$(printf '%s' "$WR2OUT" | tr '\n' '|' | head -c 300))" "$CHECK_RC"
+  fi
+
+  # The turn gate itself (the operator's option A, 2026-09-30): a turn that
+  # started after the request, a turn with no start recorded, and no
+  # heartbeat at all each skip rather than relay, recording the request
+  # served and logging INTERRUPT_SKIPPED once; a turn that started exactly at
+  # the request's own at still relays.
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_heartbeat_fixture "$IR_RD/heartbeat.json" 6000
+  write_interrupt_fixture "$IR_RD/interrupt.request" 5000 coordinator "turn started after the request"
+  OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT" in *"LOG="*"INTERRUPT_SKIPPED: turn started after the request (child-1, by=coordinator, turn started 6000)"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "turnStartedAt later than at skips, with one INTERRUPT_SKIPPED line (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  case "$OUT" in *"SERVED=5000"*"REQFILE=NONE"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "turnStartedAt later than at still records the request served, and writes no child-side request file (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_heartbeat_fixture "$IR_RD/heartbeat.json" ""
+  write_interrupt_fixture "$IR_RD/interrupt.request" 5000 coordinator "no turn open"
+  OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT" in *"LOG="*"INTERRUPT_SKIPPED: no turn open (child-1, by=coordinator, turn started none)"*"REQFILE=NONE"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "turnStartedAt null (a heartbeat with no turn open) skips, logging turn started none (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_interrupt_fixture "$IR_RD/interrupt.request" 5000 coordinator "no heartbeat file at all"
+  OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT" in *"LOG="*"INTERRUPT_SKIPPED: no heartbeat file at all (child-1, by=coordinator, turn started none)"*"REQFILE=NONE"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "a missing heartbeat file reads as no running turn and skips (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_heartbeat_fixture "$IR_RD/heartbeat.json" 5000
+  write_interrupt_fixture "$IR_RD/interrupt.request" 5000 coordinator "turn started exactly at the request"
+  OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT" in *"LOG="*"INTERRUPT: turn started exactly at the request"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "turnStartedAt equal to at relays (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 fi
+
+# --- The coordinator's interrupt relay, through the real poll loop ---
+# The extraction-based section above drives relay_interrupt_request as a
+# fixture-fed function and cannot see whether the real loop still calls it,
+# whether gate_stage_child still threads INTERRUPT_REQUEST_FILE through the
+# ADOPT route, or whether the holder's launch line still hands its sixth
+# argument to a freshly launched child's holder: every one of those three
+# wires could be cut and every check above would stay green. Two drives
+# close that gap, in the frozen-adopt case's own shape above (a live sleep
+# of this suite's own, adopted or launched through the real
+# bin/supervise.sh): ADOPT, which exercises gate_stage_child's own wiring,
+# and LAUNCH, which exercises the holder-launch line's. Both use a fresh
+# heartbeat rather than the frozen fixture above, since this pair is about
+# the relay's wiring, not about the final-ask path the frozen-adopt case
+# already covers, and a frozen child would pull FINAL_ASK noise into the log
+# this pair reads.
+
+# ADOPT: the sleep's heartbeat is stamped fresh at setup, so the real poll
+# reads it alive for the run's whole (short) duration and the loop just
+# waits between polls. The coordinator's request lands in
+# $IA_DIR/interrupt.request, the same top-level run-directory path
+# fleet_interrupt writes; nothing here plays the holder's part, so a relay
+# that lands is read directly off $IA_DIR/child-1/interrupt.request, the
+# file gate_stage_child's own INTERRUPT_REQUEST_FILE assignment names.
+IA_DIR=$(mktemp -d "$TMP/rd-interrupt-adopt.XXXXXX"); mkdir -p "$IA_DIR/child-1" "$TMP/home-interrupt-adopt" "$TMP/wd-interrupt-adopt"
+sleep 90 & IA_PID=$!
+IA_WIN=$(tr -d '\r\n' < "/proc/$IA_PID/winpid" 2>/dev/null)
+IA_TICKS=$(powershell -NoProfile -Command "(Get-Process -Id $IA_WIN).StartTime.Ticks" 2>/dev/null | tr -d '\r\n')
+case "$IA_TICKS" in *[!0-9]*|'') IA_TICKS="" ;; esac
+[ -n "$IA_WIN" ] && [ "${#IA_TICKS}" -ge 18 ]; check "interrupt adopt setup: a live sleep's Windows pid and 18-digit start ticks were read (${IA_WIN:-none},${IA_TICKS:-none})" "$?"
+printf '{"sessionId":"sess-ia","holderPid":"41180","holderWinPid":"35088","holderTicks":"639012345678901180","childPid":"%s","childWinPid":"%s","childTicks":"%s","supervisorWinPid":"34870","supervisorTicks":"639012345678900011","launchedAt":1000,"childIndex":1}' "$IA_PID" "$IA_WIN" "$IA_TICKS" > "$IA_DIR/child-1/handle.json"
+: > "$IA_DIR/child-1/stdout.jsonl"
+node -e 'const now = Date.now(); require("fs").writeFileSync(process.argv[1], JSON.stringify({ sessionId: "sess-ia", lastSeen: now, turnStartedAt: now }))' "$IA_DIR/heartbeat.json"
+env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-interrupt-adopt" supervisorPollMs=1000 supervisorGateWaitS=3 \
+  bash "$SCRIPT" "$TMP/wd-interrupt-adopt" modelprobe default --rundir "$IA_DIR" --no-channel > "$IA_DIR/drive.out" 2>&1 &
+IA_SUP=$!
+wait_for_line "$IA_DIR/supervisor.log" 'ADOPT child-1: .*verdict alive' 300; IA_ADOPTED=$?
+check "interrupt adopt: the real gate adopts the sleep as child-1 on an alive verdict (adopted=$IA_ADOPTED, log=$(tr '\n' '|' < "$IA_DIR/supervisor.log" 2>/dev/null | tail -c 800))" "$IA_ADOPTED"
+
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Date.now(), by: "coordinator", reason: "stuck on a tool call" }))' "$IA_DIR/interrupt.request"
+wait_for_line "$IA_DIR/supervisor.log" 'INTERRUPT: stuck on a tool call' 100; IA_RELAYED=$?
+check "interrupt adopt: the real loop relays the coordinator's request, logging one INTERRUPT line (relayed=$IA_RELAYED, log=$(tr '\n' '|' < "$IA_DIR/supervisor.log" 2>/dev/null | tail -c 500))" "$IA_RELAYED"
+[ -f "$IA_DIR/child-1/interrupt.request" ] && grep -q '"reason":"stuck on a tool call"' "$IA_DIR/child-1/interrupt.request"; CHECK_RC=$?
+check "interrupt adopt: the real loop writes the child's own interrupt.request whole, the path gate_stage_child names (file=$(cat "$IA_DIR/child-1/interrupt.request" 2>/dev/null))" "$CHECK_RC"
+sleep 1.5
+[ "$(grep -c 'INTERRUPT: stuck on a tool call' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; check "interrupt adopt: across several more polls the first request is still logged exactly once" "$?"
+
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Date.now(), by: "coordinator", reason: "a second, later ask" }))' "$IA_DIR/interrupt.request"
+wait_for_line "$IA_DIR/supervisor.log" 'INTERRUPT: a second, later ask' 100; IA_RELAYED2=$?
+check "interrupt adopt: a second, later request relays again, logging a second INTERRUPT line (relayed=$IA_RELAYED2)" "$IA_RELAYED2"
+
+# The turn gate, through the real loop: the heartbeat is rewritten to a turn
+# that starts after a third, still later request, so this one is the
+# coordinator's own record of a turn that has already moved on. It relays
+# nothing and is skipped once, however many more polls run after it.
+IA_REQUEST_AT=$(node -e 'console.log(Date.now())')
+IA_TURN_AFTER=$((IA_REQUEST_AT + 60000))
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ sessionId: "sess-ia", lastSeen: Date.now(), turnStartedAt: Number(process.argv[2]) }))' "$IA_DIR/heartbeat.json" "$IA_TURN_AFTER"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Number(process.argv[2]), by: "coordinator", reason: "turn moved on before this landed" }))' "$IA_DIR/interrupt.request" "$IA_REQUEST_AT"
+wait_for_line "$IA_DIR/supervisor.log" 'INTERRUPT_SKIPPED: turn moved on before this landed' 100; IA_SKIPPED=$?
+check "interrupt adopt: a turn that starts after the request relays nothing and is skipped (skipped=$IA_SKIPPED)" "$IA_SKIPPED"
+sleep 1.5
+[ "$(grep -c 'INTERRUPT_SKIPPED: turn moved on before this landed' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; check "interrupt adopt: across several more polls the skip is still logged exactly once" "$?"
+[ "$(grep -c ' INTERRUPT: ' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 2 ]; check "interrupt adopt: the skipped request never adds a third relay to the log" "$?"
+
+kill -TERM "$IA_SUP" 2>/dev/null; wait "$IA_SUP" 2>/dev/null
+kill "$IA_PID" 2>/dev/null; wait "$IA_PID" 2>/dev/null
+
+# LAUNCH: a stub claude that just sleeps, holding the pipe, under the real
+# (unstubbed) holder process bin/supervise.sh launches for it. The
+# supervisor's own relay writes $IL_DIR/child-1/interrupt.request the same
+# way the ADOPT drive proves; the real holder then takes that file off its
+# path (renames it away and removes it, bin/supervise-holder.sh's own
+# mechanism) within a few of its own poll intervals, which happens only
+# where the holder's sixth launch argument carried the path. Checking the
+# file's disappearance, not just its appearance, is what a dropped sixth
+# argument breaks, since the supervisor's own write and the loop's own call
+# site are both still exercised by the ADOPT drive above.
+IL_DIR=$(mktemp -d "$TMP/rd-interrupt-launch.XXXXXX")
+mkdir -p "$TMP/home-interrupt-launch/.claude/plugins/store" "$TMP/stub-interrupt-launch" "$TMP/wd-interrupt-launch"
+printf '{}' > "$TMP/home-interrupt-launch/.claude/plugins/store/agentic-plugin_agent-persona-modelprobe.json"
+printf '#!/usr/bin/env bash\ntouch "%s"\nsleep 60\n' "$TMP/stub-interrupt-launch/launched" > "$TMP/stub-interrupt-launch/claude"
+chmod +x "$TMP/stub-interrupt-launch/claude"
+# The stub claude never writes a heartbeat of its own, so the turn gate is
+# seeded here, a turn already running when this setup runs, well before the
+# launch even starts, so it predates every request this drive writes below.
+node -e 'const now = Date.now(); require("fs").writeFileSync(process.argv[1], JSON.stringify({ sessionId: "sess-il", lastSeen: now, turnStartedAt: now }))' "$IL_DIR/heartbeat.json"
+env -i PATH="$TMP/stub-interrupt-launch:$PATH" HOME="$TMP/home-interrupt-launch" supervisorPollMs=1000 SUPERVISOR_HOLDER_POLL_S=1 \
+  bash "$SCRIPT" "$TMP/wd-interrupt-launch" modelprobe default --rundir "$IL_DIR" --no-channel > "$IL_DIR/drive.out" 2>&1 &
+IL_SUP=$!
+wait_for_line "$IL_DIR/supervisor.log" 'LAUNCH child-1' 300; IL_LAUNCHED=$?
+check "interrupt launch: the real bin/supervise.sh launches child-1 under the stub claude (launched=$IL_LAUNCHED)" "$IL_LAUNCHED"
+
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Date.now(), by: "coordinator", reason: "stuck on a tool call" }))' "$IL_DIR/interrupt.request"
+wait_for_line "$IL_DIR/supervisor.log" 'INTERRUPT: stuck on a tool call' 100; IL_RELAYED=$?
+check "interrupt launch: the real loop relays the coordinator's request, logging one INTERRUPT line (relayed=$IL_RELAYED, log=$(tr '\n' '|' < "$IL_DIR/supervisor.log" 2>/dev/null | tail -c 500))" "$IL_RELAYED"
+
+IL_TAKEN=1
+for _ in $(seq 1 50); do
+  [ -e "$IL_DIR/child-1/interrupt.request" ] || { IL_TAKEN=0; break; }
+  sleep 0.1
+done
+check "interrupt launch: the real holder takes the child's own interrupt.request off its path within a bounded wait, which only happens where its sixth launch argument carried the path (taken=$IL_TAKEN)" "$IL_TAKEN"
+
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Date.now(), by: "coordinator", reason: "a second, later ask" }))' "$IL_DIR/interrupt.request"
+wait_for_line "$IL_DIR/supervisor.log" 'INTERRUPT: a second, later ask' 100; IL_RELAYED2=$?
+check "interrupt launch: a second, later request relays again (relayed=$IL_RELAYED2)" "$IL_RELAYED2"
+
+kill -TERM "$IL_SUP" 2>/dev/null; wait "$IL_SUP" 2>/dev/null
+for f in "$IL_DIR"/child-1/child.pid "$IL_DIR"/child-1/holder.pid; do
+  p=$(tr -d '\r\n' < "$f" 2>/dev/null)
+  case "$p" in ''|*[!0-9]*) ;; *) kill -9 "$p" 2>/dev/null ;; esac
+done
 
 # --- The channel log sweep ---
 # sweep_channel_log_segments is extracted and run as written, through the find

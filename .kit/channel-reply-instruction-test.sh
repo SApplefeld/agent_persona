@@ -134,8 +134,15 @@ ROLE_RESTART_REPORT_CONTROL="report every use to the operator"
 # that sends the record with agentic_say after the interrupt. The tool name
 # alone joins the absence sweeps beside ROLE_RESTART_TOOL_CONTROL.
 ROLE_INTERRUPT_TOOL_CONTROL="fleet_interrupt"
-ROLE_INTERRUPT_KEEP_CONTROL="ends another persona's running turn and keeps its conversation"
-ROLE_INTERRUPT_GROWTH_CONTROL="past its class's growth window"
+# The behavior a correct reword keeps, not the exact sentence, per the plan
+# doc's Standing Brief Amendment: "conversation" is what tells fleet_interrupt
+# apart from fleet_restart (which loses it), and the trigger is pinned on
+# fleet_status's own field names, which a reword cannot rephrase away without
+# also rewriting the tool it points at.
+ROLE_INTERRUPT_KEEP_CONTROL="conversation"
+ROLE_INTERRUPT_TURN_STATE_CONTROL="turnState"
+ROLE_INTERRUPT_TURN_RUNNING_CONTROL="turnRunningMs"
+ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL="heartbeatAgeMs"
 ROLE_INTERRUPT_REPORT_CONTROL="report every use to the operator"
 ROLE_INTERRUPT_SEND_CONTROL="send the record with agentic_say"
 ROLE_INTERRUPT_ARRIVE_CONTROL="arrives as that persona's next prompt"
@@ -1069,8 +1076,8 @@ case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *) check "persona matches COORDINATOR_PERSONA: the interrupt lever is named, ending the turn and keeping the conversation" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_INTERRUPT_GROWTH_CONTROL"*"$ROLE_INTERRUPT_REPORT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the interrupt trigger names the growth window, with every use reported to the operator" 0 ;;
-  *) check "persona matches COORDINATOR_PERSONA: the interrupt trigger names the growth window, with every use reported to the operator" 1 ;;
+  *"$ROLE_INTERRUPT_TURN_STATE_CONTROL"*"$ROLE_INTERRUPT_TURN_RUNNING_CONTROL"*"$ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL"*"$ROLE_INTERRUPT_REPORT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the interrupt trigger is stated in fleet_status's own fields, with every use reported to the operator" 0 ;;
+  *) check "persona matches COORDINATOR_PERSONA: the interrupt trigger is stated in fleet_status's own fields, with every use reported to the operator" 1 ;;
 esac
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_INTERRUPT_SEND_CONTROL"*"$ROLE_INTERRUPT_ARRIVE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the break-in duty calls fleet_interrupt then agentic_say, arriving as the next prompt" 0 ;;

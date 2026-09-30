@@ -1266,8 +1266,11 @@ async function caseInterruptWritesTheRequest() {
   check("interrupt: at is the tool's clock, as a number", request?.at === T0, request);
   check("interrupt: by is the calling session's persona", request?.by === "coordinator", request);
   check("interrupt: reason is the trimmed reason", request?.reason === "stuck on a tool call for an hour", request);
+  // Pinned on stable forms per the plan doc's Standing Brief Amendment: the
+  // persona name, the behavior of keeping the conversation, and that a poll
+  // is what relays it, not the exact sentence a correct reword would change.
   check("interrupt: the result names the persona and keeping the conversation", says(result?.result, "'alpha'") && says(result?.result, "conversation"), result?.result);
-  check("interrupt: the result says the next poll relays it", says(result?.result, "next poll"), result?.result);
+  check("interrupt: the result says a poll relays it", says(result?.result, "poll"), result?.result);
   check("interrupt: exactly one file was written, and it is the request", h.fsWrites.length === 1 && h.fsWrites[0].path === INTERRUPT_ALPHA_REQUEST, h.fsWrites.map((w) => w.path));
   check("interrupt: the commons store is untouched", JSON.stringify([...h.storeMap.entries()]) === storeBefore, [...h.storeMap.keys()]);
 
