@@ -44,7 +44,9 @@
 // The lines after it are the digest, oldest session first: a session line
 // naming the first and last record of the tail read and the version, then
 // "operator <hh:mm>: <text>" and "persona <hh:mm>: <text>" in file order, which
-// is time order, then "last words: <text>", then one count line for the whole
+// is time order, an operator line reading "operator <hh:mm>: <author>: <text>"
+// where its channel tag names an author, then "last words: <text>", then one
+// count line for the whole
 // digest. hh:mm is UTC. A session whose last record is older than --since
 // prints as one line naming its age and nothing else.
 //
@@ -253,11 +255,50 @@ function isoOf(record) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
+// The five entities the harness escapes attribute text with, decoded in one
+// pass so a decoded '&' never starts a second decode.
+const TAG_ENTITIES = { quot: '"', amp: '&', lt: '<', gt: '>', apos: "'" };
+
+/**
+ * The opening channel tag of a tagged record: its attributes by name and the
+ * index just past its closing '>'. The tag is read as a run of name="value"
+ * pairs, so a '>' inside a quoted value does not end it and attribute order
+ * does not matter; a name given twice keeps its first value. Returns null
+ * where the text does not open with a whole tag. This is the rule
+ * channelEnvelopeAttributes in hooks/index.ts applies, which a .mjs script
+ * cannot import from TypeScript.
+ * @param {string} content
+ * @returns {{attributes: Map<string,string>, end: number}|null}
+ */
+function channelTag(content) {
+  const open = '<channel';
+  if (!content.startsWith(open)) return null;
+  const pair = /\s+([A-Za-z_][\w.:-]*)="([^"]*)"/y;
+  const attributes = new Map();
+  let at = open.length;
+  for (;;) {
+    pair.lastIndex = at;
+    const m = pair.exec(content);
+    if (!m) break;
+    if (!attributes.has(m[1])) attributes.set(m[1], m[2].replace(/&(quot|amp|lt|gt|apos);/g, (_, name) => TAG_ENTITIES[name]));
+    at = pair.lastIndex;
+  }
+  const close = /^\s*>/.exec(content.slice(at));
+  return close ? { attributes, end: at + close[0].length } : null;
+}
+
 // The operator's words in a tagged record, without the tag around them.
 function operatorWords(content) {
-  const open = content.indexOf('>');
+  const tag = channelTag(content);
+  const open = tag ? tag.end - 1 : content.indexOf('>');
   const body = open >= 0 ? content.slice(open + 1) : '';
   return body.replace(/<\/channel>\s*$/, '');
+}
+
+// The author the tag of a tagged record names, or '' where it names none.
+function operatorAuthor(content) {
+  const tag = channelTag(content);
+  return (tag && tag.attributes.get('author')) || '';
 }
 
 /**
@@ -297,7 +338,7 @@ function relayStamped(origin) {
  * timestamps, and the version. Everything outside the three admitted shapes is
  * passed over here, and a sidechain record is passed over whatever its shape.
  * @param {object[]} records
- * @returns {{lines: {kind: string, at: string|null, text: string}[], lastWords: string|null, firstAt: string|null, lastAt: string|null, lastOperatorAt: string|null, version: string}}
+ * @returns {{lines: {kind: string, at: string|null, text: string, author?: string}[], lastWords: string|null, firstAt: string|null, lastAt: string|null, lastOperatorAt: string|null, version: string}}
  */
 export function sessionDigest(records) {
   const lines = [];
@@ -314,12 +355,12 @@ export function sessionDigest(records) {
     }
     if (typeof r.version === 'string' && r.version) version = r.version;
     if (r.isSidechain === true) continue;
-    // Every carrier is its own message. The tag names only the source and the
-    // chat, so the same text twice in a session is the operator writing it
-    // twice, and both print and both move lastOperatorAt.
+    // Every carrier is its own message. The tag names no message id, so the
+    // same text twice in a session is the operator writing it twice, and both
+    // print and both move lastOperatorAt.
     const tagged = operatorCarrier(r);
     if (tagged !== null) {
-      lines.push({ kind: 'operator', at, text: operatorWords(tagged) });
+      lines.push({ kind: 'operator', at, text: operatorWords(tagged), author: operatorAuthor(tagged) });
       if (at && (lastOperatorAt === null || at > lastOperatorAt)) lastOperatorAt = at;
       continue;
     }
@@ -532,7 +573,9 @@ export function recap(flags, opts = {}) {
     for (const l of s.lines) {
       if (l.kind === 'operator') operators += 1;
       else replies += 1;
-      entries.push({ text: l.kind + ' ' + hhmm(l.at) + ': ' + digestText(l.text), message: true });
+      // An operator line whose tag named an author opens its words with them.
+      const author = l.author ? digestText(l.author) : '';
+      entries.push({ text: l.kind + ' ' + hhmm(l.at) + ': ' + (author ? author + ': ' : '') + digestText(l.text), message: true });
     }
     entries.push({ text: 'last words: ' + (s.lastWords === null ? '(none)' : digestText(s.lastWords)), message: false });
   }

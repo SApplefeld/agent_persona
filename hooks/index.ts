@@ -1705,6 +1705,58 @@ function opensWithSeatLead(text: string): boolean {
 // the SDK host, which is how the supervisor's launch prompt arrives.
 const OPERATOR_ORIGIN_KINDS: ReadonlySet<string> = new Set(["composer", "bridge", "channel", "sdk"]);
 
+// Who sent a relayed channel message, as the broker writes it on the
+// envelope the harness wraps the message in:
+//   <channel source="..." chat_id="..." author="..." sender_class="...">
+// with the text on the lines below and </channel> closing it. A class of
+// exactly "participant" is a person in the thread with no authority. Every
+// other value, and an envelope with no class, is the operator's, so a broker
+// that writes no class keeps every channel turn's standing. The author is the
+// sender's name, or empty where the envelope names none.
+type ChannelSender = { senderClass: "operator" | "participant"; author: string };
+const OPERATOR_SENDER: ChannelSender = { senderClass: "operator", author: "" };
+
+// The five entities the harness escapes attribute text with, decoded in one
+// pass so a decoded "&" never starts a second decode.
+const ENVELOPE_ENTITIES: Readonly<Record<string, string>> = { quot: '"', amp: "&", lt: "<", gt: ">", apos: "'" };
+function decodeEnvelopeAttribute(value: string): string {
+  return value.replace(/&(quot|amp|lt|gt|apos);/g, (_, name: string) => ENVELOPE_ENTITIES[name]);
+}
+
+// The attributes of the channel envelope's opening tag, by name, or null
+// where the text does not open with a whole one. Only a tag at the very start
+// of the text is read: a <channel sequence anywhere later is the message's own
+// content, which the sender wrote. The tag is read as a run of name="value"
+// pairs up to its closing '>', so a '>' inside a quoted value does not end
+// it, and attribute order does not matter. A name given twice keeps its first
+// value.
+function channelEnvelopeAttributes(text: string): Map<string, string> | null {
+  const open = "<channel";
+  if (!text.startsWith(open)) return null;
+  const pair = /\s+([A-Za-z_][\w.:-]*)="([^"]*)"/y;
+  const attributes = new Map<string, string>();
+  let at = open.length;
+  for (;;) {
+    pair.lastIndex = at;
+    const m = pair.exec(text);
+    if (!m) break;
+    if (!attributes.has(m[1])) attributes.set(m[1], decodeEnvelopeAttribute(m[2]));
+    at = pair.lastIndex;
+  }
+  return /^\s*>/.test(text.slice(at)) ? attributes : null;
+}
+
+// The sender a channel prompt's envelope names. A text that does not open
+// with a whole envelope tag reads as the operator's with no author.
+function channelSenderOf(text: string): ChannelSender {
+  const attributes = channelEnvelopeAttributes(text);
+  if (attributes === null) return OPERATOR_SENDER;
+  return {
+    senderClass: attributes.get("sender_class") === "participant" ? "participant" : "operator",
+    author: attributes.get("author") ?? "",
+  };
+}
+
 // The one refusal the four acts that start a new effort give outside a turn
 // the operator or the coordinator persona started.
 const EFFORT_REFUSED_TEXT =
@@ -5054,8 +5106,10 @@ export const register: Register = async (on, options) => {
   // What the real prompt.submit hook saw on each genuine external prompt
   // whose turn has not opened yet: the prompt's text, the text the hook
   // chain beneath settled it to where it reported one, its origin kind
-  // ("unclassified" where it carried none) and whether it is the
-  // supervisor's priming prompt. turn.start takes the reading whose text
+  // ("unclassified" where it carried none), whether it is the
+  // supervisor's priming prompt, and the sender class and author its channel
+  // envelope names (the operator's with no author for any other kind).
+  // turn.start takes the reading whose text
   // its own text equals on either key, the two-key rule the expected-turn
   // list uses, so a turn that opens between a prompt's submit and that
   // prompt's own turn never takes the prompt's reading. A dropped prompt
@@ -5063,15 +5117,24 @@ export const register: Register = async (on, options) => {
   // past that: 8 prompts queued with none of their turns opened is past
   // any queue the engine builds, so a reading dropped there belongs to a
   // prompt whose turn never came.
-  type OriginReading = { text: string; settledText?: string; kind: string; priming: boolean };
+  type OriginReading = {
+    text: string;
+    settledText?: string;
+    kind: string;
+    priming: boolean;
+    senderClass: ChannelSender["senderClass"];
+    author: string;
+  };
   const ORIGIN_READINGS_CAP = 8;
   const originReadings: OriginReading[] = [];
   // What opened the turn now running, captured at turn.start and read by
   // turnMayStartEffort: the origin kind of the reading the turn took
   // ("unclassified" where it took none), whether that reading is the
-  // supervisor's priming prompt, and the expected-turn entry the turn's text
-  // matched, if any. currentGateTurnId is the id that turn.start carried.
-  // Every turn.start overwrites all four. A turn.complete resets them only
+  // supervisor's priming prompt, the sender class and author that reading
+  // carries (the operator's with no author where it took none), and the
+  // expected-turn entry the turn's text matched, if any. currentGateTurnId is
+  // the id that turn.start carried.
+  // Every turn.start overwrites all six. A turn.complete resets them only
   // when it carries that same id, the closing-by-id rule openTurns uses,
   // since a background subagent's completion reaches turn.complete while
   // the persona's own turn is still open. A subagent's turn.start is not
@@ -5080,6 +5143,8 @@ export const register: Register = async (on, options) => {
   // running turn as tool context changes none of them.
   let currentTurnOriginKind = "unclassified";
   let currentTurnIsPriming = false;
+  let currentTurnSenderClass: ChannelSender["senderClass"] = "operator";
+  let currentTurnAuthor = "";
   let currentTurnEntry: ExpectedTurn | null = null;
   let currentGateTurnId: string | null = null;
   // The id of the proposal turn whose proposal agentic_say has already
@@ -5116,10 +5181,13 @@ export const register: Register = async (on, options) => {
   // other turn is only where the reading it took carries one of the
   // operator's kinds. So a nudge or delivery turn that opens while a channel
   // prompt's reading still waits for its own turn is not the operator's,
-  // since that turn matched its expected-turn entry.
+  // since that turn matched its expected-turn entry. A channel turn whose
+  // envelope names the participant class is not the operator's either: it is
+  // a person in the thread, whose words carry no authority.
   const turnIsOperators = (): boolean => {
     if (currentTurnIsPriming) return false;
     if (currentTurnEntry !== null) return false;
+    if (currentTurnOriginKind === "channel" && currentTurnSenderClass === "participant") return false;
     return OPERATOR_ORIGIN_KINDS.has(currentTurnOriginKind);
   };
   // Whether the reply tool (channel-relay's mcp__..__reply) was called
@@ -9556,12 +9624,16 @@ export const register: Register = async (on, options) => {
     currentTurnEntry = matched ?? null;
     currentTurnOriginKind = "unclassified";
     currentTurnIsPriming = false;
+    currentTurnSenderClass = "operator";
+    currentTurnAuthor = "";
     if (!matched) {
       const reading = originReadings.find((r) => turnTextEquals(e.text, r));
       if (reading) {
         originReadings.splice(originReadings.indexOf(reading), 1);
         currentTurnOriginKind = reading.kind;
         currentTurnIsPriming = reading.priming;
+        currentTurnSenderClass = reading.senderClass;
+        currentTurnAuthor = reading.author;
         // Section 4 (goal-every-turn): the open record takes the id of the turn
         // its own message opens. prompt.submit cannot do this, because it runs
         // before the turn exists and its promise settles once the turn has
@@ -9826,6 +9898,8 @@ export const register: Register = async (on, options) => {
     if (e.turnId === currentGateTurnId && !(typeof e.agentId === "string" && e.agentId.length > 0)) {
       currentTurnOriginKind = "unclassified";
       currentTurnIsPriming = false;
+      currentTurnSenderClass = "operator";
+      currentTurnAuthor = "";
       currentTurnEntry = null;
       currentGateTurnId = null;
     }
@@ -11275,6 +11349,9 @@ export const register: Register = async (on, options) => {
         createdAt: now,
         updatedAt: now,
       };
+      // A root created on a channel turn records who asked, where the
+      // envelope named them.
+      if (currentTurnOriginKind === "channel" && currentTurnAuthor !== "") root.askedBy = currentTurnAuthor;
 
       // An ask the slot names belongs to the tree being replaced, and an open
       // one would hold goal_add's activation on the new tree. It closes the
@@ -12918,11 +12995,15 @@ export const register: Register = async (on, options) => {
     lastPromptWasExternal = true;
     // The effort gate's reading of this prompt, taken by the turn that opens
     // with its text. Its settled text is filled in below once the chain
-    // beneath has answered.
+    // beneath has answered. Only a channel prompt carries the relay's
+    // envelope, so only its text is read for the sender.
+    const sender = originKind === "channel" ? channelSenderOf(e.text) : OPERATOR_SENDER;
     const originReading: OriginReading = {
       text: e.text,
       kind: typeof originKind === "string" ? originKind : "unclassified",
       priming: e.text.startsWith("[SUPERVISOR-PRIMING]") || supervisorAskTurn,
+      senderClass: sender.senderClass,
+      author: sender.author,
     };
     originReadings.push(originReading);
     if (originReadings.length > ORIGIN_READINGS_CAP) originReadings.shift();
@@ -12930,20 +13011,24 @@ export const register: Register = async (on, options) => {
     // D5b (bullet 1): an open ask never silences the worker. This hook fires
     // only for a genuine external turn - the controller's own $.prompt.submit
     // calls (nudges, operator-record delivery, the ask re-raise) bypass this
-    // handler, per the expected-turns comment above. So any turn that reaches
-    // here while an ask is open is the operator answering it, whether it
-    // came from the keyboard or a Discord thread reply, and whether or not
-    // it carries the ask id: close the ask, which lifts the hold on the
-    // entry it named; the entry keeps its status.
-    // A [SUPERVISOR-ASK prompt is the one external turn that is not the
-    // operator, so it leaves an open ask open.
+    // handler, per the expected-turns comment above. A prompt whose reading
+    // carries one of the operator's origin kinds and a sender class other than
+    // participant is the operator answering the open ask, whether it came from
+    // the keyboard or a Discord thread reply, and whether or not it carries
+    // the ask id: close the ask, which lifts the hold on the entry it named;
+    // the entry keeps its status. The turn does not exist yet, so the reading
+    // just built stands in for turnIsOperators. A participant's message leaves
+    // the ask open, since a question put to the operator is theirs to answer.
+    // A [SUPERVISOR-ASK prompt is not the operator either, so it leaves an
+    // open ask open.
     // Section 4 (goal-every-turn): the entry an ask closed on this turn named,
     // or null where this turn closed no ask. The record step below reads it as
     // its one fixed rule that needs a fact from this block: a turn answering an
     // open ask is about the entry that asked, so it opens a record attached to
     // that entry and puts nothing to Jev.
     let answeredAskNodeId: string | null = null;
-    if (sess.isOwner && sess.state.pendingAskId && !supervisorAskTurn) {
+    const operatorsPrompt = OPERATOR_ORIGIN_KINDS.has(originReading.kind) && originReading.senderClass !== "participant";
+    if (sess.isOwner && sess.state.pendingAskId && !supervisorAskTurn && operatorsPrompt) {
       const askId = sess.state.pendingAskId;
       const store = commonsStoreOf($);
       const askRecord = await readAskRecord(store, sess.persona, askId);

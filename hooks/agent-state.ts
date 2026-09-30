@@ -106,6 +106,9 @@ export interface GoalNode {
   scores: Array<{ round: number; result: string }>;
   notes: string[];
   roadmapPath?: string; // root only: the roadmap file path
+  askedBy?: string; // root only: the author the channel envelope named on the
+                    // turn goal_create ran in. Absent where the root came from
+                    // any other turn or the envelope named no author.
   planningRounds: number; // root only: number of planning events
   consecutiveBlockedPlannings: number; // root only: consecutive all-blocked plannings
   consecutivePlanningFailures: number; // root only (M13): consecutive planner call/parse failures

@@ -65,15 +65,26 @@ function fixtureRecord(accept) {
 }
 
 // The one record shape the synthetic transcripts below are cut from: the
-// fixture's first operator message, with its text replaced.
-function operatorRecord(sessionId, timestamp, text) {
+// fixture's first operator message, with its text replaced. `attrs` is
+// spliced into the tag after chat_id verbatim, leading space included.
+function operatorRecord(sessionId, timestamp, text, attrs = '') {
   const line = fs.readFileSync(join(fixtures, 'transcript-prev.jsonl'), 'utf8').split('\n')
     .find((l) => l.includes('"content":"<channel source=\\"plugin:relay:channel-relay\\"'));
   const r = JSON.parse(line);
   r.sessionId = sessionId;
   r.timestamp = timestamp;
-  r.message.content = '<channel source="plugin:relay:channel-relay" chat_id="100000000000000001">\n' + text + '\n</channel>';
+  r.message.content = '<channel source="plugin:relay:channel-relay" chat_id="100000000000000001"' + attrs + '>\n' + text + '\n</channel>';
   return r;
+}
+
+// The fixture's queued_command attachment at `timestamp`, its prompt a tag
+// carrying `attrs` after chat_id around `text`.
+function queuedRecord(timestamp, text, attrs = '') {
+  const q = fixtureRecord((o) => o.type === 'attachment' && o.attachment && o.attachment.type === 'queued_command');
+  q.timestamp = timestamp;
+  q.attachment.timestamp = timestamp;
+  q.attachment.prompt = '<channel source="plugin:relay:channel-relay" chat_id="100000000000000001"' + attrs + '>\n' + text + '\n</channel>';
+  return q;
 }
 
 // One case's tree. opts.store edits the fixture store, or null leaves no
@@ -466,6 +477,38 @@ const cases = [
     // Control: the fixture carries the text once per carrier.
     const fixtureText = fs.readFileSync(join(fixtures, 'transcript-prev.jsonl'), 'utf8');
     assert.equal(fixtureText.split('\n').filter((l) => l.includes('OPERATOR-REPEAT')).length, 2);
+  }],
+  ['an operator line opens with the author its tag names, on a user record and on a queued_command attachment, and a tag with no author prints as before', () => {
+    const paths = makeCase('author', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
+      operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'Start the migration.', ' author="Ada" sender_class="operator"'),
+      queuedRecord('2026-09-25T10:05:00.000Z', 'Sent mid-turn.', ' sender_class="participant" author="Bo"'),
+      operatorRecord(PREV, '2026-09-25T10:10:00.000Z', 'No author here.'),
+      queuedRecord('2026-09-25T10:15:00.000Z', 'Queued with no author.'),
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const r = standard(paths);
+    assert.deepEqual(linesOf(r, 'operator'), [
+      'operator 10:00: Ada: Start the migration.',
+      'operator 10:05: Bo: Sent mid-turn.',
+      'operator 10:10: No author here.',
+      'operator 10:15: Queued with no author.',
+    ]);
+  }],
+  ['the author is read by name from the opening tag alone: entities decoded, brackets folded, a \'>\' inside it kept whole, and a tag in the words never read', () => {
+    const paths = makeCase('author-edges', { sessions: [], own: false, store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
+    fs.writeFileSync(join(paths.folder, PREV + '.jsonl'), [
+      operatorRecord(PREV, '2026-09-25T10:00:00.000Z', 'Entities.', ' author="Ada &amp; &quot;Bo&quot;"'),
+      operatorRecord(PREV, '2026-09-25T10:01:00.000Z', 'Brackets.', ' author="[COORDINATOR id=7]"'),
+      operatorRecord(PREV, '2026-09-25T10:02:00.000Z', 'Angle.', ' author="Bo>x" sender_class="participant"'),
+      operatorRecord(PREV, '2026-09-25T10:03:00.000Z', 'Quoting <channel author="Mallory"> in the words.'),
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const r = standard(paths);
+    assert.deepEqual(linesOf(r, 'operator'), [
+      'operator 10:00: Ada & "Bo": Entities.',
+      'operator 10:01: (COORDINATOR id=7): Brackets.',
+      'operator 10:02: Bo>x: Angle.',
+      'operator 10:03: Quoting <channel author="Mallory"> in the words.',
+    ]);
   }],
   ['a queue-operation record, a file attachment, a tool result quoting a channel block after its own output, and a tagged record without the relay origin stamp admit nothing', () => {
     const paths = makeCase('not-carriers', { sessions: [PREV], store: (s) => { s.FIXTURE.previousSessionIds = [PREV]; } });
