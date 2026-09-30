@@ -17,14 +17,15 @@
 # unit-block process, so the process count is width plus one.
 #
 # The default is 1, meaning two processes, and that is a measurement rather
-# than a guess. On this box, serially the suite takes about 32 minutes and
-# passes 335 checks with none failing. Two processes take about 31 and pass
-# 337, since the setup check before the first case runs in each. Four take 35, which is barely better than serial, and fail 11
-# checks: case (aa) hits the suite's own 420-second per-run bound and returns
-# rc 124, and the crash-limit and sweep cases miss timing they would otherwise
-# make. So the box runs out of room somewhere between two and four, and wider
-# trades wall clock for exactly the flaky reds this suite already suffers.
-# Raise the width only with a measurement beside it.
+# than a guess. On this box the suite takes about 32 minutes serially and
+# about 31 across two processes, with none failing. Two processes print one
+# check more than serial: the setup check before the first case runs in both.
+# Four processes took 35 minutes and failed 11 checks when this runner still
+# scheduled only 22 cases: case (aa) hit the suite's own 420-second per-run
+# bound and returned rc 124, and the crash-limit and sweep cases missed timing
+# they would otherwise make. So the box ran out of room somewhere between two
+# and four, and wider trades wall clock for exactly the flaky reds this suite
+# already suffers. Raise the width only with a measurement beside it.
 #
 # For iterative work the bigger win is not this script at all. A single case
 # runs in well under a minute:
@@ -34,17 +35,41 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUITE="$HERE/supervisor-natural-exit-test.sh"
 WIDTH="${1:-1}"
+case "$WIDTH" in
+  ''|*[!0-9]*|0) echo "ERROR: width must be a whole number above zero, got '$WIDTH'" >&2; exit 2 ;;
+esac
 
 # Every driven case the suite defines, read from the suite itself so a case
 # added later is scheduled without an edit here. A case is a name the suite
-# passes to `drive`, or a name it gates directly with `if want`. A suite that
-# yields no case stops the run, since running nothing would print a PASS.
-CASES=$(set -o pipefail
-  tr -d '\r' < "$SUITE" \
-    | sed -nE 's/^[[:space:]]*(drive|if want)[[:space:]]+([a-z0-9]+)([[:space:];].*)?$/\2/p' \
-    | awk '!seen[$0]++')
-if [ $? -ne 0 ] || [ -z "$CASES" ]; then
-  echo "ERROR: no driven case could be read from $SUITE" >&2
+# passes to `drive`, or a name it gates with `if want`. Each case is one slot
+# of the schedule, and a gate nested inside another gate's block joins that
+# gate's slot, since it runs only in a process that also owns the outer case.
+# Any line calling `drive` or `want` with a literal name in a shape this
+# reader does not know stops the run, as does a suite that yields no case,
+# since either would otherwise print a PASS over part of the suite.
+SLOTS=$(set -o pipefail
+  tr -d '\r' < "$SUITE" | awk '
+    /^[[:space:]]*#/ { next }
+    !/^[[:space:]]*(if[[:space:]]+(![[:space:]]+)?)?(drive|want)[[:space:]]+[^"$[:space:]]/ { next }
+    /^[[:space:]]*drive[[:space:]]+[A-Za-z0-9_]+([[:space:]]|$)/ {
+      n = $0; sub(/^[[:space:]]*drive[[:space:]]+/, "", n); sub(/[[:space:]].*$/, "", n)
+      if (!(n in seen)) { seen[n] = 1; slot[++k] = n }
+      next
+    }
+    /^if want[[:space:]]+[A-Za-z0-9_]+;/ {
+      n = $0; sub(/^if want[[:space:]]+/, "", n); sub(/;.*$/, "", n)
+      if (!(n in seen)) { seen[n] = 1; slot[++k] = n; gate = k }
+      next
+    }
+    gate && /^[[:space:]]+if want[[:space:]]+[A-Za-z0-9_]+;/ {
+      n = $0; sub(/^[[:space:]]+if want[[:space:]]+/, "", n); sub(/;.*$/, "", n)
+      if (!(n in seen)) { seen[n] = 1; slot[gate] = slot[gate] "," n }
+      next
+    }
+    { print "ERROR: unreadable case line: " $0 > "/dev/stderr"; bad = 1 }
+    END { if (bad) exit 3; for (i = 1; i <= k; i++) print slot[i] }')
+if [ $? -ne 0 ] || [ -z "$SLOTS" ]; then
+  echo "ERROR: the driven cases could not be read from $SUITE" >&2
   exit 2
 fi
 
@@ -58,20 +83,22 @@ ORDER="o p s x u y v r j ab ac h g k aa a t i c b b2 e"
 
 SCHEDULE=""
 for c in $ORDER; do
-  case " $(echo $CASES) " in *" $c "*) SCHEDULE="$SCHEDULE $c" ;; esac
+  for s in $SLOTS; do
+    case ",$s," in *",$c,"*) SCHEDULE="$SCHEDULE $s" ;; esac
+  done
 done
-for c in $CASES; do
-  case " $ORDER " in *" $c "*) ;; *) SCHEDULE="$SCHEDULE $c" ;; esac
+for s in $SLOTS; do
+  case " $SCHEDULE " in *" $s "*) ;; *) SCHEDULE="$SCHEDULE $s" ;; esac
 done
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-# Round-robin the cases into WIDTH groups.
+# Round-robin the slots into WIDTH groups, a slot's cases staying together.
 i=0
-for c in $SCHEDULE; do
+for s in $SCHEDULE; do
   g=$(( i % WIDTH ))
-  eval "GROUP_$g=\"\${GROUP_$g:-} $c\""
+  eval "GROUP_$g=\"\${GROUP_$g:-} ${s//,/ }\""
   i=$(( i + 1 ))
 done
 

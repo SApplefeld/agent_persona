@@ -75,9 +75,11 @@ elif [ "${1:-}" = "--cases" ]; then
   [ -n "$*" ] || { echo "ERROR: --cases needs at least one case name" >&2; exit 2; }
 fi
 # True when the named driven case is in this process's share of the suite.
+# A case this process owns lifts the check suppression a skipped drive left
+# behind, so a case gated directly by `if want` reports its own checks.
 want() {
-  [ -z "$WANT_CASES" ] && return 0
-  case "$WANT_CASES" in *" $1 "*) return 0 ;; *) return 1 ;; esac
+  [ -z "$WANT_CASES" ] && { SKIP_CASE=0; return 0; }
+  case "$WANT_CASES" in *" $1 "*) SKIP_CASE=0; return 0 ;; *) return 1 ;; esac
 }
 
 # The extractor and the closure walker are shared with the other suite that
