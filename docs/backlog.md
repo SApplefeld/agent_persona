@@ -1,5 +1,11 @@
 # Backlog
 
+## Operator check owed by the error turn definition plan (parked 2026-10-01)
+
+The error turn definition plan (`docs/archive/agent_persona_error-turn-definition_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Watch a relaunched persona stay quiet through ordinary tool failures.** After the installed plugin updates and a persona relaunches, a persona that retries a refused file read, or sees a shell command exit non-zero inside a turn that ends normally, opens no "Error streak" ask. An `Error streak` ask on a persona whose turns ended normally reopens the plan.
+
 ## Operator checks owed by the client sandbox plan (parked 2026-10-01)
 
 The client sandbox plan (`docs/archive/agent_persona_client-sandbox_spec_v1.md`) is Complete. Four items are the operator's.
@@ -133,7 +139,7 @@ The harness typings (`.claude/types/claude-code.d.ts`, the `prompt.submit` hook 
 
 ## A subagent's completion still advances four per-turn values meant for the persona's own turn end (found 2026-09-25)
 
-A background subagent's completion reaches `turn.complete` in `hooks/index.ts` while the persona's own turn is still open, and four readers there still run on it. `toolErrorsThisTurn` feeds the error streak. `openTurns.delete` runs under the parent's turn id. The nudge-count reset runs where the turn called a work tool or came from a channel. The `next_speaker` outcome joiner records `neither` for the held call, which the README states as the current behaviour. The list was read from code by the Jev question quality plan's section 4 implementer and is unmeasured. Remedy: gate each on `completesSubagentLoop`, the test the ask-marker, lead and reply readers now take, with one tick case per value, and decide `next_speaker` separately, since the README documents it. Split out of the three-readers entry when that fix shipped.
+A background subagent's completion reaches `turn.complete` in `hooks/index.ts` while the persona's own turn is still open, and four readers there still run on it. The error streak takes that completion's reason, so a subagent ending in error advances the persona's streak and one ending normally resets it. `openTurns.delete` runs under the parent's turn id. The nudge-count reset runs where the turn called a work tool or came from a channel. The `next_speaker` outcome joiner records `neither` for the held call, which the README states as the current behaviour. The list was read from code by the Jev question quality plan's section 4 implementer and is unmeasured. Remedy: gate each on `completesSubagentLoop`, the test the ask-marker, lead and reply readers now take, with one tick case per value, and decide `next_speaker` separately, since the README documents it. Split out of the three-readers entry when that fix shipped.
 
 ## Whether the engine joins a multi-block answer with whitespace is unverified (found 2026-09-28)
 
