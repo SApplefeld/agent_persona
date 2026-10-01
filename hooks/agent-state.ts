@@ -1905,8 +1905,8 @@ export function planningCapReached(
 
 // A turn is an error turn when the harness ends it with reason "error".
 // A tool error or a denied call inside a turn that ends normally is work,
-// not failure, so it does not advance the streak; the count still lands on
-// toolErrorsLastTurn as the record of what happened in the turn.
+// not failure, so it does not advance the streak; the tool-error count the
+// caller passes still lands on toolErrorsLastTurn as a record.
 export function applyTurnToErrors(
   prev: EnvErrors,
   turn: { reason: string; toolErrors: number },

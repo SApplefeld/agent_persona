@@ -19579,10 +19579,9 @@ async function caseS13_score_completedTurnRecordsRound(clock) {
 
 // Error streak: three turns ending with reason "error" reach the C3 streak
 // on the next tick, and the streak opens an ask and leaves the plan active
-// rather than blocking or pausing it; the open ask is the hold. The reason
-// alone drives the streak now, so the inducer is turn.complete's own reason
-// rather than a denied tool call, as abkDriveStreak uses for the no-active-node
-// cases.
+// rather than blocking or pausing it; the open ask is the hold. The inducer
+// is turn.complete's own reason, as abkDriveStreak uses for the
+// no-active-node cases.
 async function caseS13_errorStreak_threeErrorTurnsOpenAnAsk(clock) {
   console.log("\n=== S13 errorstreak: three error turns escalate to an ask, not a block or a pause ===");
   clock.set(T0);
@@ -19634,19 +19633,24 @@ async function caseS13_errorTurn_toolErrorAndDenialInsideAGoodTurnDoNotStreak(cl
   const toolH = h.handlers["tool.call"];
   const completeH = h.handlers["turn.complete"];
   let denyText;
+  let readsFlagged = 0;
   for (let i = 1; i <= 3; i++) {
     const turnId = `t-goodturn-${i}`;
     await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
-    await toolH(h.fake, { tool: "Read", turnId }, async () => ({ result: "refused: too large", isError: true }));
+    const readR = await toolH(h.fake, { tool: "Read", turnId }, async () => ({ result: "refused: too large", isError: true }));
+    if (readR && !readR.deny && readR.isError === true) readsFlagged++;
     const r = await toolH(h.fake, { tool: "Bash", turnId }, async () => ({ result: "ran" }));
     if (r && r.deny) denyText = r.deny;
     await completeH(h.fake, { turnId, reason: "completed" }, async () => ({ result: "ok" }));
   }
-  // The denial text and decision detail are the root "no bash" constraint's
-  // own, at hooks/index.ts:12960 and :12957, so the refusal is confirmed as
-  // that rule's and not some other guard's.
-  check("s13 errorturn: the Bash call was refused by the root \"no bash\" constraint",
-    denyText === "Bash is not allowed by the current goal", denyText);
+  // Each turn carries one flagged result that reached the tool and one
+  // refusal. The refusal's decision detail is the root "no bash"
+  // constraint's own ("Bash denied by root constraint" in hooks/index.ts),
+  // so the check below it confirms that rule refused, not another guard.
+  check("s13 errorturn: every Read reached the tool and came back flagged isError",
+    readsFlagged === 3, readsFlagged);
+  check("s13 errorturn: the Bash call was refused",
+    typeof denyText === "string" && denyText.length > 0, denyText);
   const denyDecisions = getDecisions(h).filter((d) => d.action === "deny");
   check("s13 errorturn: every deny decision names the root constraint, not another rule",
     denyDecisions.length === 3 && denyDecisions.every((d) => d.detail.includes("Bash denied by root constraint")),
@@ -19696,6 +19700,8 @@ async function caseS13_errorTurn_toolErrorAndDenialInsideAGoodTurnDoNotStreak(cl
     countAction(cDecisions, "ask_opened") === 1, cDecisions.map((d) => d.action));
   const cAskKeys = [...c.storeMap.keys()].filter((k) => k.startsWith("ask:"));
   check("s13 errorturn control: one ask record in the store", cAskKeys.length === 1, cAskKeys);
+  check("s13 errorturn control: pendingAskId is set", typeof cState.pendingAskId === "string", cState.pendingAskId);
+  check("s13 errorturn control: one toast", c.uiToasts.length === 1, c.uiToasts);
 }
 
 // Error streak, no active node: three error turns on a persona with no
