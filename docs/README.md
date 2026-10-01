@@ -8,6 +8,7 @@
 
 ## Active plans
 
+- `plans/agent_persona_error-turn-definition_spec_v1.md` (Ready, one section, Branch-and-PR) narrows the error streak so only a turn whose completion reason is `error` counts as an error turn: a tool result flagged as an error, or a call the plugin denied, inside a turn that ends normally no longer advances the streak or opens an `Error streak` ask. The per-turn tool-error count stays on the state as a record, the re-fire rule and the self-review trigger keep their code, and the tick suite proves both directions. Written on the operator's 2026-10-01 ruling that individual tool failures are a normal part of work.
 - `plans/agent_persona_client-sandbox_spec_v1.md` (In Progress, four sections, Branch-and-PR) reads the sender class and author the Discord broker now writes on a channel envelope, so a participant's message opens a turn that starts no effort while an operator's or an unclassed one keeps today's standing; adds the liaison seat beside the coordinator and architect seats, with its roster key, charter and a settings template that refuses a tool outside its allow list; states both in the security model and the README; and carries the runbook the operator provisions a client's sandbox host from. Second of three companion plans, after the broker's `channels_client-sandbox_spec_v1.md` and before the kit's `claude-kit_liaison-seat_spec_v1.md`.
 
 ## Archived plans
