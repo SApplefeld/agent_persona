@@ -94,7 +94,7 @@ Check: `node --version` prints `v24` or later. `git --version`, `gh --version` a
 
 ## Credentials
 
-The host holds four credentials, each issued for this host alone. This section provisions two: the experiment's Claude account and a GitHub token for the client repository. The Broker section adds the other two, the Discord bot's token and a key for TypeSafe, the vendor whose classifier the response gate calls. No credential of your own fleet is ever copied onto it.
+The host holds four credentials, each issued for this host alone. This section provisions two: the experiment's Claude account and a GitHub token for the client repository. The Broker section adds the other two, the Discord bot's token and a key for TypeSafe, the vendor whose Jev classifier the broker, the persona plugin and the kit's memory store call. No credential of your own fleet is ever copied onto it.
 
 1. Run `claude` and sign in with the Claude account whose spend is the experiment's.
 2. Create a fine-grained GitHub token whose resource owner is `<owner>`. Limit its repository access to `<client repo>` alone, give it Contents and Pull requests at read and write, and set an expiry date.
@@ -151,11 +151,17 @@ Check: `Select-String -Path $HOME\.claude\claude-kit-doctrine.md -SimpleMatch -P
 
 The host's kit memory store starts empty and syncs nowhere. The operator tier on your fleet machines carries the names of other clients, so nothing from it may reach this host. The store's root is `$HOME\.claude`.
 
+Write the kit's Jev config, so `memq` has Jev judge the store's records against the work in progress. The file names TypeSafe's endpoint and model and holds no key:
+
+```powershell
+'{"endpoint":"https://api.typesafe.ai","model":"jev-latest"}' | Set-Content -Encoding ascii $HOME\.claude\kit-jev.json
+```
+
 | Check | Expected | Why |
 |---|---|---|
 | `Test-Path $HOME\.claude\kit-memory-db.json` | `False` | With no database client file, the store publishes to no shared database |
 | `git -C $HOME\.claude remote -v` | prints nothing | The store syncs only where it has a remote |
-| `Test-Path $HOME\.claude\kit-jev.json` | `False` | Without it, `memq` sends no record list to TypeSafe for judging |
+| `Test-Path $HOME\.claude\kit-jev.json` | `True` | With it, `memq` sends TypeSafe each nearby record's name, description and status for judging |
 | `Test-Path $HOME\.claude\kit-sidecar` | `False` | The kit's sidecar hook captures nothing while its spool folder, `kit-sidecar\spool`, is absent |
 | `Test-Path $HOME\.claude\kit-endpoint.json` | `False` | The sidecar's judge service is on your own network, and this file would name it |
 
@@ -183,21 +189,30 @@ The host runs its own broker from the `discord-channels` repository. Its senders
 
    It prompts for the bot token and raises one UAC prompt. Every operator holds your whole authority over the host. A client user added later is an edit to `CHANNEL_SENDERS` in `broker.env` and a broker restart.
 
-3. Write the TypeSafe key file, from the same non-elevated window. The response gate sends TypeSafe a held batch to judge. Use a key no fleet host uses, so revoking it touches this host alone:
+3. Write the TypeSafe key file, from the same non-elevated window. The broker sends TypeSafe held batches and persona replies to judge. Use a key no fleet host uses, so revoking it touches this host alone:
 
    ```powershell
    $k = Read-Host 'TypeSafe key' -AsSecureString
    [IO.File]::WriteAllText("$env:LOCALAPPDATA\sapplefeld-channels\inbox-judge-key.txt", [Net.NetworkCredential]::new('', $k).Password)
    ```
 
-4. Add the gate and the key file to `%LOCALAPPDATA%\sapplefeld-channels\broker.env`:
+   Then give every Claude session on the host the same key, through the `env` block of the user-level settings file. The persona plugin and `memq` read it from there. The keeper's env file cannot carry it, since its allowlist refuses every other key:
+
+   ```powershell
+   node -e "const fs=require('fs');const f=require('os').homedir()+'/.claude/settings.json';const s=JSON.parse(fs.readFileSync(f,'utf8'));s.env=Object.assign({},s.env,{TYPESAFE_API_KEY:fs.readFileSync(process.env.LOCALAPPDATA+'/sapplefeld-channels/inbox-judge-key.txt','utf8').trim()});fs.writeFileSync(f,JSON.stringify(s,null,2))"
+   ```
+
+   Check: `node -e "console.log(Boolean(require(require('os').homedir()+'/.claude/settings.json').env.TYPESAFE_API_KEY))"` prints `true`.
+
+4. Add the gate, the inbox card and the key file to `%LOCALAPPDATA%\sapplefeld-channels\broker.env`:
 
    ```
    CHANNEL_RESPONSE_GATE=shadow
+   CHANNEL_INBOX_CARD=true
    CHANNEL_INBOX_JUDGE_KEY_FILE=C:\Users\<user>\AppData\Local\sapplefeld-channels\inbox-judge-key.txt
    ```
 
-   Leave `CHANNEL_INBOX_CARD` unset. The inbox card is then off, and no persona reply goes to TypeSafe.
+   The inbox card has Jev read each persona reply for a question the persona did not mark as one.
 
 5. Restart the broker, in an elevated window from `D:\discord-channels`:
 
@@ -215,8 +230,8 @@ Give the client these four facts in writing before any client user posts in a th
 
 1. Every persona turn sends its text to Anthropic, under the experiment's Claude account.
 2. Discord stores every thread message, card and tool approval prompt under Discord's own retention. A tool approval prompt carries the tool's actual input.
-3. While the response gate is at `shadow` or `live`, the broker sends TypeSafe each thread's held messages once the thread has been quiet for five seconds. It sends the newest lines up to 12,000 code points, each line carrying its author's Discord name and class. A batch that a mention, a reply or a size or age cap releases first is never sent, and neither is one the broker's secret screen matches. No persona reply goes to TypeSafe from this host, since the inbox card is off, every persona runs with `jevMode` off, and the kit holds no `kit-jev.json`.
-4. The host's memory store, its session transcripts and the gate's journal stay on the host.
+3. TypeSafe, through its Jev classifier, may receive most of what Anthropic receives. That includes client messages in a thread, persona replies, the personas' plans, goals and working state, and the names and descriptions of records in the host's memory store. What it receives may grow as the fleet gains Jev features, without a new notice. It receives this under a key issued for this host alone.
+4. The host stores its memory store, its session transcripts and the gate's journal on the host alone. Facts 1 and 3 still send parts of their content off it.
 
 ## Fleet
 
@@ -274,7 +289,7 @@ The fleet is four personas: the steward as coordinator, the architect, the liais
        "channelName": "steward",
        "model": "sonnet",
        "controllerTickMs": 300000,
-       "jevMode": "off",
+       "jevMode": "shadow",
        "coordinatorPersona": "steward",
        "architectPersona": "architect",
        "liaisonPersona": "liaison",
@@ -290,7 +305,7 @@ The fleet is four personas: the steward as coordinator, the architect, the liais
        "model": "fable",
        "effort": "high",
        "controllerTickMs": 60000,
-       "jevMode": "off",
+       "jevMode": "shadow",
        "coordinatorPersona": "steward",
        "architectPersona": "architect",
        "enabled": true
@@ -301,7 +316,7 @@ The fleet is four personas: the steward as coordinator, the architect, the liais
        "permissionMode": "default",
        "rundir": "D:/personas/liaison/run",
        "channelName": "liaison",
-       "jevMode": "off",
+       "jevMode": "shadow",
        "coordinatorPersona": "steward",
        "architectPersona": "architect",
        "liaisonPersona": "liaison",
@@ -314,7 +329,7 @@ The fleet is four personas: the steward as coordinator, the architect, the liais
        "rundir": "D:/personas/dev/run",
        "channelName": "dev",
        "model": "opus",
-       "jevMode": "off",
+       "jevMode": "shadow",
        "coordinatorPersona": "steward",
        "architectPersona": "architect",
        "enabled": true
