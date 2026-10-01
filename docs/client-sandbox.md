@@ -14,7 +14,8 @@ Angle brackets mark a value you supply. Every other value in this runbook is fix
 | `<Azure DevOps url>` | The clone URL of the Azure DevOps repository that holds `<client branch>` |
 | `<bridge folder>` | The folder on your own machine that holds the bridge clone |
 | `<sweep pattern>` | A regular expression matching every other client's name and the credential shapes your repositories carry |
-| `<host>` | The VM's name, in capitals, as `$env:COMPUTERNAME` prints it. The broker shows it on its cards, and the launch wrapper finds this host by it |
+| `<reviewer>` | The GitHub account that reviews the worker's pull requests: a client user's, or a second account of yours. It is never the token's owner, since GitHub refuses an author's approval of their own pull request |
+| `<host>` | The VM's name, in capitals, as `$env:COMPUTERNAME` prints it. The broker shows it on its cards |
 | `<user>` | The VM's Windows account that runs the fleet |
 | `<channel id>`, `<your user id>`, `<client user id>` | Discord IDs, copied with Developer Mode on |
 
@@ -55,9 +56,10 @@ The client's code lives in one private GitHub repository, seeded from its Azure 
    ```
    git log --all -p -i -G "<sweep pattern>"
    git log --all -i --grep "<sweep pattern>"
+   git log --all --name-only --format= | Sort-Object -Unique | Select-String -Pattern "<sweep pattern>"
    ```
 
-   The first command reads every change in the history, and the second reads every commit message. Run each once with a word you know the history holds, and see it print, before you trust its silence. A match stops the seeding until it is resolved on `<client branch>` in Azure DevOps.
+   The first command reads every change in the history, the second every commit message, and the third every file path. The first diffs every commit, so on a long history it runs for minutes before it prints. Run each once with a word you know the history holds, and see it print, before you trust its silence. A match stops the seeding until it is resolved on `<client branch>` in Azure DevOps.
 
 4. Push the branch as the new repository's `main`:
 
@@ -67,7 +69,15 @@ The client's code lives in one private GitHub repository, seeded from its Azure 
 
 5. Protect `main`. Under the repository's Settings, Rules, add a branch ruleset targeting `main`, active, with an empty bypass list. It requires a pull request with one approving review, dismisses stale approvals on a push, and requires approval of the most recent push.
 
-Check: `gh repo view <owner>/<client repo> --json defaultBranchRef --jq .defaultBranchRef.name` prints `main`. `gh api repos/<owner>/<client repo>/rules/branches/main` shows a `pull_request` rule whose `required_approving_review_count` is at least 1, with `dismiss_stale_reviews_on_push` and `require_last_push_approval` both true.
+6. Give `<reviewer>` write access. The ruleset counts only an approval from an account with write access.
+
+   ```
+   gh api -X PUT repos/<owner>/<client repo>/collaborators/<reviewer> -f permission=push
+   ```
+
+   GitHub emails `<reviewer>` an invitation, which they accept.
+
+Check: `gh repo view <owner>/<client repo> --json defaultBranchRef --jq .defaultBranchRef.name` prints `main`. `gh api repos/<owner>/<client repo>/rules/branches/main` shows a `pull_request` rule whose `required_approving_review_count` is at least 1, with `dismiss_stale_reviews_on_push` and `require_last_push_approval` both true. `gh api repos/<owner>/<client repo>/collaborators/<reviewer>/permission --jq .permission` prints `write`.
 
 ## Host Machine
 
@@ -84,7 +94,7 @@ Check: `node --version` prints `v24` or later. `git --version`, `gh --version` a
 
 ## Credentials
 
-The host holds four credentials, each issued for this host alone. This section provisions two: the experiment's Claude account and a GitHub token for the client repository. The Broker section adds the other two, the Discord bot's token and a TypeSafe key. No credential of your own fleet is ever copied onto it.
+The host holds four credentials, each issued for this host alone. This section provisions two: the experiment's Claude account and a GitHub token for the client repository. The Broker section adds the other two, the Discord bot's token and a key for TypeSafe, the vendor whose classifier the response gate calls. No credential of your own fleet is ever copied onto it.
 
 1. Run `claude` and sign in with the Claude account whose spend is the experiment's.
 2. Create a fine-grained GitHub token whose resource owner is `<owner>`. Limit its repository access to `<client repo>` alone, give it Contents and Pull requests at read and write, and set an expiry date.
@@ -103,7 +113,7 @@ Never place any of these on the host: a file from a fleet machine's `.claude` fo
 
 ## Plugins and Kit
 
-The fleet runs on the persona plugin and the kit. Both must be installed before any persona launches, since the liaison's charter loads the kit's `liaison` skill and the doctrine's class clause tells every session how to weigh a participant's message.
+The fleet runs on the persona plugin and the kit. Both must be installed before any persona launches. The liaison's charter loads the kit's `liaison` skill, and the doctrine's class clause tells every session how to weigh a participant's message.
 
 1. Install the persona plugin:
 
@@ -119,10 +129,10 @@ The fleet runs on the persona plugin and the kit. Both must be installed before 
    claude plugin install claude-kit@applefeld --scope user
    ```
 
-3. Import the kit's doctrine for every session:
+3. Import the kit's doctrine for every session. The command adds the import line only where `CLAUDE.md` lacks it:
 
    ```powershell
-   Add-Content -Path $HOME\.claude\CLAUDE.md -Value '@claude-kit-doctrine.md'
+   if (-not (Select-String -Path $HOME\.claude\CLAUDE.md -SimpleMatch -Pattern '@claude-kit-doctrine.md' -Quiet -ErrorAction SilentlyContinue)) { Add-Content -Path $HOME\.claude\CLAUDE.md -Value '@claude-kit-doctrine.md' }
    ```
 
 4. Run the kit doctor from the installed payload with `-Fix`, and accept its repairs:
@@ -149,7 +159,7 @@ The host's kit memory store starts empty and syncs nowhere. The operator tier on
 | `Test-Path $HOME\.claude\kit-sidecar` | `False` | The kit's sidecar hook captures nothing while its spool folder, `kit-sidecar\spool`, is absent |
 | `Test-Path $HOME\.claude\kit-endpoint.json` | `False` | The sidecar's judge service is on your own network, and this file would name it |
 
-Never run the kit's sidecar daemon on this host, since running it creates the spool folder. Never copy a memory file from a fleet machine.
+Never run the kit's sidecar daemon on this host. Running it creates the spool folder. Never copy a memory file from a fleet machine.
 
 ## Broker
 
@@ -162,13 +172,9 @@ The host runs its own broker from the `discord-channels` repository. Its senders
    Set-Location D:\discord-channels
    ```
 
-2. Add this host to the launch wrapper's host table, because the wrapper refuses to launch on a machine the table does not name. In `wrapper\Enter-ClaudeSession.ps1`, add this line inside the `$script:ChannelFlagByHost = @{ ... }` block:
+   Leave the user environment variable `CHANNEL_LAUNCH_FLAG` unset. The launch wrapper then starts every session with `--channels`, and the checkout stays unedited. "The launch dialog" in `docs/install.md` owns that variable.
 
-   ```powershell
-   '<host>' = '--channels'
-   ```
-
-3. From the repository root, in a non-elevated window, install the host. Give `-Senders` one entry per client user, each as an operator:
+2. From the repository root, in a non-elevated window, install the host. Give `-Senders` one entry per client user, each as an operator:
 
    ```powershell
    install\Install-All.ps1 -HostName <host> -ChannelId <channel id> -AllowedUserId <your user id> `
@@ -177,14 +183,14 @@ The host runs its own broker from the `discord-channels` repository. Its senders
 
    It prompts for the bot token and raises one UAC prompt. Every operator holds your whole authority over the host. A client user added later is an edit to `CHANNEL_SENDERS` in `broker.env` and a broker restart.
 
-4. Write the TypeSafe key file, from the same non-elevated window. TypeSafe is the vendor whose classifier the response gate calls to judge a held batch. Use a key no fleet host uses, so revoking it touches this host alone:
+3. Write the TypeSafe key file, from the same non-elevated window. The response gate sends TypeSafe a held batch to judge. Use a key no fleet host uses, so revoking it touches this host alone:
 
    ```powershell
    $k = Read-Host 'TypeSafe key' -AsSecureString
    [IO.File]::WriteAllText("$env:LOCALAPPDATA\sapplefeld-channels\inbox-judge-key.txt", [Net.NetworkCredential]::new('', $k).Password)
    ```
 
-5. Add the gate and the key file to `%LOCALAPPDATA%\sapplefeld-channels\broker.env`:
+4. Add the gate and the key file to `%LOCALAPPDATA%\sapplefeld-channels\broker.env`:
 
    ```
    CHANNEL_RESPONSE_GATE=shadow
@@ -193,15 +199,15 @@ The host runs its own broker from the `discord-channels` repository. Its senders
 
    Leave `CHANNEL_INBOX_CARD` unset. The inbox card is then off, and no persona reply goes to TypeSafe.
 
-6. Restart the broker, in an elevated window from `D:\discord-channels`:
+5. Restart the broker, in an elevated window from `D:\discord-channels`:
 
    ```powershell
    .\install\Repair-Broker.ps1
    ```
 
-7. Run the per-host verification under "The relay as a plugin" in `docs/install.md`, steps 2 to 4. From a new PowerShell window, `cchat sandbox-check` launches a watched session. A message typed in its thread must reach it, and its reply must land back in the thread. Then `/exit`.
+6. Run the per-host verification under "The relay as a plugin" in `docs/install.md`, steps 2 to 4. From a new PowerShell window, `cchat sandbox-check` launches a watched session. A message typed in its thread must reach it, and its reply must land back in the thread. Then `/exit`.
 
-Check: `Select-String -Path $env:LOCALAPPDATA\sapplefeld-channels\broker.env -Pattern '^CHANNEL_SENDERS='` shows every client user's ID with `:operator`. `Get-Content $env:LOCALAPPDATA\sapplefeld-channels\broker.log -Tail 50` holds no refusal naming the sender roster, the gate mode or the key file. `curl.exe -s http://127.0.0.1:8787/sessions` answers. `Test-Path $env:LOCALAPPDATA\sapplefeld-channels\relay-mcp.json` prints `True`. Every persona's channel loads through the relay plugin, which reads that file and exits where it is missing. Only a wrapped launch, such as the one in step 7, writes it.
+Check: `Select-String -Path $env:LOCALAPPDATA\sapplefeld-channels\broker.env -Pattern '^CHANNEL_SENDERS='` shows every client user's ID with `:operator`. `Get-Content $env:LOCALAPPDATA\sapplefeld-channels\broker.log -Tail 50` holds no refusal naming the sender roster, the gate mode or the key file. `curl.exe -s http://127.0.0.1:8787/sessions` answers. `Test-Path $env:LOCALAPPDATA\sapplefeld-channels\relay-mcp.json` prints `True`. Every persona's channel loads through the relay plugin, which reads that file and exits where it is missing. Only a wrapped launch, such as the one in step 6, writes it.
 
 ## Client Disclosure
 
@@ -243,7 +249,7 @@ The fleet is four personas: the steward as coordinator, the architect, the liais
    Copy-Item D:\agent_persona\docs\liaison-settings.template.json D:\personas\liaison\.claude\settings.json
    ```
 
-   The liaison runs on the `default` permission mode, and its allow list marks the tools it runs without approval. In the supervisor's launch, with the channel attached, a tool outside the list is refused and no approval reaches the thread. A Bash command the harness classes as read-only runs without approval. The harness decides that class, and its reach is unmeasured. The liaison's bounds assume the user-level settings file grants nothing more. The broker's installer, in Broker step 3, writes that file's one allow rule, the relay's reply tool. So check it: `node -e "console.log(JSON.stringify(require(require('os').homedir()+'/.claude/settings.json').permissions))"` prints an allow list holding `mcp__plugin_relay_channel-relay__reply` and nothing else. A missing file means Broker step 3 did not finish, so run it again. Any other allow entry widens every persona on the host, the liaison included, so remove it.
+   The liaison runs on the `default` permission mode, and its allow list marks the tools it runs without approval. In the supervisor's launch, with the channel attached, a tool outside the list is refused and no approval reaches the thread. A Bash command the harness classes as read-only runs without approval. The harness decides that class, and its reach is unmeasured. The liaison's bounds assume the user-level settings file grants nothing more. The broker's installer, in Broker step 2, writes that file's one allow rule, the relay's reply tool. So check it: `node -e "console.log(JSON.stringify(require(require('os').homedir()+'/.claude/settings.json').permissions))"` prints an allow list holding `mcp__plugin_relay_channel-relay__reply` and nothing else. A missing file means Broker step 2 did not finish, so run it again. Any other allow entry widens every persona on the host, the liaison included, so remove it.
 
 5. Trust the liaison's working directory. The harness ignores the settings file's allow list in a directory it has not trusted.
 
@@ -359,7 +365,7 @@ Where a liaison joins a fleet that is already running, the steward must restart 
 1. Add the liaison's entry to `D:\personas\fleet.json`, and add `"liaisonPersona": "liaison"` to the steward's entry.
 2. Take steps 2, 4 and 5 of the Fleet section for the liaison's folder.
 3. Re-run step 8 to register the liaison's task.
-4. Delete the steward's settings file. Then ask the steward in its thread to shut down. Its shutdown tool leaves a hold marker, so the keeper does not relaunch it on the old settings before step 5.
+4. Ask the steward in its thread to shut down. Its shutdown leaves a hold marker, so the keeper does not relaunch it before step 5. Once `Test-Path D:\personas\steward\run\keeper.hold` prints `True`, delete the steward's settings file:
 
    ```powershell
    Remove-Item D:\personas\steward\run\settings.json
@@ -441,7 +447,7 @@ The first host is accepted when every item below passes. Each names what you run
    Get-ChildItem $HOME\.claude\projects\D--personas-liaison\*.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1 | Select-String -SimpleMatch -Pattern 'sender_class=' | Select-Object -Last 1
    ```
 
-   It passes where the printed line's `<channel` tag carries `author=` with your Discord name and `sender_class=` with `operator`. No line, or a tag missing either attribute, fails it.
+   It passes where the printed line's `<channel` tag carries `author=` with the name Discord shows for you in that server and `sender_class=` with `operator`. No line, or a tag missing either attribute, fails it.
 
 2. **Brief reaches the architect.** In the liaison's thread, ask for a change to `<client repo>` that needs a plan. `Select-String -Path $HOME\.claude\projects\D--personas-architect\*.jsonl -SimpleMatch -Pattern '[WORKER:liaison id='` then matches the liaison's brief. Once the architect's own thread shows its answer, the liaison's thread carries that answer in plain words. No brief in the architect's transcript, or no relayed answer in the liaison's thread, fails it.
 
@@ -453,9 +459,9 @@ The first host is accepted when every item below passes. Each names what you run
 
    It passes where a matching line carries a `[COORDINATOR id=` record, and `Select-String -Path D:\<client repo>\.agentic-personas.json -SimpleMatch -Pattern '<plan filename>'` also matches. No coordinator record naming the plan, or a worker store without it, fails it.
 
-4. **Token cannot merge.** The worker opens a pull request on the client repository, which `gh pr list --repo <owner>/<client repo>` shows. On the host, before anyone reviews it, `gh pr view <number> --repo <owner>/<client repo> --json mergeStateStatus,reviewDecision` prints `BLOCKED` and `REVIEW_REQUIRED`. With the ruleset's bypass list empty, no token can merge past that block. A `mergeStateStatus` of `CLEAN` fails it. Never try a merge from the host to test this, since a failure would land an unreviewed change on `main`.
+4. **Token cannot merge.** The worker opens a pull request on the client repository, which `gh pr list --repo <owner>/<client repo>` shows. On the host, before anyone reviews it, `gh pr view <number> --repo <owner>/<client repo> --json mergeStateStatus,reviewDecision` prints `BLOCKED` and `REVIEW_REQUIRED`. With the ruleset's bypass list empty, no token can merge past that block. Once `<reviewer>` approves it on GitHub, the same command prints `APPROVED` for `reviewDecision`. A `mergeStateStatus` of `CLEAN` before the review fails it, and so does a review that leaves `REVIEW_REQUIRED`. Never try a merge from the host to test this. A failed block would land an unreviewed change on `main`.
 
-5. **Memory holds nothing of the fleet.** From `D:\personas\liaison`, `memq recall` prints no record your fleet wrote, and its stderr names no refusal. `git -C $HOME\.claude remote -v` prints nothing. A fleet record, a remote, or a refusal line fails it, since a refused read prints nothing and proves nothing.
+5. **Memory holds nothing of the fleet.** From `D:\personas\liaison`, `memq recall` prints no record your fleet wrote, and its stderr names no refusal. `git -C $HOME\.claude remote -v` prints nothing. A fleet record, a remote, or a refusal line fails it. A refused read prints nothing and proves nothing.
 
 6. **Shadow journal scores.** After a week at `shadow`, `(Select-String -Path $env:LOCALAPPDATA\sapplefeld-channels\response-gate.jsonl* -SimpleMatch -Pattern '"probability"').Count` is above zero. The scoring tool under "Response Gate Threshold" prints the count line and a row for each threshold from 0.40 to 0.95. No journal, no judged row, or a refusal from the tool fails it.
 
