@@ -8,6 +8,7 @@
 
 ## Active plans
 
+- `plans/agent_persona_goal-tree-guidance_spec_v1.md` (Ready, five sections, Branch-and-PR; refined 2026-10-01 by the ARCHITECT persona from the ASSISTANT's draft on the operator's word) makes a plan document handed to `goal_create` one plan entry the document closes and never a planner job, closes a queued plan entry from its document on the idle tick, replaces the round-budget block with a check-in the persona answers, makes every goal and task tool description true to its handler, and adds the `goal-tree` skill the priming names before a persona's first goal tool call.
 - `plans/agent_persona_client-sandbox_spec_v1.md` (In Progress, four sections, Branch-and-PR) reads the sender class and author the Discord broker now writes on a channel envelope, so a participant's message opens a turn that starts no effort while an operator's or an unclassed one keeps today's standing; adds the liaison seat beside the coordinator and architect seats, with its roster key, charter and a settings template that refuses a tool outside its allow list; states both in the security model and the README; and carries the runbook the operator provisions a client's sandbox host from. Second of three companion plans, after the broker's `channels_client-sandbox_spec_v1.md` and before the kit's `claude-kit_liaison-seat_spec_v1.md`.
 
 ## Archived plans
