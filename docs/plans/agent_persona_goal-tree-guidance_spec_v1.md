@@ -28,6 +28,7 @@ Alternatives refused:
 Rulings after the spec shipped, each appended dated:
 - 2026-10-01, by the operator on the ASSISTANT's thread, before this spec: the stall check is a check-in, not a block, and the ARCHITECT reviews the plan before anything is queued.
 - 2026-10-01, by the operator on the ARCHITECT's thread: after three "still working" check-ins the persona informs the operator with a status report, what it is working on and what progress it has made and has remaining, and not with a question. Decisions item 6 carries the words.
+- 2026-10-01, by the operator on the ARCHITECT's thread, after the item 6 ruling: "I'm good, please run it!" The plan is armed. The Steward queues it with the persona-plugin worker, whose run sets the header to In Progress.
 
 Provenance: distilled by the ARCHITECT persona on 2026-10-01 from the ASSISTANT's draft at `D:\personas\ASSISTANT\docs\plans\agent_persona_goal-tree-guidance_spec_v1.md`, the DEV-DISCORD store, `hooks/index.ts` and `hooks/agent-state.ts` at `5e7866d`, and the backlog item of 2026-10-01 on the same incident.
 
