@@ -302,8 +302,10 @@ function channelTag(content) {
 
 // The words in a tagged record, without the tag around them. Where the tag
 // does not parse whole, the words are what follows its first line break, so
-// no fragment of the broken tag reaches the digest; a record with no line
-// break at all falls back to what follows its first '>'.
+// a tag broken only at its end leaves no fragment in the digest, while one
+// broken by a line break between its pairs leaves its later pairs in the
+// words; a record with no line break at all falls back to what follows its
+// first '>'.
 function taggedWords(content) {
   const tag = channelTag(content);
   let body;

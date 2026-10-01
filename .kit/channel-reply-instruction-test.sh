@@ -746,10 +746,11 @@ check "withheld numbers control: the pin speaks on a string carrying none of the
 [ -z "$(withheld_numbers_missing_from "leave out $(claude_md_withheld_numbers | tr '\n' ' ')")" ]
 check "withheld numbers control: and is silent on a string carrying all of them" "$?"
 
-# Every persona name the priming write splices in. Three shapes carry one: the
+# Every persona name the priming write splices in. Four shapes carry one: the
 # agentic_say target the design duty and the architect's answer clause name, the
-# fleet row the liveness check reads back, and the steer sentence's own send
-# target. Each must be the eval's own COORDINATOR_PERSONA, ARCHITECT_PERSONA or
+# fleet row the liveness check reads back, the steer sentence's own send
+# target, and the [WORKER:<name> id= label the coordinator's liaison clause
+# names. Each must be the eval's own COORDINATOR_PERSONA, ARCHITECT_PERSONA or
 # LIAISON_PERSONA, each withheld from every literal bin/supervise.sh carries, so
 # a seat name hardcoded at any of those sites reds here whatever clause it sits
 # in.
