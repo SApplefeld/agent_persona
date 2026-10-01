@@ -1,6 +1,6 @@
 # An error turn is a turn that ended in error, so ordinary tool failures no longer escalate to the operator
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
