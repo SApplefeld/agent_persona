@@ -596,19 +596,40 @@ function turnOpenStateText(activeGoal: string, openRecord: string, message: stri
 // would drop one Haiku call per external message out of the spend line the
 // operator reads. The per-hour call window is not bumped: that cap bounds the
 // controller's own tick, which is the only thing that can back itself off.
+//
+// The call runs ahead of the prompt's delivery, so it is raced against
+// WORDING_TIMEOUT_MS the way the decision seam races its request: neither
+// promise rejects, and the loser runs on as an orphan because neither
+// `$.model.complete` nor `$.clock.sleep` takes an abort signal. A timeout is
+// billed, since the completion was requested and runs to its end, and falls
+// back to the excerpt.
+const WORDING_TIMEOUT_MS = 10_000;
+
 async function wordNewRecordText(dp: any, message: string): Promise<string | null> {
   const prompt =
     `A message has just arrived for an autonomous agent. In one line of under 80 characters, ` +
     `plain text with no Markdown, name what the message asks for. Answer with that line alone.\n` +
     message;
   try {
-    const raw = await dp.model.complete({
-      model: "haiku",
-      prompt,
-      maxTokens: 40,
-    });
+    const completion = Promise.resolve()
+      .then(() => dp.model.complete({ model: "haiku", prompt, maxTokens: 40 }))
+      .then(
+        (raw: unknown) => ({ kind: "answered" as const, raw }),
+        (err: unknown) => ({ kind: "threw" as const, err }),
+      );
+    // A timer that cannot be started or that rejects reads as having fired.
+    const timer = Promise.resolve()
+      .then(() => dp.clock.sleep(WORDING_TIMEOUT_MS))
+      .then(
+        () => ({ kind: "timeout" as const }),
+        () => ({ kind: "timeout" as const }),
+      );
+    const settled = await Promise.race([completion, timer]);
+    if (settled.kind === "threw") return null;
     sess.state.monitor.cost.reason.count += 1;
     sess.state.monitor.cost.reason.estTokens += estimateTokens(prompt.length, 40);
+    if (settled.kind === "timeout") return null;
+    const raw = settled.raw;
     const text = completionText(raw);
     if (text === null) {
       noteCompletionShape("turn-record-wording", raw);

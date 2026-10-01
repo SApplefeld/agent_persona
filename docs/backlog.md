@@ -864,18 +864,6 @@ It is pre-existing across all seven helpers rather than introduced by any one of
 
 Remedy: create the temp file with exclusive intent, `fs.openSync(tmp, "wx")`, in one shared place all seven use, so an existing path at that name is a refusal rather than a followed link. The same shared place is where the timeout the entry above asks for belongs, so the two are one change.
 
-## An awaited model completion on the prompt-delivery path carries no bound (found 2026-09-26)
-
-`wordNewRecordText` in `hooks/index.ts` awaits `$.model.complete` with no timer, inside the `prompt.submit` hook and ahead of the call that delivers the prompt. Under a live `turn-open` verdict of `new-goal` the operator's message does not reach the model until that completion returns, and it returns whenever the harness lets it, after the classifier has already spent up to its own 2,000 ms bound on the same prompt.
-
-This is conformant rather than a defect, which is why it sits here. Section 4 of the goal-every-turn plan asks for "the same `$.model.complete` call shape the controller's reason call uses", and that call, in the controller tick, is equally unbounded. Both the adversarial lens, which held the spec, and the performance lens, which marked its own requirement assumed rather than quoted, read it as a plan-level acceptance. Adding a timer would have been a mechanism no clause of that plan names.
-
-The class is wider than the one call. The seam bounds its own request and nothing bounds the model completions beside it, so the question is whether a hook that runs ahead of prompt delivery should be allowed to await anything unbounded at all. The controller's own call is on a tick rather than in front of a prompt, which is why it has cost nothing so far.
-
-It is reachable only once `turn-open` is named in `jevLive`, which is empty by default, so nothing is exposed today.
-
-Remedy: one shared bounded wrapper for a model completion awaited on a delivery path, racing the call against a stated bound and taking the caller's own fallback when the timer wins. For the record wording that fallback already exists and is the message excerpt. Deciding the bound is the operator's, since the tradeoff is a worded record against a delayed message.
-
 ## The seam's live timer starts after up to seven local host calls (found 2026-09-26)
 
 `hooks/decision-seam.ts` starts the live timeout race after the key read and the override resolver have both run. Up to seven awaited host calls sit before it: the environment read for the key, up to two more resolving the home, and a file-exists plus read for `active.json` and again for a version file where one is named. All are local, and none is inside the 2,000 ms the mode's bound promises.
