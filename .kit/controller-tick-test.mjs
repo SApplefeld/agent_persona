@@ -25281,8 +25281,8 @@ async function caseTurnRecord_everyLiveVerdict(clock) {
     await new Promise((r) => setTimeout(r, 5));
     if (ngHung.pendingSleepCount > 0) { sleepsAsked.push(ngHung.sleeps[0].ms); ngHung.fireSleep(); }
   }
-  check("record live new-goal: a wording call that never answers holds the message only until a ten-second timer",
-    hungSettled && sleepsAsked.includes(10_000), { settled: hungSettled, sleepsAsked });
+  check("record live new-goal: a wording call that never answers holds the message only until a seven-second timer",
+    hungSettled && sleepsAsked.includes(7_000), { settled: hungSettled, sleepsAsked });
   check("record live new-goal: the timed-out wording leaves the message excerpt",
     openRecordOf(ngHung)?.text === "A request Haiku never answers.", recordsOf(ngHung));
   check("record live new-goal: a timed-out wording call is billed once, since it ran",
@@ -25292,7 +25292,7 @@ async function caseTurnRecord_everyLiveVerdict(clock) {
   // The orphaned completion answering after the timer changes nothing: the
   // record keeps the excerpt and the call is not billed a second time.
   answerLate("A late wording line");
-  await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setImmediate(r));
   check("record live new-goal: a wording answer arriving after the timer leaves the excerpt",
     openRecordOf(ngHung)?.text === "A request Haiku never answers.", recordsOf(ngHung));
   check("record live new-goal: a wording answer arriving after the timer is not billed again",

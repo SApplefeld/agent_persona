@@ -1,4 +1,4 @@
-# A live new-goal verdict waits at most ten seconds for its wording, so a stuck model call cannot hold a message
+# A live new-goal verdict waits at most seven seconds for its wording, so a stuck model call cannot hold a message
 
 Status: In Progress
 Commit Model: Branch-and-PR
@@ -6,7 +6,7 @@ Created: 2026-10-01
 
 ## Goal
 
-When this ships, the Haiku call that words a new turn record under a live `turn-open` verdict of `new-goal` is raced against a ten-second timer. When the timer wins, the record opens with the message excerpt, exactly as it does today when the call throws or returns no text, and the message goes on to the model. A message therefore waits at most ten seconds for the wording, plus the seam's own bounded live call, before the persona reads it.
+When this ships, the Haiku call that words a new turn record under a live `turn-open` verdict of `new-goal` is raced against a seven-second timer. When the timer wins, the record opens with the message excerpt, exactly as it does today when the call throws or returns no text, and the message goes on to the model. A message therefore waits at most seven seconds for the wording, plus the seam's own bounded live call, before the persona reads it.
 
 ## Intent
 
@@ -20,7 +20,8 @@ Alternatives refused:
 - A shared wrapper over every `$.model.complete` site. Refused: the backlog entry names the class, but only this site sits in front of a prompt's delivery, and the operator's objection was about this one.
 - Bill nothing on a timeout. Refused: the completion was requested and runs to its end as an orphan, so it costs what an answered one costs, and the reason bucket is the operator's spend line.
 
-Rulings after the spec shipped: none yet.
+Rulings after the spec shipped:
+- 2026-10-01, the operator on the relay thread, choosing option one of three: the bound is 7,000 ms, not 10,000 ms. The finishing pass found that a `$.clock` wait runs the hook's own 10,000 ms budget, so a ten-second timer leaves no budget for the hook to open the record once it fires. Seven seconds leaves about one second after the seam's 2,000 ms live timer. This supersedes the ten seconds named above and in the first Assumption.
 
 Provenance: written by DEV-PERSONA on 2026-10-01 from `hooks/index.ts:585-623` and `:779-783`, `hooks/decision-seam.ts:671-696` and `docs/backlog.md:867-877` at `0fb2a08`.
 
@@ -28,9 +29,17 @@ Provenance: written by DEV-PERSONA on 2026-10-01 from `hooks/index.ts:585-623` a
 
 **The race copies the seam's.** `hooks/decision-seam.ts:690-696` races `$.http.fetch` against `host.sleep(timeoutMs)`, both mapped so neither promise rejects, and lets the loser run on as an orphan because neither call takes an abort signal. `wordNewRecordText` does the same with `dp.model.complete` and `dp.clock.sleep(WORDING_TIMEOUT_MS)`. A completion that throws keeps today's path: no bill, `null`. A completion that answers keeps today's path: billed, then read. A timeout is billed, since the call was made, and returns `null`.
 
-**The constant sits beside the function.** `WORDING_TIMEOUT_MS = 10_000`, with a one-line comment naming why ten seconds: a one-line Haiku answer normally returns in about a second, and the bound only has to stop a stuck call.
+**The constant sits beside the function.** `WORDING_TIMEOUT_MS = 7_000`, with a comment naming why seven seconds: a one-line Haiku answer normally returns in about a second, and the bound only has to stop a stuck call.
 
-**The documents follow.** `docs/architecture.md:262` gains that the wording waits at most ten seconds and falls back to the excerpt. The backlog entry at `docs/backlog.md:867` is retired, since its remedy is this change for the one site it names, and its class sentence is answered by the first refused alternative above.
+**The documents follow.** `docs/architecture.md:262` gains that the wording waits at most seven seconds and falls back to the excerpt. The backlog entry at `docs/backlog.md:867` is retired, since its remedy is this change for the one site it names, and its class sentence is answered by the first refused alternative above.
+
+## Standing Brief Amendments
+
+- The wording timer is 7,000 ms, per the operator's ruling of 2026-10-01 under Intent.
+- A timer that rejects or cannot be started reads as a timeout.
+- The backlog entry on the unbounded completion is deleted whole, its class answered by the first refused alternative under Intent.
+- `docs/architecture.md:262` states the bound.
+- The hung-wording tick case also pins that the completion was issued, and that an answer arriving after the timer neither rewrites the record nor bills again.
 
 ## Sections of Work
 
@@ -55,12 +64,12 @@ References: `.kit/controller-tick-test.mjs:25223-25266` is the sibling for the l
 
 ## Assumptions
 
-- assumed 2026-10-01 (source: the operator's reply on the relay thread): ten seconds is the bound; reversal: one constant.
+- assumed 2026-10-01 (source: the operator's reply on the relay thread): ten seconds is the bound; reversal: one constant. Superseded 2026-10-01 by the operator's ruling of seven seconds; a further change touches the constant and its comment, `docs/architecture.md:262` and the test's 7,000 literal.
 - assumed 2026-10-01 (default): a timed-out call is billed like an answered one, because it ran; reversal: move the bill inside the answered branch.
 
 ## Operator Verification
 
-- After the plugin cache updates and `turn-open` is named live on a persona, messages that start new work reach the persona promptly, and the record's text reads as a one-line summary on most of them. A message that waits visibly longer than ten seconds before the persona reacts reopens this plan.
+- After the plugin cache updates and `turn-open` is named live on a persona, messages that start new work reach the persona promptly, and the record's text reads as a one-line summary on most of them. A message that waits visibly longer than about nine seconds, the seven-second bound plus the seam's two, before the persona reacts reopens this plan.
 
 ## Open Questions
 

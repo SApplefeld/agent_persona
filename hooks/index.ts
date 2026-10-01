@@ -583,8 +583,9 @@ function turnOpenStateText(activeGoal: string, openRecord: string, message: stri
 }
 
 // One line naming what a message asks for, for the record a live `new-goal`
-// verdict opens. Null on every failure, which is a call that threw, a result
-// carrying no text, and a text that is empty once folded and trimmed; the
+// verdict opens. Null on every failure, which is a call that threw, a call the
+// timer beat, a result carrying no text, and a text that is empty once folded
+// and trimmed; the
 // caller's fallback is the message excerpt. The line is not cut here: the
 // record field's own clamp is what bounds it, so the prompt's "under 80
 // characters" is a request to Haiku rather than the guard.
@@ -604,7 +605,13 @@ function turnOpenStateText(activeGoal: string, openRecord: string, message: stri
 // billed, since the completion was requested and runs to its end, and falls
 // back to the excerpt. An answered call leaves this timer running as an
 // orphan, one more beside the seam's own on such a prompt.
-const WORDING_TIMEOUT_MS = 10_000;
+//
+// Seven seconds, because a `$.clock` wait runs the hook's own 10,000 ms budget:
+// the seam's live timer can spend 2,000 ms of it first, and the second left
+// over covers the hook's own code, so a timeout still leaves the hook alive to
+// open the record. A one-line Haiku answer normally returns in about a second,
+// so the bound only stops a stuck call.
+const WORDING_TIMEOUT_MS = 7_000;
 
 async function wordNewRecordText(dp: any, message: string): Promise<string | null> {
   const prompt =
