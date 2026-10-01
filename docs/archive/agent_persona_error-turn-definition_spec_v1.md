@@ -1,6 +1,6 @@
 # An error turn is a turn that ended in error, so ordinary tool failures no longer escalate to the operator
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
@@ -101,3 +101,23 @@ Commit Model: Branch-and-PR
 Delta: measured 2026-10-01 on this machine, worktree D:/agent_persona-error-turn at 315e83b, clean.
 
     kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+
+### Chapter 2 - 2026-10-01
+Completed: finishing-work, the close of the plan
+Implemented By: the main thread; reviewers, the goal read, the QA verifier and the docs curator dispatched.
+Metrics: finishing review rounds 1, closed clean; advisory: 4 Minors, 1 fixed, 1 fixed at archive, 2 refused with the reason; adversarial: APPROVED, 3 Minors, 2 fixed, 1 left; goal read: 3 declared, 0 refused, 0 asked, 0 unbuilt; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal, verbatim: "When this ships, the error streak counts only turns whose completion reason is `error`. A turn that ends normally after a tool result flagged as an error, or after a call the plugin denied, counts as a good turn and zeroes the streak. The per-turn tool-error count is still recorded on the state for the record and the tests that read it, and it no longer feeds the streak. The re-fire rule, the self-review trigger and the environment facts line keep their code and inherit the narrower meaning. The maintainer reference states the new definition where it stated the old one."; What the tree does now: a persona opens an "Error streak" question to the operator only after three turns in a row that the harness itself ended in error, and a failed file read, a shell command that exits non-zero or a call the plugin refuses inside a turn that ends normally resets the count instead; the number of such tool failures in the last turn is still written to the persona's state, though nothing reads it; the tick suite proves both directions, and the README and the architecture doc state the new rule; Refinements during the run: the good-turn branch writes the turn's tool-error count rather than 0, as acceptance bullet 1 requires; the renamed tick case dropped the root "no bash" objective, since no tool call takes part; `docs/backlog.md` joined the section's files in scope for its one sentence stating the old rule; Operator-pending: after the plugin cache updates and a persona relaunches, a persona that retries a refused read or sees a shell command fail inside a healthy turn opens no "Error streak" ask.
+Decisions / Surprises:
+- Base ref 5e7866d, the merge-base of plan/error-turn-definition with origin/main. The changeset is the plan doc and the five files in scope, so the base check surfaced nothing outside them and the docs index.
+- The deny-detail check in the new tick case now tests that the detail is a string before reading it (7f4c1bb), closing the adversarial reviewer's Minor; targeted lane tsc exit 0 and the tick suite at 0 failures.
+- The docs curator's one drift item, D1, was the plan's index line at `docs/README.md:11` still reading "Ready". Its basis is the plan header and an index line, with no code leg, so it is a stale index entry, not a sign the code is wrong. It closed with this archive's index refresh. The curator's library-hygiene note, that two older plans sit in `docs/plans/archive/` beside the main `docs/archive/`, predates this plan and is left as found.
+- The docs index on this branch still lists the client sandbox plan as In Progress, because the branch was cut before pull request 135. This close edits only this plan's lines; whichever pull request merges second may meet a conflict in `docs/README.md`.
+- A grep counting carriage returns at line end reported every line of `.kit/controller-tick-test.mjs` as CRLF on one call and none on the next. `git ls-files --eol` reads `i/lf w/lf` and a byte count by node agrees, so the file is LF and the edit kept it.
+Failed approaches: none
+Assumptions:
+- none
+Review Findings: review: performance, security and adversarial at fable, Workflow (high), one wave; capacity `fable capacity: scoped 19%, 7d 17%, 5h 34% (account 5, fetched 180s ago) -> dispatch`. Performance CLEAR, one Minor on fixed sleeps refused, since no requirement names a timing bound for the suite. Security CLEAR, Minors: the narrowing of what reaches the operator is the Intent's own ruling, recorded; `docs/README.md:11`'s stale status, fixed at archive. Adversarial APPROVED, Minors: the index line's stale status and dated clause, fixed at archive; the deny-detail guard, fixed in 7f4c1bb; the `completed` reason convention in the new case, left, since acceptance bullet 1 prescribes it. Goal read: scope-adjudicator at fable, RULED; BUILT-BUT-UNASKED all accept-and-declare (the index line, the README coverage clause, the backlog sentence); ASKED-BUT-UNBUILT empty. QA: qa-verifier PASS on all five acceptance bullets and both doc corrections, re-running tsc and the tick suite (6,353 OK, 0 FAIL) at 7f4c1bb. Tree porcelain empty before and after each round.
+Stamps: adjudicated 1 record used since Chapter 1, stamped 1: crlf-check-via-grep-cr-eol-is-intermittently-silent (operator), whose description now says the check misreads in both directions. `memq unstamped --since 3h` lists 0 in either tier.
+Gate: whole gate twice on the worktree D:/agent_persona-error-turn, 2026-10-01. Finishing gate at 42ebb71, 16:03Z to 17:04Z: 33 lanes, every one exit 0 (21 node suites, 6 shell suites, tsc, check-loader-rule, the injection ledger against the committed blob, and the live stop-process-tree, interrupt rate-limit and natural-exit lanes). Handoff gate over the closed tree, 7f4c1bb plus this archive, the index refresh and the backlog entry, 17:18Z to 18:13Z: the same 33 lanes, every one exit 0. Contention lane `.kit/live-all.sh` exit 10 beside each, refusing on a live ARCHITECT persona claim, its designed refusal beside a running fleet, so it is not a pass. A probe-corpus run from another session's kit work shared the box during the handoff gate, network-bound and holding nothing these lanes read.
+Next: none, plan Complete
+Commit Model: Branch-and-PR

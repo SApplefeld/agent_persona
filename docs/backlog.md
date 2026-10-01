@@ -1,5 +1,11 @@
 # Backlog
 
+## Operator check owed by the error turn definition plan (parked 2026-10-01)
+
+The error turn definition plan (`docs/archive/agent_persona_error-turn-definition_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Watch a relaunched persona stay quiet through ordinary tool failures.** After the installed plugin updates and a persona relaunches, a persona that retries a refused file read, or sees a shell command exit non-zero inside a turn that ends normally, opens no "Error streak" ask. An `Error streak` ask on a persona whose turns ended normally reopens the plan.
+
 ## Operator checks owed by the supervisor interrupt plan (parked 2026-09-30)
 
 The supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_spec_v1.md`) is Complete. Two checks are the operator's.
