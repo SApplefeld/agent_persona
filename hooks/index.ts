@@ -3731,6 +3731,8 @@ const FLEET_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
 // The bound on the reason fleet_restart writes into the request file. The
 // file sits in the target persona's own run directory, and the reason is a
 // note for whoever reads that directory, not a record anything replays.
+// fleet_interrupt reuses this same bound: both reasons sit in the same kind
+// of file, read by the same supervisor.
 const FLEET_RESTART_REASON_MAX = 200;
 
 // The keeper half of one row, read from the three files the process keeper
@@ -6129,6 +6131,41 @@ export const register: Register = async (on, options) => {
           reason: {
             type: "string",
             description: "The reason the restart is asked for, written into the request file beside the time and this session's persona. Trimmed and cut at 200 characters.",
+          },
+        },
+        required: ["persona", "reason"],
+      },
+    }));
+
+    // The coordinator's interrupt lever on another persona: ends a running
+    // turn in place rather than restarting the child, so the persona keeps
+    // its conversation. It registers under the owner tier only, beside
+    // fleet_restart, and clones that tool's gates with no interval refusal:
+    // one request is served once, by the supervisor's own served-time record,
+    // so a second request inside any window is still written and still acts.
+    await registerTool("fleet_interrupt", () => $.tool.register({
+      name: "fleet_interrupt",
+      description:
+        "End another persona's running turn without restarting its child, so the persona keeps its conversation. Writes " +
+        "interrupt.request into the run directory the roster that the plugin's fleetRoster setting names gives that persona; " +
+        "its supervisor, where one is running, reads the file at its next poll and relays it to the child's holder, which " +
+        "relays the interrupt to the child at its own next poll. Together that is up to about 12 seconds at the plugin's " +
+        "default poll intervals (a ten-second supervisor poll and a two-second holder poll), not an instant stop. Where no " +
+        "turn begun at or before this call is running, the supervisor records the request served without relaying it " +
+        "instead. A message sent with agentic_say afterwards arrives as that persona's next prompt. " +
+        "Refused when this session does not hold the coordinator persona, when no roster is set or it cannot be read, when " +
+        "persona is not a roster entry whose enabled is true, when persona is this session's own, and when the run directory " +
+        "does not exist. Touches no store, commons or persona's own. Only the session holding the coordinator persona may call it.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          persona: {
+            type: "string",
+            description: "The roster name of the persona whose child is interrupted.",
+          },
+          reason: {
+            type: "string",
+            description: "The reason the interrupt is asked for, written into the request file beside the time and this session's persona. Trimmed and cut at 200 characters.",
           },
         },
         required: ["persona", "reason"],
@@ -12767,6 +12804,71 @@ export const register: Register = async (on, options) => {
         return refuse(`the request file '${requestPath}' could not be written: ${boundedText(safeErrorText(err))}`);
       }
       return { result: `Restart requested for '${shown}': where its supervisor is running, it restarts the child at its next poll and lets a running turn end first. Where none is running, the next child launched for that persona starts after the request and reads it as served.` };
+    }
+
+    // Serve fleet_interrupt (the coordinator ends another persona's running
+    // turn in place, keeping its conversation). Clones fleet_restart's gates
+    // above in the same order, minus the fifteen-minute interval refusal:
+    // interrupt.request carries no lever a second write could jam, since the
+    // supervisor's own served-time record is what makes one request send one
+    // interrupt, not this tool. The ground, the roster read and the run
+    // directory check are the same rule for the same reason fleet_restart's
+    // comment gives: every persona runs as the operator's own account, so
+    // this tool's ground fences the tool, not the file.
+    if ((e as any).tool === "mcp__agentic-plugin__fleet_interrupt") {
+      const now = Date.now();
+      const target = String((e as any).persona || "").trim();
+      const reason = String((e as any).reason || "").trim().slice(0, FLEET_RESTART_REASON_MAX);
+      const shown = boundedText(bracketSafeText(target));
+      const refuse = (why: string) => {
+        toolErrorsThisTurn++;
+        return { deny: `fleet_interrupt refused: ${why}` };
+      };
+      const entries = await readAllEntries(commonsStoreOf($));
+      const ground = deliveryGroundIn(liveClaimsOf(entries, sess.staleAfterMs, now), coordinatorPersona, sess.mySessionId, coordinatorPersona, { persona: architectPersona, records: [] });
+      if (!("ground" in ground) || ground.ground !== COORDINATOR_GROUND) {
+        const standing = "ground" in ground ? `the ground '${ground.ground}'` : "no ground on that persona at all";
+        return refuse(`only the session holding the '${coordinatorPersona}' persona may interrupt another persona's child, and this session holds ${standing}.`);
+      }
+      if (fleetRoster === "") {
+        return refuse("the plugin's fleetRoster setting names no roster file, so there is no persona to interrupt.");
+      }
+      let roster: unknown;
+      try {
+        roster = await readRosterFile($, fleetRoster);
+      } catch (err) {
+        return refuse(`the roster '${fleetRoster}' could not be read or parsed: ${boundedText(safeErrorText(err))}`);
+      }
+      if (!Array.isArray(roster)) {
+        return refuse(`the roster '${fleetRoster}' does not hold a JSON array of persona entries.`);
+      }
+      const entry = (roster as unknown[]).find((candidate) => {
+        const name = ((candidate ?? {}) as RosterEntry).name;
+        return typeof name === "string" && name.trim() === target;
+      }) as RosterEntry | undefined;
+      if (entry === undefined) {
+        return refuse(`the roster '${fleetRoster}' carries no entry named '${shown}'.`);
+      }
+      if (entry.enabled !== true) {
+        return refuse(`the roster entry for '${shown}' is not enabled, and only a persona the roster enables is interrupted.`);
+      }
+      if (target === sess.persona) {
+        return refuse(`'${shown}' is this session's own persona.`);
+      }
+      const runDir = rosterRunDir(entry);
+      const runDirExists = runDir !== null && await $.fs.exists(runDir).catch(() => false);
+      if (runDir === null || !runDirExists) {
+        return refuse(runDir === null
+          ? `the roster entry for '${shown}' names neither a run directory nor a working directory, so there is nowhere to write the request.`
+          : `the run directory '${runDir}' for '${shown}' does not exist.`);
+      }
+      const requestPath = `${runDir}/interrupt.request`;
+      try {
+        await $.fs.write(requestPath, JSON.stringify({ at: now, by: sess.persona, reason }));
+      } catch (err) {
+        return refuse(`the request file '${requestPath}' could not be written: ${boundedText(safeErrorText(err))}`);
+      }
+      return { result: `Interrupt requested for '${shown}': where its supervisor is running, it relays the request to the child's holder at its next poll, and the holder relays the interrupt to the child at its own next poll, up to about 12 seconds after this call at the plugin's default poll intervals. The turn ends keeping the conversation. Where no turn begun at or before this call is running, the supervisor records the request served without relaying it instead. A message sent with agentic_say afterwards arrives as that persona's next prompt.` };
     }
 
     // Section 12: serve agentic_resolve (the owner marks a record's work

@@ -22,8 +22,8 @@
     {
       "name": "COORDINATOR_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 9347,
-      "words": 1649
+      "chars": 9779,
+      "words": 1719
     },
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
@@ -432,6 +432,12 @@
       "file": "hooks/index.ts",
       "chars": 989,
       "words": 164
+    },
+    {
+      "name": "fleet_interrupt_description",
+      "file": "hooks/index.ts",
+      "chars": 1323,
+      "words": 221
     },
     {
       "name": "agentic_resolve_description",

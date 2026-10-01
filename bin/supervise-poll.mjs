@@ -64,6 +64,7 @@ import path from 'node:path';
 import { decide } from './supervise-decide.mjs';
 import { readRestartRequest } from './supervise-restart-request.mjs';
 import { liveness, transcriptPathsFor, isUsageLimitRecord } from './supervise-liveness.mjs';
+import { readChildHeartbeat } from './supervise-heartbeat.mjs';
 
 // A reading off a file reads back through parseInt, and an unparseable one
 // reaches the decide unit as null. The supervisor's own settings and counts
@@ -89,20 +90,10 @@ function readJson(path) {
   }
 }
 
-// The child's own heartbeat file, { sessionId, lastSeen, turnStartedAt }, which
-// only that child writes. The shared workdir sidecar is not read: every
-// persona launched in one directory rewrites it whole, so one session's entry
-// can read stale while it stamps on time. Null where the file was never
-// written, cannot be parsed, carries no lastSeen, or names another session
-// than this child's, which is the file an earlier child left behind.
-export function readChildHeartbeat(heartbeatPath, childSessionId) {
-  const hb = heartbeatPath ? readJson(heartbeatPath) : null;
-  if (!hb || typeof hb !== 'object') return null;
-  const lastSeen = intOrNull(hb.lastSeen);
-  if (lastSeen === null) return null;
-  if (hb.sessionId && childSessionId && String(hb.sessionId) !== childSessionId) return null;
-  return { lastSeen };
-}
+// readChildHeartbeat is exported from bin/supervise-heartbeat.mjs, imported
+// above: bin/supervise.sh's interrupt relay reads the same file for the same
+// shape, through the same reader, and that script runs unconditional
+// top-level CLI logic on load, so it must never be imported itself.
 
 // The newest decision matching a test, as get_fact reads it: last in the
 // array, since decisions[] is append-ordered. Null where there is none.

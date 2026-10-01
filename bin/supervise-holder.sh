@@ -6,8 +6,10 @@
 # process's own stdout is the child's stdin. It writes the priming turn to the
 # pipe, waits for that turn's result line in the child's stdout and writes the
 # goal where one was given, then holds the pipe open. While it holds, it relays
-# the final ask the supervisor drops in the ask-request file, exits a few
-# seconds after the child's pid disappears, and exits when it is signaled.
+# the final ask the supervisor drops in the ask-request file, relays an
+# interrupt the supervisor drops in the interrupt-request file as a fixed
+# control line it builds itself, exits a few seconds after the child's pid
+# disappears, and exits when it is signaled.
 #
 # The supervisor stops the child by killing this process (the pipe-close phase):
 # closing this process's stdout is the end of input the child reads to exit. So
@@ -31,6 +33,9 @@
 #
 # Usage: supervise-holder.sh <holder-pid-file> <child-stdout> <child-pid-file>
 #                            <ask-request-file> <goal-prompt-file|"">
+#                            [interrupt-request-file]
+# The sixth argument is read as `${6:-}`, so a five-argument launch, the old
+# shape, watches no interrupt-request file at all.
 # The supervisor exports PERSONA, NO_CHANNEL, COORDINATOR_PERSONA,
 # ARCHITECT_PERSONA, LIAISON_PERSONA and CHILD_INDEX for the priming text and
 # the log lines, and SUPERVISOR_HOLDER_POLL_S for the hold cadence.
@@ -41,6 +46,7 @@ OUT="$2"
 CHILD_PID_FILE="$3"
 ASK_REQUEST_FILE="$4"
 PROMPT_FILE="$5"
+INTERRUPT_REQUEST_FILE="${6:-}"
 
 # Record this process's own MSYS pid at once. The launching pipeline's `$!` is
 # the child, the pipeline's last stage, so the supervisor cannot read this
@@ -121,6 +127,38 @@ const block = content[0];
 const ok = sameKeys(block, ["type", "text"]) && block.type === "text"
   && typeof block.text === "string" && block.text.startsWith("[SUPERVISOR-ASK id=");
 process.exit(ok ? 0 : 1);
+' "$1" 2>/dev/null
+}
+
+# Validates and extracts an interrupt-request file's content in one node
+# call: a valid request is one JSON object whose keys are exactly id, at, by
+# and reason, where id is a short token of letters, digits and hyphens, at is
+# a finite number, by is a string of at most 64 characters and reason a
+# string of at most 200. On a valid request, prints "<id>\t<reason>" and
+# exits 0; the reason has every C0 control, DEL, C1 control, and Unicode
+# line/paragraph separator (U+2028, U+2029) stripped. A C0 control reaches the
+# parsed reason only through an escape such as \n, and the other three may sit
+# in the file unescaped; any of them would otherwise let a single `log` call
+# read as more than one line. On anything else, an array
+# among it, prints nothing and exits non-zero. The holder never relays this
+# content itself; it only reads id and reason from this call's own output, so
+# a spawn that exits 0 with truncated or absent stdout is caught below by the
+# same id shape this function itself checks, never by trusting this call's
+# exit code alone.
+holder_interrupt_relay() {  # <file content>
+  node -e '
+let o;
+try { o = JSON.parse(process.argv[1]); } catch (e) { process.exit(1); }
+const keys = ["id", "at", "by", "reason"];
+const ok = o && typeof o === "object" && !Array.isArray(o)
+  && Object.keys(o).length === keys.length && keys.every((k) => k in o)
+  && typeof o.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(o.id)
+  && typeof o.at === "number" && Number.isFinite(o.at)
+  && typeof o.by === "string" && o.by.length <= 64
+  && typeof o.reason === "string" && o.reason.length <= 200;
+if (!ok) process.exit(1);
+const reason = o.reason.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, "");
+process.stdout.write(o.id + "\t" + reason + "\n");
 ' "$1" 2>/dev/null
 }
 
@@ -274,8 +312,17 @@ holder_ask_file_whole() {  # <file> <first line as read>
     # The restart lever closes the clause: fleet_restart acts on what a fleet
     # reading shows, the coordinator is the only persona the plugin lets use
     # it, and the operator hears of every use. Its refusals are in its own
-    # description.
-    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. fleet_restart restarts another persona's child: you use it on a persona the fleet reading shows stuck or one the operator names, and you report every use to the operator. "
+    # description. fleet_interrupt sits beside it as the lighter lever: it
+    # ends a stuck turn in place, keeping the child's conversation, where
+    # fleet_restart loses it. Its trigger reads two fields fleet_status
+    # itself returns, turnState and turnRunningMs. heartbeatAgeMs plays no
+    # part in it: the heartbeat tick republishes on its own cadence
+    # regardless of what the turn is doing, so a turn fleet_status shows "in
+    # turn" always carries a fresh heartbeat and a stale one never co-occurs
+    # with it. The coordinator instead reads a row showing a turn running far
+    # longer than its own work needs, rather than off a private judgment it
+    # cannot check.
+    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. fleet_restart restarts another persona's child: you use it on a persona the fleet reading shows stuck or one the operator names, and you report every use to the operator. fleet_interrupt ends another persona's running turn and keeps its conversation. You use it on a row fleet_status shows with turnState 'in turn' and turnRunningMs far past what its turn's work needs, or on a persona the operator names. You report every use to the operator. To break in with something critical, you call fleet_interrupt and then send the record with agentic_say, and the record arrives as that persona's next prompt. "
     # The kit's Coordinator seat, which this persona holds for the machine.
     # The seat is taken once at priming, and the reconciliation pass runs on
     # the [RECONCILE] prompt alone. The kit's coordinator skill states a
@@ -520,11 +567,12 @@ if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
   GOAL_PENDING=1
 fi
 
-# The hold loop. It writes the held goal once the priming turn closes, relays a
-# final ask the supervisor drops in the ask-request file, and exits a few
-# seconds after the child's pid disappears. A signal ends it too: the default
-# TERM disposition exits, and the `sleep` below holds no copy of the pipe, so
-# the child sees end of input the moment this process dies.
+# The hold loop. It relays an interrupt the supervisor drops in the
+# interrupt-request file, writes the held goal once the priming turn closes,
+# relays a final ask the supervisor drops in the ask-request file, and exits
+# a few seconds after the child's pid disappears. A signal ends it too: the
+# default TERM disposition exits, and the `sleep` below holds no copy of the
+# pipe, so the child sees end of input the moment this process dies.
 #
 # The exit-on-death is armed by the child-pid file holding a valid pid rather
 # than by having seen that pid alive. The supervisor writes the file the instant
@@ -534,6 +582,53 @@ fi
 # for a child that died that fast, which blocks the supervisor's own `wait` on
 # the pipeline.
 while true; do
+  if [ -n "$INTERRUPT_REQUEST_FILE" ] && [ -f "$INTERRUPT_REQUEST_FILE" ]; then
+    # Checked, and written where it relays, before the goal-pending write
+    # below: an interrupt landing in the same poll as the priming turn's
+    # result line must reach the pipe first, never race the goal turn or
+    # kill it once it has already been sent.
+    #
+    # Taken off its path with one rename before anything reads it, so a
+    # well-formed request that lands behind it mid-poll is never deleted
+    # unserved: the rename leaves nothing at the original path for a fresh
+    # write to collide with, and this holder reads only its own private
+    # ".taken" copy from here on. A failed rename (the file already gone, a
+    # race with a departing writer) skips the interrupt for this poll; there
+    # is nothing to refuse or remove, and the next poll tries again.
+    if mv -f "$INTERRUPT_REQUEST_FILE" "$INTERRUPT_REQUEST_FILE.taken" 2>/dev/null; then
+      # The private copy is read exactly once, through `head -c 4097` so the
+      # read never grows past that cap to find out how much more there is.
+      # `read -d ''` keeps every byte `head` hands it, trailing newline
+      # included, unlike a bare `$(head ...)` capture, which a command
+      # substitution would trim and so could undercount a file whose 4097th
+      # byte is itself a newline. `read -d ''` also stops at the first NUL
+      # byte in that stream, so a file carrying one inside its first 4097
+      # bytes reads only its prefix up to the NUL, not the whole head: the
+      # size gate below then measures that shorter prefix, not the file's
+      # real size. Whatever text this read yields, interrupt_bytes checks it
+      # against the 4096 cap, and holder_interrupt_relay still parses only a
+      # checked id out of it, so a truncated or oversized read passes nothing
+      # but that checked id to the pipe below.
+      IFS= read -r -d '' interrupt_content < <(head -c 4097 "$INTERRUPT_REQUEST_FILE.taken" 2>/dev/null)
+      interrupt_bytes=$(LC_ALL=C printf '%s' "$interrupt_content" | wc -c)
+      interrupt_id=""
+      if [ "$interrupt_bytes" -le 4096 ] && interrupt_fields=$(holder_interrupt_relay "$interrupt_content"); then
+        interrupt_id="${interrupt_fields%%$'\t'*}"
+        interrupt_reason="${interrupt_fields#*$'\t'}"
+      fi
+      # holder_interrupt_relay already checked this id against the same
+      # rule; this is the pipe's own guard, so a spawn that exits 0 with
+      # truncated or empty stdout can never put an empty request_id on the
+      # pipe.
+      if [[ "$interrupt_id" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+        printf '{"type":"control_request","request_id":"%s","request":{"subtype":"interrupt"}}\n' "$interrupt_id"
+        log "relayed an interrupt id=$interrupt_id reason=$interrupt_reason"
+      else
+        log "the interrupt-request file did not hold one valid interrupt request; removed it unrelayed"
+      fi
+      rm -f "$INTERRUPT_REQUEST_FILE.taken"
+    fi
+  fi
   if [ "$GOAL_PENDING" -eq 1 ] && [ -f "$OUT" ] && grep -q '"type":"result"' "$OUT"; then
     goal_prompt_json "$PROMPT_FILE" "$GOAL_PROMPT_FRAMING"
     log "priming turn completed; sent the goal prompt as its own turn"

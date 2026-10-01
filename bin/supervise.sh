@@ -2823,6 +2823,240 @@ if (at !== null) console.log(Math.floor(at));
 " "$PLUGIN_DIR/bin/supervise-restart-request.mjs" "$RUNDIR" 2>> "$RUNDIR/supervisor.err"
 }
 
+# --- Helper: read the interrupt request the coordinator left in the run
+# directory ---
+# The coordinator's fleet_interrupt tool writes <rundir>/interrupt.request the
+# same way fleet_restart writes restart.request: one file in this persona's
+# own run directory, read through the parser the poll would import
+# (bin/supervise-interrupt-request.mjs), so the two paths cannot disagree on
+# what a request is. Prints "<at>\t<by>\t<reason>" on one line where the
+# parser reads a request, nothing where it reads none. by and reason are cut
+# to 64 and 200 characters here, the same bounds write_interrupt_relay
+# applies, so a request the skip path never re-reads through that writer
+# still logs a bounded reason; they are then stripped of every C0 control,
+# DEL, C1 control and Unicode line/paragraph separator so the caller's own
+# log calls, which carry this line's fields as plain bash arguments, can
+# never be split into more than one line by either field. Called once per
+# poll, on every running
+# child, launched or adopted, to decide whether to relay or to skip. The
+# existence check ahead of the spawn is the common case, no file at all,
+# answered without paying for a node start.
+get_interrupt_request() {
+  [ -f "$RUNDIR/interrupt.request" ] || return 0
+  node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+const { readInterruptRequest } = await import(pathToFileURL(process.argv[1]).href);
+const req = readInterruptRequest(process.argv[2], Date.now());
+if (req === null) process.exit(0);
+const by = req.by.slice(0, 64);
+const reason = req.reason.slice(0, 200);
+const sep = String.fromCharCode(0x2028) + String.fromCharCode(0x2029);
+const strip = (s) => s.replace(new RegExp('[\\\\x00-\\\\x1f\\\\x7f-\\\\x9f' + sep + ']', 'g'), '');
+console.log(Math.floor(req.at) + String.fromCharCode(9) + strip(by) + String.fromCharCode(9) + strip(reason));
+" "$PLUGIN_DIR/bin/supervise-interrupt-request.mjs" "$RUNDIR" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: whether the child has a turn running, and when it started ---
+# Usage: get_child_turn_started
+# Reads $CHILD_HEARTBEAT, the same file the real poll reads (its path is set
+# once near the top of this script and handed to bin/supervise-poll.mjs as
+# that script's first argument), through readChildHeartbeat
+# (bin/supervise-heartbeat.mjs), the same reader and the same read guard the
+# liveness verdict itself uses (bin/supervise-poll.mjs imports the same
+# function), so this reading and the liveness verdict's own heartbeat read
+# can never disagree on whose heartbeat file this is or what counts as
+# unreadable. bin/supervise-poll.mjs is never imported itself: its own header
+# says so, since it runs its CLI unconditionally on load. Prints
+# turnStartedAt where the file parses, names this child's own session (or
+# none has been recorded on this poll yet), and carries a numeric
+# turnStartedAt; prints nothing and exits 0 for a missing or unreadable file,
+# one naming another session, or one with no turn open (turnStartedAt null
+# between turns), each of which readChildHeartbeat itself catches and reports
+# as null, so the interrupt gate below reads every one of them as no running
+# turn. A thrown error this function's own node call does not catch (the
+# import failing, for instance) exits non-zero instead, prints nothing the
+# same as the no-turn case, and the caller tells the two apart by that exit
+# code rather than by the empty output alone. The existence check ahead of
+# the spawn is the common case early in a child's life, no heartbeat file
+# yet.
+get_child_turn_started() {
+  [ -f "$CHILD_HEARTBEAT" ] || return 0
+  node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+const { readChildHeartbeat } = await import(pathToFileURL(process.argv[1]).href);
+const hb = readChildHeartbeat(process.argv[2], process.argv[3] || null);
+if (hb && hb.turnStartedAt !== null && hb.turnStartedAt !== undefined) console.log(hb.turnStartedAt);
+" "$PLUGIN_DIR/bin/supervise-heartbeat.mjs" "$CHILD_HEARTBEAT" "${CHILD_SESSION_ID:-}" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: write the coordinator's interrupt request into the child's own
+# interrupt-request file ---
+# Usage: write_interrupt_relay <id> <request_at>
+# Re-reads <rundir>/interrupt.request through the same parser
+# get_interrupt_request reads. request_at is the caller's own reading, from
+# the call that decided to relay; this call's own read can still land on a
+# different request, where the coordinator writes a new one between the two
+# reads, so the re-read's Math.floor(at) must equal request_at exactly, or
+# this call exits non-zero and writes nothing rather than relay a request the
+# caller never decided on. On a match, writes the re-read object whole, with
+# the id this poll minted, to "$INTERRUPT_REQUEST_FILE.tmp" - the caller
+# moves it into place so the holder never reads a half-written file. by and
+# reason are cut to 64 and 200 characters before the write, the bounds the
+# holder's own validator enforces, so an oversized field in the request file
+# still passes that validator. Prints "<by>\t<reason>" on success, both cut
+# and with every C0 control, DEL, C1 control and Unicode line/paragraph
+# separator stripped, the same strip the holder's own relay applies before it
+# logs a reason: the caller's own log call carries this printed text as bash
+# arguments, so a control character or an embedded separator in either field
+# never reaches that one log line as more than plain text. Exits non-zero and
+# writes nothing where the reader now finds no request at all, or one whose
+# at no longer matches request_at (the request was cleared or overwritten
+# between the two reads).
+write_interrupt_relay() {
+  local id="$1" request_at="$2"
+  node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+const { readInterruptRequest } = await import(pathToFileURL(process.argv[1]).href);
+const req = readInterruptRequest(process.argv[2], Date.now());
+if (req === null) process.exit(1);
+if (Math.floor(req.at) !== Number(process.argv[5])) process.exit(1);
+const by = req.by.slice(0, 64);
+const reason = req.reason.slice(0, 200);
+fs.writeFileSync(process.argv[3], JSON.stringify({ id: process.argv[4], at: req.at, by, reason }) + String.fromCharCode(10));
+const sep = String.fromCharCode(0x2028) + String.fromCharCode(0x2029);
+const strip = (s) => s.replace(new RegExp('[\\\\x00-\\\\x1f\\\\x7f-\\\\x9f' + sep + ']', 'g'), '');
+process.stdout.write(strip(by) + String.fromCharCode(9) + strip(reason) + String.fromCharCode(10));
+" "$PLUGIN_DIR/bin/supervise-interrupt-request.mjs" "$RUNDIR" "$INTERRUPT_REQUEST_FILE.tmp" "$id" "$request_at" 2>> "$RUNDIR/supervisor.err"
+}
+
+# --- Helper: relay the coordinator's interrupt request to the running child,
+# once, only while the turn it named is still the one running ---
+# Called on every poll of a running child, launched or adopted, right after
+# run_child_poll, as its own step in its own process(es): run_child_poll's
+# own "in one process" reading above describes that call alone, not this one.
+# A request older than CHILD_START_TS is one this child predates and never
+# acts on; a request no newer than "$CHILD_DIR/interrupt.served" is one an
+# earlier poll, by this supervisor or by one that adopted this same child,
+# already relayed or already skipped, so neither fires twice and a supervisor
+# that adopts a running child never re-sends its predecessor's request.
+# Past those two, a session-known check: note_child_session_id runs after
+# this call in the poll loop, so a relaunched child's first few polls carry
+# no CHILD_SESSION_ID yet, while CHILD_HEARTBEAT on disk can still be a
+# predecessor's file, since the launch cleanup never removes it. Reading that
+# file blind could relay against the predecessor's own stale turn, so while
+# the id is unknown this returns without reading the heartbeat and without
+# writing interrupt.served, leaving the request standing for the poll that
+# has the id.
+#
+# Past that, the turn gate (option A, the plan's Decisions section): the
+# coordinator's fleet_interrupt call and its agentic_say can land in
+# either order relative to the relay, so a request whose turn has already
+# ended, or whose turn has not started yet, must not end some other turn in
+# its place. get_child_turn_started's reading of turnStartedAt is that turn's
+# own start; where it is at or before the request's at, this is the turn the
+# coordinator meant, and the relay proceeds. Where it is missing (no
+# heartbeat, no turn open, or the field unreadable) or later than the
+# request, there is no turn to end on the coordinator's own terms, and the
+# request is recorded served without relaying, logged once as
+# INTERRUPT_SKIPPED, covering both "no running turn" and "a turn that began
+# after the request" in the one line. Where the read itself failed (a
+# non-zero exit from get_child_turn_started), there is no reading to gate on
+# at all, so this returns the same way the session-known check above does,
+# without writing interrupt.served, and the next poll re-reads the turn gate
+# from scratch rather than treating the failure as "no turn". The residual:
+# the published heartbeat is a periodic stamp (hooks/index.ts, the comment
+# above sess.turnStartedAt's heartbeat write, near line 9812), so
+# turnStartedAt can still name a turn for up to one heartbeat interval after
+# that turn itself ended; within that window a request meant for the ended
+# turn can still relay against the turn that followed it. Once past the turn
+# gate, mints an id shaped like write_final_ask's FINAL_ASK_ID, writes the
+# child's own interrupt-request file by write-then-rename so the holder never
+# reads a half-written file, records the served time only on a write that
+# lands, and logs the relay with its reason and requester.
+#
+# INTERRUPT_HANDLED_AT is this supervisor's own in-memory record of the
+# request_at it already relayed or already skipped for this child, set the
+# moment that decision is taken (the relay's mv landing, or the skip itself),
+# before either one's own served-marker write is attempted. A later poll that
+# finds the served-marker write still missing, because that write itself
+# failed, reads request_at against this record rather than against the turn
+# gate again: a match means the decision already happened, so this poll
+# retries only the served-marker write, checked, and neither relays nor
+# skips nor logs a second time. Without this record, a served-marker write
+# that keeps failing would look unhandled on every poll, relaying the
+# request again each time, which can land on the turn after the one the
+# coordinator meant. The residual: a successor supervisor that adopts this
+# child before the marker lands carries no such memory (it is process-local,
+# never written to disk), and can relay or skip the same request once more.
+# A relay or skip whose served-marker write fails is logged INTERRUPT_FAILED
+# once for this request_at rather than once per poll, since every later poll
+# retries only that write until it finally lands.
+relay_interrupt_request() {
+  local request_fields request_at by reason served_at turn_started turn_rc fields id
+  request_fields=$(get_interrupt_request)
+  [ -n "$request_fields" ] || return 0
+  request_at="${request_fields%%$'\t'*}"
+  request_fields="${request_fields#*$'\t'}"
+  by="${request_fields%%$'\t'*}"
+  reason="${request_fields#*$'\t'}"
+  [ "$request_at" -gt "$CHILD_START_TS" ] || return 0
+  served_at=""
+  if [ -s "$CHILD_DIR/interrupt.served" ]; then
+    served_at=$(cat "$CHILD_DIR/interrupt.served" 2>/dev/null)
+    case "$served_at" in ''|*[!0-9]*) served_at="" ;; esac
+  fi
+  [ -z "$served_at" ] || [ "$request_at" -gt "$served_at" ] || return 0
+
+  # A relaunched child's early polls carry no recorded session id yet
+  # (note_child_session_id runs after this call); the heartbeat on disk could
+  # still be a predecessor's. Wait for the id rather than read it blind.
+  [ -n "${CHILD_SESSION_ID:-}" ] || return 0
+
+  if [ "${INTERRUPT_HANDLED_AT:-}" = "$request_at" ]; then
+    # Already relayed or already skipped by an earlier poll on this
+    # supervisor; only the served marker failed to land. Retry just that
+    # write, checked, with nothing relayed or skipped and nothing re-logged.
+    printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served" 2>>"$RUNDIR/supervisor.err"
+    return 0
+  fi
+
+  turn_started=$(get_child_turn_started)
+  turn_rc=$?
+  # A non-zero exit is a failed read, not "no turn": leave interrupt.served
+  # untouched so the next poll re-reads the turn gate from scratch, rather
+  # than recording a transient failure as a served skip.
+  [ "$turn_rc" -eq 0 ] || return 0
+  if [ -z "$turn_started" ] || [ "$turn_started" -gt "$request_at" ]; then
+    INTERRUPT_HANDLED_AT="$request_at"
+    if printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served" 2>>"$RUNDIR/supervisor.err"; then
+      log "INTERRUPT_SKIPPED: $reason (child-$CHILD_INDEX, by=$by, turn started ${turn_started:-none})"
+    elif [ "${INTERRUPT_FAIL_LOGGED_AT:-}" != "$request_at" ]; then
+      log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX was skipped, but its served marker could not be written; the next poll retries only the marker write"
+      INTERRUPT_FAIL_LOGGED_AT="$request_at"
+    fi
+    return 0
+  fi
+
+  INTERRUPT_SEQ=$((INTERRUPT_SEQ + 1))
+  id="$SUPERVISOR_START_MS-int-$INTERRUPT_SEQ"
+  if fields=$(write_interrupt_relay "$id" "$request_at") \
+     && mv -f "$INTERRUPT_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE" 2>>"$RUNDIR/supervisor.err"; then
+    by="${fields%%$'\t'*}"
+    reason="${fields#*$'\t'}"
+    INTERRUPT_HANDLED_AT="$request_at"
+    if printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served" 2>>"$RUNDIR/supervisor.err"; then
+      log "INTERRUPT: $reason (child-$CHILD_INDEX, id=$id, by=$by)"
+    elif [ "${INTERRUPT_FAIL_LOGGED_AT:-}" != "$request_at" ]; then
+      log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX (id=$id) relayed, but its served marker could not be written; the next poll retries only the marker write"
+      INTERRUPT_FAIL_LOGGED_AT="$request_at"
+    fi
+  elif [ "${INTERRUPT_FAIL_LOGGED_AT:-}" != "$request_at" ]; then
+    log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX (id=$id) was not relayed, either because the request was cleared or overwritten between the two reads or because the file could not be written; the next poll retries"
+    INTERRUPT_FAIL_LOGGED_AT="$request_at"
+  fi
+}
+
 # --- Helper: read the newest root_complete decision's timestamp AND
 # whether it was backfilled, in one read ---
 # v2 Section 0 item 1: a root_complete decision whose own detail text says
@@ -3718,6 +3952,7 @@ gate_stage_child() {
   HOLDER_PID_FILE="$CHILD_DIR/holder.pid"
   CHILD_PID_FILE="$CHILD_DIR/child.pid"
   ASK_REQUEST_FILE="$CHILD_DIR/ask.request"
+  INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
   CHILD_SESSION_ID="$4"
   HOLDER_LAUNCH_PID="$5"
   HOLDER_WINPID="$6"
@@ -3755,7 +3990,7 @@ gate_drop_child_globals() {
   HOLDER_LAUNCH_PID=""; HOLDER_WINPID=""; HOLDER_TICKS=""; HOLDER_OWN_LAUNCH=""
   CHILD_ADOPTED=""; CHILD_SESSION_ID=""
   HANDLE_FILE=""; EXIT_MARKER=""; CHILD_DIR=""; OUT=""; ERR=""; DEBUG=""
-  HOLDER_PID_FILE=""; CHILD_PID_FILE=""; ASK_REQUEST_FILE=""
+  HOLDER_PID_FILE=""; CHILD_PID_FILE=""; ASK_REQUEST_FILE=""; INTERRUPT_REQUEST_FILE=""
   LAUNCHED_AT=""; CHILD_START_TS=""
   LAST_STOP_SNAPSHOT=""; POLL_LIVENESS=""
   CHILD_TREE_MSYS_PIDS=""; CHILD_TREE_WINPIDS=""; CHILD_TREE_SEEN_WINPIDS=""
@@ -4056,6 +4291,15 @@ RESTART_TIMES=()  # array of timestamps for rolling-hour budget
 SUPERVISOR_START_MS=$(node -e "console.log(Date.now())")
 # How many final asks this supervisor has written, which numbers each ask's id.
 FINAL_ASK_SEQ=0
+# How many interrupts this supervisor has relayed, which numbers each
+# interrupt's id the same way.
+INTERRUPT_SEQ=0
+# The request_at of the interrupt this child's polls have already relayed or
+# already skipped, this supervisor's own in-memory record so a served-marker
+# write that keeps failing retries only that write rather than relaying or
+# skipping the same request again. Set in relay_interrupt_request as soon as
+# that decision is taken, and cleared per child beside INTERRUPT_FAIL_LOGGED_AT.
+INTERRUPT_HANDLED_AT=""
 
 # Where the harness keeps its transcripts, and the launch directory that names
 # the child's project under it. The poll derives the transcript from these and
@@ -4240,7 +4484,8 @@ while true; do
     HOLDER_PID_FILE="$CHILD_DIR/holder.pid"
     CHILD_PID_FILE="$CHILD_DIR/child.pid"
     ASK_REQUEST_FILE="$CHILD_DIR/ask.request"
-    rm -f "$EXIT_MARKER" "$HANDLE_FILE" "$HOLDER_PID_FILE" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "$ASK_REQUEST_FILE.tmp"
+    INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
+    rm -f "$EXIT_MARKER" "$HANDLE_FILE" "$HOLDER_PID_FILE" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "$ASK_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE" "$INTERRUPT_REQUEST_FILE.tmp" "$INTERRUPT_REQUEST_FILE.taken"
 
     # --- Take the child start timestamp BEFORE the launch call (Z6) ---
     CHILD_START_TS=$(node -e "console.log(Date.now())")
@@ -4312,7 +4557,7 @@ while true; do
     LIAISON_PERSONA="${LIAISON_PERSONA:-}" \
     CHILD_INDEX="$CHILD_INDEX" SUPERVISOR_HOLDER_POLL_S="${SUPERVISOR_HOLDER_POLL_S:-2}" \
       bash "$PLUGIN_DIR/bin/supervise-holder.sh" \
-        "$HOLDER_PID_FILE" "$OUT" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "${PROMPT_FILE:-}" \
+        "$HOLDER_PID_FILE" "$OUT" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "${PROMPT_FILE:-}" "$INTERRUPT_REQUEST_FILE" \
         2>> "$RUNDIR/supervisor.err" \
       | { child_wrapper "$EXIT_MARKER" env "${CHANNEL_ENV[@]}" claude -p --input-format stream-json --output-format stream-json --verbose \
           "${PLUGIN_DIR_ARGS[@]}" \
@@ -4403,6 +4648,16 @@ while true; do
   RATE_LIMIT_LOGGED=""
   RATE_LIMIT_RESET=""
   RATE_LIMIT_RESET_ISO=""
+  # The request_at of the last interrupt relay failure this child's polls
+  # logged, so a failure that keeps recurring for the same standing request
+  # is named once rather than on every poll. A fresh child's relay history is
+  # its own.
+  INTERRUPT_FAIL_LOGGED_AT=""
+  # The request_at this child's polls have already relayed or already
+  # skipped, so a standing served-marker failure retries only that write
+  # rather than relaying or skipping the same request again. A fresh child's
+  # relay history is its own.
+  INTERRUPT_HANDLED_AT=""
   # The liveness state this child's polls carry from one to the next, since
   # the poll process is fresh every poll: the stream's size as last seen and
   # the moment it last changed, on this supervisor's clock, and the time of
@@ -4450,6 +4705,11 @@ while true; do
     # run_child_poll is the one place the poll process is called, shared with
     # the pre-launch gate's adoption verdict.
     run_child_poll
+
+    # The coordinator's interrupt request, checked every poll independent of
+    # this poll's own reading: an interrupt is orthogonal to liveness, so a
+    # poll whose liveness read failed still relays a standing request.
+    relay_interrupt_request
 
     # The liveness state and the shutdown ask carried to the next poll, taken
     # only from a poll that ran: a failed one says nothing about the stream or

@@ -1217,6 +1217,145 @@ async function caseRestartOverAStaleOrBrokenRequest() {
 }
 
 // ============================================================
+// fleet_interrupt: the coordinator ends another persona's running turn in
+// place, keeping its conversation, with no fifteen-minute interval refusal
+// ============================================================
+const INTERRUPT_TOOL = "mcp__agentic-plugin__fleet_interrupt";
+
+function callFleetInterrupt(h, persona, reason) {
+  return h.handlers["tool.call"](h.fake, { tool: INTERRUPT_TOOL, persona, reason }, async () => ({ result: "passthrough" }));
+}
+
+const INTERRUPT_ROSTER = [
+  { name: "coordinator", rundir: "D:/interrupt/coordinator/run", enabled: true },
+  { name: "alpha", rundir: "D:/interrupt/alpha/run", enabled: true },
+  { name: "off", rundir: "D:/interrupt/off/run", enabled: false },
+  { name: "nodir", rundir: "D:/interrupt/nodir/run", enabled: true },
+];
+const INTERRUPT_ALPHA_REQUEST = "D:/interrupt/alpha/run/interrupt.request";
+
+function seedInterruptFleet(h) {
+  h.fsMap.set(ROSTER_PATH, JSON.stringify(INTERRUPT_ROSTER));
+  for (const dir of ["D:/interrupt/coordinator/run", "D:/interrupt/alpha/run", "D:/interrupt/off/run"]) {
+    h.fsMap.set(dir, "");
+  }
+}
+
+async function caseInterruptRegistersForTheOwnerTierAlone() {
+  console.log("\n=== fleet_interrupt: registered for the owner tier and not the reader ===");
+  const owner = await startSession("interrupt_register_owner");
+  const ownerTool = owner.toolRegisters.find((t) => t.name === "fleet_interrupt");
+  check("register: the owner tier registers fleet_interrupt", ownerTool !== undefined, owner.toolRegisters.map((t) => t.name));
+  check("register: its schema requires persona and reason", JSON.stringify([...(ownerTool?.inputSchema?.required ?? [])].sort()) === JSON.stringify(["persona", "reason"]), ownerTool?.inputSchema);
+  const reader = await startSession("interrupt_register_reader", { arming: "reader" });
+  check("register: the reader tier does not register fleet_interrupt", !reader.toolRegisters.some((t) => t.name === "fleet_interrupt"), reader.toolRegisters.map((t) => t.name));
+  check("register control: the reader tier still registers fleet_status", reader.toolRegisters.some((t) => t.name === "fleet_status"), reader.toolRegisters.map((t) => t.name));
+}
+
+async function caseInterruptWritesTheRequest() {
+  console.log("\n=== fleet_interrupt: a coordinator's request lands in the target's run directory and nowhere else, with the right shape ===");
+  const h = await startSession("interrupt_ok");
+  seedInterruptFleet(h);
+  const storeBefore = JSON.stringify([...h.storeMap.entries()]);
+  h.resetFsWrites();
+
+  const result = await callFleetInterrupt(h, "alpha", "   stuck on a tool call for an hour   ");
+  check("interrupt: the call is served, not denied", typeof result?.result === "string" && result.deny === undefined, result);
+  const request = parsedRequest(h, INTERRUPT_ALPHA_REQUEST);
+  check("interrupt: the request file exists under the target's run directory and parses", request !== null && typeof request === "object", h.fsMap.get(INTERRUPT_ALPHA_REQUEST));
+  check("interrupt: at is the tool's clock, as a number", request?.at === T0, request);
+  check("interrupt: by is the calling session's persona", request?.by === "coordinator", request);
+  check("interrupt: reason is the trimmed reason", request?.reason === "stuck on a tool call for an hour", request);
+  // Pinned on stable forms per the plan doc's Standing Brief Amendment: the
+  // persona name, the behavior of keeping the conversation, and that a poll
+  // is what relays it, not the exact sentence a correct reword would change.
+  check("interrupt: the result names the persona and keeping the conversation", says(result?.result, "'alpha'") && says(result?.result, "conversation"), result?.result);
+  check("interrupt: the result says a poll relays it", says(result?.result, "poll"), result?.result);
+  check("interrupt: exactly one file was written, and it is the request", h.fsWrites.length === 1 && h.fsWrites[0].path === INTERRUPT_ALPHA_REQUEST, h.fsWrites.map((w) => w.path));
+  check("interrupt: the commons store is untouched", JSON.stringify([...h.storeMap.entries()]) === storeBefore, [...h.storeMap.keys()]);
+
+  h.resetFsWrites();
+  const long = `  ${"r".repeat(300)}  `;
+  const second = await callFleetInterrupt(h, "alpha", long);
+  const secondRequest = parsedRequest(h, INTERRUPT_ALPHA_REQUEST);
+  check("interrupt bound: a long reason is trimmed and cut at 200 characters", second?.deny === undefined && secondRequest?.reason === "r".repeat(200), secondRequest?.reason?.length);
+}
+
+async function caseInterruptDeniedOffTheCoordinatorGround() {
+  console.log("\n=== fleet_interrupt: denied to every caller off the coordinator ground, writing nothing ===");
+  const callers = [
+    ["reader of the coordinator persona", "interrupt_deny_reader", { arming: "reader" }, "'READER:coordinator'"],
+    ["worker", "interrupt_deny_worker", { persona: "worker-a" }, "'WORKER:worker-a'"],
+    ["architect", "interrupt_deny_architect", { persona: "architect", architectPersona: "architect" }, "'WORKER:architect'"],
+    ["session with no claim", "interrupt_deny_noclaim", { persona: "default" }, "no ground"],
+  ];
+  for (const [label, caseName, overrides, groundToken] of callers) {
+    const h = await startSession(caseName, overrides);
+    seedInterruptFleet(h);
+    const storeBefore = JSON.stringify([...h.storeMap.entries()]);
+    h.resetFsWrites();
+    const result = await callFleetInterrupt(h, "alpha", "stuck");
+    check(`deny ${label}: the call is denied`, typeof result?.deny === "string" && result.result === undefined, result);
+    check(`deny ${label}: the deny names the coordinator ground as the rule and the ground this session holds`, says(result?.deny, "'coordinator'") && says(result?.deny, groundToken), result?.deny);
+    check(`deny ${label}: no file is written`, h.fsWrites.length === 0 && !h.fsMap.has(INTERRUPT_ALPHA_REQUEST), h.fsWrites.map((w) => w.path));
+    check(`deny ${label}: the commons store is untouched`, JSON.stringify([...h.storeMap.entries()]) === storeBefore, [...h.storeMap.keys()]);
+  }
+}
+
+async function caseInterruptRefusals() {
+  console.log("\n=== fleet_interrupt: each refusal a coordinator can meet names its reason and writes nothing ===");
+  const refusals = [
+    ["a target the roster does not carry", "ghost", (h) => seedInterruptFleet(h), ["'ghost'", "no entry"]],
+    ["a target the roster does not enable", "off", (h) => seedInterruptFleet(h), ["'off'", "enabled"]],
+    ["the caller's own persona", "coordinator", (h) => seedInterruptFleet(h), ["own persona"]],
+    ["a run directory that does not exist", "nodir", (h) => seedInterruptFleet(h), ["D:/interrupt/nodir/run", "does not exist"]],
+    ["a roster file that is missing", "alpha", () => {}, [ROSTER_PATH, "could not be read"]],
+    ["a roster file that is not JSON", "alpha", (h) => h.fsMap.set(ROSTER_PATH, "[{\"name\": \"alpha\""), [ROSTER_PATH, "could not be read"]],
+    ["a roster that is not an array", "alpha", (h) => h.fsMap.set(ROSTER_PATH, JSON.stringify({ alpha: {} })), [ROSTER_PATH, "JSON array"]],
+  ];
+  for (const [label, target, seed, tokens] of refusals) {
+    const h = await startSession(`interrupt_refuse_${target}_${tokens[0].replace(/\W+/g, "_")}`);
+    seed(h);
+    h.resetFsWrites();
+    const result = await callFleetInterrupt(h, target, "stuck");
+    check(`refuse ${label}: the call is denied`, typeof result?.deny === "string" && result.result === undefined, result);
+    check(`refuse ${label}: the deny names the reason`, tokens.every((t) => says(result?.deny, t)), result?.deny);
+    check(`refuse ${label}: no file is written`, h.fsWrites.length === 0, h.fsWrites.map((w) => w.path));
+  }
+
+  const unset = await startSession("interrupt_refuse_unset", { fleetRoster: "" });
+  unset.resetFsWrites();
+  const result = await callFleetInterrupt(unset, "alpha", "stuck");
+  check("refuse no fleetRoster setting: the call is denied", typeof result?.deny === "string" && result.result === undefined, result);
+  check("refuse no fleetRoster setting: the deny names the setting", says(result?.deny, "fleetRoster"), result?.deny);
+  check("refuse no fleetRoster setting: no file is written", unset.fsWrites.length === 0, unset.fsWrites.map((w) => w.path));
+}
+
+// The spec carries no interval refusal for fleet_interrupt: one request is
+// served once by the supervisor's own served-time record, so a second
+// request inside fifteen minutes of the first is written here, not refused,
+// unlike fleet_restart's own case of the same name.
+async function caseInterruptInsideFifteenMinutesIsWritten() {
+  console.log("\n=== fleet_interrupt: a second request inside fifteen minutes is written, not refused ===");
+  const h = await startSession("interrupt_interval");
+  seedInterruptFleet(h);
+  try {
+    const first = await callFleetInterrupt(h, "alpha", "first");
+    check("interval: the first request is written", first?.deny === undefined && parsedRequest(h, INTERRUPT_ALPHA_REQUEST)?.at === T0, first);
+
+    moveClockTo(h, T0 + 1000);
+    h.resetFsWrites();
+    const second = await callFleetInterrupt(h, "alpha", "second");
+    const request = parsedRequest(h, INTERRUPT_ALPHA_REQUEST);
+    check("interval: a second request one second later is served, not refused", second?.deny === undefined && typeof second?.result === "string", second);
+    check("interval: the file now carries the second request's own at and reason", request?.at === T0 + 1000 && request?.reason === "second", request);
+    check("interval: that write is the one file written", h.fsWrites.length === 1 && h.fsWrites[0].path === INTERRUPT_ALPHA_REQUEST, h.fsWrites.map((w) => w.path));
+  } finally {
+    suiteClock.set(T0);
+  }
+}
+
+// ============================================================
 async function main() {
   const clock = stubDateNow();
   suiteClock = clock;
@@ -1253,6 +1392,11 @@ async function main() {
     await caseRestartRefusals();
     await caseRestartInsideFifteenMinutes();
     await caseRestartOverAStaleOrBrokenRequest();
+    await caseInterruptRegistersForTheOwnerTierAlone();
+    await caseInterruptWritesTheRequest();
+    await caseInterruptDeniedOffTheCoordinatorGround();
+    await caseInterruptRefusals();
+    await caseInterruptInsideFifteenMinutesIsWritten();
   } finally {
     clock.restore();
   }
