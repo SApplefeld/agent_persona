@@ -583,12 +583,11 @@ function turnOpenStateText(activeGoal: string, openRecord: string, message: stri
 }
 
 // One line naming what a message asks for, for the record a live `new-goal`
-// verdict opens. Null on every failure, which is a call that threw, a call the
-// timer beat, a result carrying no text, and a text that is empty once folded
-// and trimmed; the
-// caller's fallback is the message excerpt. The line is not cut here: the
-// record field's own clamp is what bounds it, so the prompt's "under 80
-// characters" is a request to Haiku rather than the guard.
+// verdict opens. Null on every failure, which is a call that threw, a result
+// carrying no text, a timed-out call among them, and a text that is empty once
+// folded and trimmed; the caller's fallback is the message excerpt. The line
+// is not cut here: the record field's own clamp is what bounds it, so the
+// prompt's "under 80 characters" is a request to Haiku rather than the guard.
 //
 // The call is billed to the `reason` bucket, beside the controller's own reason
 // call whose shape this one clones: a one-line Haiku completion over text the
@@ -598,20 +597,15 @@ function turnOpenStateText(activeGoal: string, openRecord: string, message: stri
 // operator reads. The per-hour call window is not bumped: that cap bounds the
 // controller's own tick, which is the only thing that can back itself off.
 //
-// The call runs ahead of the prompt's delivery, so it is raced against
-// WORDING_TIMEOUT_MS the way the decision seam races its request: neither
-// promise rejects, and the loser runs on as an orphan because neither
-// `$.model.complete` nor `$.clock.sleep` takes an abort signal. A timeout is
-// billed, since the completion was requested and runs to its end, and falls
-// back to the excerpt. An answered call leaves this timer running as an
-// orphan, one more beside the seam's own on such a prompt.
-//
-// Seven seconds, because a `$.clock` wait runs the hook's own 10,000 ms budget:
-// the seam's live timer can spend 2,000 ms of it first, and the second left
-// over covers the hook's own code, so a timeout still leaves the hook alive to
-// open the record. A one-line Haiku answer normally returns in about a second,
-// so the bound only stops a stuck call.
-const WORDING_TIMEOUT_MS = 7_000;
+// The call runs ahead of the prompt's delivery, so it carries the completion's
+// own `timeoutMs`. A `$` call's time never counts against the hook's budget,
+// and a call past its bound resolves `{ isAnswered: false, reason: "aborted" }`,
+// which reads as a result with no text: billed, since the call was made, and
+// the excerpt stands. A race against `$.clock.sleep` would bound it the same
+// way while spending the hook's budget, since a clock wait is the one `$` call
+// that runs it. A one-line Haiku answer normally returns in about a second, so
+// ten seconds only stops a stuck call.
+const WORDING_TIMEOUT_MS = 10_000;
 
 async function wordNewRecordText(dp: any, message: string): Promise<string | null> {
   const prompt =
@@ -619,25 +613,9 @@ async function wordNewRecordText(dp: any, message: string): Promise<string | nul
     `plain text with no Markdown, name what the message asks for. Answer with that line alone.\n` +
     message;
   try {
-    const completion = Promise.resolve()
-      .then(() => dp.model.complete({ model: "haiku", prompt, maxTokens: 40 }))
-      .then(
-        (raw: unknown) => ({ kind: "answered" as const, raw }),
-        () => ({ kind: "threw" as const }),
-      );
-    // A timer that cannot be started or that rejects reads as having fired.
-    const timer = Promise.resolve()
-      .then(() => dp.clock.sleep(WORDING_TIMEOUT_MS))
-      .then(
-        () => ({ kind: "timeout" as const }),
-        () => ({ kind: "timeout" as const }),
-      );
-    const settled = await Promise.race([completion, timer]);
-    if (settled.kind === "threw") return null;
+    const raw = await dp.model.complete({ model: "haiku", prompt, maxTokens: 40, timeoutMs: WORDING_TIMEOUT_MS });
     sess.state.monitor.cost.reason.count += 1;
     sess.state.monitor.cost.reason.estTokens += estimateTokens(prompt.length, 40);
-    if (settled.kind === "timeout") return null;
-    const raw = settled.raw;
     const text = completionText(raw);
     if (text === null) {
       noteCompletionShape("turn-record-wording", raw);

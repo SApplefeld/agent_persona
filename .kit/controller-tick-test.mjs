@@ -25265,37 +25265,19 @@ async function caseTurnRecord_everyLiveVerdict(clock) {
   check("record live new-goal: a wording call that came back unusable is billed all the same",
     getState(ngFail).monitor.cost.reason.count === 1, getState(ngFail).monitor.cost.reason);
 
-  // A wording call that never settles holds the message only until its timer:
-  // the record opens with the excerpt and the submission goes on. Nothing fires
-  // a harness sleep on its own, so the case fires each pending one in turn, the
-  // seam's own orphaned timer among them. An unbounded call leaves the
-  // submission open after the last, which is the red this case exists to show.
-  const ngHung = await recordHarness("record_live_new_goal_hung_wording", { ...live, stateOpts: { hasActiveLeaf: false } });
+  // The wording call carries the completion's own ten-second timeoutMs, and a
+  // call past it resolves aborted: the record opens with the excerpt and the
+  // call is billed once, since it was made.
+  const ngHung = await recordHarness("record_live_new_goal_aborted_wording", { ...live, stateOpts: { hasActiveLeaf: false } });
   ngHung.setHttpResponse(answering("new-goal"));
-  let answerLate;
-  ngHung.setCompleteValue(new Promise((r) => { answerLate = r; }));
-  let hungSettled = false;
-  submitMessage(ngHung, "A request Haiku never answers.").then(() => { hungSettled = true; });
-  const sleepsAsked = [];
-  for (let i = 0; i < 200 && !hungSettled; i++) {
-    await new Promise((r) => setTimeout(r, 5));
-    if (ngHung.pendingSleepCount > 0) { sleepsAsked.push(ngHung.sleeps[0].ms); ngHung.fireSleep(); }
-  }
-  check("record live new-goal: a wording call that never answers holds the message only until a seven-second timer",
-    hungSettled && sleepsAsked.includes(7_000), { settled: hungSettled, sleepsAsked });
-  check("record live new-goal: the timed-out wording leaves the message excerpt",
+  ngHung.setCompleteValue({ isAnswered: false, reason: "aborted" });
+  await submitMessage(ngHung, "A request Haiku never answers.");
+  check("record live new-goal: the wording call carries a ten-second timeoutMs",
+    ngHung.completeCalls.length === 1 && ngHung.completeCalls[0][0]?.timeoutMs === 10_000,
+    { completeCalls: ngHung.completeCalls.map((c) => c[0]?.timeoutMs) });
+  check("record live new-goal: a timed-out wording leaves the message excerpt",
     openRecordOf(ngHung)?.text === "A request Haiku never answers.", recordsOf(ngHung));
   check("record live new-goal: a timed-out wording call is billed once, since it ran",
-    getState(ngHung).monitor.cost.reason.count === 1, getState(ngHung).monitor.cost.reason);
-  check("record live new-goal: the timer won against a completion that was issued",
-    ngHung.completeCalls.length === 1, { completeCalls: ngHung.completeCalls.length });
-  // The orphaned completion answering after the timer changes nothing: the
-  // record keeps the excerpt and the call is not billed a second time.
-  answerLate("A late wording line");
-  await new Promise((r) => setImmediate(r));
-  check("record live new-goal: a wording answer arriving after the timer leaves the excerpt",
-    openRecordOf(ngHung)?.text === "A request Haiku never answers.", recordsOf(ngHung));
-  check("record live new-goal: a wording answer arriving after the timer is not billed again",
     getState(ngHung).monitor.cost.reason.count === 1, getState(ngHung).monitor.cost.reason);
 
   // step: attached to the active entry, superseding whatever was open, bare or
