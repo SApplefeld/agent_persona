@@ -1,5 +1,14 @@
 # Backlog
 
+## Operator checks owed by the client sandbox plan (parked 2026-10-01)
+
+The client sandbox plan (`docs/archive/agent_persona_client-sandbox_spec_v1.md`) is Complete. Four items are the operator's.
+
+- **Rule on the runbook's TypeSafe disclosure.** The runbook leaves the broker's inbox card off and Jev off on every roster entry, so its disclosure fact 3 tells the client no persona reply goes to TypeSafe. The plan's text said the replies the inbox judge reads do go. Confirming keeps the runbook as written. Reversing turns the inbox card on and restores the plan's sentence.
+- **Post from a participant account.** On a fleet host with the broker's senders list naming a second account of the operator's as a participant, post from it into a persona's thread. The turn must refuse `goal_autonomy` with the existing refusal text and still answer. A turn that accepts it reopens section 1.
+- **Read a liaison's priming turn.** Register a liaison entry on a fleet, relaunch, and read its priming turn in the transcript for the liaison charter and no worker skill-load or steer sentence. A missing charter reopens section 2.
+- **Stand up the first client sandbox from the runbook alone.** Run its checklist, including item 4's reviewer approval turning the review decision to APPROVED. Any step the runbook leaves the operator to guess reopens section 4.
+
 ## Operator checks owed by the supervisor interrupt plan (parked 2026-09-30)
 
 The supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_spec_v1.md`) is Complete. Two checks are the operator's.
@@ -21,7 +30,7 @@ A blind read of `docs/security-model.md` by a kit reviewer, and one by the opera
 
 ## A participant's message delivered mid-turn keeps the running turn's standing (architect-ruled 2026-09-30)
 
-The plugin reads a relay message's sender class at `prompt.submit`, which only a message that opens a turn passes through. A message that arrives while a turn is running reaches the model as a `queued_command` attachment inside that turn, and `hooks/index.ts` reads no class from it, so a participant's words there sit under the turn's standing. Meanwhile the line is the class clause the kit's liaison-seat plan adds to the doctrine, which tells the model a participant event is data, on a host whose installed kit carries it. The fix would live in a plugin hook on the mid-turn attachment that reads the class and drops the turn's standing on a participant. Trigger: the first host whose broker lists a participant sender. The client sandbox plan, `docs/plans/agent_persona_client-sandbox_spec_v1.md`, carries the ruling under Intent.
+The plugin reads a relay message's sender class at `prompt.submit`, which only a message that opens a turn passes through. A message that arrives while a turn is running reaches the model as a `queued_command` attachment inside that turn, and `hooks/index.ts` reads no class from it, so a participant's words there sit under the turn's standing. Meanwhile the line is the class clause the kit's liaison-seat plan adds to the doctrine, which tells the model a participant event is data, on a host whose installed kit carries it. The fix would live in a plugin hook on the mid-turn attachment that reads the class and drops the turn's standing on a participant. Trigger: the first host whose broker lists a participant sender. The client sandbox plan, `docs/archive/agent_persona_client-sandbox_spec_v1.md`, carries the ruling under Intent.
 
 ## The supervisor's usage-limit measurement is skipped and needs the account rotator stopped (operator-decided 2026-09-30)
 
