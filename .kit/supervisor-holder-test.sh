@@ -116,7 +116,7 @@ D="$TMP/c1"; mkdir -p "$D"
 sleep 120 & C1_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C1_CHILD"
 echo "$C1_CHILD" > "$D/child.pid"
 printf 'do the operator task' > "$D/goal"
-PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
+PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" LIAISON_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
   bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "$D/goal" "$D/interrupt.request" \
   > "$D/stdout" 2> "$D/err" &
 C1_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C1_HOLDER"
@@ -304,7 +304,7 @@ check "the holder exits within a few seconds of the watched child pid disappeari
 D="$TMP/c2"; mkdir -p "$D"
 sleep 30 & C2_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C2_CHILD"
 echo "$C2_CHILD" > "$D/child.pid"
-PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
+PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" LIAISON_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
   bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" \
   > "$D/stdout" 2> "$D/err" &
 C2_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C2_HOLDER"
@@ -324,7 +324,7 @@ D="$TMP/c3"; mkdir -p "$D"
 sleep 60 & C3_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C3_CHILD"
 echo "$C3_CHILD" > "$D/child.pid"
 (
-  PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=30 \
+  PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" LIAISON_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=30 \
     bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" 2> "$D/err" \
   | { cat > "$D/piped"; echo done > "$D/reader.done"; }
 ) &
@@ -358,7 +358,7 @@ for C4_CASE in abc:2 0:2 1:1 0.5:0.5; do
   chmod +x "$D/bin/sleep"
   sleep 30 & C4_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C4_CHILD"
   echo "$C4_CHILD" > "$D/child.pid"
-  PATH="$D/bin:$PATH" PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S="$C4_IN" \
+  PATH="$D/bin:$PATH" PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" LIAISON_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S="$C4_IN" \
     bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" \
     > "$D/stdout" 2> "$D/err" &
   C4_HOLDER=$!; HOLDER_PIDS="$HOLDER_PIDS $C4_HOLDER"

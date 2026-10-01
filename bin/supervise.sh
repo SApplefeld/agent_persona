@@ -538,6 +538,31 @@ else
     echo "ERROR: $SETTINGS_FILE resolves '$ARCHITECT_PERSONA' as both coordinatorPersona and architectPersona; one persona cannot hold both seats" | tee -a "$LOG" >&2
     exit 1
   fi
+  # The liaison's name travels the same two branches under the architect's
+  # rule, through the same shared read: no default, the persona class, and
+  # "default" refused, so a mis-set name is a refused launch named in the log.
+  # A name another seat holds builds two contradicting charters into one
+  # priming write, so either pair is refused here as emit_settings_json refuses
+  # it on the other branch.
+  if ! LIAISON_PERSONA="$(read_settings_liaison_persona "$SETTINGS_FILE" "$DEV_MODE" 2>>"$LOG")"; then
+    echo "ERROR: could not read liaisonPersona from $SETTINGS_FILE; see $LOG" | tee -a "$LOG" >&2
+    exit 1
+  fi
+  export LIAISON_PERSONA
+  if [ -n "$LIAISON_PERSONA" ] && [ "$LIAISON_PERSONA" = "$COORDINATOR_PERSONA" ]; then
+    echo "ERROR: $SETTINGS_FILE resolves '$LIAISON_PERSONA' as both coordinatorPersona and liaisonPersona; one persona cannot hold both seats" | tee -a "$LOG" >&2
+    exit 1
+  fi
+  if [ -n "$LIAISON_PERSONA" ] && [ "$LIAISON_PERSONA" = "$ARCHITECT_PERSONA" ]; then
+    echo "ERROR: $SETTINGS_FILE resolves '$LIAISON_PERSONA' as both architectPersona and liaisonPersona; one persona cannot hold both seats" | tee -a "$LOG" >&2
+    exit 1
+  fi
+  # The liaison's charter sends every brief to the architect by name, so a
+  # file naming a liaison and no architect is refused as the emitter refuses it.
+  if [ -n "$LIAISON_PERSONA" ] && [ -z "$ARCHITECT_PERSONA" ]; then
+    echo "ERROR: $SETTINGS_FILE resolves liaisonPersona to '$LIAISON_PERSONA' while architectPersona is unset; a liaison sends its briefs to the architect, so a file naming one must name the other" | tee -a "$LOG" >&2
+    exit 1
+  fi
 fi
 
 # --- Helper: log a line to supervisor.log ---
@@ -4529,6 +4554,7 @@ while true; do
     # the marker records the child's real exit code.
     PERSONA="$PERSONA" NO_CHANNEL="$NO_CHANNEL" \
     COORDINATOR_PERSONA="${COORDINATOR_PERSONA:-}" ARCHITECT_PERSONA="${ARCHITECT_PERSONA:-}" \
+    LIAISON_PERSONA="${LIAISON_PERSONA:-}" \
     CHILD_INDEX="$CHILD_INDEX" SUPERVISOR_HOLDER_POLL_S="${SUPERVISOR_HOLDER_POLL_S:-2}" \
       bash "$PLUGIN_DIR/bin/supervise-holder.sh" \
         "$HOLDER_PID_FILE" "$OUT" "$CHILD_PID_FILE" "$ASK_REQUEST_FILE" "${PROMPT_FILE:-}" "$INTERRUPT_REQUEST_FILE" \

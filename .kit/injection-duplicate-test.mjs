@@ -381,10 +381,13 @@ function fail(name) {
       fail("guard control: a += clause wrapped onto two lines - fewer than two COORDINATOR_ROLE_INSTRUCTION+= lines to pick the second from");
     } else {
       const idx = plusLines[1];
+      // The name's assignment lines are counted off the unmutated source, so
+      // the refusal is read for the count the guard holds and one fewer found.
+      const assigned = lines.filter((l) => /^\s*COORDINATOR_ROLE_INSTRUCTION\+?="/.test(l)).length;
       const cut = lines[idx].indexOf(" ", 80);
       lines[idx] = lines[idx].slice(0, cut) + "\\\n" + lines[idx].slice(cut);
       const wrapped = lines.join("\n");
-      expectRefusal("a += clause wrapped onto two lines", "[instruction-count]", ["COORDINATOR_ROLE_INSTRUCTION", "expected 5", "found 4"], () => buildLedgerFrom(shSrc, wrapped, tsSrc));
+      expectRefusal("a += clause wrapped onto two lines", "[instruction-count]", ["COORDINATOR_ROLE_INSTRUCTION", `expected ${assigned}`, `found ${assigned - 1}`], () => buildLedgerFrom(shSrc, wrapped, tsSrc));
     }
   }
   // A += clause rewritten as the bare shape NAME="...", which bash reads as

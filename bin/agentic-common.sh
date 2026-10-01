@@ -8,14 +8,15 @@
 #           jev_live_to_csv, settings_path_json,
 #           read_settings_coordinator_persona,
 #           read_settings_architect_persona,
+#           read_settings_liaison_persona,
 #           read_settings_fleet_roster,
 #           valid_persona_name,
 #           find_global_store, list_installed_stores, poll_decisions,
 #           poll_heartbeat.
-# COORDINATOR_PERSONA and ARCHITECT_PERSONA are exported on both settings
-# branches: emit_settings_json exports the names it writes, and the two
-# read_settings_*_persona functions print the names a provided file resolves
-# to, for the caller to export.
+# COORDINATOR_PERSONA, ARCHITECT_PERSONA and LIAISON_PERSONA are exported on
+# both settings branches: emit_settings_json exports the names it writes, and
+# the three read_settings_*_persona functions print the names a provided file
+# resolves to, for the caller to export.
 # All functions use W2 read-error semantics: a read error is a transient mid-write
 # race, treated as "live" (or "not ready"), never an abort. The timeout is the only
 # exit. refuse_if_persona_live is the one exception: it is a start-only check with
@@ -157,6 +158,7 @@ jev_live_to_csv() {
 #          coordinatorPersona (from COORDINATOR_PERSONA, default "coordinator")
 #          and architectPersona (from ARCHITECT_PERSONA, which has no default:
 #          the key is omitted where the variable is unset or empty),
+#          and liaisonPersona (from LIAISON_PERSONA, omitted the same way),
 #          and fleetRoster (from FLEET_ROSTER, which has no default either
 #          and is omitted the same way), and supervisorMailbox, heartbeatPath
 #          and supervisorHeartbeatPath (from SUPERVISOR_MAILBOX, HEARTBEAT_PATH
@@ -165,11 +167,12 @@ jev_live_to_csv() {
 #          way and refused outside that pair); and,
 #          outside the plugin options, the harness's own autoContinue, always
 #          false.
-# Exports COORDINATOR_PERSONA and ARCHITECT_PERSONA to the values it wrote, so
-# a caller can compare its own persona against the same names without parsing
-# the settings file. This is the emit branch's half of those exports; the
-# provided-settings branch reads the same names back through
-# read_settings_coordinator_persona and read_settings_architect_persona.
+# Exports COORDINATOR_PERSONA, ARCHITECT_PERSONA and LIAISON_PERSONA to the
+# values it wrote, so a caller can compare its own persona against the same
+# names without parsing the settings file. This is the emit branch's half of
+# those exports; the provided-settings branch reads the same names back through
+# read_settings_coordinator_persona, read_settings_architect_persona and
+# read_settings_liaison_persona.
 emit_settings_json() {
   local out="$1"
   local self_review_opts=""
@@ -245,9 +248,9 @@ emit_settings_json() {
   # Every value below is spliced into JSON unescaped, so each is held to a
   # shape that cannot close a string or an object and that JSON accepts:
   # digits with no leading zero for the numbers, letters, digits, underscore
-  # and hyphen for the persona and for coordinatorPersona and architectPersona
-  # (the same valid_persona_name check, since all three are spliced the same
-  # way).
+  # and hyphen for the persona and for coordinatorPersona, architectPersona and
+  # liaisonPersona (the same valid_persona_name check, since all four are
+  # spliced the same way).
   local var
   for var in TICK_MS NUDGE_IDLE_MS GIT_PROBE_MS NUDGE_FLOOR_MS HEARTBEAT_MS STALE_AFTER_MS \
     MEMORY_GATE_DISCARD_PERCENT \
@@ -313,6 +316,43 @@ emit_settings_json() {
     architect_opt=",\"architectPersona\":\"$architect_persona\""
   fi
   export ARCHITECT_PERSONA="$architect_persona"
+  # liaisonPersona names the persona that receives the liaison's standing
+  # instruction, under the architect key's rule: no default, so an unset or
+  # empty variable omits the key and no persona receives the charter; the same
+  # character class and valid_persona_name check; "default" refused for the
+  # same reason; and a name another seat holds refused, since that persona's one
+  # priming write would carry two standing instructions that contradict each
+  # other. The coordinator's name counts as held even when it is the default,
+  # because the launch still resolves it. A liaison also needs an architect
+  # named beside it, which the last check below states.
+  local liaison_persona="${LIAISON_PERSONA:-}"
+  local liaison_opt=""
+  if [ -n "$liaison_persona" ]; then
+    if ! valid_persona_name "$liaison_persona"; then
+      echo "ERROR: emit_settings_json: LIAISON_PERSONA '$liaison_persona' may hold only letters, digits, underscore and hyphen" >&2
+      return 1
+    fi
+    if [ "$liaison_persona" = "default" ]; then
+      echo "ERROR: emit_settings_json: LIAISON_PERSONA must not be 'default'" >&2
+      return 1
+    fi
+    if [ "$liaison_persona" = "$coordinator_persona" ]; then
+      echo "ERROR: emit_settings_json: LIAISON_PERSONA and COORDINATOR_PERSONA are both '$liaison_persona'; one persona cannot hold both seats" >&2
+      return 1
+    fi
+    if [ "$liaison_persona" = "$architect_persona" ]; then
+      echo "ERROR: emit_settings_json: LIAISON_PERSONA and ARCHITECT_PERSONA are both '$liaison_persona'; one persona cannot hold both seats" >&2
+      return 1
+    fi
+    # The seat's one job is to send briefs to the architect, whose name its
+    # charter splices, and an absent architect key reads as no architect.
+    if [ -z "$architect_persona" ]; then
+      echo "ERROR: emit_settings_json: LIAISON_PERSONA '$liaison_persona' names a liaison while ARCHITECT_PERSONA is unset: liaisonPersona needs architectPersona, since the liaison sends its briefs to the architect" >&2
+      return 1
+    fi
+    liaison_opt=",\"liaisonPersona\":\"$liaison_persona\""
+  fi
+  export LIAISON_PERSONA="$liaison_persona"
   # fleetRoster names the roster file the plugin reads: its fleet_status tool
   # on demand, and its controller tick to watch each roster persona's health.
   # The setting carries no default, as architectPersona does not: an unset or
@@ -357,7 +397,7 @@ emit_settings_json() {
   # absent from the engine's type file, and options under the other id are
   # ignored without an error, so the same options are written under both.
   # .kit/settings-plugin-key-test.sh pins both ids against the two manifests.
-  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000},\"memoryGateDiscardPercent\":${MEMORY_GATE_DISCARD_PERCENT:-90}$self_review_opts$cost_opts$jev_opts$recap_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$roster_opt$supervisor_opts}"
+  local options="{\"controllerTickMs\":$TICK_MS,\"nudgeIdleMs\":$NUDGE_IDLE_MS,\"nudgeFloorMs\":${NUDGE_FLOOR_MS:-5000},\"gitProbeMs\":$GIT_PROBE_MS,\"heartbeatMs\":${HEARTBEAT_MS:-30000},\"staleAfterMs\":${STALE_AFTER_MS:-90000},\"memoryGateDiscardPercent\":${MEMORY_GATE_DISCARD_PERCENT:-90}$self_review_opts$cost_opts$jev_opts$recap_opts$persona_opt,\"arming\":\"owner\",\"coordinatorPersona\":\"$coordinator_persona\"$architect_opt$liaison_opt$roster_opt$supervisor_opts}"
   # autoContinue is the harness's own setting, at the top level rather than
   # under a plugin id. Off, a child that trips a usage limit ends its turn and
   # sits idle rather than parking until the limit resets, and the supervisor's
@@ -737,17 +777,45 @@ console.log(usable && value.trim() !== "default" ? value.trim() : "coordinator")
 # persona character class or naming "default", the two values emit_settings_json
 # refuses, so a mis-set name is a refused launch named in the log rather than a
 # fleet that comes up with no architect; the error-line shape is the same, and
-# it prints nothing then.
+# it prints nothing then. The rule itself lives in read_settings_seat_persona,
+# which the liaison key's read shares.
 read_settings_architect_persona() {
-  local dev_mode="${2:-1}"
+  read_settings_seat_persona read_settings_architect_persona architectPersona "$1" "${2:-1}"
+}
+
+# --- read_settings_liaison_persona ---
+# Usage: read_settings_liaison_persona <settings-file> [dev_mode: 0|1, default 1]
+# Prints the liaisonPersona a settings file the caller provided carries, so
+# bin/supervise.sh can export LIAISON_PERSONA on the provided branch to the
+# same value the emit branch exports. The plugin reads no liaison setting, so
+# this read is the key's only consumer. It takes the architect key's rule
+# through the same shared read: the loaded id alone, no default, a name outside
+# the persona class or naming "default" refused with the value named, and the
+# same refusals of a file that cannot hold options, each naming this function.
+read_settings_liaison_persona() {
+  read_settings_seat_persona read_settings_liaison_persona liaisonPersona "$1" "${2:-1}"
+}
+
+# --- read_settings_seat_persona ---
+# Usage: read_settings_seat_persona <caller> <key> <settings-file> <dev_mode>
+# The read the two named-seat keys share, architectPersona and liaisonPersona,
+# so the rule a name spliced into a standing instruction is held to is written
+# once. Reads <key> under the plugin id dev_mode picks, as
+# read_settings_coordinator_persona does, prints the name trimmed, and prints
+# the empty string for a missing key or an empty value, since neither seat has
+# a default. Refuses, with ERROR lines opening "<caller>: <file>", the shapes
+# read_settings_coordinator_persona refuses, a present value that is not a
+# string, and a name outside valid_persona_name's class or naming "default".
+read_settings_seat_persona() {
+  local caller="$1" key="$2" dev_mode="${4:-1}"
   local id="$AGENTIC_PLUGIN_INSTALLED_ID"
   if [ "$dev_mode" -eq 1 ]; then
     id="$AGENTIC_PLUGIN_DEV_ID"
   fi
   node -e '
 const fs = require("fs");
-const [file, id] = process.argv.slice(1);
-const fail = (msg) => { console.error("ERROR: read_settings_architect_persona: " + file + " " + msg); process.exit(1); };
+const [file, id, caller, key] = process.argv.slice(1);
+const fail = (msg) => { console.error("ERROR: " + caller + ": " + file + " " + msg); process.exit(1); };
 const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 let s;
 try { s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch (e) { fail("is not valid JSON: " + e.message); }
@@ -758,14 +826,14 @@ let value;
 if (pc[id] !== undefined) {
   if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
   if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
-  if (plain(pc[id].options)) value = pc[id].options.architectPersona;
+  if (plain(pc[id].options)) value = pc[id].options[key];
 }
-if (value !== undefined && typeof value !== "string") fail("has an architectPersona that is not a string");
+if (value !== undefined && typeof value !== "string") fail("has " + (/^[aeiou]/i.test(key) ? "an " : "a ") + key + " that is not a string");
 const name = typeof value === "string" ? value.trim() : "";
-if (name !== "" && !/^[A-Za-z0-9_-]+$/.test(name)) fail("resolves architectPersona to \u0027" + name + "\u0027, which may hold only letters, digits, underscore and hyphen");
-if (name === "default") fail("resolves architectPersona to \u0027default\u0027, and architectPersona must not be \u0027default\u0027");
+if (name !== "" && !/^[A-Za-z0-9_-]+$/.test(name)) fail("resolves " + key + " to \u0027" + name + "\u0027, which may hold only letters, digits, underscore and hyphen");
+if (name === "default") fail("resolves " + key + " to \u0027default\u0027, and " + key + " must not be \u0027default\u0027");
 console.log(name);
-' "$1" "$id"
+' "$3" "$id" "$caller" "$key"
 }
 
 # --- read_settings_fleet_roster ---
