@@ -10,7 +10,6 @@ The error turn definition plan (`docs/archive/agent_persona_error-turn-definitio
 
 The client sandbox plan (`docs/archive/agent_persona_client-sandbox_spec_v1.md`) is Complete. Four items are the operator's.
 
-- **Rule on the runbook's TypeSafe disclosure.** The runbook leaves the broker's inbox card off and Jev off on every roster entry, so its disclosure fact 3 tells the client no persona reply goes to TypeSafe. The plan's text said the replies the inbox judge reads do go. Confirming keeps the runbook as written. Reversing turns the inbox card on and restores the plan's sentence.
 - **Post from a participant account.** On a fleet host with the broker's senders list naming a second account of the operator's as a participant, post from it into a persona's thread. The turn must refuse `goal_autonomy` with the existing refusal text and still answer. A turn that accepts it reopens section 1.
 - **Read a liaison's priming turn.** Register a liaison entry on a fleet, relaunch, and read its priming turn in the transcript for the liaison charter and no worker skill-load or steer sentence. A missing charter reopens section 2.
 - **Stand up the first client sandbox from the runbook alone.** Run its checklist, including item 4's reviewer approval turning the review decision to APPROVED. Any step the runbook leaves the operator to guess reopens section 4.
