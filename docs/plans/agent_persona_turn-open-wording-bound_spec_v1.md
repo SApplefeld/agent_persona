@@ -84,3 +84,13 @@ Delta: 2026-10-01T20:00Z on this worktree; the reading is below.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-10-01
+Stage: finishing-work, between step 4 (goal read) and the fix path. Base ref 0fb2a08. Steps 1 to 4 have run; the fix path waits on one operator answer.
+Live dispatches: none on this plan.
+Gate baseline: whole gate at 3c8fb88, 2026-10-01 20:04:11Z to 21:12:31Z on the worktree D:/agent_persona/.claude/worktrees/turn-open-wording-bound, machine SCOTT-CLAUDE: 33 lanes, every one exit 0, runner exit 0; tick lane 6359 OK, 0 FAIL against 6353 at 0fb2a08. Contention lane `.kit/live-all.sh` exit 10, its designed refusal on a live ARCHITECT persona claim. Another session's kit gate (`node --test test/*.test.js`) overlapped part of the run. QA verifier (fable): PASS on every Section 1 criterion.
+Reviews: security (fable, high) CLEAR, no findings. Adversarial (fable, high) APPROVED_WITH_CONCERNS, four Minors. Performance (fable, high) one Major and two Minors.
+Rulings adopted since the last boundary:
+- Goal read (scope-adjudicator, fable): built-but-unasked 4, all accept-and-declare; asked-but-unbuilt 0. Declared: a rejecting or unstartable timer reads as a timeout; the backlog entry deleted whole; docs/architecture.md:262 states the bound; the hung case's issued-call and late-answer checks.
+- Performance Major, relevance ruling CONFIRM (scope-adjudicator, fable): WORDING_TIMEOUT_MS of 10,000 ms equals the hook budget of 10,000 ms, and a `$.clock` wait runs that budget (.claude/types/claude-code.d.ts:3075-3077, 4507-4509, 4523), so a timed-out wording likely overruns prompt.submit and the engine runs next(e) on the hook's behalf, dropping its context blocks. Disposition: fix now. The value changes the operator-accepted ten seconds, so it went to the operator on 2026-10-01 with a recommendation of 7,000 ms (the seam's 2,000 ms live timer plus 7,000 ms leaves about one second of budget).
+Next action: on the operator's answer, set the constant and its comment, docs/architecture.md:262, the test's 10,000 literal and the plan's Goal, Intent and Assumptions to the chosen value; run the tick lane and tsc; take the adversarial lens over the fix delta; then the Minor pass over .kit/scratch/turn-open-wording-bound/finishing/minors.md, step 5 docs curation, the final Chapter, the archive, the handoff gate and the pull request.
