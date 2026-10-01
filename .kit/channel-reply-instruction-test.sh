@@ -141,7 +141,12 @@ ROLE_INTERRUPT_TOOL_CONTROL="fleet_interrupt"
 # and fleet_interrupt_sentence_ok, defined below the instruction literals,
 # do the pinning; the trigger is pinned separately, on fleet_status's own
 # field names, which a reword cannot rephrase away without also rewriting the
-# tool it points at.
+# tool it points at. turnState 'in turn' and a stale heartbeat never co-occur
+# (the heartbeat tick republishes on its own cadence regardless of the turn),
+# so the trigger names no heartbeatAgeMs: ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL
+# feeds an absence check, and extract_fleet_interrupt_trigger_sentence below
+# scopes that check to the trigger sentence alone so a mention of
+# heartbeatAgeMs anywhere else in the instruction cannot fail it.
 ROLE_INTERRUPT_TURN_STATE_CONTROL="turnState"
 ROLE_INTERRUPT_TURN_RUNNING_CONTROL="turnRunningMs"
 ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL="heartbeatAgeMs"
@@ -473,6 +478,24 @@ extract_fleet_interrupt_sentence() {  # <text>
   esac
   rest="${text#*fleet_interrupt}"
   printf '%s' "fleet_interrupt${rest%%.*}."
+}
+
+# Prints the first sentence of <text> (split on ". ") that names turnState,
+# the field the trigger is stated in, so the heartbeatAgeMs absence check
+# reads only the trigger sentence and never flags a mention of that field
+# anywhere else in the instruction. The anchor is the field name rather than
+# the sentence's wording, so a correct reword still extracts it. Empty where
+# no sentence names turnState, which the absence check treats as a failure.
+extract_fleet_interrupt_trigger_sentence() {  # <text>
+  local text="$1" sentence
+  while [ -n "$text" ]; do
+    sentence="${text%%. *}"
+    case "$sentence" in
+      *"$ROLE_INTERRUPT_TURN_STATE_CONTROL"*) printf '%s.' "${sentence%.}"; return 0 ;;
+    esac
+    [ "$sentence" = "$text" ] && return 0
+    text="${text#*. }"
+  done
 }
 
 # True where <sentence> says the conversation survives (a stem from the
@@ -1127,9 +1150,43 @@ fleet_interrupt_sentence_ok "$FLEET_INTERRUPT_SENTENCE"
 CHECK_RC=$?
 check "persona matches COORDINATOR_PERSONA: the fleet_interrupt sentence says the conversation is kept, not lost ($FLEET_INTERRUPT_SENTENCE)" "$CHECK_RC"
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
-  *"$ROLE_INTERRUPT_TURN_STATE_CONTROL"*"$ROLE_INTERRUPT_TURN_RUNNING_CONTROL"*"$ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL"*"$ROLE_INTERRUPT_REPORT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the interrupt trigger is stated in fleet_status's own fields, with every use reported to the operator" 0 ;;
+  *"$ROLE_INTERRUPT_TURN_STATE_CONTROL"*"$ROLE_INTERRUPT_TURN_RUNNING_CONTROL"*"$ROLE_INTERRUPT_REPORT_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the interrupt trigger is stated in fleet_status's own fields, with every use reported to the operator" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the interrupt trigger is stated in fleet_status's own fields, with every use reported to the operator" 1 ;;
 esac
+# True where <sentence> is a non-empty trigger sentence naming no
+# heartbeatAgeMs. An empty extraction fails, so a reword that loses the
+# trigger's field names reds here rather than passing silently.
+trigger_sentence_lacks_heartbeat_age() {  # <sentence>
+  [ -n "$1" ] || return 1
+  case "$1" in
+    *"$ROLE_INTERRUPT_HEARTBEAT_AGE_CONTROL"*) return 1 ;;
+  esac
+  return 0
+}
+# Withheld control: a planted instruction whose trigger sentence carries
+# heartbeatAgeMs, between sentences that do not, must go through the same
+# extractor and fail the same predicate before that check is trusted on the
+# real instruction, per the silent-check rule. A planted instruction with no
+# turnState sentence must fail it too.
+PLANTED_INSTRUCTION_WITH_HEARTBEAT_AGE="fleet_interrupt ends another persona's running turn and keeps its conversation. You use it on a row fleet_status shows with turnState 'in turn', turnRunningMs large and heartbeatAgeMs stale far longer than its work needs, or on one the operator names. You report every use to the operator. "
+PLANTED_TRIGGER_SENTENCE=$(extract_fleet_interrupt_trigger_sentence "$PLANTED_INSTRUCTION_WITH_HEARTBEAT_AGE")
+trigger_sentence_lacks_heartbeat_age "$PLANTED_TRIGGER_SENTENCE"
+CHECK_RC=$?
+[ "$CHECK_RC" -ne 0 ]
+check "heartbeatAgeMs absence control: a planted instruction's trigger sentence carrying heartbeatAgeMs is extracted and caught ($PLANTED_TRIGGER_SENTENCE)" "$?"
+PLANTED_EMPTY_SENTENCE=$(extract_fleet_interrupt_trigger_sentence "fleet_interrupt ends a turn. You use it when a turn runs long. ")
+trigger_sentence_lacks_heartbeat_age "$PLANTED_EMPTY_SENTENCE"
+CHECK_RC=$?
+[ "$CHECK_RC" -ne 0 ]
+check "heartbeatAgeMs absence control: an instruction with no turnState sentence fails the check rather than passing empty" "$?"
+# heartbeatAgeMs never co-occurs with turnState 'in turn', since the
+# heartbeat tick republishes on its own cadence through a stuck turn, so the
+# trigger names only turnState and turnRunningMs. Checked on the trigger
+# sentence alone, so a mention of heartbeatAgeMs elsewhere cannot fail this.
+FLEET_INTERRUPT_TRIGGER_SENTENCE=$(extract_fleet_interrupt_trigger_sentence "${COORDINATOR_ROLE_INSTRUCTION:-}")
+trigger_sentence_lacks_heartbeat_age "$FLEET_INTERRUPT_TRIGGER_SENTENCE"
+CHECK_RC=$?
+check "persona matches COORDINATOR_PERSONA: the fleet_interrupt trigger sentence names no heartbeatAgeMs ($FLEET_INTERRUPT_TRIGGER_SENTENCE)" "$CHECK_RC"
 case "${COORDINATOR_ROLE_INSTRUCTION:-}" in
   *"$ROLE_INTERRUPT_SEND_CONTROL"*"$ROLE_INTERRUPT_ARRIVE_CONTROL"*) check "persona matches COORDINATOR_PERSONA: the break-in duty calls fleet_interrupt then agentic_say, arriving as the next prompt" 0 ;;
   *) check "persona matches COORDINATOR_PERSONA: the break-in duty calls fleet_interrupt then agentic_say, arriving as the next prompt" 1 ;;

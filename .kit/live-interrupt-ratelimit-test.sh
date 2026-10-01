@@ -28,6 +28,13 @@
 # watch first saw them, and the supervisor's line is timed the same way beside
 # its own whole-second stamp.
 #
+# The child launches under this script's own real HOME (nothing here
+# overrides it), so it loads the operator's own account settings the same way
+# any other persona's child does. The evidence directory's stub log
+# ($SUITE_DIR/stub-requests.jsonl) keeps every request body the child sent in
+# full, decoded, which carries the whole system prompt and any memory records
+# the harness injected into it.
+#
 # Exit 0 on pass, 1 on fail. The evidence stays under $SUITE_DIR. Not part of
 # .kit/live-all.sh: this is a standing, repeatable proof, not a gate suite.
 set -u
@@ -39,15 +46,18 @@ PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RELAY_TO_RESULT_MAX_MS=5000
 
 # --- Setup ---
-rm -rf "$SUITE_DIR"
+# The guard is read, and the lock claimed, before anything under $SUITE_DIR
+# is touched: a second invocation while a run is live must refuse rather than
+# clear that run's own files out from under it. Only once the lock is ours is
+# the rest of the directory cleared, with the RUNNING file itself spared.
 mkdir -p "$SUITE_DIR"
+RUNNING="$SUITE_DIR/RUNNING"
+[ -f "$RUNNING" ] && { echo "RUNNING exists, refusing: $RUNNING ($(head -1 "$RUNNING")). Remove it if no run is live."; exit 8; }
+echo "live-interrupt-ratelimit $0 $(date -u +%FT%TZ)" > "$RUNNING"
+find "$SUITE_DIR" -mindepth 1 -maxdepth 1 ! -name "$(basename "$RUNNING")" -exec rm -rf {} +
 cd "$SUITE_DIR" || exit 9
 
 source "$SCRIPT_DIR/live-common.sh"
-
-RUNNING="$SUITE_DIR/RUNNING"
-[ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
-echo "live-interrupt-ratelimit $0 $(date -u +%FT%TZ)" > "$RUNNING"
 
 WORKDIR="$SUITE_DIR/workdir"
 mkdir -p "$WORKDIR"

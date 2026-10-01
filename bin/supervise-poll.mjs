@@ -90,7 +90,7 @@ function readJson(path) {
   }
 }
 
-// readChildHeartbeat now lives in bin/supervise-heartbeat.mjs, imported
+// readChildHeartbeat is exported from bin/supervise-heartbeat.mjs, imported
 // above: bin/supervise.sh's interrupt relay reads the same file for the same
 // shape, through the same reader, and that script runs unconditional
 // top-level CLI logic on load, so it must never be imported itself.

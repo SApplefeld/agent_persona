@@ -313,12 +313,15 @@ holder_ask_file_whole() {  # <file> <first line as read>
     # it, and the operator hears of every use. Its refusals are in its own
     # description. fleet_interrupt sits beside it as the lighter lever: it
     # ends a stuck turn in place, keeping the child's conversation, where
-    # fleet_restart loses it. Its trigger is stated in fields fleet_status
-    # itself returns (turnState, turnRunningMs, heartbeatAgeMs), so the
-    # coordinator reads it off a row rather than off a private judgment it
-    # cannot check: a turn fleet_status shows running whose heartbeat has sat
-    # still far longer than its own work needs.
-    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. fleet_restart restarts another persona's child: you use it on a persona the fleet reading shows stuck or one the operator names, and you report every use to the operator. fleet_interrupt ends another persona's running turn and keeps its conversation. You use it on a row fleet_status shows with turnState 'in turn', turnRunningMs large and heartbeatAgeMs stale far longer than its work needs, or on one the operator names. You report every use to the operator. To break in with something critical, you call fleet_interrupt and then send the record with agentic_say, and the record arrives as that persona's next prompt. "
+    # fleet_restart loses it. Its trigger reads two fields fleet_status
+    # itself returns, turnState and turnRunningMs. heartbeatAgeMs plays no
+    # part in it: the heartbeat tick republishes on its own cadence
+    # regardless of what the turn is doing, so a turn fleet_status shows "in
+    # turn" always carries a fresh heartbeat and a stale one never co-occurs
+    # with it. The coordinator instead reads a row showing a turn running far
+    # longer than its own work needs, rather than off a private judgment it
+    # cannot check.
+    COORDINATOR_ROLE_INSTRUCTION+="A prompt labelled [FLEET] carries the personas whose health class changed since the last such prompt, one line each. You report those lines on your own channel and you poll the fleet at no point, and that prompt's own opening line says what a line beginning with '> ' is and what to do with it. You call fleet_status only in the cases this instruction names, and none of them is polling. This duty names two. The operator asks for fleet state, and you need the whole picture behind a change. That tool's description is where a row's fields and the standing it settles for a persona are stated. fleet_restart restarts another persona's child: you use it on a persona the fleet reading shows stuck or one the operator names, and you report every use to the operator. fleet_interrupt ends another persona's running turn and keeps its conversation. You use it on a row fleet_status shows with turnState 'in turn' and turnRunningMs far past what its turn's work needs, or on a persona the operator names. You report every use to the operator. To break in with something critical, you call fleet_interrupt and then send the record with agentic_say, and the record arrives as that persona's next prompt. "
     # The kit's Coordinator seat, which this persona holds for the machine.
     # The seat is taken once at priming, and the reconciliation pass runs on
     # the [RECONCILE] prompt alone. The kit's coordinator skill states a
@@ -541,12 +544,19 @@ while true; do
     # race with a departing writer) skips the interrupt for this poll; there
     # is nothing to refuse or remove, and the next poll tries again.
     if mv -f "$INTERRUPT_REQUEST_FILE" "$INTERRUPT_REQUEST_FILE.taken" 2>/dev/null; then
-      # The private copy is read exactly once, capped at 4097 bytes: a file
-      # over 4096 is refused unread, since this read never grows past the cap
-      # to find out how much more there is. `read -d ''` keeps every byte
-      # `head` hands it, trailing newline included, unlike a bare
-      # `$(head ...)` capture, which a command substitution would trim and so
-      # could undercount a file whose 4097th byte is itself a newline.
+      # The private copy is read exactly once, through `head -c 4097` so the
+      # read never grows past that cap to find out how much more there is.
+      # `read -d ''` keeps every byte `head` hands it, trailing newline
+      # included, unlike a bare `$(head ...)` capture, which a command
+      # substitution would trim and so could undercount a file whose 4097th
+      # byte is itself a newline. `read -d ''` also stops at the first NUL
+      # byte in that stream, so a file carrying one inside its first 4097
+      # bytes reads only its prefix up to the NUL, not the whole head: the
+      # size gate below then measures that shorter prefix, not the file's
+      # real size. Whatever text this read yields, interrupt_bytes checks it
+      # against the 4096 cap, and holder_interrupt_relay still parses only a
+      # checked id out of it, so a truncated or oversized read passes nothing
+      # but that checked id to the pipe below.
       IFS= read -r -d '' interrupt_content < <(head -c 4097 "$INTERRUPT_REQUEST_FILE.taken" 2>/dev/null)
       interrupt_bytes=$(LC_ALL=C printf '%s' "$interrupt_content" | wc -c)
       interrupt_id=""

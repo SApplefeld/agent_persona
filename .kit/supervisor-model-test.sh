@@ -2078,8 +2078,13 @@ if [ -n "$RELAY_INTERRUPT_SNIPPET" ]; then
   # read all three. CHILD_HEARTBEAT is $RUNDIR/heartbeat.json, the same fixed
   # path bin/supervise.sh itself derives, so a fixture written under the
   # caller's own rundir is what the turn gate reads.
-  interrupt_poll() {  # <rundir> <childdir> <child-start-ts>
+  interrupt_poll() {  # <rundir> <childdir> <child-start-ts> [session-id]
     local script="$TMP/interrupt-poll.sh"
+    # Unset (the 3-arg call most cases use) defaults to a non-empty fixture
+    # session id, since relay_interrupt_request waits for one; passing ""
+    # explicitly (the empty-session-id case below) keeps the
+    # empty value, which "${4-default}" (not "${4:-default}") preserves.
+    local session_id="${4-sess-fixture}"
     printf '%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$LOG_SNIPPET" "$GET_INTERRUPT_SNIPPET" "$GET_TURN_STARTED_SNIPPET" "$WRITE_INTERRUPT_SNIPPET" > "$script"
     printf '%s\n' "$RELAY_INTERRUPT_SNIPPET" >> "$script"
     cat >> "$script" <<'EOF2'
@@ -2089,7 +2094,7 @@ CHILD_DIR="$3"
 CHILD_HEARTBEAT="$RUNDIR/heartbeat.json"
 INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
 CHILD_START_TS="$4"
-CHILD_SESSION_ID=""
+CHILD_SESSION_ID="$5"
 CHILD_INDEX=1
 INTERRUPT_SEQ=0
 SUPERVISOR_START_MS=9999
@@ -2100,7 +2105,7 @@ echo "LOG=$(cat "$LOG" 2>/dev/null)"
 echo "SERVED=$(cat "$CHILD_DIR/interrupt.served" 2>/dev/null || echo NONE)"
 echo "REQFILE=$(cat "$INTERRUPT_REQUEST_FILE" 2>/dev/null || echo NONE)"
 EOF2
-    bash "$script" "$IR_PLUGIN_DIR" "$1" "$2" "$3"
+    bash "$script" "$IR_PLUGIN_DIR" "$1" "$2" "$3" "$session_id"
   }
   write_interrupt_fixture() {  # <path> <at> <by> <reason>
     node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ at: Number(process.argv[2]), by: process.argv[3], reason: process.argv[4] }))' \
@@ -2261,13 +2266,13 @@ EOF4
   CHECK_RC=$?
   check "turnStartedAt equal to at relays (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
 
-  # Fix round 2: the skip path's log line is bounded. get_interrupt_request
-  # strips control characters from by and reason but, before this fix, never
-  # cut their length, so an oversized by or reason written straight into the
-  # run directory could log unboundedly on a skip. No heartbeat file exists
-  # here, so the turn gate skips ("no heartbeat file at all"), and the
-  # INTERRUPT_SKIPPED line is read for by and reason cut to 64 and 200, the
-  # same bounds write_interrupt_relay applies on the relay path.
+  # The skip path's log line is bounded: get_interrupt_request strips control
+  # characters from by and reason and cuts their length, so an oversized by
+  # or reason written straight into the run directory never logs unboundedly
+  # on a skip. No heartbeat file exists here, so the turn gate skips ("no
+  # heartbeat file at all"), and the INTERRUPT_SKIPPED line is read for by
+  # and reason cut to 64 and 200, the same bounds write_interrupt_relay
+  # applies on the relay path.
   rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
   OVERSIZED_BY=$(node -e 'console.log("b".repeat(300))')
   OVERSIZED_REASON=$(node -e 'console.log("r".repeat(500))')
@@ -2278,6 +2283,74 @@ EOF4
   case "$OUT" in *"LOG="*"INTERRUPT_SKIPPED: $EXPECT_REASON (child-1, by=$EXPECT_BY, turn started none)"*) true ;; *) false ;; esac
   CHECK_RC=$?
   check "an oversized by and reason on the skip path are cut to 64 and 200 in the log line (out=$(printf '%s' "$OUT" | tr '\n' '|' | head -c 400))" "$CHECK_RC"
+
+  # An empty CHILD_SESSION_ID (a relaunched child's
+  # first few polls, before note_child_session_id has run) must wait for the
+  # id rather than read a heartbeat that can be a predecessor's. A turn
+  # already running since well before the request would normally relay it at
+  # once; with no session id yet, this poll must relay nothing, skip nothing,
+  # and leave interrupt.served unwritten, so a later poll with the id set
+  # still sees the request standing and acts on it.
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_heartbeat_fixture "$IR_RD/heartbeat.json" 100
+  write_interrupt_fixture "$IR_RD/interrupt.request" 1500 coordinator "no session id yet"
+  OUT=$(interrupt_poll "$IR_RD" "$IR_CD" 1000 "")
+  case "$OUT" in *"LOG="*"INTERRUPT"*) false ;; *) true ;; esac
+  CHECK_RC=$?
+  check "an empty CHILD_SESSION_ID relays nothing and skips nothing (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  case "$OUT" in *"SERVED=NONE"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "an empty CHILD_SESSION_ID leaves interrupt.served unwritten (out=$(printf '%s' "$OUT" | tr '\n' '|'))" "$CHECK_RC"
+  OUT2=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$OUT2" in *"LOG="*"INTERRUPT: no session id yet"*"SERVED=1500"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "a later poll with CHILD_SESSION_ID set relays the standing request (out=$(printf '%s' "$OUT2" | tr '\n' '|'))" "$CHECK_RC"
+
+  # A failed heartbeat read must never be read the same
+  # as "no turn running". A PLUGIN_DIR whose supervise-heartbeat.mjs throws on
+  # import stands in for a transient node failure (a bad spawn, a thrown
+  # error): get_child_turn_started's node call exits non-zero, and the relay
+  # must leave interrupt.served unwritten so the next poll retries the whole
+  # turn gate, rather than logging a skip the way an empty reading would.
+  THROW_PLUGIN_DIR="$TMP/plugin-heartbeat-throws"
+  mkdir -p "$THROW_PLUGIN_DIR/bin"
+  cp "$IR_PLUGIN_DIR/bin/supervise-interrupt-request.mjs" "$THROW_PLUGIN_DIR/bin/supervise-interrupt-request.mjs"
+  printf '%s\n' "throw new Error('injected failure for the F1 node-failure test');" > "$THROW_PLUGIN_DIR/bin/supervise-heartbeat.mjs"
+  rm -rf "$IR_RD"; IR_CD="$IR_RD/child-1"; mkdir -p "$IR_CD"
+  write_heartbeat_fixture "$IR_RD/heartbeat.json" 100
+  write_interrupt_fixture "$IR_RD/interrupt.request" 1500 coordinator "heartbeat reader throws"
+  THROW_SCRIPT="$TMP/interrupt-poll-throw.sh"
+  printf '%s\n%s\n%s\n%s\n%s\n' "$STUB_OPTIONS" "$LOG_SNIPPET" "$GET_INTERRUPT_SNIPPET" "$GET_TURN_STARTED_SNIPPET" "$WRITE_INTERRUPT_SNIPPET" > "$THROW_SCRIPT"
+  printf '%s\n' "$RELAY_INTERRUPT_SNIPPET" >> "$THROW_SCRIPT"
+  cat >> "$THROW_SCRIPT" <<'EOF5'
+PLUGIN_DIR="$1"
+RUNDIR="$2"
+CHILD_DIR="$3"
+CHILD_HEARTBEAT="$RUNDIR/heartbeat.json"
+INTERRUPT_REQUEST_FILE="$CHILD_DIR/interrupt.request"
+CHILD_START_TS="$4"
+CHILD_SESSION_ID="sess-fixture"
+CHILD_INDEX=1
+INTERRUPT_SEQ=0
+SUPERVISOR_START_MS=9999
+LOG="$RUNDIR/supervisor.log"
+: > "$LOG"
+relay_interrupt_request
+echo "LOG=$(cat "$LOG" 2>/dev/null)"
+echo "SERVED=$(cat "$CHILD_DIR/interrupt.served" 2>/dev/null || echo NONE)"
+echo "REQFILE=$(cat "$INTERRUPT_REQUEST_FILE" 2>/dev/null || echo NONE)"
+EOF5
+  THROW_OUT=$(bash "$THROW_SCRIPT" "$THROW_PLUGIN_DIR" "$IR_RD" "$IR_CD" 1000)
+  case "$THROW_OUT" in *"LOG="*"INTERRUPT"*) false ;; *) true ;; esac
+  CHECK_RC=$?
+  check "a heartbeat reader that throws neither relays nor skips (out=$(printf '%s' "$THROW_OUT" | tr '\n' '|'))" "$CHECK_RC"
+  case "$THROW_OUT" in *"SERVED=NONE"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "a heartbeat reader that throws leaves interrupt.served unwritten, so the next poll retries (out=$(printf '%s' "$THROW_OUT" | tr '\n' '|'))" "$CHECK_RC"
+  THROW_OUT2=$(interrupt_poll "$IR_RD" "$IR_CD" 1000)
+  case "$THROW_OUT2" in *"LOG="*"INTERRUPT: heartbeat reader throws"*"SERVED=1500"*) true ;; *) false ;; esac
+  CHECK_RC=$?
+  check "a later poll with a working heartbeat reader relays the request the failed read left standing (out=$(printf '%s' "$THROW_OUT2" | tr '\n' '|'))" "$CHECK_RC"
 fi
 
 # --- The coordinator's interrupt relay, through the real poll loop ---
@@ -2344,13 +2417,13 @@ sleep 1.5
 [ "$(grep -c 'INTERRUPT_SKIPPED: turn moved on before this landed' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 1 ]; check "interrupt adopt: across several more polls the skip is still logged exactly once" "$?"
 [ "$(grep -c ' INTERRUPT: ' "$IA_DIR/supervisor.log" 2>/dev/null)" -eq 2 ]; check "interrupt adopt: the skipped request never adds a third relay to the log" "$?"
 
-# Fix round 2: a served-marker write that fails must never cause a second
-# relay. Turning $IA_DIR/child-1/interrupt.served into a directory makes the
-# write fail the way a permissions problem would; this needs the real,
-# persistent loop rather than the extraction-based fixture above, since the
-# in-memory INTERRUPT_HANDLED_AT record this fix adds lives for the
-# supervisor process's whole life, and the fixture drives a fresh process per
-# poll. A fresh heartbeat puts a turn running again, so this request relays.
+# A served-marker write that fails must never cause a second relay. Turning
+# $IA_DIR/child-1/interrupt.served into a directory makes the write fail the
+# way a permissions problem would; this needs the real, persistent loop
+# rather than the extraction-based fixture above, since the in-memory
+# INTERRUPT_HANDLED_AT record lives for the supervisor process's whole life,
+# and the fixture drives a fresh process per poll. A fresh heartbeat puts a
+# turn running again, so this request relays.
 # The served-write failure means only INTERRUPT_FAILED ever logs for it
 # (INTERRUPT: logs only on a served write that lands), so a second relay is
 # read off the child's own interrupt.request file instead: nothing here
@@ -2381,7 +2454,7 @@ check "interrupt adopt: once the marker is writable again, a later poll writes i
 IA_UNWRITABLE_ID3=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).id) } catch (e) { console.log("NONE") }' "$IA_DIR/child-1/interrupt.request")
 [ "$IA_UNWRITABLE_ID3" = "$IA_UNWRITABLE_ID1" ]; check "interrupt adopt: writing the marker late relays nothing new (same id throughout: $IA_UNWRITABLE_ID1 -> $IA_UNWRITABLE_ID3)" "$?"
 
-# Fix round 2: the skip branch's marker write is checked too, with the same
+# The skip branch's marker write is checked too, with the same
 # once-per-request discipline the relay path has. A heartbeat whose turn
 # starts after this new request triggers the skip decision; the marker is a
 # directory again, so its write fails the same way. INTERRUPT_SKIPPED, like
@@ -2423,7 +2496,17 @@ kill "$IA_PID" 2>/dev/null; wait "$IA_PID" 2>/dev/null
 IL_DIR=$(mktemp -d "$TMP/rd-interrupt-launch.XXXXXX")
 mkdir -p "$TMP/home-interrupt-launch/.claude/plugins/store" "$TMP/stub-interrupt-launch" "$TMP/wd-interrupt-launch"
 printf '{}' > "$TMP/home-interrupt-launch/.claude/plugins/store/agentic-plugin_agent-persona-modelprobe.json"
-printf '#!/usr/bin/env bash\ntouch "%s"\nsleep 60\n' "$TMP/stub-interrupt-launch/launched" > "$TMP/stub-interrupt-launch/claude"
+# The stub prints one init-shaped line carrying session_id "sess-il" before
+# it sleeps, so note_child_session_id's real read of $OUT records that id:
+# relay_interrupt_request's session-known check waits for CHILD_SESSION_ID before it
+# will read a heartbeat at all, and the heartbeat fixture below is seeded
+# under that same session id for the gate to match it against.
+cat > "$TMP/stub-interrupt-launch/claude" <<STUB
+#!/usr/bin/env bash
+touch "$TMP/stub-interrupt-launch/launched"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-il"}'
+sleep 60
+STUB
 chmod +x "$TMP/stub-interrupt-launch/claude"
 # The stub claude never writes a heartbeat of its own, so the turn gate is
 # seeded here, a turn already running when this setup runs, well before the

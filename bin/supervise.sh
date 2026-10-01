@@ -2844,11 +2844,16 @@ console.log(Math.floor(req.at) + String.fromCharCode(9) + strip(by) + String.fro
 # says so, since it runs its CLI unconditionally on load. Prints
 # turnStartedAt where the file parses, names this child's own session (or
 # none has been recorded on this poll yet), and carries a numeric
-# turnStartedAt; prints nothing for a missing or unreadable file, one naming
-# another session, or one with no turn open (turnStartedAt null between
-# turns), each of which the interrupt gate below reads as no running turn.
-# The existence check ahead of the spawn is the common case early in a
-# child's life, no heartbeat file yet.
+# turnStartedAt; prints nothing and exits 0 for a missing or unreadable file,
+# one naming another session, or one with no turn open (turnStartedAt null
+# between turns), each of which readChildHeartbeat itself catches and reports
+# as null, so the interrupt gate below reads every one of them as no running
+# turn. A thrown error this function's own node call does not catch (the
+# import failing, for instance) exits non-zero instead, prints nothing the
+# same as the no-turn case, and the caller tells the two apart by that exit
+# code rather than by the empty output alone. The existence check ahead of
+# the spawn is the common case early in a child's life, no heartbeat file
+# yet.
 get_child_turn_started() {
   [ -f "$CHILD_HEARTBEAT" ] || return 0
   node --input-type=module -e "
@@ -2910,8 +2915,17 @@ process.stdout.write(strip(by) + String.fromCharCode(9) + strip(reason) + String
 # earlier poll, by this supervisor or by one that adopted this same child,
 # already relayed or already skipped, so neither fires twice and a supervisor
 # that adopts a running child never re-sends its predecessor's request.
-# Past those two, the turn gate (the operator's decision of 2026-09-30, option
-# A): the coordinator's fleet_interrupt call and its agentic_say can land in
+# Past those two, a session-known check: note_child_session_id runs after
+# this call in the poll loop, so a relaunched child's first few polls carry
+# no CHILD_SESSION_ID yet, while CHILD_HEARTBEAT on disk can still be a
+# predecessor's file, since the launch cleanup never removes it. Reading that
+# file blind could relay against the predecessor's own stale turn, so while
+# the id is unknown this returns without reading the heartbeat and without
+# writing interrupt.served, leaving the request standing for the poll that
+# has the id.
+#
+# Past that, the turn gate (option A, the plan's Decisions section): the
+# coordinator's fleet_interrupt call and its agentic_say can land in
 # either order relative to the relay, so a request whose turn has already
 # ended, or whose turn has not started yet, must not end some other turn in
 # its place. get_child_turn_started's reading of turnStartedAt is that turn's
@@ -2921,16 +2935,20 @@ process.stdout.write(strip(by) + String.fromCharCode(9) + strip(reason) + String
 # request, there is no turn to end on the coordinator's own terms, and the
 # request is recorded served without relaying, logged once as
 # INTERRUPT_SKIPPED, covering both "no running turn" and "a turn that began
-# after the request" in the one line. The residual: the published heartbeat
-# is a periodic stamp (hooks/index.ts, the comment above sess.turnStartedAt's
-# heartbeat write, near line 9812), so turnStartedAt can still name a turn for
-# up to one heartbeat interval after that turn itself ended; within that
-# window a request meant for the ended turn can still relay against the turn
-# that followed it. Once past the turn gate, mints an id shaped like
-# write_final_ask's FINAL_ASK_ID, writes the child's own interrupt-request
-# file by write-then-rename so the holder never reads a half-written file,
-# records the served time only on a write that lands, and logs the relay
-# with its reason and requester.
+# after the request" in the one line. Where the read itself failed (a
+# non-zero exit from get_child_turn_started), there is no reading to gate on
+# at all, so this returns the same way the session-known check above does,
+# without writing interrupt.served, and the next poll re-reads the turn gate
+# from scratch rather than treating the failure as "no turn". The residual:
+# the published heartbeat is a periodic stamp (hooks/index.ts, the comment
+# above sess.turnStartedAt's heartbeat write, near line 9812), so
+# turnStartedAt can still name a turn for up to one heartbeat interval after
+# that turn itself ended; within that window a request meant for the ended
+# turn can still relay against the turn that followed it. Once past the turn
+# gate, mints an id shaped like write_final_ask's FINAL_ASK_ID, writes the
+# child's own interrupt-request file by write-then-rename so the holder never
+# reads a half-written file, records the served time only on a write that
+# lands, and logs the relay with its reason and requester.
 #
 # INTERRUPT_HANDLED_AT is this supervisor's own in-memory record of the
 # request_at it already relayed or already skipped for this child, set the
@@ -2950,7 +2968,7 @@ process.stdout.write(strip(by) + String.fromCharCode(9) + strip(reason) + String
 # once for this request_at rather than once per poll, since every later poll
 # retries only that write until it finally lands.
 relay_interrupt_request() {
-  local request_fields request_at by reason served_at turn_started fields id
+  local request_fields request_at by reason served_at turn_started turn_rc fields id
   request_fields=$(get_interrupt_request)
   [ -n "$request_fields" ] || return 0
   request_at="${request_fields%%$'\t'*}"
@@ -2965,6 +2983,11 @@ relay_interrupt_request() {
   fi
   [ -z "$served_at" ] || [ "$request_at" -gt "$served_at" ] || return 0
 
+  # A relaunched child's early polls carry no recorded session id yet
+  # (note_child_session_id runs after this call); the heartbeat on disk could
+  # still be a predecessor's. Wait for the id rather than read it blind.
+  [ -n "${CHILD_SESSION_ID:-}" ] || return 0
+
   if [ "${INTERRUPT_HANDLED_AT:-}" = "$request_at" ]; then
     # Already relayed or already skipped by an earlier poll on this
     # supervisor; only the served marker failed to land. Retry just that
@@ -2974,6 +2997,11 @@ relay_interrupt_request() {
   fi
 
   turn_started=$(get_child_turn_started)
+  turn_rc=$?
+  # A non-zero exit is a failed read, not "no turn": leave interrupt.served
+  # untouched so the next poll re-reads the turn gate from scratch, rather
+  # than recording a transient failure as a served skip.
+  [ "$turn_rc" -eq 0 ] || return 0
   if [ -z "$turn_started" ] || [ "$turn_started" -gt "$request_at" ]; then
     INTERRUPT_HANDLED_AT="$request_at"
     if printf '%s' "$request_at" > "$CHILD_DIR/interrupt.served" 2>>"$RUNDIR/supervisor.err"; then
@@ -2999,7 +3027,7 @@ relay_interrupt_request() {
       INTERRUPT_FAIL_LOGGED_AT="$request_at"
     fi
   elif [ "${INTERRUPT_FAIL_LOGGED_AT:-}" != "$request_at" ]; then
-    log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX (id=$id) could not be written; the next poll retries"
+    log "INTERRUPT_FAILED: the request at $request_at for child-$CHILD_INDEX (id=$id) was not relayed, either because the request was cleared or overwritten between the two reads or because the file could not be written; the next poll retries"
     INTERRUPT_FAIL_LOGGED_AT="$request_at"
   fi
 }

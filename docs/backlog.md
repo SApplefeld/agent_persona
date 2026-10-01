@@ -1,5 +1,14 @@
 # Backlog
 
+## Findings the supervisor interrupt finishing pass deferred (found 2026-09-30)
+
+The finishing reviews of the supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_spec_v1.md`) raised four Minors that serve no part of that plan's Goal. Each is deferred here with its likely remedy.
+
+- **Every poll pays a node spawn once an interrupt was used.** `<rundir>/interrupt.request` is never removed after it is served, so each later poll of a running child spawns node to read it, measured at 68 to 100 ms. An mtime guard is the likely fix. Measure `-nt` granularity on this platform before relying on it.
+- **The model suite's driven adopt case waits on fixed sleeps.** `.kit/supervisor-model-test.sh` waits 1.5 seconds at a time for the supervisor's poll, which a slow iteration may not cover. It has been green on every run so far. Replace the sleeps with bounded waits on the log line the case expects.
+- **The log-field strip is copied by hand in three places.** The strip that cleans `by` and `reason` before they reach a log line lives in `bin/supervise.sh`'s `get_interrupt_request` and `write_interrupt_relay`, and in the holder's reason strip in `bin/supervise-holder.sh`. Export one helper and pin the copies to it.
+- **The restart live script clears its directory before reading its guard.** `.kit/live-restartrequest-test.sh` runs `rm -rf` on its suite directory before it reads the `RUNNING` guard, so a second run deletes a live run's files. `.kit/live-interrupt-ratelimit-test.sh` reads the guard first, and the restart script should take the same order.
+
 ## The supervisor's usage-limit measurement is skipped and needs the account rotator stopped (operator-decided 2026-09-30)
 
 The supervisor-peer plan's measurement 5, a usage limit reached with the pause off, has never run. The operator skipped it for the deferred gate run on 2026-09-30, because producing a limit on the shared account stops all six personas. The operator's stated way to take it cheaply: stop the account rotator, Claude-Swap, so one account alone reaches its five-hour limit, then run the measurement on that account. Stopping the rotator is the operator's act, so the measurement waits on the operator's word that the machine is prepared. The deferred gate run's archived plan, `docs/archive/agent_persona_deferred-gate-run_v1.md`, carries the ledger row.

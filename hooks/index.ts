@@ -6064,8 +6064,9 @@ export const register: Register = async (on, options) => {
         "interrupt.request into the run directory the roster that the plugin's fleetRoster setting names gives that persona; " +
         "its supervisor, where one is running, reads the file at its next poll and relays it to the child's holder, which " +
         "relays the interrupt to the child at its own next poll. Together that is up to about 12 seconds at the plugin's " +
-        "default poll intervals (a ten-second supervisor poll and a two-second holder poll), not an instant stop. A message " +
-        "sent with agentic_say afterwards arrives as that persona's next prompt. " +
+        "default poll intervals (a ten-second supervisor poll and a two-second holder poll), not an instant stop. Where no " +
+        "turn begun at or before this call is running, the supervisor records the request served without relaying it " +
+        "instead. A message sent with agentic_say afterwards arrives as that persona's next prompt. " +
         "Refused when this session does not hold the coordinator persona, when no roster is set or it cannot be read, when " +
         "persona is not a roster entry whose enabled is true, when persona is this session's own, and when the run directory " +
         "does not exist. Touches no store, commons or persona's own. Only the session holding the coordinator persona may call it.",
@@ -12772,7 +12773,7 @@ export const register: Register = async (on, options) => {
       } catch (err) {
         return refuse(`the request file '${requestPath}' could not be written: ${boundedText(safeErrorText(err))}`);
       }
-      return { result: `Interrupt requested for '${shown}': where its supervisor is running, it relays the request to the child's holder at its next poll, and the holder relays the interrupt to the child at its own next poll, up to about 12 seconds after this call at the plugin's default poll intervals. The turn ends keeping the conversation. A message sent with agentic_say afterwards arrives as that persona's next prompt.` };
+      return { result: `Interrupt requested for '${shown}': where its supervisor is running, it relays the request to the child's holder at its next poll, and the holder relays the interrupt to the child at its own next poll, up to about 12 seconds after this call at the plugin's default poll intervals. The turn ends keeping the conversation. Where no turn begun at or before this call is running, the supervisor records the request served without relaying it instead. A message sent with agentic_say afterwards arrives as that persona's next prompt.` };
     }
 
     // Section 12: serve agentic_resolve (the owner marks a record's work
