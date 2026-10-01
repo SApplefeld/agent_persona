@@ -2302,14 +2302,14 @@ wait_log() {  # <log> <pattern> <bound>
   return 0
 }
 # start_heartbeat_writer keeps a persona's claim live in a heartbeat fixture:
-# after <delay> seconds it starts a node writer that stamps lastSeen every two
-# seconds, and records the writer's pid in hb.pid beside the case's wd. A torn
-# read of the fixture, which is rewritten in place, is skipped. The writer ends
-# itself with status 0 on the first read that finds the fixture gone and after
-# <lifetime> seconds, so no kill has to reach it for a run to leave nothing
-# behind. The caller reads the backgrounded starter's pid from $!.
+# after <delay> seconds the backgrounded starter execs a node writer that stamps
+# lastSeen every two seconds. A torn read of the fixture, which is rewritten in
+# place, is skipped. The writer ends itself with status 0 on the first read that
+# finds the fixture gone and after <lifetime> seconds, so no kill has to reach it
+# for a run to leave nothing behind. The caller's $! is the writer once the delay
+# has passed, and a kill during the delay ends the starter before any writer exists.
 start_heartbeat_writer() {  # <fixture> <persona> <delay s> <lifetime s>
-  ( sleep "$3"; node -e 'const [f,p,life]=process.argv.slice(1);const fs=require("fs");setTimeout(()=>process.exit(0),Number(life)*1000);setInterval(()=>{let s;try{s=fs.readFileSync(f,"utf8");}catch(e){if(e.code==="ENOENT")process.exit(0);return;}try{const h=JSON.parse(s);h[p].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$1" "$2" "$4" & echo $! > "$(dirname "$(dirname "$1")")/hb.pid" ) &
+  ( sleep "$3"; exec node -e 'const [f,p,life]=process.argv.slice(1);const fs=require("fs");setTimeout(()=>process.exit(0),Number(life)*1000);setInterval(()=>{let s;try{s=fs.readFileSync(f,"utf8");}catch(e){if(e.code==="ENOENT")process.exit(0);return;}try{const h=JSON.parse(s);h[p].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$1" "$2" "$4" ) &
 }
 
 # --- (na)/(nb) a TERM detaches a live handled child, and a second supervisor
