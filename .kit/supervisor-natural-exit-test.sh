@@ -2301,6 +2301,16 @@ wait_log() {  # <log> <pattern> <bound>
   done
   return 0
 }
+# start_heartbeat_writer keeps a persona's claim live in a heartbeat fixture:
+# after <delay> seconds it starts a node writer that stamps lastSeen every two
+# seconds, and records the writer's pid in hb.pid beside the case's wd. A torn
+# read of the fixture, which is rewritten in place, is skipped. The writer ends
+# itself with status 0 on the first read that finds the fixture gone and after
+# <lifetime> seconds, so no kill has to reach it for a run to leave nothing
+# behind. The caller reads the backgrounded starter's pid from $!.
+start_heartbeat_writer() {  # <fixture> <persona> <delay s> <lifetime s>
+  ( sleep "$3"; node -e 'const [f,p,life]=process.argv.slice(1);const fs=require("fs");setTimeout(()=>process.exit(0),Number(life)*1000);setInterval(()=>{let s;try{s=fs.readFileSync(f,"utf8");}catch(e){if(e.code==="ENOENT")process.exit(0);return;}try{const h=JSON.parse(s);h[p].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$1" "$2" "$4" & echo $! > "$(dirname "$(dirname "$1")")/hb.pid" ) &
+}
 
 # --- (na)/(nb) a TERM detaches a live handled child, and a second supervisor
 #     adopts it ---
@@ -2378,7 +2388,7 @@ if want ne; then
   # A live heartbeat sidecar for this persona, with no handle.json anywhere.
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ [process.argv[2]]: { sessionId: "other", lastSeen: Date.now() } }))' "$NE/wd/.agentic-heartbeat.json" "$PERSONA_NAME"
   printf '%s\n' "clean" > "$NE/plan"; printf '%s' "$NE" > "$STUB/case"
-  ( sleep 8; node -e 'const f=process.argv[1];const fs=require("fs");setInterval(()=>{try{const h=JSON.parse(fs.readFileSync(f,"utf8"));h[process.argv[2]].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$NE/wd/.agentic-heartbeat.json" "$PERSONA_NAME" & echo $! > "$NE/hb.pid"; sleep 130; kill "$(cat "$NE/hb.pid")" 2>/dev/null ) &
+  start_heartbeat_writer "$NE/wd/.agentic-heartbeat.json" "$PERSONA_NAME" 8 130
   NE_HB=$!
   env -i PATH="$STUB:$PATH" HOME="$TMP/home" supervisorPollMs="$DRIVE_POLL_MS" \
     timeout 200 bash "$SUP" "$NE/wd" "$PERSONA_NAME" default --rundir "$NE/rd" --no-channel > "$NE/out" 2>&1
@@ -2496,7 +2506,7 @@ fi
 if want nh; then
   NH="$TMP/nh"; mkdir -p "$NH/wd" "$NH/rd"
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ [process.argv[2]]: { sessionId: "other", lastSeen: Date.now() } }))' "$NH/wd/.agentic-heartbeat.json" "$PERSONA_NAME"
-  ( sleep 6; node -e 'const f=process.argv[1];const fs=require("fs");setInterval(()=>{try{const h=JSON.parse(fs.readFileSync(f,"utf8"));h[process.argv[2]].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$NH/wd/.agentic-heartbeat.json" "$PERSONA_NAME" & echo $! > "$NH/hb.pid"; sleep 60; kill "$(cat "$NH/hb.pid")" 2>/dev/null ) &
+  start_heartbeat_writer "$NH/wd/.agentic-heartbeat.json" "$PERSONA_NAME" 6 60
   NH_HB=$!
   printf '%s\n' "clean" > "$NH/plan"; printf '%s' "$NH" > "$STUB/case"
   env -i PATH="$STUB:$PATH" HOME="$TMP/home" supervisorPollMs="$DRIVE_POLL_MS" \

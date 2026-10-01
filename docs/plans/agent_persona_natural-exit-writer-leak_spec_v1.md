@@ -1,6 +1,6 @@
 # The natural-exit suite's heartbeat writer ends itself, so no run leaves a process behind
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
