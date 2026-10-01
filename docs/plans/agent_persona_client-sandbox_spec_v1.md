@@ -63,6 +63,10 @@ The contract sweep for this plan ran over the repository on 2026-09-30 and retur
 - The runbook's roster gives the coordinator's entry `liaisonPersona` as well as the liaison's own, since the coordinator builds its liaison clause only where its own entry names the seat.
 - The runbook carries, as steps with their checks: trusting the liaison's working directory by one interactive Claude Code launch there, the failure symptom being `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted` on stderr; the kit carrying the `liaison` skill and the doctrine's class clause installed before the liaison's first launch; each client user admitted on the broker's senders list; a worked roster entry for the liaison, the coordinator and the architect, naming which carries `liaisonPersona`; and, where a liaison joins a running fleet, the coordinator's settings file removed and its wrapper restarted so its liaison clause is built.
 - The security model states the mid-turn gap as a known gap in one paragraph: a relay message arriving inside a running turn carries that turn's standing; the kit doctrine's class clause is the line that holds; the pilot lists no participant account, so the gap has no live instance until a host names one.
+- The envelope reader treats a channel tag that does not parse whole, or that names `sender_class` twice, as a participant's with no author, and decodes the five XML entities in attribute values, in both the hook and the restart recap.
+- The liaison key's settings read shares one validator with the architect key's, and the architect read's rule and refusal texts are unchanged.
+- The runbook carries the steps and checks its named parts need to be performed: a reviewer account with write access for pull request review, the host tooling and execution policy, the keeper env file and its probe, the user-level settings allow-list check, and the repository URL posted in the architect's thread.
+- `docs/backlog.md` carries one entry for faults the documents' blind read found in text this plan did not change.
 
 ## Sections of Work
 
