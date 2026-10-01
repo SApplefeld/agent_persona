@@ -9,7 +9,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_plan-record-sections_spec_v1.md` (Ready, one section, Branch-and-PR) has the turn-end plan read write two more fields to the plan holder beside `chapterCount`: the document's section total and its latest Chapter's `Next:` line, read by the same rules the board card and the external engine parse the document with. The Discord board card reads the store each tick and today draws progress from the launch folder's stale copy, so a worker in a linked worktree was drawn at `2/11` while on section 9; the broker's companion plan `channels_board-worktree-progress_spec_v1.md` reads the three fields. The directory walk is unchanged, since the store already showed the right count.
 
 ## Archived plans
 
