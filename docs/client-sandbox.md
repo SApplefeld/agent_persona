@@ -14,12 +14,11 @@ Angle brackets mark a value you supply. Every other value in this runbook is fix
 | `<Azure DevOps url>` | The clone URL of the Azure DevOps repository that holds `<client branch>` |
 | `<bridge folder>` | The folder on your own machine that holds the bridge clone |
 | `<sweep pattern>` | A regular expression matching every other client's name and the credential shapes your repositories carry |
-| `<host>` | The label the broker shows for this host on its cards |
-| `<COMPUTER NAME>` | The VM's name, as `$env:COMPUTERNAME` prints it |
+| `<host>` | The VM's name, in capitals, as `$env:COMPUTERNAME` prints it. The broker shows it on its cards, and the launch wrapper finds this host by it |
 | `<user>` | The VM's Windows account that runs the fleet |
 | `<channel id>`, `<your user id>`, `<client user id>` | Discord IDs, copied with Developer Mode on |
 
-`<plan filename>`, `<number>` and `<id>` are values a step below produces. This runbook names the four personas `steward`, `architect`, `liaison` and `dev`, and keeps the fleet under `D:\personas`. `D:/personas/fleet.json` and `D:/personas/keeper.env` are the keeper's default paths (`bin/Register-PersonaTasks.ps1`), so the VM needs a `D:` drive. Host commands run in Windows PowerShell.
+`<plan filename>`, `<number>` and `<id>` are values a step below produces. This runbook names the four personas `steward`, `architect`, `liaison` and `dev`, and keeps the fleet under `D:\personas`. This layout puts the fleet, the broker and the clones on a `D:` drive, so the VM needs one. Host commands run in Windows PowerShell.
 
 ## Discord Server
 
@@ -85,7 +84,7 @@ Check: `node --version` prints `v24` or later. `git --version`, `gh --version` a
 
 ## Credentials
 
-The host holds exactly two credentials: the experiment's Claude account and a GitHub token for the client repository. No credential of your own fleet is ever copied onto it.
+The host holds four credentials, each issued for this host alone. This section provisions two: the experiment's Claude account and a GitHub token for the client repository. The Broker section adds the other two, the Discord bot's token and a TypeSafe key. No credential of your own fleet is ever copied onto it.
 
 1. Run `claude` and sign in with the Claude account whose spend is the experiment's.
 2. Create a fine-grained GitHub token whose resource owner is `<owner>`. Limit its repository access to `<client repo>` alone, give it Contents and Pull requests at read and write, and set an expiry date.
@@ -98,7 +97,7 @@ The host holds exactly two credentials: the experiment's Claude account and a Gi
 
    At the login prompts, choose GitHub.com and HTTPS, and paste the token.
 
-Check: `gh auth status` shows one account. `cmdkey /list` lists no Git or GitHub entry. `Test-Path $HOME\.git-credentials` and `Test-Path $HOME\.ssh` both print `False`.
+Check: `gh auth status` shows one account. `git config --global --get-all credential.https://github.com.helper` prints an empty line, then a line ending `auth git-credential`, so Git asks the GitHub CLI and nothing else for a GitHub credential. `Test-Path $HOME\.git-credentials` and `Test-Path $HOME\.ssh` both print `False`.
 
 Never place any of these on the host: a file from a fleet machine's `.claude` folder, its GitHub CLI configuration, its SSH keys, an Azure DevOps credential, or a TypeSafe key a fleet host uses.
 
@@ -166,7 +165,7 @@ The host runs its own broker from the `discord-channels` repository. Its senders
 2. Add this host to the launch wrapper's host table, because the wrapper refuses to launch on a machine the table does not name. In `wrapper\Enter-ClaudeSession.ps1`, add this line inside the `$script:ChannelFlagByHost = @{ ... }` block:
 
    ```powershell
-   '<COMPUTER NAME>' = '--channels'
+   '<host>' = '--channels'
    ```
 
 3. From the repository root, in a non-elevated window, install the host. Give `-Senders` one entry per client user, each as an operator:
@@ -178,7 +177,7 @@ The host runs its own broker from the `discord-channels` repository. Its senders
 
    It prompts for the bot token and raises one UAC prompt. Every operator holds your whole authority over the host. A client user added later is an edit to `CHANNEL_SENDERS` in `broker.env` and a broker restart.
 
-4. Write the TypeSafe key file, from the same non-elevated window. Use a key no fleet host uses, so revoking it touches this host alone:
+4. Write the TypeSafe key file, from the same non-elevated window. TypeSafe is the vendor whose classifier the response gate calls to judge a held batch. Use a key no fleet host uses, so revoking it touches this host alone:
 
    ```powershell
    $k = Read-Host 'TypeSafe key' -AsSecureString
@@ -244,7 +243,7 @@ The fleet is four personas: the steward as coordinator, the architect, the liais
    Copy-Item D:\agent_persona\docs\liaison-settings.template.json D:\personas\liaison\.claude\settings.json
    ```
 
-   The liaison runs on the `default` permission mode, and its allow list marks the tools it runs without approval. In the supervisor's launch, with the channel attached, a tool outside the list is refused and no approval reaches the thread. A Bash command the harness classes as read-only runs without approval. The harness decides that class, and its reach is unmeasured. The liaison's bounds assume the user-level settings file grants nothing more, so check it: `node -e "console.log(JSON.stringify(require(require('os').homedir()+'/.claude/settings.json').permissions))"` prints an allow list holding `mcp__plugin_relay_channel-relay__reply` and nothing else.
+   The liaison runs on the `default` permission mode, and its allow list marks the tools it runs without approval. In the supervisor's launch, with the channel attached, a tool outside the list is refused and no approval reaches the thread. A Bash command the harness classes as read-only runs without approval. The harness decides that class, and its reach is unmeasured. The liaison's bounds assume the user-level settings file grants nothing more. The broker's installer, in Broker step 3, writes that file's one allow rule, the relay's reply tool. So check it: `node -e "console.log(JSON.stringify(require(require('os').homedir()+'/.claude/settings.json').permissions))"` prints an allow list holding `mcp__plugin_relay_channel-relay__reply` and nothing else. A missing file means Broker step 3 did not finish, so run it again. Any other allow entry widens every persona on the host, the liaison included, so remove it.
 
 5. Trust the liaison's working directory. The harness ignores the settings file's allow list in a directory it has not trusted.
 
@@ -332,7 +331,7 @@ The fleet is four personas: the steward as coordinator, the architect, the liais
 
    Check, from `D:\agent_persona`: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File bin\keeper-probe.ps1 -OutFile D:\personas\probe.txt` writes `node.exit=0` and `claude.exit=0` to `probe.txt`.
 
-8. Register the tasks, in an elevated window from `D:\agent_persona`. It prompts for `<user>`'s password.
+8. Register the tasks, in an elevated window from `D:\agent_persona`. A credential dialog asks for `<user>`'s password, which the scheduler stores so each task runs as that account.
 
    ```powershell
    bin/Register-PersonaTasks.ps1 -Roster D:/personas/fleet.json -EnvFile D:/personas/keeper.env
@@ -360,7 +359,7 @@ Where a liaison joins a fleet that is already running, the steward must restart 
 1. Add the liaison's entry to `D:\personas\fleet.json`, and add `"liaisonPersona": "liaison"` to the steward's entry.
 2. Take steps 2, 4 and 5 of the Fleet section for the liaison's folder.
 3. Re-run step 8 to register the liaison's task.
-4. Delete the steward's settings file, then stop the steward at once. Ask it in its thread to shut down, since a stop through its shutdown tool holds it down.
+4. Delete the steward's settings file. Then ask the steward in its thread to shut down. Its shutdown tool leaves a hold marker, so the keeper does not relaunch it on the old settings before step 5.
 
    ```powershell
    Remove-Item D:\personas\steward\run\settings.json
@@ -397,17 +396,17 @@ git push client ado/<client branch>:refs/heads/upstream
 gh pr create --repo <owner>/<client repo> --base main --head upstream --title "Product update" --body "Merges the latest product update into main."
 ```
 
-The pull request merges `upstream` into `main` under the same review rule as every other.
+The pull request merges `upstream` into `main` under the same review rule as every other. Merge it with a merge commit, never a squash or a rebase. Delivery pushes the client's `main` back to `<client branch>`, and that push fast-forwards only while `main` contains the Azure DevOps commits themselves.
 
 ## Response Gate Threshold
 
 The gate runs at `shadow` for the first week, delivering every message at once and journalling what `live` would have done. The threshold is then chosen from that week's labelled rows. "Choosing the response gate's threshold" in `docs/operations.md` of the `discord-channels` repository owns the procedure.
 
-1. The journal is `%LOCALAPPDATA%\sapplefeld-channels\response-gate.jsonl`. Where `response-gate.jsonl.1` or a higher number exists, the week rotated. Join the files oldest first, highest number first, and use `week.jsonl` in place of `response-gate.jsonl` in steps 2 and 4:
+1. The journal is `%LOCALAPPDATA%\sapplefeld-channels\response-gate.jsonl`. It rotates at the broker log's own size and file count, to `response-gate.jsonl.1`, `.2` and on, where a higher number is older. Where any numbered file exists, join every one of them, highest number first, and the active file last. Then use `week.jsonl` in place of `response-gate.jsonl` in steps 2 and 4. With `.1` and `.2` present, the join reads:
 
    ```powershell
    Set-Location $env:LOCALAPPDATA\sapplefeld-channels
-   cmd /c copy /b response-gate.jsonl.1+response-gate.jsonl week.jsonl
+   cmd /c copy /b response-gate.jsonl.2+response-gate.jsonl.1+response-gate.jsonl week.jsonl
    ```
 
 2. From the same folder, list the rows the judge scored, each with its buffered lines:
@@ -430,7 +429,7 @@ The gate runs at `shadow` for the first week, delivering every message at once a
 
    It prints the count of labelled judged rows, then the precision and recall at each threshold from 0.40 to 0.95. A threshold that would deliver nothing prints `n/a`.
 
-5. In `broker.env`, set `CHANNEL_RESPONSE_GATE_THRESHOLD` to the lowest threshold whose precision is acceptable, and set `CHANNEL_RESPONSE_GATE=live`. Then restart the broker with `.\install\Repair-Broker.ps1`, elevated, from `D:\discord-channels`.
+5. In `broker.env`, set `CHANNEL_RESPONSE_GATE_THRESHOLD` to the lowest threshold whose precision you accept, and set `CHANNEL_RESPONSE_GATE=live`. Then restart the broker with `.\install\Repair-Broker.ps1`, elevated, from `D:\discord-channels`.
 
 ## Acceptance Checklist
 
