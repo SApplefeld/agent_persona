@@ -19653,7 +19653,7 @@ async function caseS13_errorTurn_toolErrorAndDenialInsideAGoodTurnDoNotStreak(cl
     typeof denyText === "string" && denyText.length > 0, denyText);
   const denyDecisions = getDecisions(h).filter((d) => d.action === "deny");
   check("s13 errorturn: every deny decision names the root constraint, not another rule",
-    denyDecisions.length === 3 && denyDecisions.every((d) => d.detail.includes("Bash denied by root constraint")),
+    denyDecisions.length === 3 && denyDecisions.every((d) => typeof d.detail === "string" && d.detail.includes("Bash denied by root constraint")),
     denyDecisions.map((d) => d.detail));
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
