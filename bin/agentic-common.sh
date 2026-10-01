@@ -759,9 +759,9 @@ console.log(usable && value.trim() !== "default" ? value.trim() : "coordinator")
 # Usage: read_settings_architect_persona <settings-file> [dev_mode: 0|1, default 1]
 # Prints the architectPersona a settings file the caller provided carries, so
 # bin/supervise.sh can export ARCHITECT_PERSONA on the provided branch to the
-# same value the emit branch exports. The setting is the supervisor's own: the
-# plugin under hooks/ reads coordinatorPersona and never this key, so this read
-# is the only consumer. The plugin id the launch loads is picked by dev_mode
+# same value the emit branch exports. This read is not the key's only consumer:
+# the plugin under hooks/ reads architectPersona from its own config too. The
+# plugin id the launch loads is picked by dev_mode
 # exactly as in read_settings_coordinator_persona. The name rule is
 # valid_persona_name's own class, the one emit_settings_json holds
 # ARCHITECT_PERSONA to: a string that after trim is a non-empty run of letters,
