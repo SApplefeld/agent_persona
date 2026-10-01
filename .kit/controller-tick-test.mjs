@@ -3777,7 +3777,8 @@ async function main() {
     await caseS9_cost_cap_below(clock);
     await caseS7_reader_does_not_overwrite(clock);
     await caseS13_score_completedTurnRecordsRound(clock);
-    await caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock);
+    await caseS13_errorStreak_threeErrorTurnsOpenAnAsk(clock);
+    await caseS13_errorTurn_toolErrorAndDenialInsideAGoodTurnDoNotStreak(clock);
     await caseS13_errorStreak_noActiveNode_emptyTree_logsOnlyAndOpensNoAsk(clock);
     await caseS13_errorStreak_noActiveNode_completeRootOnly_logsOnlyAndOpensNoAsk(clock);
     await caseS13_errorStreak_noActiveNode_reFireAfterHandled_stillOpensNoAsk(clock);
@@ -19576,30 +19577,27 @@ async function caseS13_score_completedTurnRecordsRound(clock) {
   check("s13 score: the on-goal round is burned (completedRounds 1)", plan && plan.completedRounds === 1, plan && plan.completedRounds);
 }
 
-// Error streak: a root objective saying "no bash" denies Bash in
-// tool.call, three denied turns reach the C3 streak on the next tick, and the
-// streak opens an ask and leaves the plan active rather than blocking or
-// pausing it; the open ask is the hold.
-async function caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock) {
-  console.log("\n=== S13 errorstreak: three denied turns escalate to an ask, not a block or a pause ===");
+// Error streak: three turns ending with reason "error" reach the C3 streak
+// on the next tick, and the streak opens an ask and leaves the plan active
+// rather than blocking or pausing it; the open ask is the hold. The reason
+// alone drives the streak now, so the inducer is turn.complete's own reason
+// rather than a denied tool call, as abkDriveStreak uses for the no-active-node
+// cases.
+async function caseS13_errorStreak_threeErrorTurnsOpenAnAsk(clock) {
+  console.log("\n=== S13 errorstreak: three error turns escalate to an ask, not a block or a pause ===");
   clock.set(T0);
   const h = await createTickHarness({
     ...OPTS,
     caseName: "s13_errorstreak",
-    stateOpts: { now: T0, goals: rootWithActivePlan(T0, { objective: "no bash: write the file with the Write tool" }), activeGoalId: "g-plan" },
+    stateOpts: { now: T0, goals: rootWithActivePlan(T0), activeGoalId: "g-plan" },
   });
   const startH = h.handlers["turn.start"];
-  const toolH = h.handlers["tool.call"];
   const completeH = h.handlers["turn.complete"];
-  let denied = 0;
   for (let i = 1; i <= 3; i++) {
     const turnId = `t-streak-${i}`;
     await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
-    const r = await toolH(h.fake, { tool: "Bash", turnId }, async () => ({ result: "ran" }));
-    if (r && r.deny) denied++;
-    await completeH(h.fake, { turnId, aborted: true, reason: "aborted" }, async () => ({ result: "ok" }));
+    await completeH(h.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
   }
-  check("s13 errorstreak: the root constraint denied Bash on every turn", denied === 3, denied);
   clock.advance(10_000);
   await tickAndSettle(h, clock, 20);
   // The entry stays active, so the open ask is read by the idle branch,
@@ -19607,12 +19605,97 @@ async function caseS13_errorStreak_threeDeniedTurnsOpenAnAsk(clock) {
   clock.advance(65_000);
   await tickAndSettle(h, clock, 20);
   const decisions = getDecisions(h);
-  const expected = ["deny", "deny", "deny", "error_streak", "ask_opened", "ask_waiting"];
-  check("s13 errorstreak: deny x3, error_streak, ask_opened, ask_waiting in order", matchedInOrder(decisions, expected) === expected.length, decisions.map((d) => d.action));
+  const expected = ["error_streak", "ask_opened", "ask_waiting"];
+  check("s13 errorstreak: error_streak, ask_opened, ask_waiting in order", matchedInOrder(decisions, expected) === expected.length, decisions.map((d) => d.action));
   check("s13 errorstreak: no block (the streak asks, it does not block)", !decisions.some((d) => d.action === "block"));
   const plan = getState(h).goals.find((g) => g.id === "g-plan");
   check("s13 errorstreak: no paused_by_controller, the plan stays active with no reason and the ask is the hold",
     !decisions.some((d) => d.action === "paused_by_controller") && plan?.status === "active" && plan.blockedReason === undefined && typeof getState(h).pendingAskId === "string", plan);
+}
+
+// Error turn is error-reason alone: a normal turn carrying a tool result
+// flagged isError and a call the root "no bash" constraint denies is a good
+// turn, not an error turn, so three such turns in a row never advance the
+// streak; the tool-error count still lands on toolErrorsLastTurn for the
+// last turn. The control drives the same tree with three turns ending
+// reason "error" and no tool call, and reaches the streak at the first
+// tick, so the ruling is proven in both directions: a helper that dropped
+// the reason leg would leave the control red, and one that kept the count
+// leg would leave this case red.
+async function caseS13_errorTurn_toolErrorAndDenialInsideAGoodTurnDoNotStreak(clock) {
+  console.log("\n=== S13 errorturn: a tool error and a denied call inside a completed turn do not streak ===");
+  clock.set(T0);
+  const h = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_errorturn_goodturn",
+    stateOpts: { now: T0, goals: rootWithActivePlan(T0, { objective: "no bash: write the file with the Write tool" }), activeGoalId: "g-plan" },
+  });
+  const startH = h.handlers["turn.start"];
+  const toolH = h.handlers["tool.call"];
+  const completeH = h.handlers["turn.complete"];
+  let denyText;
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `t-goodturn-${i}`;
+    await startH(h.fake, { turnId }, async () => ({ result: "ok" }));
+    await toolH(h.fake, { tool: "Read", turnId }, async () => ({ result: "refused: too large", isError: true }));
+    const r = await toolH(h.fake, { tool: "Bash", turnId }, async () => ({ result: "ran" }));
+    if (r && r.deny) denyText = r.deny;
+    await completeH(h.fake, { turnId, reason: "completed" }, async () => ({ result: "ok" }));
+  }
+  // The denial text and decision detail are the root "no bash" constraint's
+  // own, at hooks/index.ts:12960 and :12957, so the refusal is confirmed as
+  // that rule's and not some other guard's.
+  check("s13 errorturn: the Bash call was refused by the root \"no bash\" constraint",
+    denyText === "Bash is not allowed by the current goal", denyText);
+  const denyDecisions = getDecisions(h).filter((d) => d.action === "deny");
+  check("s13 errorturn: every deny decision names the root constraint, not another rule",
+    denyDecisions.length === 3 && denyDecisions.every((d) => d.detail.includes("Bash denied by root constraint")),
+    denyDecisions.map((d) => d.detail));
+  clock.advance(10_000);
+  await tickAndSettle(h, clock, 20);
+  clock.advance(65_000);
+  await tickAndSettle(h, clock, 20);
+  const state = getState(h);
+  check("s13 errorturn: consecutiveErrorTurns is 0 after the good turns",
+    state.monitor.env.errors.consecutiveErrorTurns === 0, state.monitor.env.errors);
+  check("s13 errorturn: toolErrorsLastTurn is 2 (the isError result and the denial on the last turn)",
+    state.monitor.env.errors.toolErrorsLastTurn === 2, state.monitor.env.errors);
+  const decisions = getDecisions(h);
+  check("s13 errorturn: no error_streak or ask_opened decision",
+    !decisions.some((d) => ["error_streak", "ask_opened"].includes(d.action)), decisions.map((d) => d.action));
+  check("s13 errorturn: pendingAskId unset", state.pendingAskId === undefined, state.pendingAskId);
+  const askKeys = [...h.storeMap.keys()].filter((k) => k.startsWith("ask:"));
+  check("s13 errorturn: no ask record in the store", askKeys.length === 0, askKeys);
+  check("s13 errorturn: no toast", h.uiToasts.length === 0, h.uiToasts);
+
+  // Control: the same tree, three turns ending with reason "error" and no
+  // tool call, reaches the streak at the first tick, proving the main
+  // case's absence checks above can speak.
+  clock.set(T0);
+  const c = await createTickHarness({
+    ...OPTS,
+    caseName: "s13_errorturn_control",
+    stateOpts: { now: T0, goals: rootWithActivePlan(T0, { objective: "no bash: write the file with the Write tool" }), activeGoalId: "g-plan" },
+  });
+  const cStartH = c.handlers["turn.start"];
+  const cCompleteH = c.handlers["turn.complete"];
+  for (let i = 1; i <= 3; i++) {
+    const turnId = `t-control-${i}`;
+    await cStartH(c.fake, { turnId }, async () => ({ result: "ok" }));
+    await cCompleteH(c.fake, { turnId, reason: "error" }, async () => ({ result: "ok" }));
+  }
+  clock.advance(10_000);
+  await tickAndSettle(c, clock, 20);
+  const cState = getState(c);
+  check("s13 errorturn control: consecutiveErrorTurns is 3 at the first tick",
+    cState.monitor.env.errors.consecutiveErrorTurns === 3, cState.monitor.env.errors);
+  const cDecisions = getDecisions(c);
+  check("s13 errorturn control: exactly one error_streak decision",
+    countAction(cDecisions, "error_streak") === 1, cDecisions.map((d) => d.action));
+  check("s13 errorturn control: exactly one ask_opened decision",
+    countAction(cDecisions, "ask_opened") === 1, cDecisions.map((d) => d.action));
+  const cAskKeys = [...c.storeMap.keys()].filter((k) => k.startsWith("ask:"));
+  check("s13 errorturn control: one ask record in the store", cAskKeys.length === 1, cAskKeys);
 }
 
 // Error streak, no active node: three error turns on a persona with no
