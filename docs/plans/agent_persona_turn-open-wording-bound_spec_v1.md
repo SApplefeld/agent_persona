@@ -67,3 +67,20 @@ References: `.kit/controller-tick-test.mjs:25223-25266` is the sibling for the l
 None.
 
 ## Chapters
+
+### Chapter 1 - 2026-10-01
+Completed: 1. The wording call is raced against a ten-second timer, and the suite proves a stuck call no longer holds the message
+Implemented By: main session (Locus: inline, tier opus, run on the session model)
+Metrics: review rounds 1, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: section open: race wordNewRecordText's completion against a 10,000 ms dp.clock.sleep and fall back to the excerpt; serves the Goal's first sentence; adds the timer race the Goal names, no unnamed mechanism; about 25 lines of code and 25 of test; not building it leaves a live new-goal verdict able to hold a message indefinitely. The session that opened this section ended while the adversarial reviewer was still out; a successor session read that reviewer's report from the predecessor's transcript, since the task output file was empty, and ran the close pass, close gate and this Chapter.
+Failed approaches: none
+Assumptions: none beyond the plan's own two
+Review Findings: review: adversarial + blind + performance at fable, Agent tool. No Critical or Major from any lens. Minors: 4 fixed in the close pass (the comment now names the orphaned wording timer beside the seam's; the unread err capture in the threw arm is dropped; the hung case pins that the completion was issued; a late-answer leg pins that an answer after the timer neither rewrites the record nor bills again), 0 upgraded, 2 left with the reason (a completion rejecting after the timer is billed, per the plan's assumption that a timed-out call ran; ten seconds against the seam's two is the operator-accepted bound), 1 note-only with no change (the test's 200 x 5 ms poll is a ceiling). The close pass delta took an author re-read rather than a round.
+Stamps: adjudicated 10, stamped 0 from the report; 1 stamped directly, a-hooks-module-can-pass-tsc-and-the-harness-and-still-fail-to-load, which added the loader-rule check to this close (PASS, exit 0)
+Gate: targeted lane at 2026-10-01T20:03Z on the clean worktree at 54e3b8e plus the close-pass edits, box clear of foreign test runs at start: npx tsc --noEmit exit 0; node .kit/controller-tick-test.mjs exit 0, 6359 OK, 0 FAIL, 168 s, against the same lane's baseline of 6353 OK, 0 FAIL, 153 s at 0fb2a08; red run on the unfixed code: exit 3, three FAIL lines on the new case. Tests added: 6 checks in caseTurnRecord_everyLiveVerdict, all pinning the Goal's ten-second bound and its excerpt and billing fallback; none retired or edited; none spawns a process. node .kit/check-loader-rule.mjs: PASS, exit 0.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: 2026-10-01T20:00Z on this worktree; the reading is below.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

@@ -25272,7 +25272,8 @@ async function caseTurnRecord_everyLiveVerdict(clock) {
   // submission open after the last, which is the red this case exists to show.
   const ngHung = await recordHarness("record_live_new_goal_hung_wording", { ...live, stateOpts: { hasActiveLeaf: false } });
   ngHung.setHttpResponse(answering("new-goal"));
-  ngHung.setCompleteValue(new Promise(() => {}));
+  let answerLate;
+  ngHung.setCompleteValue(new Promise((r) => { answerLate = r; }));
   let hungSettled = false;
   submitMessage(ngHung, "A request Haiku never answers.").then(() => { hungSettled = true; });
   const sleepsAsked = [];
@@ -25285,6 +25286,16 @@ async function caseTurnRecord_everyLiveVerdict(clock) {
   check("record live new-goal: the timed-out wording leaves the message excerpt",
     openRecordOf(ngHung)?.text === "A request Haiku never answers.", recordsOf(ngHung));
   check("record live new-goal: a timed-out wording call is billed once, since it ran",
+    getState(ngHung).monitor.cost.reason.count === 1, getState(ngHung).monitor.cost.reason);
+  check("record live new-goal: the timer won against a completion that was issued",
+    ngHung.completeCalls.length === 1, { completeCalls: ngHung.completeCalls.length });
+  // The orphaned completion answering after the timer changes nothing: the
+  // record keeps the excerpt and the call is not billed a second time.
+  answerLate("A late wording line");
+  await new Promise((r) => setTimeout(r, 20));
+  check("record live new-goal: a wording answer arriving after the timer leaves the excerpt",
+    openRecordOf(ngHung)?.text === "A request Haiku never answers.", recordsOf(ngHung));
+  check("record live new-goal: a wording answer arriving after the timer is not billed again",
     getState(ngHung).monitor.cost.reason.count === 1, getState(ngHung).monitor.cost.reason);
 
   // step: attached to the active entry, superseding whatever was open, bare or

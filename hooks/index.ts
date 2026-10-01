@@ -602,7 +602,8 @@ function turnOpenStateText(activeGoal: string, openRecord: string, message: stri
 // promise rejects, and the loser runs on as an orphan because neither
 // `$.model.complete` nor `$.clock.sleep` takes an abort signal. A timeout is
 // billed, since the completion was requested and runs to its end, and falls
-// back to the excerpt.
+// back to the excerpt. An answered call leaves this timer running as an
+// orphan, one more beside the seam's own on such a prompt.
 const WORDING_TIMEOUT_MS = 10_000;
 
 async function wordNewRecordText(dp: any, message: string): Promise<string | null> {
@@ -615,7 +616,7 @@ async function wordNewRecordText(dp: any, message: string): Promise<string | nul
       .then(() => dp.model.complete({ model: "haiku", prompt, maxTokens: 40 }))
       .then(
         (raw: unknown) => ({ kind: "answered" as const, raw }),
-        (err: unknown) => ({ kind: "threw" as const, err }),
+        () => ({ kind: "threw" as const }),
       );
     // A timer that cannot be started or that rejects reads as having fired.
     const timer = Promise.resolve()
