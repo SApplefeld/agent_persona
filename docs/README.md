@@ -9,7 +9,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_natural-exit-writer-leak_spec_v1.md` (Ready, one section, Branch-and-PR) has the natural-exit suite's heartbeat writer exit on its own when its fixture is gone or its lifetime ends, shared by the (ne) and (nh) cases through one function, so a run leaves no `node.exe` behind. Five leftovers from 2026-10-01's runs are swept in the same section. Found by the coordinator persona while starting another plan's finishing gate.
 
 ## Archived plans
 
