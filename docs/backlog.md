@@ -1,5 +1,12 @@
 # Backlog
 
+## Operator checks owed by the supervisor interrupt plan (parked 2026-09-30)
+
+The supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_spec_v1.md`) is Complete. Two checks are the operator's.
+
+- **Relaunch each persona's supervisor after the installed plugin updates.** A holder launched by an older supervisor watches no interrupt file, and a child loads `fleet_interrupt` only from the updated plugin. Until the relaunch, `fleet_interrupt` writes a request nothing relays. A failure here shows as `fleet_interrupt` answering and no `INTERRUPT:` line in that persona's `supervisor.log`, which reopens the plan.
+- **Run `.kit/live-all.sh` once the fleet is down.** It refuses with exit 10 while the live Steward holds its claim, so the finishing gate ran every other lane. A red there reopens the plan.
+
 ## Findings the supervisor interrupt finishing pass deferred (found 2026-09-30)
 
 The finishing reviews of the supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_spec_v1.md`) raised four Minors that serve no part of that plan's Goal. Each is deferred here with its likely remedy.
