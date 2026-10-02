@@ -177,8 +177,11 @@ holder_ask_file_whole() {  # <file> <first line as read>
   # The kit's skill prefix on this host, read once at launch: every sentence
   # below that names a kit skill takes it, so a skill the Skill tool is asked
   # for is one the host has installed under that name.
+  # A failed source or read leaves the prefix empty, which falls back to the
+  # old name rather than priming a bare ":operating-instructions".
   source "$(dirname "${BASH_SOURCE[0]}")/agentic-common.sh"
-  KIT_SKILL_PREFIX=$(kit_skill_prefix)
+  KIT_SKILL_PREFIX=$(kit_skill_prefix 2>/dev/null)
+  [ -n "$KIT_SKILL_PREFIX" ] || KIT_SKILL_PREFIX=claude-kit
   SKILL_LOAD_INSTRUCTION="Before your first tool call on any plan work, invoke the Skill tool for ${KIT_SKILL_PREFIX}:operating-instructions, then ${KIT_SKILL_PREFIX}:executing-work; when a plan reaches its last section, ${KIT_SKILL_PREFIX}:finishing-work. Those skills own how a section, its review rounds and its fix rounds run. "
   # A fixed sentence telling the child what a prompt labelled
   # [COORDINATOR id=<record id>] carries: the operator's delegated authority

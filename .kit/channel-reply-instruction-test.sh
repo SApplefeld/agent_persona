@@ -591,41 +591,82 @@ priming_concat() {
 }
 
 # kit_skill_prefix, read out of bin/agentic-common.sh, answers from the
-# installed_plugins.json under HOME: grimoire for a file holding the new key,
-# claude-kit for a file holding only the old key and for a file it cannot read
-# or parse, and claude-kit where the file is absent. Each fixture sits under a
-# temporary HOME, and the answer is read in a child shell so HOME is the
-# fixture's alone.
-KIT_PREFIX_FN=$(sed -n '/^kit_skill_prefix() {$/,/^}$/p' "$HERE/../bin/agentic-common.sh")
-if [ -z "$KIT_PREFIX_FN" ]; then
-  echo "FAIL: could not locate kit_skill_prefix in bin/agentic-common.sh"
-  exit 1
+# installed_plugins.json under USERPROFILE, else HOME: grimoire for a file
+# holding a usable record under the new key, and claude-kit for a file holding
+# only the old key, for a new key with no usable record, for a file it cannot
+# read or parse, and where the file is absent. A usable record is the one the
+# plugin's lookup runs from. Each fixture sits under a temporary home, and the
+# answer is read in a child shell so the home is the fixture's alone. Neither
+# these fixtures nor the holder-text check below depends on the prefix the pass
+# evaluates under, so they run in the first pass only.
+if [ "$KIT_PREFIX_PASS" = claude-kit ]; then
+  KIT_PREFIX_FN=$(sed -n '/^kit_skill_prefix() {$/,/^}$/p' "$HERE/../bin/agentic-common.sh")
+  if [ -z "$KIT_PREFIX_FN" ]; then
+    echo "FAIL: could not locate kit_skill_prefix in bin/agentic-common.sh"
+    exit 1
+  fi
+  kit_prefix_under() {  # <USERPROFILE> <HOME>
+    USERPROFILE="$1" HOME="$2" bash -c "$KIT_PREFIX_FN; kit_skill_prefix"
+  }
+  kit_prefix_seed() {  # <home> <installed_plugins.json text, or ABSENT, or UNREADABLE>
+    mkdir -p "$1/.claude/plugins"
+    case "$2" in
+      ABSENT) ;;
+      UNREADABLE) mkdir "$1/.claude/plugins/installed_plugins.json" ;;
+      *) printf '%s' "$2" > "$1/.claude/plugins/installed_plugins.json" ;;
+    esac
+  }
+  kit_prefix_expect() {  # <label> <expected answer> <installed_plugins.json text, or ABSENT, or UNREADABLE>
+    local home answer
+    home=$(mktemp -d)
+    kit_prefix_seed "$home" "$3"
+    answer=$(kit_prefix_under "$home" "$home")
+    rm -rf "$home"
+    if [ "$answer" = "$2" ]; then check "kit_skill_prefix: $1 reads $2" 0; else check "kit_skill_prefix: $1 reads $2 (got '$answer')" 1; fi
+  }
+  KIT_G_FILE='{"version":2,"plugins":{"grimoire@applefeld":[{"installPath":"C:/g","lastUpdated":"2026-10-01T00:00:00.000Z"}]}}'
+  KIT_K_FILE='{"version":2,"plugins":{"claude-kit@applefeld":[{"installPath":"C:/k","lastUpdated":"2026-10-02T00:00:00.000Z"}]}}'
+  kit_prefix_expect "a file holding a usable grimoire@applefeld record" grimoire "$KIT_G_FILE"
+  kit_prefix_expect "a file holding both keys, the old record newer" grimoire '{"plugins":{"claude-kit@applefeld":[{"installPath":"C:/k","lastUpdated":"2026-10-02T00:00:00.000Z"}],"grimoire@applefeld":[{"installPath":"C:/g","lastUpdated":"2026-10-01T00:00:00.000Z"}]}}'
+  kit_prefix_expect "a file holding only the claude-kit@applefeld key" claude-kit "$KIT_K_FILE"
+  kit_prefix_expect "a grimoire@applefeld key holding an empty array beside a usable old record" claude-kit '{"plugins":{"claude-kit@applefeld":[{"installPath":"C:/k","lastUpdated":"2026-10-02T00:00:00.000Z"}],"grimoire@applefeld":[]}}'
+  kit_prefix_expect "a grimoire@applefeld record with no lastUpdated" claude-kit '{"plugins":{"grimoire@applefeld":[{"installPath":"C:/g"}]}}'
+  kit_prefix_expect "a grimoire@applefeld record with an empty installPath" claude-kit '{"plugins":{"grimoire@applefeld":[{"installPath":" ","lastUpdated":"2026-10-01T00:00:00.000Z"}]}}'
+  kit_prefix_expect "a grimoire@applefeld value that is not an array" claude-kit '{"plugins":{"grimoire@applefeld":{"installPath":"C:/g","lastUpdated":"2026-10-01T00:00:00.000Z"}}}'
+  kit_prefix_expect "a file that is not JSON" claude-kit '{ "plugins": '
+  kit_prefix_expect "a file whose plugins value is not an object" claude-kit '{"plugins":["grimoire@applefeld"]}'
+  kit_prefix_expect "an absent file" claude-kit ABSENT
+  # An unreadable file is a directory where the file should be, which the read
+  # refuses.
+  kit_prefix_expect "an unreadable file" claude-kit UNREADABLE
+  # USERPROFILE wins over HOME, as it does for the plugin's lookup, and HOME
+  # answers where USERPROFILE is empty.
+  KIT_UP=$(mktemp -d); KIT_HM=$(mktemp -d)
+  kit_prefix_seed "$KIT_UP" "$KIT_G_FILE"
+  kit_prefix_seed "$KIT_HM" "$KIT_K_FILE"
+  answer=$(kit_prefix_under "$KIT_UP" "$KIT_HM")
+  [ "$answer" = grimoire ]; check "kit_skill_prefix: reads the file under USERPROFILE before the one under HOME (got '$answer')" "$?"
+  answer=$(kit_prefix_under "" "$KIT_UP")
+  [ "$answer" = grimoire ]; check "kit_skill_prefix: reads the file under HOME where USERPROFILE is empty (got '$answer')" "$?"
+  rm -rf "$KIT_UP" "$KIT_HM"
+
+  # The holder names every kit skill through KIT_SKILL_PREFIX, so neither of
+  # the kit's two names appears in its text followed by a colon. The kit has
+  # exactly these two names, so the check covers the class: a hard-coded name
+  # in any launch shape's sentence, or in a sentence added later, fails it. The
+  # control runs the same check over the holder's text with one prefixed
+  # reference rewritten to each literal name, which it must catch.
+  holder_names_a_literal_kit_prefix() {  # <text>
+    printf '%s' "$1" | grep -qE '(^|[^A-Za-z0-9_-])(claude-kit|grimoire):'
+  }
+  HOLDER_TEXT=$(cat "$HOLDER")
+  ! holder_names_a_literal_kit_prefix "$HOLDER_TEXT"; check "the holder names no kit skill under a literal kit name" "$?"
+  for lit in claude-kit grimoire; do
+    mutated=$(printf '%s' "$HOLDER_TEXT" | sed "s/\${KIT_SKILL_PREFIX}:consult/$lit:consult/")
+    [ "$mutated" != "$HOLDER_TEXT" ] && holder_names_a_literal_kit_prefix "$mutated"
+    check "control: the literal-name check catches a holder naming $lit:consult" "$?"
+  done
 fi
-kit_prefix_under() {  # <home directory>
-  HOME="$1" bash -c "$KIT_PREFIX_FN; kit_skill_prefix"
-}
-kit_prefix_expect() {  # <label> <expected answer> <installed_plugins.json text, or ABSENT, or UNREADABLE>
-  local home answer
-  home=$(mktemp -d)
-  mkdir -p "$home/.claude/plugins"
-  case "$3" in
-    ABSENT) ;;
-    UNREADABLE) mkdir "$home/.claude/plugins/installed_plugins.json" ;;
-    *) printf '%s' "$3" > "$home/.claude/plugins/installed_plugins.json" ;;
-  esac
-  answer=$(kit_prefix_under "$home")
-  rm -rf "$home"
-  if [ "$answer" = "$2" ]; then check "kit_skill_prefix: $1 reads $2" 0; else check "kit_skill_prefix: $1 reads $2 (got '$answer')" 1; fi
-}
-kit_prefix_expect "a file holding the grimoire@applefeld key" grimoire '{"version":2,"plugins":{"grimoire@applefeld":[{"installPath":"C:/g"}]}}'
-kit_prefix_expect "a file holding both keys" grimoire '{"plugins":{"claude-kit@applefeld":[],"grimoire@applefeld":[]}}'
-kit_prefix_expect "a file holding only the claude-kit@applefeld key" claude-kit '{"version":2,"plugins":{"claude-kit@applefeld":[{"installPath":"C:/k"}]}}'
-kit_prefix_expect "a file that is not JSON" claude-kit '{ "plugins": '
-kit_prefix_expect "a file whose plugins value is not an object" claude-kit '{"plugins":["grimoire@applefeld"]}'
-kit_prefix_expect "an absent file" claude-kit ABSENT
-# An unreadable file is a directory where the file should be, which the read
-# refuses.
-kit_prefix_expect "an unreadable file" claude-kit UNREADABLE
 
 # The reply-tool sentence the channel instruction keeps, and the pointer it
 # carries to the surface that owns how a reply is written. Read as an ordered
