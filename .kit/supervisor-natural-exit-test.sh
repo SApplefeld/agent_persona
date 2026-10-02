@@ -170,33 +170,36 @@ kill_leaked_survivors() {
 # "READ <rows> <unreadable>" line: how many processes the table held, and how
 # many of those had no command line to read. A process with no readable
 # command line cannot be judged, so that count is the listing's blind spot.
-# Returns 1 when the process table itself could not be read, so a caller never
-# takes a failed listing for an empty one. The path reaches PowerShell through
-# the environment, so the listing's own process never names it, and
-# MSYS2_ENV_CONV_EXCL keeps MSYS from rewriting the MSYS spelling into the
-# Windows one on the way.
+# Returns 1 when the process table could not be read, or the walk over it
+# failed anywhere, so a caller never takes a failed listing for an empty one.
+# The path reaches PowerShell through the environment, so the listing's own
+# process never names it, and MSYS2_ENV_CONV_EXCL keeps MSYS from rewriting the
+# MSYS spelling into the Windows one on the way. A command line naming the
+# path by its 8.3 short form is not matched. A \\?\ or \??\ prefixed Windows
+# spelling is, since it still holds the drive-letter spelling.
 # Usage: processes_naming <path>
 processes_naming() {
   local raw
   raw=$(export PAT_MSYS="$1" PAT_WIN="$(cygpath -m "$1")" MSYS2_ENV_CONV_EXCL=PAT_MSYS
     run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
-      \$a = \$env:PAT_MSYS.ToLower(); \$b = \$env:PAT_WIN.ToLower(); \$c = \$b.Replace('/', '\\')
-      \$cimFailed = \$false
+      \$ErrorActionPreference = 'Stop'
+      \$readFailed = \$false
       \$rows = @()
-      try {
-        \$rows = @(Get-CimInstance Win32_Process -Property ProcessId,Name,CommandLine -ErrorAction Stop)
-      } catch {
-        \$cimFailed = \$true
-      }
       \$unreadable = 0
-      foreach (\$p in \$rows) {
-        if (\$p.ProcessId -eq \$PID) { continue }
-        \$cl = [string]\$p.CommandLine
-        if (-not \$cl) { \$unreadable++; continue }
-        \$l = \$cl.ToLower()
-        if (\$l.Contains(\$a) -or \$l.Contains(\$b) -or \$l.Contains(\$c)) { 'HIT {0} {1} {2}' -f \$p.ProcessId, \$p.Name, (\$cl -replace '\s+', ' ') }
+      try {
+        \$a = \$env:PAT_MSYS.ToLower(); \$b = \$env:PAT_WIN.ToLower(); \$c = \$b.Replace('/', '\\')
+        \$rows = @(Get-CimInstance Win32_Process -Property ProcessId,Name,CommandLine)
+        foreach (\$p in \$rows) {
+          if (\$p.ProcessId -eq \$PID) { continue }
+          \$cl = [string]\$p.CommandLine
+          if (-not \$cl) { \$unreadable++; continue }
+          \$l = \$cl.ToLower()
+          if (\$l.Contains(\$a) -or \$l.Contains(\$b) -or \$l.Contains(\$c)) { 'HIT {0} {1} {2}' -f \$p.ProcessId, \$p.Name, (\$cl -replace '\s+', ' ') }
+        }
+      } catch {
+        \$readFailed = \$true
       }
-      if (\$cimFailed) { Write-Output 'CIMFAIL' }
+      if (\$readFailed) { Write-Output 'CIMFAIL' }
       Write-Output ('READ {0} {1}' -f \$rows.Count, \$unreadable)
       Write-Output '$STOP_PS_SENTINEL'
     " 2>/dev/null)
@@ -232,7 +235,27 @@ fail_on_leftover_processes() {
   echo "  OK: exit: no process names this run's temp root $TMP (${read_line%% *} processes read, ${read_line#* } with no readable command line)"
   return 0
 }
-trap 'kill_leaked_survivors; fail_on_leftover_processes; LEFTOVER_RC=$?; rm -rf "$TMP"; if [ "$LEFTOVER_RC" -ne 0 ]; then echo "supervisor-natural-exit-test.sh: FAIL"; exit 1; fi' EXIT
+# The run's one verdict line is printed here, after the listing, so a run
+# whose cases passed and which left a process behind reads FAIL once rather
+# than PASS and then FAIL. kill_leaked_survivors runs first. Its stops are
+# matched by start ticks and need not have finished when the listing reads,
+# and the survivors it stops are bare PowerShell sleeps whose command lines
+# name no temp path, so the listing cannot be raced by them.
+finish_run() {
+  local run_rc="$1" leftover_rc
+  kill_leaked_survivors
+  fail_on_leftover_processes
+  leftover_rc=$?
+  rm -rf "$TMP"
+  if [ "$run_rc" -eq 0 ] && [ "$leftover_rc" -eq 0 ]; then
+    echo "supervisor-natural-exit-test.sh: PASS"
+    exit 0
+  fi
+  echo "supervisor-natural-exit-test.sh: FAIL"
+  [ "$run_rc" -ne 0 ] && exit "$run_rc"
+  exit 1
+}
+trap 'finish_run $?' EXIT
 
 if [ "$RUN_UNITS" = 1 ]; then
 # --- What this suite's own survivor kill does with a pid that moved on ---
@@ -2372,23 +2395,35 @@ wait_log() {  # <log> <pattern> <bound>
 # end_detached_child ends the child-1 a TERM left running in a case directory.
 # A TERM to a supervisor holding a live handled child takes its DETACH route,
 # which exits and leaves the child and its holder running for a next
-# supervisor to adopt. A case that adopts nothing has to end them itself. The
-# holder recorded its own MSYS pid in holder.pid, and ending it closes the
-# stub's input, so the stub reads end of input and exits, and the child's
-# wrapper with it. Then it waits up to <bound> seconds for no process to name
-# the case directory. It returns 0 only on a listing that read the process
-# table and found nothing, and otherwise prints what still names the
-# directory, or "unread" where the table could not be read.
+# supervisor to adopt. A case that adopts nothing has to end them itself. It
+# assumes a stub plan that reads its input to end of input, as the holds plan
+# does: ending the holder closes the stub's input, so the stub exits, and the
+# child's wrapper with it. The holder is ended by the Windows pid and start
+# ticks child-1's handle recorded for it, through the stop path's own
+# ticks-matched kill, so a holder that already exited and whose pid Windows
+# handed to another process is never signalled. Where the handle or either
+# field is missing or not digits, nothing is signalled and a line says why.
+# Then it waits until <bound> seconds have passed for no process to name the
+# case directory. It returns 0 only on a listing that read the process table
+# and found nothing. Otherwise it prints what still names the directory, or
+# "unread" where the table could not be read, which ends the wait at once.
 end_detached_child() {  # <case dir> <bound s>
-  local dir="$1" bound="$2" holder out rc waited=0
-  holder=$(tr -d '\r\n' < "$dir/rd/child-1/holder.pid" 2>/dev/null)
-  case "$holder" in ''|*[!0-9]*) ;; *) kill -TERM "$holder" 2>/dev/null ;; esac
+  local dir="$1" bound="$2" pair out rc start
+  pair=$(node -e 'const h = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(`${h.holderWinPid ?? ""},${h.holderTicks ?? ""}`)' "$dir/rd/child-1/handle.json" 2>/dev/null)
+  case "$pair" in ''|,*|*,|*,*,*|*[!0-9,]*) pair="" ;; esac
+  if [ -n "$pair" ]; then
+    kill_process_snapshot "$pair" > /dev/null 2>&1
+  else
+    echo "  no holder signalled: $dir/rd/child-1/handle.json is missing or holds no digit holderWinPid and holderTicks" >&2
+  fi
+  start=$(date +%s)
   while :; do
     out=$(processes_naming "$dir")
     rc=$?
-    if [ "$rc" -eq 0 ] && ! printf '%s\n' "$out" | grep -q '^HIT '; then return 0; fi
-    [ "$waited" -ge "$bound" ] && break
-    sleep 1; waited=$((waited + 1))
+    [ "$rc" -ne 0 ] && break
+    printf '%s\n' "$out" | grep -q '^HIT ' || return 0
+    [ $(( $(date +%s) - start )) -ge "$bound" ] && break
+    sleep 1
   done
   if [ "$rc" -ne 0 ]; then echo "unread"; else printf '%s\n' "$out" | grep '^HIT ' | sed 's/^HIT //'; fi
   return 1
@@ -2554,16 +2589,16 @@ if want nf; then
   NF_RC2=$?
   [ "$NF_RC2" -eq 2 ] && grep -q 'GATE TIMEOUT' "$NF/sup2.out"; check "(nf) a second supervisor started while the first runs ends in GATE TIMEOUT (rc=$NF_RC2)" "$?"
   ! grep -q 'ADOPT' "$NF/sup2.out"; check "(nf) the second supervisor does not adopt the running first's child" "$?"
-  kill -TERM "$NF_SUP1" 2>/dev/null; wait "$NF_SUP1" 2>/dev/null
+  kill -TERM "$NF_SUP1" 2>/dev/null; wait "$NF_SUP1" 2>/dev/null; NF_RC1=$?
   : > "$NF/touch-stop"; wait "$NF_TOUCHER" 2>/dev/null
-  # The TERM detaches the first supervisor from its live child, and nothing
-  # here adopts it, so the case ends the child and its holder itself, then
-  # reads the first supervisor gone and nothing left naming the case.
+  # The TERM detaches the first supervisor from its live child, so it exits
+  # 143, and nothing here adopts the child. The case ends the child and its
+  # holder itself, then reads nothing left naming the case.
   NF_LEFT=$(end_detached_child "$NF" 30)
   NF_LEFT_RC=$?
   NF_LEFT=$(printf '%s' "$NF_LEFT" | tr '\n' ';')
-  ! kill -0 "$NF_SUP1" 2>/dev/null && [ "$NF_LEFT_RC" -eq 0 ]
-  check "(nf) the first supervisor has exited and no process names $NF once the case ends its detached child (left: ${NF_LEFT:-none})" "$?"
+  [ "$NF_RC1" -eq 143 ] && [ "$NF_LEFT_RC" -eq 0 ]
+  check "(nf) the first supervisor exits 143 on the TERM (rc=$NF_RC1) and no process names $NF once the case ends its detached child (left: ${NF_LEFT:-none})" "$?"
   DRIVE_ENV=(); DRIVE_CRASH_LIMIT=1
 fi
 
@@ -2693,9 +2728,8 @@ if [ -s "$CASE_TIMES" ]; then
   awk '{t+=$1; n++} END {printf "  total %ss across %s driven runs\n", t, n}' "$CASE_TIMES"
 fi
 
+# The verdict line is printed by the exit trap, after its process listing.
 if [ "$failed" -eq 0 ]; then
-  echo "supervisor-natural-exit-test.sh: PASS"
   exit 0
 fi
-echo "supervisor-natural-exit-test.sh: FAIL"
 exit 1
