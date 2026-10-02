@@ -133,6 +133,8 @@ check("##Out of Scope, with no whitespace, is no heading and does not end the bl
   parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One"]) + "\n##Out of Scope\n\n### 2. Two\n")).sections === 2);
 check("only the first ## Sections of Work block is read: a second one's sections count nothing",
   parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One"]) + "\n## Related\n" + sectionsBody(["### 2. Two", "### 3. Three"]))).sections === 1);
+check("a leading byte-order mark is dropped before the split, as the card drops it, so a first-line ## Chapters heading opens the block",
+  parsePlanRecord(String.fromCharCode(0xfeff) + "## Chapters\n\n### Chapter 1 - 2026-10-02\nNext: x\n").chapters === 1);
 
 // --- The heading patterns against the card's ---
 // The plugin's block and section patterns are linear forms of the card's
@@ -192,7 +194,7 @@ console.log("\n=== the block and section heading patterns accept exactly the car
   }
 
   // Cap-sized lines: 256 KiB of whitespace, or of whitespace then text, before
-  // a terminator, the longest run a document under the reader's cap can hold. Each value is the one the
+  // a terminator, a run the size of the reader's cap. Each value is the one the
   // card's literal gives the same shape.
   const N = PLAN_RECORD_MAX_BYTES;
   const capCases = [
@@ -209,13 +211,18 @@ console.log("\n=== the block and section heading patterns accept exactly the car
     check(`the ${name} pattern reads a cap-sized line of ${shape}, ${line.length} units, as ${want}`, got === want, got);
   }
 
-  // The terminators are in each class, as escapes in the pattern's source.
-  const BS = String.fromCharCode(0x5c);
-  for (const [name, re] of [["block", BLOCK_HEADING], ["section", SECTION_HEADING]]) {
-    const src = re.source;
-    const escaped = [BS + "r", BS + "u2028", BS + "u2029"].every((e) => src.includes(e));
-    const live = [CR, LS, PS].some((c) => src.includes(c));
-    check(`the ${name} pattern's source holds the escapes for CR, U+2028 and U+2029 and no live terminator`, escaped && !live, src);
+  // No source file holds a live U+2028 or U+2029. A pattern's .source escapes
+  // a live terminator whatever the construction, so it cannot show one; the
+  // files' own bytes are read instead, for the UTF-8 sequences E2 80 A8 and
+  // E2 80 A9.
+  const { readFileSync } = await import("node:fs");
+  for (const file of ["hooks/plan-record.ts", ".kit/plan-record-unit-test.mjs"]) {
+    const bytes = readFileSync(new URL("../" + file, import.meta.url));
+    let live = 0;
+    for (let i = 0; i + 2 < bytes.length; i++) {
+      if (bytes[i] === 0xe2 && bytes[i + 1] === 0x80 && (bytes[i + 2] === 0xa8 || bytes[i + 2] === 0xa9)) live += 1;
+    }
+    check(`${file} holds no live U+2028 or U+2029 byte sequence`, live === 0, live);
   }
 }
 

@@ -143,7 +143,9 @@ export function parsePlanRecord(text: string): PlanRecord {
   // The split is the card's own. The LINE_TERMINATOR guard in ./agent-state
   // governs text that leaves the parse for a reader, and the next line is the
   // only free text here that does, so it alone is folded through oneLine.
-  const lines = text.split(/\r?\n/);
+  // A leading byte-order mark is dropped first, as the card drops it.
+  const BOM = String.fromCharCode(0xfeff);
+  const lines = (text.startsWith(BOM) ? text.slice(1) : text).split(/\r?\n/);
 
   let complete = false;
   for (const line of lines) {
