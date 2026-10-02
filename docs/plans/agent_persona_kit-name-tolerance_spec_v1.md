@@ -105,3 +105,9 @@ Delta: 2026-10-02, the kit-name-tolerance worktree. The report reads, quoted who
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-10-02
+State: finishing pass, base ref 0245191fc01b8397a526e38e4f22f8e9b57b0dda, branch plans/kit-name-tolerance with PR #143 open, last pushed 09c1d01.
+Done: step 1 QA PASS, all 30 offline lanes exit 0 against the all-zero baseline; `.kit/live-all.sh` refused with exit 10 on a live persona claim, operator-only. The red leg QA's hook blocked was replayed in the main thread: the base `hooks/index.ts` reds 19 tick checks, the head none. Steps 2 and 3 at fable: security CLEAR, performance CLEAR, adversarial APPROVED_WITH_CONCERNS with one Major (Case 7 pinned the skill-load wording), fixed in 09c1d01 and re-reviewed APPROVED at fable. Step 4 goal read at fable RULED: 8 built-but-unasked items, all accept-and-declare; nothing asked-but-unbuilt.
+Minor pass: the README pronoun the re-review found, fixed with this entry. The full disposition list is `.kit/scratch/kit-name-tolerance/finishing/minors.md`.
+Next: step 5 docs-curator, then step 6 (final Chapter with the backlog items on install scope and enabledPlugins, Status Complete, archive, index, handoff gate), then step 7 (ready, auto-merge), then tell the coordinator once #143 merges.
