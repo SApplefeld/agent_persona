@@ -164,7 +164,98 @@ kill_leaked_survivors() {
     kill_process_snapshot "$snapshot" > /dev/null 2>&1
   done
 }
-trap 'kill_leaked_survivors; rm -rf "$TMP"' EXIT
+
+# Prints every process whose command line names <path>, in its MSYS spelling
+# or either Windows one, as "HIT <winpid> <image> <command line>", then one
+# "READ <rows> <unreadable>" line: how many processes the table held, and how
+# many of those had no command line to read. A process with no readable
+# command line cannot be judged, so that count is the listing's blind spot.
+# Returns 1 when the process table could not be read, or the walk over it
+# failed anywhere, so a caller never takes a failed listing for an empty one.
+# The path reaches PowerShell through the environment, so the listing's own
+# process never names it, and MSYS2_ENV_CONV_EXCL keeps MSYS from rewriting the
+# MSYS spelling into the Windows one on the way. A command line naming the
+# path by its 8.3 short form is not matched. A \\?\ or \??\ prefixed Windows
+# spelling is, since it still holds the drive-letter spelling.
+# Usage: processes_naming <path>
+processes_naming() {
+  local raw
+  raw=$(export PAT_MSYS="$1" PAT_WIN="$(cygpath -m "$1")" MSYS2_ENV_CONV_EXCL=PAT_MSYS
+    run_bounded_powershell_capture "$SUPERVISOR_PS_BOUND_S" "
+      \$ErrorActionPreference = 'Stop'
+      \$readFailed = \$false
+      \$rows = @()
+      \$unreadable = 0
+      try {
+        \$a = \$env:PAT_MSYS.ToLower(); \$b = \$env:PAT_WIN.ToLower(); \$c = \$b.Replace('/', '\\')
+        \$rows = @(Get-CimInstance Win32_Process -Property ProcessId,Name,CommandLine)
+        foreach (\$p in \$rows) {
+          if (\$p.ProcessId -eq \$PID) { continue }
+          \$cl = [string]\$p.CommandLine
+          if (-not \$cl) { \$unreadable++; continue }
+          \$l = \$cl.ToLower()
+          if (\$l.Contains(\$a) -or \$l.Contains(\$b) -or \$l.Contains(\$c)) { 'HIT {0} {1} {2}' -f \$p.ProcessId, \$p.Name, (\$cl -replace '\s+', ' ') }
+        }
+      } catch {
+        \$readFailed = \$true
+      }
+      if (\$readFailed) { Write-Output 'CIMFAIL' }
+      Write-Output ('READ {0} {1}' -f \$rows.Count, \$unreadable)
+      Write-Output '$STOP_PS_SENTINEL'
+    " 2>/dev/null)
+  printf '%s\n' "$raw" | grep -E '^(HIT|READ) '
+  printf '%s\n' "$raw" | grep -qx 'CIMFAIL' && return 1
+  printf '%s\n' "$raw" | grep -qx "$STOP_PS_SENTINEL" || return 1
+  return 0
+}
+
+# A process still running at exit whose command line names this run's temp
+# root is something a case started and did not end, and nothing after this
+# run will end it. So the run fails, with the processes listed, and ends
+# none of them: the case that started one is what has to end it. A listing
+# that could not read the process table fails the run too, since it proves
+# nothing either way. Runs before the temp root is removed, while every such
+# command line still names a folder that exists.
+fail_on_leftover_processes() {
+  local out rc hits read_line
+  out=$(processes_naming "$TMP")
+  rc=$?
+  hits=$(printf '%s\n' "$out" | grep '^HIT ')
+  read_line=$(printf '%s\n' "$out" | grep '^READ ' | tail -1)
+  read_line="${read_line#READ }"
+  if [ "$rc" -ne 0 ]; then
+    echo "  FAIL: exit: the process table could not be read, so this run cannot show it left nothing running under $TMP"
+    return 1
+  fi
+  if [ -n "$hits" ]; then
+    echo "  FAIL: exit: $(printf '%s\n' "$hits" | wc -l | tr -d ' ') process(es) still name this run's temp root $TMP (pids: $(printf '%s\n' "$hits" | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')):"
+    printf '%s\n' "$hits" | sed 's/^HIT /    /'
+    return 1
+  fi
+  echo "  OK: exit: no process names this run's temp root $TMP (${read_line%% *} processes read, ${read_line#* } with no readable command line)"
+  return 0
+}
+# The run's one verdict line is printed here, after the listing, so a run
+# whose cases passed and which left a process behind reads FAIL once rather
+# than PASS and then FAIL. kill_leaked_survivors runs first. Its stops are
+# matched by start ticks and need not have finished when the listing reads.
+# The survivors it stops are bare PowerShell sleeps whose command lines name
+# no temp path.
+finish_run() {
+  local run_rc="$1" leftover_rc
+  kill_leaked_survivors
+  fail_on_leftover_processes
+  leftover_rc=$?
+  rm -rf "$TMP"
+  if [ "$run_rc" -eq 0 ] && [ "$leftover_rc" -eq 0 ]; then
+    echo "supervisor-natural-exit-test.sh: PASS"
+    exit 0
+  fi
+  echo "supervisor-natural-exit-test.sh: FAIL"
+  [ "$run_rc" -ne 0 ] && exit "$run_rc"
+  exit 1
+}
+trap 'finish_run $?' EXIT
 
 if [ "$RUN_UNITS" = 1 ]; then
 # --- What this suite's own survivor kill does with a pid that moved on ---
@@ -2301,6 +2392,58 @@ wait_log() {  # <log> <pattern> <bound>
   done
   return 0
 }
+# end_detached_child ends the child-1 a TERM left running in a case directory.
+# A TERM to a supervisor holding a live handled child takes its DETACH route,
+# which exits and leaves the child and its holder running for a next
+# supervisor to adopt. A case that adopts nothing has to end them itself. It
+# assumes a stub plan that reads its input to end of input, as the holds plan
+# does: ending the holder closes the stub's input, so the stub exits, and the
+# child's wrapper with it. The holder is ended by the Windows pid and start
+# ticks child-1's handle recorded for it, through the stop path's own
+# ticks-matched kill, so a holder that already exited and whose pid Windows
+# handed to another process is never signalled. Where the handle or either
+# field is missing or not digits, nothing is signalled and a line says why. A
+# handle already gone, as an adopting supervisor's stop leaves it, is said so.
+# Then it waits until <bound> seconds have passed for no process to name the
+# case directory. The bound is read between listings, so a listing that wedges
+# runs past it by that listing's own ceiling. It returns 0 only on a listing
+# that read the process table and found nothing. Otherwise it prints what still
+# names the directory, or "unread" where the table could not be read, which
+# ends the wait at once.
+end_detached_child() {  # <case dir> <bound s>
+  local dir="$1" bound="$2" pair out rc start
+  pair=$(node -e 'const h = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(`${h.holderWinPid ?? ""},${h.holderTicks ?? ""}`)' "$dir/rd/child-1/handle.json" 2>/dev/null)
+  case "$pair" in ''|,*|*,|*,*,*|*[!0-9,]*) pair="" ;; esac
+  if [ -n "$pair" ]; then
+    kill_process_snapshot "$pair" > /dev/null 2>&1
+  elif [ ! -e "$dir/rd/child-1/handle.json" ]; then
+    echo "  handle already cleared, nothing to signal: $dir/rd/child-1/handle.json" >&2
+  else
+    echo "  no holder signalled: $dir/rd/child-1/handle.json holds no digit holderWinPid and holderTicks" >&2
+  fi
+  start=$(date +%s)
+  while :; do
+    out=$(processes_naming "$dir")
+    rc=$?
+    [ "$rc" -ne 0 ] && break
+    printf '%s\n' "$out" | grep -q '^HIT ' || return 0
+    [ $(( $(date +%s) - start )) -ge "$bound" ] && break
+    sleep 1
+  done
+  if [ "$rc" -ne 0 ]; then echo "unread"; else printf '%s\n' "$out" | grep '^HIT ' | sed 's/^HIT //'; fi
+  return 1
+}
+# start_heartbeat_writer keeps a persona's claim live in a heartbeat fixture:
+# after <delay> seconds the backgrounded starter execs a node writer that stamps
+# lastSeen every two seconds. A torn read of the fixture, which is rewritten in
+# place, is skipped. The writer ends itself with status 0 on the first read that
+# finds the fixture gone and after <lifetime> seconds. The exit listing reads
+# before the temp root is removed, so a writer the caller's kill missed is still
+# alive then and fails the run. The caller's $! is the writer once the delay
+# has passed, and a kill during the delay ends the starter before any writer exists.
+start_heartbeat_writer() {  # <fixture> <persona> <delay s> <lifetime s>
+  ( sleep "$3"; exec node -e 'const [f,p,life]=process.argv.slice(1);const fs=require("fs");setTimeout(()=>process.exit(0),Number(life)*1000);setInterval(()=>{let s;try{s=fs.readFileSync(f,"utf8");}catch(e){if(e.code==="ENOENT")process.exit(0);return;}try{const h=JSON.parse(s);h[p].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$1" "$2" "$4" ) &
+}
 
 # --- (na)/(nb) a TERM detaches a live handled child, and a second supervisor
 #     adopts it ---
@@ -2366,6 +2509,14 @@ if want na; then
     [ "$NB_RC2" -eq 0 ]; check "(nb) the adopting supervisor's run ends at exit 0 once the adopted child is stopped (rc=$NB_RC2)" "$?"
   fi
   : > "$NA/touch-stop"; wait "$NA_TOUCHER" 2>/dev/null
+  # Where (nb) ran, its adopting supervisor already stopped the child. Where
+  # (na) ran alone, the detached child and its holder are still up, so the
+  # case ends them, and either way reads nothing left naming the case.
+  NA_LEFT=$(end_detached_child "$NA" 30)
+  NA_LEFT_RC=$?
+  NA_LEFT=$(printf '%s' "$NA_LEFT" | tr '\n' ';')
+  [ "$NA_LEFT_RC" -eq 0 ]
+  check "(na) no process names $NA once the case ends what its supervisors left running (left: ${NA_LEFT:-none})" "$?"
   DRIVE_ENV=(); DRIVE_CRASH_LIMIT=1
 fi
 
@@ -2378,7 +2529,7 @@ if want ne; then
   # A live heartbeat sidecar for this persona, with no handle.json anywhere.
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ [process.argv[2]]: { sessionId: "other", lastSeen: Date.now() } }))' "$NE/wd/.agentic-heartbeat.json" "$PERSONA_NAME"
   printf '%s\n' "clean" > "$NE/plan"; printf '%s' "$NE" > "$STUB/case"
-  ( sleep 8; node -e 'const f=process.argv[1];const fs=require("fs");setInterval(()=>{try{const h=JSON.parse(fs.readFileSync(f,"utf8"));h[process.argv[2]].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$NE/wd/.agentic-heartbeat.json" "$PERSONA_NAME" & echo $! > "$NE/hb.pid"; sleep 130; kill "$(cat "$NE/hb.pid")" 2>/dev/null ) &
+  start_heartbeat_writer "$NE/wd/.agentic-heartbeat.json" "$PERSONA_NAME" 8 130
   NE_HB=$!
   env -i PATH="$STUB:$PATH" HOME="$TMP/home" supervisorPollMs="$DRIVE_POLL_MS" \
     timeout 200 bash "$SUP" "$NE/wd" "$PERSONA_NAME" default --rundir "$NE/rd" --no-channel > "$NE/out" 2>&1
@@ -2444,8 +2595,16 @@ if want nf; then
   NF_RC2=$?
   [ "$NF_RC2" -eq 2 ] && grep -q 'GATE TIMEOUT' "$NF/sup2.out"; check "(nf) a second supervisor started while the first runs ends in GATE TIMEOUT (rc=$NF_RC2)" "$?"
   ! grep -q 'ADOPT' "$NF/sup2.out"; check "(nf) the second supervisor does not adopt the running first's child" "$?"
-  kill -TERM "$NF_SUP1" 2>/dev/null; wait "$NF_SUP1" 2>/dev/null
+  kill -TERM "$NF_SUP1" 2>/dev/null; wait "$NF_SUP1" 2>/dev/null; NF_RC1=$?
   : > "$NF/touch-stop"; wait "$NF_TOUCHER" 2>/dev/null
+  # The TERM detaches the first supervisor from its live child, so it exits
+  # 143, and nothing here adopts the child. The case ends the child and its
+  # holder itself, then reads nothing left naming the case.
+  NF_LEFT=$(end_detached_child "$NF" 30)
+  NF_LEFT_RC=$?
+  NF_LEFT=$(printf '%s' "$NF_LEFT" | tr '\n' ';')
+  [ "$NF_LEFT_RC" -eq 0 ]; check "(nf) no process names $NF once the case ends its detached child (left: ${NF_LEFT:-none})" "$?"
+  [ "$NF_RC1" -eq 143 ]; check "(nf) the first supervisor exits 143 on the TERM (rc=$NF_RC1)" "$?"
   DRIVE_ENV=(); DRIVE_CRASH_LIMIT=1
 fi
 
@@ -2496,7 +2655,7 @@ fi
 if want nh; then
   NH="$TMP/nh"; mkdir -p "$NH/wd" "$NH/rd"
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ [process.argv[2]]: { sessionId: "other", lastSeen: Date.now() } }))' "$NH/wd/.agentic-heartbeat.json" "$PERSONA_NAME"
-  ( sleep 6; node -e 'const f=process.argv[1];const fs=require("fs");setInterval(()=>{try{const h=JSON.parse(fs.readFileSync(f,"utf8"));h[process.argv[2]].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$NH/wd/.agentic-heartbeat.json" "$PERSONA_NAME" & echo $! > "$NH/hb.pid"; sleep 60; kill "$(cat "$NH/hb.pid")" 2>/dev/null ) &
+  start_heartbeat_writer "$NH/wd/.agentic-heartbeat.json" "$PERSONA_NAME" 6 60
   NH_HB=$!
   printf '%s\n' "clean" > "$NH/plan"; printf '%s' "$NH" > "$STUB/case"
   env -i PATH="$STUB:$PATH" HOME="$TMP/home" supervisorPollMs="$DRIVE_POLL_MS" \
@@ -2575,9 +2734,8 @@ if [ -s "$CASE_TIMES" ]; then
   awk '{t+=$1; n++} END {printf "  total %ss across %s driven runs\n", t, n}' "$CASE_TIMES"
 fi
 
+# The verdict line is printed by the exit trap, after its process listing.
 if [ "$failed" -eq 0 ]; then
-  echo "supervisor-natural-exit-test.sh: PASS"
   exit 0
 fi
-echo "supervisor-natural-exit-test.sh: FAIL"
 exit 1

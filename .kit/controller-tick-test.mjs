@@ -3580,6 +3580,7 @@ async function main() {
     await caseBank2_aLateSettlingEndNeverBanksMidTurn(clock);
     await caseBank2_greatestLastUpdatedRecordIsRun(clock);
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
+    await caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
     await caseBank2_aThrowingMidSectionEndStillClearsTheOwedBank(clock);
     await caseBank2_aPlanAddedInANoGoalTurnIsMidSection(clock);
@@ -16477,10 +16478,10 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
   console.log("\n=== boundary-compaction Section 2: a missing install record skips the run with one decision ===");
   const misses = [
     { label: "absent file", seed: null, token: "absent" },
-    { label: "missing key", seed: { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } }, token: "no claude-kit@applefeld key" },
-    { label: "empty array", seed: { version: 2, plugins: { "claude-kit@applefeld": [] } }, token: "no install record" },
+    { label: "missing key", seed: { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } }, token: "no grimoire@applefeld or claude-kit@applefeld install record is usable" },
+    { label: "empty array", seed: { version: 2, plugins: { "claude-kit@applefeld": [] } }, token: "no grimoire@applefeld or claude-kit@applefeld install record is usable" },
     { label: "unparseable JSON", seed: "{ \"version\": 2, \"plugins\": ", token: "not JSON" },
-    { label: "no usable record", seed: { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", lastUpdated: "2026-09-25T00:00:00.000Z" }, { scope: "user", installPath: "C:\\kit", lastUpdated: "never" }] } }, token: "no claude-kit@applefeld record has an installPath" },
+    { label: "no usable record", seed: { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", lastUpdated: "2026-09-25T00:00:00.000Z" }, { scope: "user", installPath: "C:\\kit", lastUpdated: "never" }] } }, token: "no grimoire@applefeld or claude-kit@applefeld install record is usable" },
   ];
   for (const m of misses) {
     clock.set(T0);
@@ -16497,6 +16498,77 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
       decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped" && decisions[0].detail.includes(m.token), decisions);
     await bank2CheckNoSecondBank(`bank2 ${m.label}`, h, runs, "t-after");
   }
+}
+
+// The kit installs under either key. The new key alone and the old key alone
+// each run from their own record. Where both are present the new key's record
+// runs even when the old key's record is the newer one, since a host
+// mid-migration holds both and the old record is the stale one. Where neither
+// is present the run is skipped with one decision naming both keys.
+async function caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock) {
+  console.log("\n=== boundary-compaction Section 2: either kit key runs, the new key is preferred, neither skips naming both ===");
+  const NEW_INSTALL = "C:\\kit-cache\\grimoire\\build-new";
+  const OLD_INSTALL = "C:\\kit-cache\\claude-kit\\build-old";
+  const newRecord = (lastUpdated) => [{ scope: "user", installPath: NEW_INSTALL, version: "n", lastUpdated }];
+  const oldRecord = (lastUpdated) => [{ scope: "user", installPath: OLD_INSTALL, version: "o", lastUpdated }];
+  const runs = [
+    { label: "new key alone", plugins: { "grimoire@applefeld": newRecord("2026-09-25T09:59:04.362Z") }, install: NEW_INSTALL },
+    { label: "old key alone", plugins: { "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "both keys, old record newer", plugins: { "claude-kit@applefeld": oldRecord("2026-10-01T00:00:00.000Z"), "grimoire@applefeld": newRecord("2026-09-01T00:00:00.000Z") }, install: NEW_INSTALL },
+    { label: "new key present with no usable record, old key usable", plugins: { "grimoire@applefeld": [], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "new key with an unusable record before a usable one", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: NEW_INSTALL }, ...newRecord("2026-09-25T09:59:04.362Z")] }, install: NEW_INSTALL },
+    { label: "new key whose lastUpdated does not parse, old key usable", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: NEW_INSTALL, lastUpdated: "never" }], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "new key whose installPath is blank, old key usable", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: " ", lastUpdated: "2026-09-25T09:59:04.362Z" }], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+  ];
+  // The supervisor's kit_skill_prefix (bin/agentic-common.sh) reads the same
+  // file by the same usable-record rule, so each fixture here is also handed
+  // to it: it must answer grimoire exactly where this lookup runs the grimoire
+  // install. A change to either reader's rule that the other does not share
+  // reds here rather than priming skills the plugin's install does not hold.
+  const prefixFn = readFileSync(join(import.meta.dirname, "..", "bin", "agentic-common.sh"), "utf8")
+    .replace(/\r/g, "").match(/^kit_skill_prefix\(\) \{$[\s\S]*?^\}$/m)?.[0];
+  check("bank2 kit keys: kit_skill_prefix is found in bin/agentic-common.sh", typeof prefixFn === "string");
+  const prefixFor = (plugins) => {
+    const home = mkdtempSync(join(tmpdir(), "kit-prefix-"));
+    try {
+      mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+      writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins }));
+      const r = spawnSync("bash", ["-c", `${prefixFn}\nkit_skill_prefix`], { env: { ...process.env, USERPROFILE: home, HOME: home }, encoding: "utf8" });
+      return r.error ? `bash did not run: ${r.error.message}` : (r.stdout ?? "").trim();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+  for (const c of runs) {
+    const want = c.install === NEW_INSTALL ? "grimoire" : "claude-kit";
+    const got = typeof prefixFn === "string" ? prefixFor(c.plugins) : "";
+    check(`bank2 ${c.label}: kit_skill_prefix answers ${want}, the name of the install this lookup runs`, got === want, got);
+  }
+  for (const c of runs) {
+    clock.set(T0);
+    const h = await bank2NoGoalHarness(`bank2_keys_${runs.indexOf(c)}`);
+    await bank2SeedInstalled(h, { version: 2, plugins: c.plugins });
+    const recorded = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-keys", "Here is the answer.");
+    bank2CheckOwedOnly(`bank2 ${c.label}`, h, recorded, end);
+    const call = await bank2NextTurnCall(`bank2 ${c.label}`, h, recorded, "t-after");
+    bank2CheckBanked(`bank2 ${c.label}`, h, recorded, call, { script: `${c.install}/hooks/kit-compact-checkpoint.js` });
+  }
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_keys_neither");
+  await bank2SeedInstalled(h, { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } });
+  const recorded = bank2Recorder(h);
+  const end = await bank2Turn(h, "t-keys", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 neither key", h, recorded, end);
+  const call = await bank2NextTurnCall("bank2 neither key", h, recorded, "t-after");
+  const decisions = bank2Decisions(h);
+  bank2CheckSettled("bank2 neither key (first main-loop tool call)", call);
+  check("bank2 neither key: no child process ran", recorded.length === 0, recorded);
+  check("bank2 neither key: exactly one skipped decision naming both keys",
+    decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped"
+      && decisions[0].detail.includes("no grimoire@applefeld or claude-kit@applefeld install record is usable"), decisions);
+  const neitherPrefix = typeof prefixFn === "string" ? prefixFor({ "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] }) : "";
+  check("bank2 neither key: kit_skill_prefix answers claude-kit", neitherPrefix === "claude-kit", neitherPrefix);
 }
 
 // A run that exits non-zero, and a run that rejects (the host's timeout
@@ -34888,8 +34960,8 @@ async function caseMemq12_theMigrationRunsWhereverASessionBecomesOwner(clock) {
 }
 
 // The installed kit the plugin would run, located as the plugin locates it:
-// the record with the greatest lastUpdated under claude-kit@applefeld in the
-// real installed_plugins.json. A string naming why where there is none.
+// the record with the greatest lastUpdated under grimoire@applefeld, else under
+// claude-kit@applefeld, in the real installed_plugins.json. A string naming why where there is none.
 function memq11InstalledMemq() {
   let parsed;
   try {
@@ -34897,11 +34969,11 @@ function memq11InstalledMemq() {
   } catch (err) {
     return `installed_plugins.json could not be read (${err && err.code ? err.code : String(err)})`;
   }
-  const records = parsed && parsed.plugins && Array.isArray(parsed.plugins["claude-kit@applefeld"]) ? parsed.plugins["claude-kit@applefeld"] : [];
-  const best = records
+  const keyed = (key) => (parsed && parsed.plugins && Array.isArray(parsed.plugins[key]) ? parsed.plugins[key] : [])
     .filter((r) => r && typeof r.installPath === "string" && typeof r.lastUpdated === "string")
     .sort((a, b) => (a.lastUpdated < b.lastUpdated ? 1 : a.lastUpdated > b.lastUpdated ? -1 : 0))[0];
-  if (!best) return "no claude-kit@applefeld install is recorded";
+  const best = keyed("grimoire@applefeld") || keyed("claude-kit@applefeld");
+  if (!best) return "no grimoire@applefeld or claude-kit@applefeld install is recorded";
   const script = join(best.installPath, "scripts", "memq.js");
   try { readFileSync(script); } catch { return `the located install holds no scripts/memq.js (${script})`; }
   return { script };
