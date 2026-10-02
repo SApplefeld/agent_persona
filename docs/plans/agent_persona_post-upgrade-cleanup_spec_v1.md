@@ -32,6 +32,11 @@ Alternatives refused. A `version` field in the manifest: refused by the operator
 
 **The README.** Line 669 says "After any engine update, regenerate with the stream-json invocation. Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment first:" and the invocation follows. The second sentence goes, and the first keeps its colon so the invocation still reads as what follows it.
 
+## Standing Brief Amendments
+
+- Section 1, acceptance bullet 4 reads: `node bin/upgrade-check.mjs pre` on a 2.1.287 build, with the flag unset and again with it set, gives the same verdict on step 2 and on step 7, and step 7 passes. Step 2 fails on 2.1.287 either way, because that build has no `/plugin-types` command. Its repair is the types probe plan, `docs/plans/agent_persona_types-probe_spec_v1.md`. Ruled by the ARCHITECT persona on 2026-10-02.
+- Section 1, acceptance bullet 2's allowed hits also include this plan document and its `docs/README.md` index line, which describe the plan and tell no one to set the flag. Declared by the worker on 2026-10-02 as a reading of the Goal sentence, not a ruling.
+
 ## Sections of Work
 
 ### 1. The author lands, the flag leaves the check, the test, the fixture, the scripts and the README

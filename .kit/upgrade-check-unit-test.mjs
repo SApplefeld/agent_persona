@@ -400,8 +400,10 @@ const cases = [
   ["no step's child environment carries CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", () => {
     // Cleared in the launch environment first: a machine that still sets the
     // flag globally would otherwise pass it to every step and fail the case
-    // for a reason the check does not own.
-    const { paths, r } = passingPre('function-hooks', { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '' });
+    // for a reason the check does not own. A test file is planted so step 6
+    // spawns too, and every step that spawns is swept.
+    const { paths, r } = passingPre('function-hooks', { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '' }, { testFile: true });
+    assert.deepEqual([...new Set(r.calls.map((c) => c.kind))].sort(), ['smoke', 'test', 'types', 'validate', 'version']);
     const withFlag = r.calls.filter((c) => c.functionHooks !== '').map((c) => c.kind);
     assert.deepEqual(withFlag, [], JSON.stringify(r.calls.map((c) => [c.kind, c.functionHooks])));
     // The types and smoke steps run in the scratch folder, so the plugin finds no persona there.
