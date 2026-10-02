@@ -9,7 +9,7 @@
 
 ## Active plans
 
-- `plans/agent_persona_architect-draft-pr_spec_v1.md`: The architect's charter says a plan branch gets a draft pull request the worker finishes (three sentences in the architect's role instruction, the injection ledger baseline and the architecture size row refreshed). Ready, waits on the kit-name tolerance plan merging.
+- `plans/agent_persona_architect-draft-pr_spec_v1.md`: The architect's charter says a plan branch gets a draft pull request the worker finishes (four sentences in the architect's role instruction, the injection ledger baseline and the architecture size row refreshed). Ready, waits on the kit-name tolerance plan merging.
 
 ## Archived plans
 
