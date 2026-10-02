@@ -1,6 +1,6 @@
 # The plan holder carries the section total and the next line beside its Chapter count
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
@@ -76,3 +76,9 @@ Tests: the section count under the block rule in both directions, a foreign `##`
 - None. The field names are shared with the companion plan and fixed under Assumptions.
 
 ## Chapters
+
+### Interim board 1 - 2026-10-02
+State: section 1 implementing on `plans/plan-record-sections`, main merged in at 9885c60. Status changed from `Ready` to `In Progress` at the run's start. The first implementer-opus dispatch died on an authentication failure before running any test, leaving about 305 uncommitted lines across the section's code and test files; a second implementer-opus dispatch is finishing from that tree, counted as an environment fault rather than a failed round.
+Gate baseline: the natural-exit supervisor-tree plan's whole gate on this machine, 2026-10-02 12:29 to 13:16, on a tree whose code equals 9885c60's (only plan docs and the docs index differ): 31 offline lanes all exit 0, natural-exit parallel `342 OK, 0 FAIL`.
+Intake: the spec's line anchors are at a92b351; the brief re-anchors them by symbol at 9885c60. A kit guard refuses a subagent's docs/ write, so docs/architecture.md's line is the main thread's.
+Next: verify the implementer's diff, apply the docs/architecture.md text, first-green commit and push, round 1 review at fable.

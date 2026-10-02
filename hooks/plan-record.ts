@@ -17,10 +17,12 @@ import { PLAN_PATH_PATTERN } from "./agent-state";
 export interface PlanRecord {
   complete: boolean;
   chapters: number;
+  sections: number;
+  next: string | null;
 }
 
 export type PlanRecordReading =
-  | { kind: "read"; complete: boolean; chapters: number }
+  | { kind: "read"; complete: boolean; chapters: number; sections: number; next: string | null }
   | { kind: "archived"; at: string }
   | { kind: "unreadable"; reason: string };
 
@@ -57,6 +59,28 @@ const PLAN_DIR_PREFIX = "docs/plans/";
 // and a "### Chapter" with no number are not Chapters. The heading may carry
 // text after the word, as "## Chapters (append-only)" does. A document with
 // no "## Chapters" section has zero.
+//
+// Sections: the number of "### N." headings inside the "## Sections of Work"
+// block, where N is one or more digits followed by a period and whitespace.
+// The block opens at a line reading "## Sections of Work", with nothing after
+// it but whitespace, and runs to
+// the next "## " heading of any text, so a foreign "##" heading inside it ends
+// it early and drops every later section. That edge is the plan-doc
+// contract's own, and the board card and the external engine count the same
+// way, so a count that disagreed with theirs about the same file would be the
+// wrong one. A "### N." line outside the block, and a "#### N." line inside
+// it, count nothing. A document with no such block has zero.
+//
+// Next: the value of the first line opening with "Next:" under the
+// highest-numbered Chapter, the Chapters being the headings the count above
+// counts. A repeated number reads the later-written Chapter, the more recent
+// account of it. The value is trimmed and cut to NEXT_LINE_MAX_CHARS
+// characters, counted so an astral character is never halved. It is null
+// where there is no Chapter or the highest one carries no Next: line, even
+// where an earlier Chapter carries one. The key is case-sensitive and must
+// open the line, as the contract reads it.
+export const NEXT_LINE_MAX_CHARS = 200;
+
 export function parsePlanRecord(text: string): PlanRecord {
   const lines = text.split(/\r?\n/);
 
@@ -71,16 +95,41 @@ export function parsePlanRecord(text: string): PlanRecord {
   }
 
   let chapters = 0;
+  let sections = 0;
   let inChapters = false;
+  let inSections = false;
+  // The highest-numbered Chapter seen so far and its first Next: value, and
+  // whether the line being read sits under that Chapter.
+  let latest = -1;
+  let latestNext: string | null = null;
+  let underLatest = false;
   for (const line of lines) {
     if (/^## /.test(line)) {
       inChapters = /^## Chapters\b/.test(line);
+      inSections = /^## Sections of Work\s*$/.test(line);
+      underLatest = false;
       continue;
     }
-    if (inChapters && /^### Chapter \d+(?!\d)/.test(line)) chapters += 1;
+    if (inSections && /^###\s+\d+\.\s/.test(line)) sections += 1;
+    if (!inChapters) continue;
+    const chapter = /^### Chapter (\d+)(?!\d)/.exec(line);
+    if (chapter) {
+      chapters += 1;
+      const n = Number(chapter[1]);
+      underLatest = n >= latest;
+      if (underLatest) {
+        latest = n;
+        latestNext = null;
+      }
+      continue;
+    }
+    if (underLatest && latestNext === null) {
+      const next = /^Next:(.*)$/.exec(line);
+      if (next) latestNext = Array.from(next[1].trim()).slice(0, NEXT_LINE_MAX_CHARS).join("");
+    }
   }
 
-  return { complete, chapters };
+  return { complete, chapters, sections, next: latestNext };
 }
 
 // The reader. The host's file functions are passed as two closures rather
@@ -117,7 +166,7 @@ export async function readPlanRecord(
         return { kind: "unreadable", reason: `document over ${PLAN_RECORD_MAX_BYTES} bytes` };
       }
       const record = parsePlanRecord(text);
-      return { kind: "read", complete: record.complete, chapters: record.chapters };
+      return { kind: "read", complete: record.complete, chapters: record.chapters, sections: record.sections, next: record.next };
     }
     for (const dir of PLAN_ARCHIVE_DIRS) {
       const archived = `${dir}/${name}`;
