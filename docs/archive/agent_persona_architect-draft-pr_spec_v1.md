@@ -186,7 +186,10 @@ Failed approaches: tried taking a reviewer's reading of the launch turn as settl
 Assumptions: none
 Review Findings: review: security + performance + adversarial at fable, Workflow effort high; goal read: scope-adjudicator at fable, Agent tool, frontmatter effort high. Security: threat model present, one Major (the launch turn) fixed, one Minor (the drop's channel) to the backlog. Performance: two Majors, the bare ASK: line fixed and the per-report relaunch accepted as stated; four Minors left as bounded costs (charter size growth, nudge cadence, the plan-path walk, the ask expiry). Adversarial: one Major (the launch turn) fixed; Minors fixed (`docs/architecture.md:421`, the archived clause, the restatements via docs curation). goal read: 5 built-but-unasked (0 refused, 5 declared, 0 asked), 0 asked-but-unbuilt.
 Stamps: none further surfaced beyond the section Chapters' sweep.
-Gate: PENDING
+Gate: whole gate as the handoff gate, 2026-10-02 16:32:18 to 17:19:39 on this machine, worktree clean at 1e29903, no foreign test runner at the start, 5,134 MB free and 236 processes at the end. Fast lane 16:32:18 to 16:49:04: 31 exit markers all 0 (every node suite, the six offline shell suites, tsc --noEmit, check-loader-rule, injection-ledger). Natural-exit parallel 16:49:04 to 17:19:39: exit 0, `natexit-parallel: 342 OK, 0 FAIL across 2 processes`. Delta against the baseline on the same lanes (the natural-exit plan's whole gate on a tree whose code equals 6da8065, 31 markers all 0 and 342 OK) and against QA at 90d78b2 (the same): none. The live suites are not run, since they need the fleet down. Tests added, retired, edited: none (one test file's comment changed). Spawning: unchanged.
 Next: none
 Commit Model: Branch-and-PR
-Delta: PENDING
+Delta: 2026-10-02 17:20, this machine, worktree at 1e29903. kit-size reports:
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
