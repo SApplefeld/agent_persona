@@ -1129,7 +1129,7 @@ How the root came to lack a `planPath` is not confirmed. The likely path is a go
 
 ## The upgrade check's probe run drops three login keys but not a cloud-provider login (found 2026-10-02)
 
-Step 2 of `bin/upgrade-check.mjs` runs the new build on a probe plugin under an empty config folder, so the run makes no model call. It drops `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` from the probe's environment, which is the list the types probe plan's ruling fixed. A host that reaches the model through a cloud provider instead, with `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` and that provider's credentials, still logs the probe in, so `/version` goes to the model as a prompt.
+Step 2 of `bin/upgrade-check.mjs` runs the new build on a probe plugin under an empty config folder, so the run makes no model call. It drops `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` from the probe's environment, which is the list the types probe plan's ruling fixed. A host that reaches the model through a cloud provider instead, with a switch such as `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY` and that provider's credentials, still logs the probe in, so `/version` goes to the model as a prompt.
 
 It is here rather than fixed because the ruling named three keys, and widening it is the ARCHITECT persona's call. No fleet host is known to use a cloud provider, which is unconfirmed.
 

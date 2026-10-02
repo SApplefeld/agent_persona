@@ -295,7 +295,8 @@ export function runChild(file, args, opts = {}) {
 
 // The child environment for a step. Every step but step 2's probe run inherits
 // this process's environment unchanged: the plugin loads with no flag from
-// Claude Code 2.1.287. Step 2 narrows its own copy.
+// Claude Code 2.1.287. Step 2 copies it, sets CLAUDE_CONFIG_DIR and drops the
+// login keys.
 function childEnv() {
   return { ...process.env };
 }
@@ -822,9 +823,10 @@ export function pre(flags) {
   // the engine does not load writes nothing. The config directory is an empty
   // one inside the scratch folder, so the run finds no stored login and no
   // installed plugin: the engine answers "Not logged in" and exits 1, having
-  // already written the files. So the step passes on the file alone, and the exit code and the
-  // run's first output line are evidence. The emptied scratch folder is what
-  // keeps an earlier run's file from reading as this build's.
+  // already written the files. So once the run spawned and did not time out,
+  // the step passes on the two files alone, and the exit code and the run's
+  // first output line are evidence. The emptied scratch folder is what keeps
+  // an earlier run's files from reading as this build's.
   const probeDir = path.join(scratch, 'types-probe');
   const configDir = path.join(scratch, 'config');
   fs.mkdirSync(path.join(probeDir, '.claude-plugin'), { recursive: true });
@@ -837,8 +839,8 @@ export function pre(flags) {
   // A login carried in the environment would log the run in despite the empty
   // config directory, and a logged-in run sends "/version" to the model, so
   // the probe's environment drops the three Anthropic login keys. The other
-  // steps keep theirs. A cloud-provider login (Bedrock, Vertex) is not
-  // dropped, and docs/backlog.md carries that gap.
+  // steps keep theirs. A cloud-provider login, such as Bedrock, Vertex or
+  // Foundry, is not dropped, and docs/backlog.md carries that gap.
   const probeEnv = { ...childEnv(), CLAUDE_CONFIG_DIR: configDir };
   for (const key of Object.keys(probeEnv)) {
     if (PROBE_LOGIN_KEYS.includes(key.toUpperCase())) delete probeEnv[key];

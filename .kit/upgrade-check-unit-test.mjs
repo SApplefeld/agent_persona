@@ -318,7 +318,9 @@ const cases = [
     const { r } = passingPre('types-exit-1', { FAKE_CLAUDE_TYPES_EXIT: '1' });
     const row = only(r.rows, '2. types');
     assert.equal(row.result, 'pass', row.evidence);
-    assert.match(row.evidence, /^first line: .+; exit 1 \(.+\); joined /);
+    // The build's first line leads, so the row's length cap cannot cut it.
+    assert.match(row.evidence, /^first line: \/\/ Written by Claude Code /);
+    assert.match(row.evidence, /\bexit 1\b/);
   }],
   ['the fixture refuses the retired types slash command at its unknown branch, and a bare /version without --plugin-dir', () => {
     const paths = makeCase('old-invocation');
