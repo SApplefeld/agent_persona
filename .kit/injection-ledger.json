@@ -28,8 +28,8 @@
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 12100,
-      "words": 2187
+      "chars": 12135,
+      "words": 2191
     },
     {
       "name": "LIAISON_ROLE_INSTRUCTION",
