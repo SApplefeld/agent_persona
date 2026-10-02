@@ -78,3 +78,11 @@ Tests: the reproduction both ways on (nf), the listing's red before the teardown
 - None.
 
 ## Chapters
+
+### Interim board 1 - 2026-10-02
+State: section 1 in review, branch plans/natural-exit-supervisor-tree on PR #140, main merged in at 3d6831c, first green 0dd9d18, round 1 fixes 137d33b. Status changed from `Ready` to `In Progress` at the run's start.
+Built (implementer-opus): the (nf) and (na) cases end the child a TERM detached through `end_detached_child`, which ends the holder by `kill_process_snapshot` on the handle's holderWinPid,holderTicks pair; the exit trap lists every process naming the run's temp root before removing it and fails the run on a hit or an unread table. Reproduction: the process left in each tree under a `bin/supervise.sh` command line is child-1's wrapper, the brace group `bin/supervise.sh:4559-4571` forks, not the first supervisor, which logs DETACH and exits 143. No supervisor finding. Assumption 3's reading is refuted.
+Sweep: 32 test processes ended across 16 trees (13 found at intake, 3 from the section's own red runs), 16 wrappers exited on their own, fleet 24 before and after. Pid 4092 (an orphaned suite shell) and node 19632 (the old heartbeat writer refreshing D:/Temp/tmp.3d8TmB3GTc/ne/wd) name no /tmp/tmp. path, were left, and went to the coordinator as a finding.
+Round 1 at fable (adversarial, blind, security, performance; Agent tool): one Major from all four lenses (holder signalled by a stale pid with no identity check), fixed in 137d33b; the blind Major on lone (ne)/(nh) runs tested and refuted (both exit 0 with empty listings); the performance Major on an iteration-counted wait covered by the adversarial Minor and fixed. Seven Minors taken in the fix round, two left with reason. Lists: `.kit/scratch/natural-exit-supervisor-tree/{add-decisions,minors,advisory}-section-1.md`.
+Gate baseline: targeted lane 2026-10-02 10:04-10:08 in the worktree at 0dd9d18, `--cases nf` exit 0 and `--cases na nb` exit 0, both exit listings empty (236 read, 19 unreadable).
+Next: round 2, the adversarial lens at opus through Workflow at effort high over 137d33b; then the close gate (`--cases nf`, `--cases na nb`), the Chapter, and finishing-work.
