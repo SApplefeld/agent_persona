@@ -28,6 +28,31 @@
 AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
 AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
 
+# --- Kit skill prefix ---
+# The name the kit's skills are qualified by on this host: "grimoire" where the
+# engine's installed_plugins.json holds the key "grimoire@applefeld" as a
+# property of its plugins object, and "claude-kit" in every other case, an
+# absent, unreadable or unparsable file included, so a launch always primes a
+# prefix. The path is passed to node as an argument, never spliced into the
+# script text.
+kit_skill_prefix() {
+  local file got
+  file="$HOME/.claude/plugins/installed_plugins.json"
+  file=$(cygpath -m "$file" 2>/dev/null || echo "$file")
+  got=$(node -e '
+  const fs = require("fs");
+  try {
+    const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8").replace(/^\uFEFF/, ""));
+    const p = s && s.plugins;
+    const plain = p !== null && typeof p === "object" && !Array.isArray(p);
+    process.stdout.write(plain && Object.hasOwn(p, "grimoire@applefeld") ? "grimoire" : "claude-kit");
+  } catch (e) {
+    process.stdout.write("claude-kit");
+  }
+' "$file" 2>/dev/null)
+  if [ "$got" = "grimoire" ]; then printf 'grimoire\n'; else printf 'claude-kit\n'; fi
+}
+
 # --- Contention guards ---
 # The bound below which a commons entry counts as live, matching the plugin's
 # staleAfterMs default (hooks/index.ts). A fleet launched with heartbeatMs

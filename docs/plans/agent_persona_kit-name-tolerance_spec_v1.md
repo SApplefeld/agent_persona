@@ -1,6 +1,6 @@
 # The persona plugin and the supervisor find the kit under either of its names, so the kit's rename to Grimoire breaks no running persona
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-02
 
