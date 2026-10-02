@@ -1,5 +1,12 @@
 # Backlog
 
+## Operator checks owed by the post-upgrade cleanup plan (parked 2026-10-02)
+
+The post-upgrade cleanup plan (`docs/archive/agent_persona_post-upgrade-cleanup_spec_v1.md`) is Complete. Two checks are the operator's.
+
+- **Remove the function-hooks flag from each fleet host.** Delete `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from the `env` block of `~/.claude/settings.json` and from any machine-level environment that sets it, then start a session and read its debug log. The line `hooks module agentic-plugin` should show the module loaded at tier user. A host where it does not load reopens the plan.
+- **Decide on the root `CLAUDE.md` warning.** `claude plugin validate --strict` warns that a `CLAUDE.md` at the plugin root is not loaded as project context. Decide whether that earns a later change.
+
 ## Operator check owed by the natural-exit writer leak plan (parked 2026-10-01)
 
 The natural-exit writer leak plan (`docs/archive/agent_persona_natural-exit-writer-leak_spec_v1.md`) is Complete. One check is the operator's.
@@ -955,7 +962,7 @@ What it costs is type narrowing rather than behaviour. The declarations merge in
 
 It is not edited by hand on its own instruction, and it sits in no section's scope, which is why it is here rather than folded into the section that made it stale.
 
-Remedy: regenerate it. The sibling record in the operator memory tier, `function-hooks-prototype-ships-behind-a-flag`, states that the `/plugin-types` command works in a headless session with the function-hooks flag set, and that a leading slash passed from Git Bash needs `MSYS_NO_PATHCONV=1` or the CLI never sees the command. That record names the sibling file and a different generator, so confirm which command writes this one before running it. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
+Remedy: regenerate it, after the types probe plan lands. Claude Code 2.1.287 has no `/plugin-types` command. The engine writes its declarations under the plugin's own `.claude-plugin/types/` when it loads a plugin passed with `--plugin-dir`, and `claude-code-mcp/index.d.ts` there is this file's successor. The types probe plan moves the upgrade check onto that path and settles where the committed declarations live, so this snapshot is regenerated from wherever that plan puts them. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
 
 ## A promoted turn record has `false` written for the outcome that scores the turn-open question (found 2026-09-27)
 

@@ -288,11 +288,10 @@ export function runChild(file, args, opts = {}) {
   };
 }
 
-// The child environment for a step. Steps 2 and 7 need the function-hooks
-// flag, which is what makes the engine load the plugin's module at all; the
-// rest inherit this process's environment unchanged.
-function childEnv(functionHooks) {
-  return functionHooks ? { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } : { ...process.env };
+// The child environment for a step. Every step inherits this process's
+// environment unchanged: the plugin loads with no flag from Claude Code 2.1.287.
+function childEnv() {
+  return { ...process.env };
 }
 
 /**
@@ -810,7 +809,7 @@ export function pre(flags) {
   }
 
   // --- Step 2. Regenerate the types on the new build. ---
-  const typesRun = runClaude(['-p', '/plugin-types'], { cwd: scratch, env: childEnv(true) });
+  const typesRun = runClaude(['-p', '/plugin-types'], { cwd: scratch, env: childEnv() });
   const newTypesPath = path.join(scratch, '.claude', 'types', 'claude-code.d.ts');
   let newTypes = '';
   try { newTypes = fs.readFileSync(newTypesPath, 'utf8'); } catch (e) { newTypes = ''; }
@@ -920,7 +919,7 @@ export function pre(flags) {
   // --- Step 7. The headless smoke run. ---
   const smokePath = path.join(scratch, 'smoke.log');
   const smoke = runClaude(['-p', 'Reply with the word ok.', '--model', 'haiku', '--debug-file', smokePath],
-    { cwd: scratch, env: childEnv(true) });
+    { cwd: scratch, env: childEnv() });
   const smokeProblem = childProblem(smoke);
   let smokeLog = '';
   try { smokeLog = fs.readFileSync(smokePath, 'utf8'); } catch (e) { smokeLog = ''; }
