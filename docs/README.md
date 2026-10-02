@@ -9,7 +9,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_post-upgrade-cleanup_spec_v1.md`: The plugin names its authors and stops asking for the function-hooks flag (the manifest gains an author object and no version, the README's types section, the upgrade check's steps 2 and 7 with their unit test and fixture, and the five live-test scripts drop `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`, which Claude Code 2.1.287 no longer reads; plain `claude plugin validate` stays the check and no gate adopts `--strict`). Ready, one section, after the fleet's 2.1.287 restart.
 
 ## Archived plans
 
