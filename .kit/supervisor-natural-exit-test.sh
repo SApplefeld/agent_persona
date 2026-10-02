@@ -2402,19 +2402,24 @@ wait_log() {  # <log> <pattern> <bound>
 # ticks child-1's handle recorded for it, through the stop path's own
 # ticks-matched kill, so a holder that already exited and whose pid Windows
 # handed to another process is never signalled. Where the handle or either
-# field is missing or not digits, nothing is signalled and a line says why.
+# field is missing or not digits, nothing is signalled and a line says why. A
+# handle already gone, as an adopting supervisor's stop leaves it, is said so.
 # Then it waits until <bound> seconds have passed for no process to name the
-# case directory. It returns 0 only on a listing that read the process table
-# and found nothing. Otherwise it prints what still names the directory, or
-# "unread" where the table could not be read, which ends the wait at once.
+# case directory. The bound is read between listings, so a listing that wedges
+# runs past it by that listing's own ceiling. It returns 0 only on a listing
+# that read the process table and found nothing. Otherwise it prints what still
+# names the directory, or "unread" where the table could not be read, which
+# ends the wait at once.
 end_detached_child() {  # <case dir> <bound s>
   local dir="$1" bound="$2" pair out rc start
   pair=$(node -e 'const h = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(`${h.holderWinPid ?? ""},${h.holderTicks ?? ""}`)' "$dir/rd/child-1/handle.json" 2>/dev/null)
   case "$pair" in ''|,*|*,|*,*,*|*[!0-9,]*) pair="" ;; esac
   if [ -n "$pair" ]; then
     kill_process_snapshot "$pair" > /dev/null 2>&1
+  elif [ ! -e "$dir/rd/child-1/handle.json" ]; then
+    echo "  handle already cleared, nothing to signal: $dir/rd/child-1/handle.json" >&2
   else
-    echo "  no holder signalled: $dir/rd/child-1/handle.json is missing or holds no digit holderWinPid and holderTicks" >&2
+    echo "  no holder signalled: $dir/rd/child-1/handle.json holds no digit holderWinPid and holderTicks" >&2
   fi
   start=$(date +%s)
   while :; do
@@ -2598,8 +2603,8 @@ if want nf; then
   NF_LEFT=$(end_detached_child "$NF" 30)
   NF_LEFT_RC=$?
   NF_LEFT=$(printf '%s' "$NF_LEFT" | tr '\n' ';')
-  [ "$NF_RC1" -eq 143 ]; check "(nf) the first supervisor exits 143 on the TERM (rc=$NF_RC1)" "$?"
   [ "$NF_LEFT_RC" -eq 0 ]; check "(nf) no process names $NF once the case ends its detached child (left: ${NF_LEFT:-none})" "$?"
+  [ "$NF_RC1" -eq 143 ]; check "(nf) the first supervisor exits 143 on the TERM (rc=$NF_RC1)" "$?"
   DRIVE_ENV=(); DRIVE_CRASH_LIMIT=1
 fi
 
