@@ -9,7 +9,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_kit-name-tolerance_spec_v1.md`: The persona plugin and the supervisor find the kit under either of its names (the kit lookup in `hooks/index.ts` accepts `grimoire@applefeld` and `claude-kit@applefeld` and prefers the new key; the supervisor primes each child with the kit's skills under whichever name the host has installed; the tick and priming-text suites pin both directions). Ready 2026-10-02, one section, no precondition. First of the four plans that rename the kit to Grimoire; the kit's own rename waits on this one merging and reaching every host.
 
 ## Archived plans
 
