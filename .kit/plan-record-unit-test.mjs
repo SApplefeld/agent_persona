@@ -18,6 +18,8 @@ const {
   resolvePlanDir,
   PLAN_RECORD_MAX_BYTES,
   PLAN_ARCHIVE_DIRS,
+  BLOCK_HEADING,
+  SECTION_HEADING,
 } = await import("../hooks/plan-record.ts");
 
 let failed = 0;
@@ -132,6 +134,91 @@ check("##Out of Scope, with no whitespace, is no heading and does not end the bl
 check("only the first ## Sections of Work block is read: a second one's sections count nothing",
   parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One"]) + "\n## Related\n" + sectionsBody(["### 2. Two", "### 3. Three"]))).sections === 1);
 
+// --- The heading patterns against the card's ---
+// The plugin's block and section patterns are linear forms of the card's
+// literals in broker/board/plans.ts. Every string over an alphabet holding
+// the three terminators the forms turn on, CR, U+2028 and U+2029, plus the
+// near misses NEL and NBSP, is checked against both, so a form accepting one
+// line the card refuses, or the reverse, fails here. The characters are built
+// from their code points so the source holds none of them live.
+console.log("\n=== the block and section heading patterns accept exactly the card's lines ===");
+{
+  const CARD_BLOCK = /^##\s+.+$/;
+  const CARD_SECTION = /^###\s+(\d+)\.\s+(.*)$/;
+  const CR = String.fromCharCode(0x0d);
+  const TAB = String.fromCharCode(0x09);
+  const LS = String.fromCharCode(0x2028);
+  const PS = String.fromCharCode(0x2029);
+  const NEL = String.fromCharCode(0x85);
+  const NBSP = String.fromCharCode(0xa0);
+  const alphabet = ["#", " ", TAB, CR, LS, PS, NEL, NBSP, "x", "1", "."];
+  const pairs = [["block", CARD_BLOCK, BLOCK_HEADING], ["section", CARD_SECTION, SECTION_HEADING]];
+  for (const prefix of ["", "##", "###", "### 1."]) {
+    for (const [name, card, plugin] of pairs) {
+      let checked = 0;
+      const diffs = [];
+      const walk = (s, depth) => {
+        checked++;
+        if (card.test(s) !== plugin.test(s)) diffs.push(JSON.stringify(s));
+        if (depth < 5) for (const c of alphabet) walk(s + c, depth + 1);
+      };
+      walk(prefix, 0);
+      check(`the ${name} pattern agrees with the card's on all ${checked} strings of up to 5 characters after ${JSON.stringify(prefix)}`,
+        diffs.length === 0, { diffs: diffs.length, first: diffs.slice(0, 5) });
+    }
+  }
+
+  // The interleaved shapes the card's forms backtrack worst on: a space and a
+  // terminator repeated, bare, then with a trailing x, then with a trailing
+  // terminator. Each is checked against the card's literal and against the
+  // value the card gives it.
+  const k = 1000;
+  for (const [tname, t] of [["CR", CR], ["U+2028", LS]]) {
+    const run = (" " + t).repeat(k);
+    const shapes = [
+      ["block", CARD_BLOCK, BLOCK_HEADING, "x", "##" + run + "x", true],
+      ["block", CARD_BLOCK, BLOCK_HEADING, "nothing", "##" + run, false],
+      ["block", CARD_BLOCK, BLOCK_HEADING, "a second " + tname, "##" + run + t, false],
+      ["section", CARD_SECTION, SECTION_HEADING, "x", "### 1." + run + "x", true],
+      ["section", CARD_SECTION, SECTION_HEADING, "nothing", "### 1." + run, true],
+      ["section", CARD_SECTION, SECTION_HEADING, "a second " + tname, "### 1." + run + t, true],
+    ];
+    for (const [name, card, plugin, tail, line, want] of shapes) {
+      const got = plugin.test(line);
+      const cardGot = card.test(line);
+      check(`the ${name} pattern reads (space, ${tname}) x ${k} then ${tail} as the card does: ${want}`,
+        got === want && cardGot === want, { got, card: cardGot });
+    }
+  }
+
+  // Cap-sized lines: 256 KiB of whitespace, or of whitespace then text, before
+  // a terminator, the longest run a document under the reader's cap can hold. Each value is the one the
+  // card's literal gives the same shape.
+  const N = PLAN_RECORD_MAX_BYTES;
+  const capCases = [
+    ["block", BLOCK_HEADING, "spaces then CR", "##" + " ".repeat(N) + CR, false],
+    ["block", BLOCK_HEADING, "spaces then U+2028", "##" + " ".repeat(N) + LS, false],
+    ["block", BLOCK_HEADING, "(space, CR) pairs then x", "##" + (" " + CR).repeat(N / 2) + "x", true],
+    ["section", SECTION_HEADING, "spaces then CR", "### 1." + " ".repeat(N) + CR, true],
+    ["section", SECTION_HEADING, "spaces, U+2029, then x", "### 1." + " ".repeat(N) + PS + "x", true],
+    ["section", SECTION_HEADING, "spaces then CR with no period", "### 1" + " ".repeat(N) + CR, false],
+    ["section", SECTION_HEADING, "spaces, x characters, then CR", "### 1." + " ".repeat(N / 2) + "x".repeat(N / 2) + CR, false],
+  ];
+  for (const [name, plugin, shape, line, want] of capCases) {
+    const got = plugin.test(line);
+    check(`the ${name} pattern reads a cap-sized line of ${shape}, ${line.length} units, as ${want}`, got === want, got);
+  }
+
+  // The terminators are in each class, as escapes in the pattern's source.
+  const BS = String.fromCharCode(0x5c);
+  for (const [name, re] of [["block", BLOCK_HEADING], ["section", SECTION_HEADING]]) {
+    const src = re.source;
+    const escaped = [BS + "r", BS + "u2028", BS + "u2029"].every((e) => src.includes(e));
+    const live = [CR, LS, PS].some((c) => src.includes(c));
+    check(`the ${name} pattern's source holds the escapes for CR, U+2028 and U+2029 and no live terminator`, escaped && !live, src);
+  }
+}
+
 // --- The next line ---
 console.log("\n=== parsePlanRecord: the next line ===");
 const chapter = (n, lines = []) => [`### Chapter ${n} - 2026-10-01`, "", ...lines].join("\n");
@@ -195,6 +282,21 @@ check("a bare Next: then Next: y reads null, since the first Next: line ends the
   const value = "a".repeat(199) + "\u{1F600}" + "b".repeat(10);
   const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${value}`])]))).next;
   check("the cut counts characters, so an astral character at the boundary is kept whole", got === "a".repeat(199) + "\u{1F600}", got && got.length);
+}
+{
+  // A line far longer than the cut. The value is first sliced to twice the
+  // cut in UTF-16 units, so a line of astral characters, two units each, still
+  // yields the whole 200 code points rather than the 100 a one-unit-each slice
+  // would hold.
+  const astral = String.fromCodePoint(0x1f600);
+  const value = astral.repeat(50000);
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${value}`])]))).next;
+  check("a 100,000-unit value of astral characters comes back as its first 200 code points", got === astral.repeat(200), got && got.length);
+}
+{
+  const value = "m".repeat(100000);
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next:   ${value}`])]))).next;
+  check("a 100,000-character value comes back as its first 200", got === "m".repeat(200), got && got.length);
 }
 
 // --- CRLF ---

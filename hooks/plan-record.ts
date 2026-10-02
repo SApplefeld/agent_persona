@@ -52,12 +52,14 @@ const PLAN_DIR_PREFIX = "docs/plans/";
 // header reading "Status: In Progress" governs over it. A document with no
 // Status line in its header is simply not complete.
 //
-// The Chapters, Sections and Next rules below use the five heading patterns
-// the Discord board card in the broker's repository uses, in
+// The Chapters, Sections and Next rules below use the heading patterns and the
+// block rule of the Discord board card in the broker's repository, in
 // `broker/board/plans.ts`, which the external engine's own reading shares. The
-// card and this parser therefore agree on the Chapter count, the section count
-// and the next line of the same file. That agreement does not cover Complete,
-// which keeps its own rule above.
+// card and this parser therefore agree on which lines are headings, which
+// blocks they open, the Chapter count and the section count of the same file.
+// That agreement does not cover Complete, which keeps its own rule above, and
+// it does not cover the Next: value, whose fold and cut are this plugin's own
+// bound.
 //
 // A block is the lines after its heading up to the next block heading, a line
 // opening "##" then whitespace then text. "###" and deeper headings never end
@@ -90,26 +92,50 @@ const PLAN_DIR_PREFIX = "docs/plans/";
 // counts. Every line from a Chapter's heading to the next Chapter heading or
 // the block's end is under it, an Interim board's lines included. A repeated
 // number reads the later-written Chapter, the more recent account of it. The
-// first Next: line ends the search whatever its value, so a bare "Next:"
-// above a "Next: y" reads null. The value is folded to one line through
-// oneLine, its whitespace runs collapsed to one space and trimmed, then cut to
-// NEXT_LINE_MAX_CHARS characters, counted so an astral character is never
-// halved. That is the card's own order: collapsing first means whitespace
-// never spends the cut. An empty value reads null, as does a document with no
+// first Next: line the pattern matches ends the search whatever its value, so
+// a bare "Next:" above a "Next: y" reads null. The value is folded to one line
+// through oneLine, its whitespace runs collapsed to one space and trimmed,
+// then cut to NEXT_LINE_MAX_CHARS code points, so an astral character is never
+// halved. Collapsing first means whitespace never spends the cut. The cut
+// first takes 2 x NEXT_LINE_MAX_CHARS UTF-16 units, which hold at least
+// NEXT_LINE_MAX_CHARS code points, so the code-point array stays small however
+// long the line is. An empty value reads null, as does a document with no
 // Chapter or a highest Chapter with no Next: line, even where an earlier
 // Chapter carries one. The key is case-sensitive and must open the line, as
 // the contract reads it. Brackets in the value are kept as written.
 export const NEXT_LINE_MAX_CHARS = 200;
 
-const BLOCK_HEADING = /^##\s+.+$/;
+// The two heading patterns below take a line terminator class. A line here
+// holds no LF, so the characters \s takes and "." refuses are CR (U+000D),
+// U+2028 and U+2029. The class is built from their code points rather than
+// written into the source, since a live U+2028 or U+2029 inside a regex
+// literal is a syntax error and some editors turn the escape into the live
+// character.
+const TERMINATORS = "\\r" + String.fromCharCode(0x2028) + String.fromCharCode(0x2029);
+const TERMINATOR = `[${TERMINATORS}]`;
+const NON_TERMINATOR = `[^${TERMINATORS}]`;
+
+// The block heading. It equals the card's literal /^##\s+.+$/ and accepts
+// exactly the same lines in a linear form. The card's form backtracks
+// quadratically over a whitespace run ending in CR (U+000D), U+2028 or
+// U+2029; this one does not. The line is "##", then either one whitespace
+// character and a non-terminator, or a whitespace run whose last character is
+// a terminator and a non-terminator, then only non-terminators to the end.
+export const BLOCK_HEADING = new RegExp(`^##(?:\\s${NON_TERMINATOR}|\\s*${TERMINATOR}${NON_TERMINATOR})${NON_TERMINATOR}*$`);
 const SECTIONS_HEADING = /^##\s+Sections of Work\s*$/;
 const CHAPTERS_HEADING = /^##\s+Chapters\s*$/;
 const CHAPTER_HEADING = /^###\s+Chapter\s+(\d+)/;
-const SECTION_HEADING = /^###\s+(\d+)\.\s+(.*)$/;
+// The section heading. It equals the card's literal /^###\s+(\d+)\.\s+(.*)$/
+// and accepts exactly the same lines in a linear form, without the captures,
+// which the count never reads. Its terminator class is the block heading's:
+// CR (U+000D), U+2028 and U+2029. After "### N." comes either one whitespace
+// character and only non-terminators, or a whitespace run whose last
+// character is a terminator and only non-terminators.
+export const SECTION_HEADING = new RegExp(`^###\\s+\\d+\\.(?:\\s${NON_TERMINATOR}*|\\s*${TERMINATOR}${NON_TERMINATOR}*)$`);
 
 function nextValue(raw: string): string | null {
   const collapsed = oneLine(raw).replace(/\s+/g, " ").trim();
-  const cut = Array.from(collapsed).slice(0, NEXT_LINE_MAX_CHARS).join("");
+  const cut = Array.from(collapsed.slice(0, NEXT_LINE_MAX_CHARS * 2)).slice(0, NEXT_LINE_MAX_CHARS).join("");
   return cut === "" ? null : cut;
 }
 
