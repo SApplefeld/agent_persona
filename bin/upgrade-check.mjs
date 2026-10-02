@@ -293,8 +293,9 @@ export function runChild(file, args, opts = {}) {
   };
 }
 
-// The child environment for a step. Every step inherits this process's
-// environment unchanged: the plugin loads with no flag from Claude Code 2.1.287.
+// The child environment for a step. Every step but step 2's probe run inherits
+// this process's environment unchanged: the plugin loads with no flag from
+// Claude Code 2.1.287. Step 2 narrows its own copy.
 function childEnv() {
   return { ...process.env };
 }
@@ -819,10 +820,9 @@ export function pre(flags) {
   // folder. The probe is the smallest plugin it loads: a manifest, a hooks.json
   // naming one module, and a module whose register attaches one hook. A probe
   // the engine does not load writes nothing. The config directory is an empty
-  // one inside the scratch folder, so the run needs no login, finds no
-  // installed plugin and makes no model call: the engine answers "Not logged
-  // in" and exits 1, since no login exists there, having already written the
-  // files. So the step passes on the file alone, and the exit code and the
+  // one inside the scratch folder, so the run finds no stored login and no
+  // installed plugin: the engine answers "Not logged in" and exits 1, having
+  // already written the files. So the step passes on the file alone, and the exit code and the
   // run's first output line are evidence. The emptied scratch folder is what
   // keeps an earlier run's file from reading as this build's.
   const probeDir = path.join(scratch, 'types-probe');
@@ -836,7 +836,9 @@ export function pre(flags) {
   const probeCommand = 'env ' + PROBE_LOGIN_KEYS.map((key) => '-u ' + key).join(' ') + ' CLAUDE_CONFIG_DIR="' + configDir + '" claude -p "/version" --plugin-dir "' + probeDir + '"';
   // A login carried in the environment would log the run in despite the empty
   // config directory, and a logged-in run sends "/version" to the model, so
-  // the probe's environment drops those keys. The other steps keep theirs.
+  // the probe's environment drops the three Anthropic login keys. The other
+  // steps keep theirs. A cloud-provider login (Bedrock, Vertex) is not
+  // dropped, and docs/backlog.md carries that gap.
   const probeEnv = { ...childEnv(), CLAUDE_CONFIG_DIR: configDir };
   for (const key of Object.keys(probeEnv)) {
     if (PROBE_LOGIN_KEYS.includes(key.toUpperCase())) delete probeEnv[key];
@@ -867,7 +869,9 @@ export function pre(flags) {
     record('2. types', 'fail', probeCommand + ' exited ' + typesRun.status + ' and wrote no ' + missing.join(' and no ') + ': ' + evidenceLine(typesRun.stderr || typesRun.stdout));
   } else {
     const firstOutput = (typesRun.stdout || typesRun.stderr || '').split(LINE_TERMINATOR).find((line) => line.trim()) || '';
-    record('2. types', 'pass', 'exit ' + typesRun.status + ' (' + evidenceLine(firstOutput).slice(0, 120) + '); joined ' + indexPath + ' and ' + toolsPath + ' into ' + newTypesPath + ', first line: ' + evidenceLine(newFirstLine));
+    // The build's first line leads, so the row's length cap cuts a long
+    // scratch path rather than the line naming the build.
+    record('2. types', 'pass', 'first line: ' + evidenceLine(newFirstLine) + '; exit ' + typesRun.status + ' (' + evidenceLine(firstOutput).slice(0, 120) + '); joined ' + indexPath + ' and ' + toolsPath + ' into ' + newTypesPath);
   }
 
   // --- Step 3. Compare the new interface against the committed one. ---
