@@ -9,9 +9,11 @@
 
 ## Active plans
 
-None.
+- None.
 
 ## Archived plans
+
+- `archive/agent_persona_kit-name-tolerance_spec_v1.md`: The persona plugin and the supervisor find the kit under either of its names (the kit lookup in `hooks/index.ts` accepts `grimoire@applefeld` and `claude-kit@applefeld` and runs from the first that holds a usable install record, the new key first; the supervisor primes each child with the kit's skills under the name the same rule picks; the tick and priming-text suites pin both directions and that the two readers agree). Complete 2026-10-02, one section. First of the four plans that rename the kit to Grimoire. Updating the persona plugin on every host before the kit's rename merges, and the live-all lane with the fleet down, are the operator's, carried in `backlog.md`.
 
 - `archive/agent_persona_types-probe_spec_v1.md`: The upgrade check reads the new build's declarations from a probe plugin the engine writes them beside (Claude Code 2.1.287 has no slash command for the declarations and writes `.claude-plugin/types/claude-code/index.d.ts` beside any plugin it loads from a folder, so step 2 writes a one-hook probe into the scratch folder, runs the build on it under a config directory inside that folder with three login keys dropped, and joins the interface and the built-in tools' tables the engine writes into the one file steps 3 and 4 read; the fixture, the unit test, the README's recipe and `.gitignore` follow). Complete 2026-10-02, one section. Running `.kit/live-all.sh` once the fleet is down is the operator's, carried in `backlog.md`.
 - `archive/agent_persona_post-upgrade-cleanup_spec_v1.md`: The plugin names its authors and stops setting the function-hooks flag (the manifest gains an author object and no version; the README's types section, the upgrade check's child environment and the five live-test scripts drop `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`, which Claude Code 2.1.287 no longer reads; the unit case keeps the fixture's log field and fails if any of the check's five launches carries the flag under any value; step 2 of the check failed on 2.1.287 for a reason the flag does not touch, which the types probe plan repairs). Complete 2026-10-02, one section.

@@ -4,7 +4,7 @@
     {
       "name": "SKILL_LOAD_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 278,
+      "chars": 248,
       "words": 39
     },
     {
@@ -28,13 +28,13 @@
     {
       "name": "ARCHITECT_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 7212,
+      "chars": 7162,
       "words": 1275
     },
     {
       "name": "LIAISON_ROLE_INSTRUCTION",
       "file": "bin/supervise-holder.sh",
-      "chars": 1541,
+      "chars": 1531,
       "words": 267
     },
     {
