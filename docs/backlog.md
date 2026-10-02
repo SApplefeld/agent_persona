@@ -1,5 +1,12 @@
 # Backlog
 
+## Operator checks owed by the post-upgrade cleanup plan (parked 2026-10-02)
+
+The post-upgrade cleanup plan (`docs/archive/agent_persona_post-upgrade-cleanup_spec_v1.md`) is Complete. Two checks are the operator's.
+
+- **Remove the function-hooks flag from each fleet host.** Delete `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from the `env` block of `~/.claude/settings.json` and from any machine-level environment that sets it, then start a session and read its debug log. The line `hooks module agentic-plugin` should show the module loaded at tier user. A host where it does not load reopens the plan.
+- **Decide on the root `CLAUDE.md` warning.** `claude plugin validate --strict` warns that a `CLAUDE.md` at the plugin root is not loaded as project context. Decide whether that earns a later change.
+
 ## Operator check owed by the natural-exit writer leak plan (parked 2026-10-01)
 
 The natural-exit writer leak plan (`docs/archive/agent_persona_natural-exit-writer-leak_spec_v1.md`) is Complete. One check is the operator's.

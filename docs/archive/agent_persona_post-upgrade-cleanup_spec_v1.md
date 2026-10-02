@@ -1,6 +1,6 @@
 # The plugin names its authors and stops asking for the function-hooks flag, which Claude Code 2.1.287 no longer reads
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
@@ -34,7 +34,7 @@ Alternatives refused. A `version` field in the manifest: refused by the operator
 
 ## Standing Brief Amendments
 
-- Section 1, acceptance bullet 4 reads: `node bin/upgrade-check.mjs pre` on a 2.1.287 build, with the flag unset and again with it set, gives the same verdict on step 2 and on step 7, and step 7 passes. Step 2 fails on 2.1.287 either way, because that build has no `/plugin-types` command. Its repair is the types probe plan, `docs/plans/agent_persona_types-probe_spec_v1.md`. Ruled by the ARCHITECT persona on 2026-10-02.
+- Section 1, acceptance bullet 4 reads: `node bin/upgrade-check.mjs pre` on a 2.1.287 build, with the flag unset and again with it set, gives the same verdict on step 2 and on step 7, and step 7 passes. Step 2 fails on 2.1.287 either way, because that build has no `/plugin-types` command. Its repair is the types probe plan, `agent_persona_types-probe_spec_v1.md` on the branch `plans/types-probe`, queued to run after this plan merges. Ruled by the ARCHITECT persona on 2026-10-02.
 - Section 1, acceptance bullet 2's allowed hits also include this plan document and its `docs/README.md` index line, which describe the plan and tell no one to set the flag. Declared by the worker on 2026-10-02 as a reading of the Goal sentence, not a ruling.
 - Section 1: the inverted unit case plants a test file, so step 6 spawns, and asserts the five call kinds version, types, validate, test and smoke before sweeping them for the flag.
 
@@ -77,6 +77,12 @@ Tests: the inverted unit case both ways, the unit suite whole, one run of the up
 
 - None.
 
+## Related
+
+- `agent_persona_unversioned-manifest_v1.md`: the earlier ruling that the manifest carries no `version`, which this plan restates.
+- `agent_persona_upgrade-check-and-restart-recap_spec_v1.md`: built the upgrade check, its unit test and its fixture, which this plan edits.
+- The types probe plan, `agent_persona_types-probe_spec_v1.md` on the branch `plans/types-probe`: repairs step 2 of the upgrade check, which fails on 2.1.287.
+
 ## Chapters
 
 ### Chapter 1 - 2026-10-02
@@ -103,3 +109,25 @@ Delta: moment 2026-10-02T01:43Z; kit-size printed:
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 2 - 2026-10-02
+Completed: finishing-work, the close of the plan
+Implemented By: main session; qa-verifier, adversarial-reviewer (folded with the security and performance lenses), scope-adjudicator and docs-curator dispatched
+Metrics: review rounds 1, closed major-closed; provenance 2 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 1 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal: "The plugin's manifest names who made it, and no file in the repository tells a reader or a script to set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`. From 2.1.287 a plugin whose `hooks/hooks.json` names a module loads with no flag, so every place that sets or documents the flag is a claim about a build the fleet no longer runs. When this ships, `.claude-plugin/plugin.json` carries an `author`, the README's types section no longer asks for the flag, the upgrade check's steps 2 and 7 run in the plain environment, its unit test pins that no step sets the flag, and the five live-test scripts no longer export it."; What the tree does now: the plugin's manifest credits "Dreamed up by Scott Applefeld, built by Claude" and still carries no version. The upgrade check hands every Claude Code session it starts this process's own environment and adds no setting. A unit test fails if any of the check's five session launches carries the old function-hooks setting under any value. The README and the five live-test scripts no longer set or ask for it, and the backlog no longer tells a reader to run the types command with it set. A 2.1.287 session with the setting nowhere in its environment or settings loaded this checkout's hooks module at tier user, read from its debug log; Refinements during the run: acceptance bullet 4 amended to "the flag's absence changes neither step 2's nor step 7's verdict", ruled by the ARCHITECT persona, since step 2 fails on 2.1.287 either way; acceptance bullet 2's allowed hits widened to this plan document and its index line, declared by the worker; the unit case's predicate widened from the value '1' to any value (round-1 review); the unit case planted a test file and pinned all five call kinds so step 6 is swept (finishing review, declared in scope by the goal read); the backlog's /plugin-types remedy rewritten (goal read); step 2's repair routed to the types probe plan, which the ARCHITECT wrote and the coordinator queued behind this one; Operator-pending: remove the flag from each fleet host's settings and environment and confirm the module loads; decide on the root CLAUDE.md warning.
+Decisions / Surprises:
+- finishing adversarial Major 2: plants a test file in the inverted case and asserts the five call kinds; serves the Intent clause "no step's child environment carries it"; adds no mechanism; size 3 lines; not building it leaves step 6's spawn unswept.
+- goal read ASKED-BUT-UNBUILT: rewrites docs/backlog.md's remedy paragraph for the MCP declarations entry; serves the Goal sentence "no file in the repository tells a reader or a script to set CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"; adds no mechanism; size 1 paragraph; not building it leaves a remedy telling a reader to run /plugin-types with the flag set.
+- The ARCHITECT persona confirmed how 2.1.287 writes type declarations: the engine writes `.claude-plugin/types/` (claude-code, claude-code-mcp and claude-code-tools) into a plugin passed with `--plugin-dir`, never into the installed cache. The types probe plan carries the repair.
+- The QA verifier's probe removed the flag from both the process and a copied settings directory, ran `claude -p --plugin-dir` on this worktree, and its debug log reads "hooks module agentic-plugin@inline loaded (worker, environment 2, tier user)". That confirms the plan's first assumption directly.
+- The branch was merged with origin/main at 0a44154 before the whole gate, so one gate run covered the merge.
+- The new backlog entry names `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` literally, because it tells the operator to remove the flag and they need the exact name. It tells no one to set it.
+- The curator's two sentences in docs/architecture.md were moved after the record sentences, so the paragraph's "Both" again names the pre and post verbs.
+- The types probe plan reference in this plan names its branch, since its file is not on this branch and the link would point at nothing on main until that plan merges.
+Failed approaches: none
+Assumptions: none beyond Chapter 1's
+Review Findings: review: finishing adversarial (folded security and performance) at fable, Workflow (high). Majors: acceptance bullet 4 unmet without an amendment, fixed by the Standing Brief Amendments block carrying the ARCHITECT's ruling; the flag pin left step 6 unswept, fixed with a control (flag planted on step 6 alone: 59 passed, 1 failed, exit 1; restored 60 passed, 0 failed, exit 0). Security and performance: no findings. Minors: 1 fixed (the index line's wording, rewritten at archive), 0 upgraded, 2 left with the reason in .kit/scratch/post-upgrade-cleanup/finishing/minors.md (the README recipe belongs to the types probe plan; childEnv is kept as the Approach asked and the types probe plan edits its callers next). goal read: 1 built-but-unasked (0 refused, 1 declared, 0 asked), 1 asked-but-unbuilt, fixed. Drift: D1 deviation, the header comment at bin/upgrade-check.mjs:4 never named the flag, already recorded in Chapter 1; no mistakes. QA: whole gate 33 of 33 lanes exit 0 at 0a44154; contention lane .kit/live-all.sh exit 10, its designed refusal beside the live fleet; bullets 2 and 4 met under the amendments; bullet 5 verified by execution for the interrupt script, and by the Chapter 1 preamble runs plus bash -n for the other four.
+Stamps: adjudicated 5, stamped 1 (forward-resource-arrangements-into-dispatch-briefs, operator tier)
+Gate:
+Next: none
+Commit Model: Branch-and-PR
