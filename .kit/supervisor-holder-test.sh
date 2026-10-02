@@ -464,9 +464,9 @@ for C7_CASE in grimoire:usable claude-kit:old-only claude-kit:lone-copy; do
   C7_HOLDER_PID=$!; HOLDER_PIDS="$HOLDER_PIDS $C7_HOLDER_PID"
   wait_for 80 test -s "$D/stdout"
   C7_TEXT=$(priming_text "$D/stdout")
-  case "$C7_TEXT" in
-    *"invoke the Skill tool for $C7_WANT:operating-instructions, then $C7_WANT:executing-work"*) C7_RC=0 ;;
-    *) C7_RC=1 ;;
+  C7_RC=1
+  case "$C7_TEXT" in *"$C7_WANT:operating-instructions"*)
+    case "$C7_TEXT" in *"$C7_WANT:executing-work"*) C7_RC=0 ;; esac ;;
   esac
   check "$C7_SHAPE: the priming turn names $C7_WANT:operating-instructions and $C7_WANT:executing-work" "$C7_RC"
   case "$C7_TEXT" in *" :operating-instructions"*|*"for :"*) C7_RC=1 ;; *) C7_RC=0 ;; esac

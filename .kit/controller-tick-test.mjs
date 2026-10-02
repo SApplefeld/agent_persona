@@ -16526,7 +16526,7 @@ async function caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock) {
   // install. A change to either reader's rule that the other does not share
   // reds here rather than priming skills the plugin's install does not hold.
   const prefixFn = readFileSync(join(import.meta.dirname, "..", "bin", "agentic-common.sh"), "utf8")
-    .match(/^kit_skill_prefix\(\) \{$[\s\S]*?^\}$/m)?.[0];
+    .replace(/\r/g, "").match(/^kit_skill_prefix\(\) \{$[\s\S]*?^\}$/m)?.[0];
   check("bank2 kit keys: kit_skill_prefix is found in bin/agentic-common.sh", typeof prefixFn === "string");
   const prefixFor = (plugins) => {
     const home = mkdtempSync(join(tmpdir(), "kit-prefix-"));
@@ -16534,7 +16534,7 @@ async function caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock) {
       mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
       writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins }));
       const r = spawnSync("bash", ["-c", `${prefixFn}\nkit_skill_prefix`], { env: { ...process.env, USERPROFILE: home, HOME: home }, encoding: "utf8" });
-      return r.stdout.trim();
+      return r.error ? `bash did not run: ${r.error.message}` : (r.stdout ?? "").trim();
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
