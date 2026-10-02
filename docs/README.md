@@ -9,7 +9,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_public-marketplace_spec_v1.md`: The persona plugin publishes its runtime folder to the public marketplace repository on a tag, and the supervisor and the runbook install it from there (the kit's publish job instanced here with this repository's allowlist, the installed id `personas@applefeld` with a migration from the former id, and the client sandbox runbook installing all three plugins from the public marketplace). Ready 2026-10-02, one section; waits on the personas rename merging. Sibling of the kit's `claude-kit_public-marketplace_spec_v1.md`.
 
 ## Archived plans
 
