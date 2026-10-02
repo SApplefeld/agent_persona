@@ -402,9 +402,10 @@ ARCH_SKILLS_JUDGMENT_CONTROL="for a finishing judgment ${KIT_SKILL_PREFIX}:finis
 # information rather than an ask, so it has to say the launch prompt is not that
 # case, or the seat bounces the operator's own task back to the steward.
 ARCH_LAUNCH_PROMPT_CONTROL="the operator's own trusted task"
-# This seat holds no goal node and the tick starts no turn on an empty inbox, so
-# nothing resumes an ask left half done. The charter's answer is visibility: the
-# seat reports where it got to before the turn ends.
+# This seat holds one goal entry per plan it is writing, and the tick nudges an
+# active entry, but an ask worked with no entry has nothing resuming it, since
+# the tick starts no turn on an empty inbox. The charter's answer is visibility:
+# the seat reports where it got to before the turn ends.
 ARCH_UNFINISHED_CONTROL="before you end a turn with an ask still open"
 # The steer sentence does not reach this seat either, so the charter is what
 # says a coordinator record is this seat's work item. Without that clause an
