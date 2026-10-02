@@ -36,6 +36,7 @@ Alternatives refused. A `version` field in the manifest: refused by the operator
 
 - Section 1, acceptance bullet 4 reads: `node bin/upgrade-check.mjs pre` on a 2.1.287 build, with the flag unset and again with it set, gives the same verdict on step 2 and on step 7, and step 7 passes. Step 2 fails on 2.1.287 either way, because that build has no `/plugin-types` command. Its repair is the types probe plan, `docs/plans/agent_persona_types-probe_spec_v1.md`. Ruled by the ARCHITECT persona on 2026-10-02.
 - Section 1, acceptance bullet 2's allowed hits also include this plan document and its `docs/README.md` index line, which describe the plan and tell no one to set the flag. Declared by the worker on 2026-10-02 as a reading of the Goal sentence, not a ruling.
+- Section 1: the inverted unit case plants a test file, so step 6 spawns, and asserts the five call kinds version, types, validate, test and smoke before sweeping them for the flag.
 
 ## Sections of Work
 
