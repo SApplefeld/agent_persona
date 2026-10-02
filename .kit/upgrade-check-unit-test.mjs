@@ -396,13 +396,13 @@ const cases = [
   }],
 
   // --- The function-hooks flag, which the engine no longer needs to load the
-  // plugin: no step's child environment carries it.
+  // plugin: no step's child environment carries it, under any value.
   ["no step's child environment carries CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", () => {
     // Cleared in the launch environment first: a machine that still sets the
     // flag globally would otherwise pass it to every step and fail the case
     // for a reason the check does not own.
     const { paths, r } = passingPre('function-hooks', { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '' });
-    const withFlag = r.calls.filter((c) => c.functionHooks === '1').map((c) => c.kind);
+    const withFlag = r.calls.filter((c) => c.functionHooks !== '').map((c) => c.kind);
     assert.deepEqual(withFlag, [], JSON.stringify(r.calls.map((c) => [c.kind, c.functionHooks])));
     // The types and smoke steps run in the scratch folder, so the plugin finds no persona there.
     const scratchCalls = r.calls.filter((c) => c.kind === 'types' || c.kind === 'smoke');
