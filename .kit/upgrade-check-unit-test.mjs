@@ -497,6 +497,10 @@ const cases = [
     fs.mkdirSync(staleDir, { recursive: true });
     fs.writeFileSync(join(paths.scratch, SCRATCH_MARKER), '');
     fs.writeFileSync(join(staleDir, 'index.d.ts'), '// Written by Claude Code 0.0.1.\n');
+    // The tables beside it too, so only the emptying can turn step 2 to fail.
+    const staleTools = join(paths.scratch, 'types-probe', '.claude-plugin', 'types', 'claude-code-tools');
+    fs.mkdirSync(staleTools, { recursive: true });
+    fs.writeFileSync(join(staleTools, 'index.d.ts'), '');
     fs.writeFileSync(join(paths.scratch, 'leftover.txt'), 'from an earlier run');
     const r = run(paths, ['pre', '--repo', paths.repo, '--results', paths.results, '--scratch', paths.scratch, '--canary', 'FIXTURE'],
       { FAKE_CLAUDE_TYPES_WRITE: 'none' });

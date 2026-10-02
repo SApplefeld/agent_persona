@@ -833,7 +833,7 @@ export function pre(flags) {
   fs.writeFileSync(path.join(probeDir, '.claude-plugin', 'plugin.json'), '{"name":"upgrade-check-types-probe"}');
   fs.writeFileSync(path.join(probeDir, 'hooks', 'hooks.json'), '{"modules":["./register.js"]}');
   fs.writeFileSync(path.join(probeDir, 'hooks', 'register.js'), "export function register(on) { on('session.start', async ($, e, next) => next(e)) }\n");
-  const probeCommand = 'CLAUDE_CONFIG_DIR="' + configDir + '" claude -p "/version" --plugin-dir "' + probeDir + '"';
+  const probeCommand = 'env ' + PROBE_LOGIN_KEYS.map((key) => '-u ' + key).join(' ') + ' CLAUDE_CONFIG_DIR="' + configDir + '" claude -p "/version" --plugin-dir "' + probeDir + '"';
   // A login carried in the environment would log the run in despite the empty
   // config directory, and a logged-in run sends "/version" to the model, so
   // the probe's environment drops those keys. The other steps keep theirs.
