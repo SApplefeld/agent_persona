@@ -38,6 +38,12 @@ The supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_
 - **Relaunch each persona's supervisor after the installed plugin updates.** A holder launched by an older supervisor watches no interrupt file, and a child loads `fleet_interrupt` only from the updated plugin. Until the relaunch, `fleet_interrupt` writes a request nothing relays. A failure here shows as `fleet_interrupt` answering and no `INTERRUPT:` line in that persona's `supervisor.log`, which reopens the plan.
 - **Run `.kit/live-all.sh` once the fleet is down.** It refuses with exit 10 while the live Steward holds its claim, so the finishing gate ran every other lane. A red there reopens the plan.
 
+## Operator checks owed by the types probe plan (parked 2026-10-02)
+
+The types probe plan (`docs/archive/agent_persona_types-probe_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Run `.kit/live-all.sh` once the fleet is down.** It refused with exit 10 on a live persona claim at both of the finishing pass's whole gates, which ran every other lane green. A red there reopens the plan. The same run discharges the supervisor interrupt plan's item above.
+
 ## Findings the supervisor interrupt finishing pass deferred (found 2026-09-30)
 
 The finishing reviews of the supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_spec_v1.md`) raised four Minors that serve no part of that plan's Goal. Each is deferred here with its likely remedy.
@@ -962,7 +968,7 @@ What it costs is type narrowing rather than behaviour. The declarations merge in
 
 It is not edited by hand on its own instruction, and it sits in no section's scope, which is why it is here rather than folded into the section that made it stale.
 
-Remedy: regenerate it the way the item above states, since the same engine write produces both files and no `/plugin-types` command exists from Claude Code 2.1.287. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
+Remedy: regenerate it the way the item "The generated tool-list mirror does not list fleet_restart" states, since the same engine write produces both files and no `/plugin-types` command exists from Claude Code 2.1.287. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
 
 ## A promoted turn record has `false` written for the outcome that scores the turn-open question (found 2026-09-27)
 
