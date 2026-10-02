@@ -6,8 +6,8 @@
 # The priming turn's skill-load instruction (SKILL_LOAD_INSTRUCTION in bin/supervise-holder.sh)
 # assumes the kit plugin is installed globally on the host running this
 # script, under either name: it names the kit's skills by their plugin-qualified
-# names, qualified by grimoire where installed_plugins.json holds the
-# grimoire@applefeld key and by claude-kit otherwise (kit_skill_prefix in
+# names, qualified by grimoire where installed_plugins.json holds a usable
+# grimoire@applefeld record and by claude-kit otherwise (kit_skill_prefix in
 # bin/agentic-common.sh).
 #
 # By default the child loads agentic-plugin as an installed plugin (plan

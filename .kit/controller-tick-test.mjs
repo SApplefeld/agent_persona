@@ -16516,7 +16516,34 @@ async function caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock) {
     { label: "old key alone", plugins: { "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
     { label: "both keys, old record newer", plugins: { "claude-kit@applefeld": oldRecord("2026-10-01T00:00:00.000Z"), "grimoire@applefeld": newRecord("2026-09-01T00:00:00.000Z") }, install: NEW_INSTALL },
     { label: "new key present with no usable record, old key usable", plugins: { "grimoire@applefeld": [], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "new key with an unusable record before a usable one", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: NEW_INSTALL }, ...newRecord("2026-09-25T09:59:04.362Z")] }, install: NEW_INSTALL },
+    { label: "new key whose lastUpdated does not parse, old key usable", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: NEW_INSTALL, lastUpdated: "never" }], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "new key whose installPath is blank, old key usable", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: " ", lastUpdated: "2026-09-25T09:59:04.362Z" }], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
   ];
+  // The supervisor's kit_skill_prefix (bin/agentic-common.sh) reads the same
+  // file by the same usable-record rule, so each fixture here is also handed
+  // to it: it must answer grimoire exactly where this lookup runs the grimoire
+  // install. A change to either reader's rule that the other does not share
+  // reds here rather than priming skills the plugin's install does not hold.
+  const prefixFn = readFileSync(join(import.meta.dirname, "..", "bin", "agentic-common.sh"), "utf8")
+    .match(/^kit_skill_prefix\(\) \{$[\s\S]*?^\}$/m)?.[0];
+  check("bank2 kit keys: kit_skill_prefix is found in bin/agentic-common.sh", typeof prefixFn === "string");
+  const prefixFor = (plugins) => {
+    const home = mkdtempSync(join(tmpdir(), "kit-prefix-"));
+    try {
+      mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+      writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins }));
+      const r = spawnSync("bash", ["-c", `${prefixFn}\nkit_skill_prefix`], { env: { ...process.env, USERPROFILE: home, HOME: home }, encoding: "utf8" });
+      return r.stdout.trim();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+  for (const c of runs) {
+    const want = c.install === NEW_INSTALL ? "grimoire" : "claude-kit";
+    const got = typeof prefixFn === "string" ? prefixFor(c.plugins) : "";
+    check(`bank2 ${c.label}: kit_skill_prefix answers ${want}, the name of the install this lookup runs`, got === want, got);
+  }
   for (const c of runs) {
     clock.set(T0);
     const h = await bank2NoGoalHarness(`bank2_keys_${runs.indexOf(c)}`);
@@ -16540,6 +16567,8 @@ async function caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock) {
   check("bank2 neither key: exactly one skipped decision naming both keys",
     decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped"
       && decisions[0].detail.includes("no grimoire@applefeld or claude-kit@applefeld install record is usable"), decisions);
+  const neitherPrefix = typeof prefixFn === "string" ? prefixFor({ "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] }) : "";
+  check("bank2 neither key: kit_skill_prefix answers claude-kit", neitherPrefix === "claude-kit", neitherPrefix);
 }
 
 // A run that exits non-zero, and a run that rejects (the host's timeout
