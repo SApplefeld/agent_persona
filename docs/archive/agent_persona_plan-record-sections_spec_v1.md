@@ -1,6 +1,6 @@
 # The plan holder carries the section total and the next line beside its Chapter count
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
@@ -38,6 +38,9 @@ Provenance: distilled by the ARCHITECT persona on 2026-10-01 from the ASSISTANT 
 - The Next: value is folded through `oneLine`, its whitespace runs collapsed to one space and trimmed, cut to 200 code points, and read null where empty; the first Next: line under the latest Chapter ends the search whatever its value.
 - The tick suite pins that a holder whose document now counts fewer Chapters keeps its stored count and logs nothing.
 - Only the first `## Sections of Work` heading and the first `## Chapters` heading open a block, as the card's block reader takes the first match; a repeated heading ends the open block and opens nothing.
+- A repeated Chapter number reads the later-written Chapter's `Next:` line, a tie-break inside the highest-numbered rule.
+- An unchanged or lower Chapter count logs nothing and leaves the stored count as it is, and `README.md` says so beside the turn-end read.
+- The docs index carries this plan's Active plans line while it runs.
 
 ## Sections of Work
 
@@ -113,3 +116,23 @@ Delta: 2026-10-02 18:05, this machine, worktree at b618669. kit-size reports:
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+### Chapter 2 - 2026-10-02
+Completed: finishing pass
+Implemented By: main session (close pass d54e537, docs close); implementer-opus for the linear-pattern fix 9474501; QA, reviews and the goal read by dispatched agents
+Metrics: review rounds 2 (security, performance and adversarial at fable; the fix's adversarial re-review at fable), closed claim-exit; provenance 4 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 4 declared, 0 asked); advisory: 1 finding at Major (performance), 1 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 1 (the first goal read, re-dispatched); escalations none; consults 0
+Recap: Goal: "A plan entry in the persona store carries three readings of its document after every turn-end read: the Chapter count it carries today, the number of sections the document declares, and the `Next:` line of its latest Chapter." Delivered: `parsePlanRecord` returns `sections` and `next`, the turn-end read writes `sectionCount` and `nextSection` on a `read` reading only, and the heading rules accept exactly the lines the board card's accept.
+Decisions / Surprises:
+- finishing open: close the plan after the finishing reviews, fixing the performance Major and the Minors; serves the Goal as built; adds no mechanism; about 40 lines of code and tests; not doing it ships a turn-end read that can stall for over 20 seconds on one hostile heading line.
+- Base ref: 73eea1a, the merge-base with origin/main.
+- QA (qa-verifier): the whole offline gate on the tree before the linear-pattern fix, 2026-10-02 18:07 to 18:53, 31 markers all 0 (30 lanes and the wrapper) and natexit-parallel `342 OK, 0 FAIL`, every acceptance bullet checked.
+- The performance lens found the card's block and section patterns quadratic on a whitespace run that ends in a lone CR, U+2028 or U+2029. Re-measured at the 256 KiB cap with `cap-timing.mjs`: 21.8 s and 25.1 s on the card's forms, under 1 ms on the linear forms. The ARCHITECT ruled linear forms accepting exactly the same lines (record ARCHITECT-016dcefe-7b83-4454-94ad-8ecdc9ca1f7f-7). An exhaustive differential run over 7,794,868 strings found 0 differences, re-run at close. Fixed in 9474501 with a bounded equality pin. The same exposure in the broker's card went to STEWARD as a finding.
+- The fix's re-review (adversarial at fable) APPROVED with three Minors, closed in d54e537: the parser drops a leading byte-order mark as the card does, the suite's terminator check reads the source files' bytes, and one test comment is corrected. The byte-order-mark pin was red against 9474501's parser and is the only failure there.
+- Goal read: 4 built-but-unasked items, all accept-and-declare and added to Standing Brief Amendments: first-block-only, the repeated-Chapter tie-break, the lower-count README sentence with its tick case, and the docs index line. Nothing promised is unbuilt. The first dispatch returned NEEDS_CONTEXT on a truncated extract of the plan's what and was re-dispatched with line-anchored headings.
+- Docs curation ran in the main thread, since the kit guard refuses a subagent's write under docs/: `README.md` and `docs/architecture.md` already state the two fields and the rules; the index moves this plan to Archived plans; the backlog carries the operator's board-card check.
+Failed approaches: tried writing a test literal holding \n escapes through the edit tool, failed because the escapes landed as live line breaks and the suite failed to parse, learned to build such literals from character codes in a script and to read a red run's log before trusting its exit code.
+Assumptions: none
+Review Findings: review: security + performance + adversarial at fable, Workflow effort high; re-review: adversarial at fable, Agent tool; goal read: scope-adjudicator at fable, Agent tool, frontmatter effort high. Security: CLEAR, 3 Minors fixed (the first-Next: comment, "200 code points", the pre-slice before Array.from). Performance: one Major fixed (the quadratic patterns); two Minors left as bounded costs (nextValue about 14 ms at the cap before the pre-slice, the holder writes riding the existing persist). Adversarial: APPROVED, 2 Minors fixed (the agreement claim narrowed to the heading rules, the docs index line).
+Stamps: none further surfaced beyond the section Chapter's sweep.
+Gate: GATE-PENDING
+Next: none
+Commit Model: Branch-and-PR
