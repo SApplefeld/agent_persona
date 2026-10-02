@@ -12,7 +12,7 @@
 // turn for the entry that was active when the turn started, when that entry
 // has a plan.
 
-import { PLAN_PATH_PATTERN } from "./agent-state";
+import { PLAN_PATH_PATTERN, oneLine } from "./agent-state";
 
 export interface PlanRecord {
   complete: boolean;
@@ -52,36 +52,71 @@ const PLAN_DIR_PREFIX = "docs/plans/";
 // header reading "Status: In Progress" governs over it. A document with no
 // Status line in its header is simply not complete.
 //
-// Chapters: the number of "### Chapter N" headings under the "## Chapters"
-// heading, counted up to the next "## " heading. N is the digits; what
+// The Chapters, Sections and Next rules below use the five heading patterns
+// the Discord board card in the broker's repository uses, in
+// `broker/board/plans.ts`, which the external engine's own reading shares. The
+// card and this parser therefore agree on the Chapter count, the section count
+// and the next line of the same file. That agreement does not cover Complete,
+// which keeps its own rule above.
+//
+// A block is the lines after its heading up to the next block heading, a line
+// opening "##" then whitespace then text. "###" and deeper headings never end
+// a block, and neither does "##text" with no whitespace. Only the first
+// heading of a block's name opens it: a second "## Chapters" or
+// "## Sections of Work" further down is read as a foreign heading that ends
+// whatever block is open.
+//
+// Chapters: the number of "### Chapter N" headings in the "## Chapters"
+// block, with any whitespace run between the words. N is the digits; what
 // follows them (a colon, a dash and a date, a suffix) is convention rather
 // than the contract, so "### Chapter 1: title" counts. "### Interim board N"
-// and a "### Chapter" with no number are not Chapters. The heading may carry
-// text after the word, as "## Chapters (append-only)" does. A document with
-// no "## Chapters" section has zero.
+// and a "### Chapter" with no number are not Chapters. The block heading is
+// "##", whitespace, "Chapters", then nothing but whitespace, so
+// "## Chapters (append-only)" opens no block and its Chapters count nothing.
+// A document with no such block has zero.
 //
 // Sections: the number of "### N." headings inside the "## Sections of Work"
 // block, where N is one or more digits followed by a period and whitespace.
-// The block opens at a line reading "## Sections of Work", with nothing after
-// it but whitespace, and runs to
-// the next "## " heading of any text, so a foreign "##" heading inside it ends
-// it early and drops every later section. That edge is the plan-doc
-// contract's own, and the board card and the external engine count the same
-// way, so a count that disagreed with theirs about the same file would be the
-// wrong one. A "### N." line outside the block, and a "#### N." line inside
-// it, count nothing. A document with no such block has zero.
+// The block heading is "##", whitespace, "Sections of Work", then nothing but
+// whitespace. A foreign "##" heading inside the block ends it early and drops
+// every later section. That edge is the plan-doc contract's own, and the
+// board card and the external engine count the same way, so a count that
+// disagreed with theirs about the same file would be the wrong one. A "### N."
+// line outside the block, and a "#### N." line inside it, count nothing. A
+// document with no such block has zero.
 //
 // Next: the value of the first line opening with "Next:" under the
 // highest-numbered Chapter, the Chapters being the headings the count above
-// counts. A repeated number reads the later-written Chapter, the more recent
-// account of it. The value is trimmed and cut to NEXT_LINE_MAX_CHARS
-// characters, counted so an astral character is never halved. It is null
-// where there is no Chapter or the highest one carries no Next: line, even
-// where an earlier Chapter carries one. The key is case-sensitive and must
-// open the line, as the contract reads it.
+// counts. Every line from a Chapter's heading to the next Chapter heading or
+// the block's end is under it, an Interim board's lines included. A repeated
+// number reads the later-written Chapter, the more recent account of it. The
+// first Next: line ends the search whatever its value, so a bare "Next:"
+// above a "Next: y" reads null. The value is folded to one line through
+// oneLine, its whitespace runs collapsed to one space and trimmed, then cut to
+// NEXT_LINE_MAX_CHARS characters, counted so an astral character is never
+// halved. That is the card's own order: collapsing first means whitespace
+// never spends the cut. An empty value reads null, as does a document with no
+// Chapter or a highest Chapter with no Next: line, even where an earlier
+// Chapter carries one. The key is case-sensitive and must open the line, as
+// the contract reads it. Brackets in the value are kept as written.
 export const NEXT_LINE_MAX_CHARS = 200;
 
+const BLOCK_HEADING = /^##\s+.+$/;
+const SECTIONS_HEADING = /^##\s+Sections of Work\s*$/;
+const CHAPTERS_HEADING = /^##\s+Chapters\s*$/;
+const CHAPTER_HEADING = /^###\s+Chapter\s+(\d+)/;
+const SECTION_HEADING = /^###\s+(\d+)\.\s+(.*)$/;
+
+function nextValue(raw: string): string | null {
+  const collapsed = oneLine(raw).replace(/\s+/g, " ").trim();
+  const cut = Array.from(collapsed).slice(0, NEXT_LINE_MAX_CHARS).join("");
+  return cut === "" ? null : cut;
+}
+
 export function parsePlanRecord(text: string): PlanRecord {
+  // The split is the card's own. The LINE_TERMINATOR guard in ./agent-state
+  // governs text that leaves the parse for a reader, and the next line is the
+  // only free text here that does, so it alone is folded through oneLine.
   const lines = text.split(/\r?\n/);
 
   let complete = false;
@@ -98,34 +133,44 @@ export function parsePlanRecord(text: string): PlanRecord {
   let sections = 0;
   let inChapters = false;
   let inSections = false;
-  // The highest-numbered Chapter seen so far and its first Next: value, and
-  // whether the line being read sits under that Chapter.
+  let chaptersOpened = false;
+  let sectionsOpened = false;
+  // The highest-numbered Chapter seen so far, whether a Next: line has been
+  // seen under it and that line's value, and whether the line being read
+  // sits under that Chapter.
   let latest = -1;
+  let latestNextSeen = false;
   let latestNext: string | null = null;
   let underLatest = false;
   for (const line of lines) {
-    if (/^## /.test(line)) {
-      inChapters = /^## Chapters\b/.test(line);
-      inSections = /^## Sections of Work\s*$/.test(line);
+    if (BLOCK_HEADING.test(line)) {
+      inChapters = !chaptersOpened && CHAPTERS_HEADING.test(line);
+      inSections = !sectionsOpened && SECTIONS_HEADING.test(line);
+      if (inChapters) chaptersOpened = true;
+      if (inSections) sectionsOpened = true;
       underLatest = false;
       continue;
     }
-    if (inSections && /^###\s+\d+\.\s/.test(line)) sections += 1;
+    if (inSections && SECTION_HEADING.test(line)) sections += 1;
     if (!inChapters) continue;
-    const chapter = /^### Chapter (\d+)(?!\d)/.exec(line);
+    const chapter = CHAPTER_HEADING.exec(line);
     if (chapter) {
       chapters += 1;
       const n = Number(chapter[1]);
       underLatest = n >= latest;
       if (underLatest) {
         latest = n;
+        latestNextSeen = false;
         latestNext = null;
       }
       continue;
     }
-    if (underLatest && latestNext === null) {
+    if (underLatest && !latestNextSeen) {
       const next = /^Next:(.*)$/.exec(line);
-      if (next) latestNext = Array.from(next[1].trim()).slice(0, NEXT_LINE_MAX_CHARS).join("");
+      if (next) {
+        latestNextSeen = true;
+        latestNext = nextValue(next[1]);
+      }
     }
   }
 

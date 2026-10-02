@@ -85,8 +85,14 @@ check("### Chapter 1b and ### Chapter 8.2 count one each (N is the digits; what 
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1b", "### Chapter 8.2"]))).chapters === 2);
 check("### Chapters and ### Chapter with no number count zero",
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapters", "### Chapter "]))).chapters === 0);
-check("## Chapters (append-only) still opens the block",
-  parsePlanRecord(doc("Status: In Progress", "\n## Chapters (append-only)\n\n### Chapter 1\n")).chapters === 1);
+check("## Chapters (append-only) no longer opens the block, so its Chapter counts 0",
+  parsePlanRecord(doc("Status: In Progress", "\n## Chapters (append-only)\n\n### Chapter 1\n")).chapters === 0);
+check("###  Chapter 3, double-spaced, is a Chapter",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["###  Chapter 3"]))).chapters === 1);
+check("##  Chapters, double-spaced, opens the block",
+  parsePlanRecord(doc("Status: In Progress", "\n##  Chapters\n\n### Chapter 1\n")).chapters === 1);
+check("only the first ## Chapters block is read: a second one's Chapters count nothing",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1"]) + "\n## Related\n" + chaptersBody(["### Chapter 2", "### Chapter 3"]))).chapters === 1);
 check("a CRLF Chapters section counts",
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1", "### Chapter 2"])).replace(/\n/g, "\r\n")).chapters === 2);
 
@@ -117,6 +123,14 @@ check("## Sections of Work with only trailing whitespace still opens the block",
   parsePlanRecord(doc("Status: In Progress", "\n## Sections of Work  \t\n\n### 1. One\n")).sections === 1);
 check("an indented ### 1. line counts nothing (opening rule)",
   parsePlanRecord(doc("Status: In Progress", sectionsBody(["  ### 1. One", "### 2. Two"]))).sections === 1);
+check("##  Sections of Work, double-spaced, opens the block and counts its sections",
+  parsePlanRecord(doc("Status: In Progress", "\n##  Sections of Work\n\n### 1. One\n\n### 2. Two\n")).sections === 2);
+check("a ## heading with a tab, ##\\tOut of Scope, ends the block",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One", "### 2. Two"]) + "\n##\tOut of Scope\n\n### 3. Three\n")).sections === 2);
+check("##Out of Scope, with no whitespace, is no heading and does not end the block",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One"]) + "\n##Out of Scope\n\n### 2. Two\n")).sections === 2);
+check("only the first ## Sections of Work block is read: a second one's sections count nothing",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One"]) + "\n## Related\n" + sectionsBody(["### 2. Two", "### 3. Three"]))).sections === 1);
 
 // --- The next line ---
 console.log("\n=== parsePlanRecord: the next line ===");
@@ -142,6 +156,29 @@ check("an indented, marked-up or lower-case key is not the line (opening rule, c
   parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["  Next: indented", "**Next:** marked", "next: lower"])]))).next === null);
 check("an Interim board heading is not a Chapter, so its Next: line is not read",
   parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: from one"]), "### Interim board 2\n\nNext: from the board"]))).next === "from one");
+check("an Interim board after a latest Chapter with no Next: line contributes its Next: line, as the card reads it",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Completed: 1. One"]), "### Interim board 2\n\nNext: from the board"]))).next === "from the board");
+check("internal whitespace runs collapse to single spaces",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: a   b\t\tc  \t d"])]))).next === "a b c d");
+{
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: a\vb\fc\u0085d"])]))).next;
+  check("a VT, an FF and a NEL in the value each fold to a space, so the value is one line", got === "a b c d", got);
+}
+check("brackets in the value come back verbatim",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: [COORDINATOR id=1] x"])]))).next === "[COORDINATOR id=1] x");
+check("a bare Next: reads null",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next:"])]))).next === null);
+check("a Next: holding only whitespace reads null",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: \t \v "])]))).next === null);
+check("a bare Next: then Next: y reads null, since the first Next: line ends the search",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next:", "Next: y"])]))).next === null);
+{
+  // The collapse runs before the cut, so whitespace runs never spend the 200.
+  const value = Array.from({ length: 150 }, () => "w").join("     ");
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${value}`])]))).next;
+  const want = Array.from({ length: 150 }, () => "w").join(" ").slice(0, 200);
+  check("whitespace collapses before the 200-character cut", got === want, got && got.length);
+}
 {
   const long = "n".repeat(300);
   const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${long}`])]))).next;

@@ -3560,6 +3560,7 @@ async function main() {
     // the turn-end read writes to the plan holder.
     await casePlanSections1_readWritesBothFieldsAndDropRemovesNext(clock);
     await casePlanSections1_unreadableAndArchivedWriteNeither(clock);
+    await casePlanSections1_fewerChaptersKeepsTheCount(clock);
 
     // Section 1 (boundary-compaction): the plan document is read from the
     // directory the session runs in, not the launch checkout.
@@ -15611,6 +15612,36 @@ async function casePlanSections1_unreadableAndArchivedWriteNeither(clock) {
         holder && holder.sectionCount === 7 && holder.nextSection === "a stored line", holder);
     }
   }
+}
+
+// A holder at chapterCount 3 whose document now counts no Chapter keeps its
+// stored count and logs nothing, since the count only ratchets up, while the
+// same read still writes sectionCount and nextSection from the document. The
+// document's Chapters sit under "## Chapters (append-only)", a heading that
+// opens no block, so the read counts 0 Chapters and has no next line. The
+// holder is plan-1 above an active task-1, so only the read reaches plan-1.
+async function casePlanSections1_fewerChaptersKeepsTheCount(clock) {
+  console.log("\n=== plan-record-sections Section 1: a document counting fewer Chapters keeps the stored count ===");
+  clock.set(T0);
+  const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 3 });
+  const plan1Seed = tree.goals.find(g => g.id === "plan-1");
+  plan1Seed.sectionCount = 7;
+  plan1Seed.nextSection = "a stored line";
+  const h = await createTickHarness({ ...OPTS, caseName: "sections1_fewer_chapters", stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+  clock.advance(60_000);
+  const text = sections1Doc({ sections: ["One", "Two"], chapters: [{ n: 1, next: "2. Two" }, { n: 2, next: "3. Three" }] })
+    .replace("\n## Chapters\n", "\n## Chapters (append-only)\n");
+  h.fsMap.set(PLAN2_FILE, text);
+  await plan2ScoredTurn(h, "t-fewer", "on-goal");
+  const r = sections1Read(h);
+  check("sections1 fewer: chapterCount stays 3", r.holder && r.holder.chapterCount === 3, r.holder && r.holder.chapterCount);
+  check("sections1 fewer: no plan_progress decision (scope: every decision after the turn)",
+    r.planDecisions.filter(d => d.action === "plan_progress").length === 0, r.planDecisions);
+  check("sections1 fewer: no plan_* decision at all", r.planDecisions.length === 0, r.planDecisions);
+  check("sections1 fewer: sectionCount is the read's 2", r.holder && r.holder.sectionCount === 2, r.holder && r.holder.sectionCount);
+  check("sections1 fewer: nextSection is removed, since the read has no Chapter",
+    r.holder && !Object.prototype.hasOwnProperty.call(r.holder, "nextSection"), r.holder);
+  check("sections1 fewer: updatedAt is untouched", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
 }
 
 // --- Section 1 (boundary-compaction): the plan document is read from the live directory ---
