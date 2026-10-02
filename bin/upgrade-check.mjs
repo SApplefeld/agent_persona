@@ -84,6 +84,9 @@ import { TRANSCRIPT_SCAN_BYTES, transcriptPathsFor } from './supervise-liveness.
 export const STEP_TIMEOUT_MS = 180000;
 // The most output one child may print before it is stopped.
 export const OUTPUT_CAP_BYTES = 16 * 1024 * 1024;
+// The environment variables that log the engine in without a config folder,
+// which step 2's probe run drops so it makes no model call.
+export const PROBE_LOGIN_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'];
 // The file a run writes into a scratch folder it made. A later run empties a
 // non-empty scratch folder only where this file is in it.
 export const SCRATCH_MARKER = '.upgrade-check-scratch';
@@ -831,19 +834,40 @@ export function pre(flags) {
   fs.writeFileSync(path.join(probeDir, 'hooks', 'hooks.json'), '{"modules":["./register.js"]}');
   fs.writeFileSync(path.join(probeDir, 'hooks', 'register.js'), "export function register(on) { on('session.start', async ($, e, next) => next(e)) }\n");
   const probeCommand = 'CLAUDE_CONFIG_DIR="' + configDir + '" claude -p "/version" --plugin-dir "' + probeDir + '"';
-  const typesRun = runClaude(['-p', '/version', '--plugin-dir', probeDir], { cwd: scratch, env: { ...childEnv(), CLAUDE_CONFIG_DIR: configDir } });
-  const newTypesPath = path.join(probeDir, '.claude-plugin', 'types', 'claude-code', 'index.d.ts');
+  // A login carried in the environment would log the run in despite the empty
+  // config directory, and a logged-in run sends "/version" to the model, so
+  // the probe's environment drops those keys. The other steps keep theirs.
+  const probeEnv = { ...childEnv(), CLAUDE_CONFIG_DIR: configDir };
+  for (const key of Object.keys(probeEnv)) {
+    if (PROBE_LOGIN_KEYS.includes(key.toUpperCase())) delete probeEnv[key];
+  }
+  const typesRun = runClaude(['-p', '/version', '--plugin-dir', probeDir], { cwd: scratch, env: probeEnv });
+  // The engine writes the declarations as two files: the interface, and the
+  // built-in tools' tables that fill its BuiltinToolInputs and
+  // BuiltinToolResults. Steps 3 and 4 read the two joined in the committed
+  // single-file shape, the tables after the interfaces they fill.
+  const engineTypesDir = path.join(probeDir, '.claude-plugin', 'types');
+  const indexPath = path.join(engineTypesDir, 'claude-code', 'index.d.ts');
+  const toolsPath = path.join(engineTypesDir, 'claude-code-tools', 'index.d.ts');
+  const newTypesPath = path.join(scratch, 'claude-code.d.ts');
+  const readOrNull = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch (e) { return null; } };
+  const indexText = readOrNull(indexPath);
+  const toolsText = readOrNull(toolsPath);
   let newTypes = '';
-  try { newTypes = fs.readFileSync(newTypesPath, 'utf8'); } catch (e) { newTypes = ''; }
+  if (indexText && toolsText !== null) {
+    newTypes = indexText + (indexText.endsWith('\n') ? '' : '\n') + toolsText;
+    fs.writeFileSync(newTypesPath, newTypes);
+  }
   const newFirstLine = newTypes ? (newTypes.split(LINE_TERMINATOR)[0] || '') : '';
   const typesProblem = childProblem(typesRun);
+  const missing = [indexText ? '' : indexPath, toolsText !== null ? '' : toolsPath].filter(Boolean);
   if (typesProblem) {
     record('2. types', 'fail', probeCommand + ' ' + typesProblem);
-  } else if (!newTypes) {
-    record('2. types', 'fail', probeCommand + ' exited ' + typesRun.status + ' and wrote no ' + newTypesPath + ': ' + evidenceLine(typesRun.stderr || typesRun.stdout));
+  } else if (missing.length) {
+    record('2. types', 'fail', probeCommand + ' exited ' + typesRun.status + ' and wrote no ' + missing.join(' and no ') + ': ' + evidenceLine(typesRun.stderr || typesRun.stdout));
   } else {
     const firstOutput = (typesRun.stdout || typesRun.stderr || '').split(LINE_TERMINATOR).find((line) => line.trim()) || '';
-    record('2. types', 'pass', 'exit ' + typesRun.status + ' (' + evidenceLine(firstOutput).slice(0, 120) + '); ' + newTypesPath + ' first line: ' + evidenceLine(newFirstLine));
+    record('2. types', 'pass', 'exit ' + typesRun.status + ' (' + evidenceLine(firstOutput).slice(0, 120) + '); joined ' + indexPath + ' and ' + toolsPath + ' into ' + newTypesPath + ', first line: ' + evidenceLine(newFirstLine));
   }
 
   // --- Step 3. Compare the new interface against the committed one. ---

@@ -252,7 +252,7 @@ const cases = [
     assert.ok(fs.readFileSync(join(probeTypes, 'claude-code-mcp', 'index.d.ts'), 'utf8').includes('SCRATCH_MIRROR'));
     const config = JSON.parse(fs.readFileSync(join(paths.scratch, 'tsconfig.json'), 'utf8'));
     const named = (config.files || []).map((f) => resolve(f));
-    assert.ok(named.includes(resolve(probeTypes, 'claude-code', 'index.d.ts')), 'the new engine types are read');
+    assert.ok(named.includes(resolve(paths.scratch, 'claude-code.d.ts')), 'the joined new engine types are read');
     assert.ok(named.includes(resolve(paths.repo, '.claude', 'types', 'claude-code-mcp.d.ts')), 'the checkout mirror is read');
     for (const dir of config.include || []) assert.ok(!resolve(dir).startsWith(resolve(paths.scratch)), 'no scratch directory is included whole: ' + dir);
   }],
@@ -282,6 +282,35 @@ const cases = [
     const row = only(r.rows, '2. types');
     assert.equal(row.result, 'pass', row.evidence);
     assert.ok(row.evidence.includes(join(probeDir, '.claude-plugin', 'types', 'claude-code', 'index.d.ts')), row.evidence);
+  }],
+  ['step 2 joins the built-in tools\' tables after the interface, and steps 3 and 4 read the joined file', () => {
+    const { paths, r } = passingPre('types-joined', { FAKE_CLAUDE_TOOLS_TEXT: '// TOOLS_TABLES: the built-in tools.\n' });
+    const engineTypes = join(paths.scratch, 'types-probe', '.claude-plugin', 'types');
+    const joined = fs.readFileSync(join(paths.scratch, 'claude-code.d.ts'), 'utf8');
+    assert.equal(joined, fs.readFileSync(join(engineTypes, 'claude-code', 'index.d.ts'), 'utf8') + '// TOOLS_TABLES: the built-in tools.\n');
+    const row = only(r.rows, '2. types');
+    assert.equal(row.result, 'pass', row.evidence);
+    assert.ok(row.evidence.includes(join(engineTypes, 'claude-code', 'index.d.ts')) && row.evidence.includes(join(engineTypes, 'claude-code-tools', 'index.d.ts')), row.evidence);
+    // Step 3 diffs the joined file, so the tables' one line counts as one more
+    // added line than the same run with no tables.
+    const added = (rows) => Number(only(rows, '3. diff').evidence.match(/^\+(\d+) and/)[1]);
+    assert.equal(added(r.rows), added(passingPre('types-unjoined').r.rows) + 1, only(r.rows, '3. diff').evidence);
+  }],
+  ['a probe run that writes the interface but no built-in tools\' tables reads fail at step 2, naming the missing file', () => {
+    const { r } = passingPre('no-tools', { FAKE_CLAUDE_TOOLS_WRITE: 'none' });
+    const row = only(r.rows, '2. types');
+    assert.equal(row.result, 'fail');
+    assert.ok(row.evidence.includes(join('claude-code-tools', 'index.d.ts')), row.evidence);
+    assert.match(only(r.rows, '4. compile').evidence, /step 2 wrote no types file/);
+  }],
+  ['the probe run carries no login key from the environment, while the other steps keep theirs', () => {
+    const keys = { ANTHROPIC_API_KEY: 'fake-key', ANTHROPIC_AUTH_TOKEN: 'fake-token', CLAUDE_CODE_OAUTH_TOKEN: 'fake-oauth' };
+    const { r } = passingPre('probe-login', keys);
+    const types = r.calls.filter((c) => c.kind === 'types');
+    assert.equal(types.length, 1);
+    assert.deepEqual(types[0].loginKeys, [], 'the probe ran with no login key');
+    const smoke = r.calls.filter((c) => c.kind === 'smoke');
+    assert.deepEqual(smoke[0].loginKeys, Object.keys(keys), 'the smoke run kept the environment whole');
   }],
   ['a probe run that exits 1 having written the declarations reads pass, with the exit code as evidence', () => {
     // The engine exits 1 under an empty config directory, since no login
