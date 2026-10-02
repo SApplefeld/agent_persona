@@ -1,6 +1,6 @@
 # The architect's charter says a plan branch gets a draft pull request the worker finishes and a goal entry from the ask to that draft, so the habit survives a restart
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-02
 
@@ -44,6 +44,11 @@ The sentences state what the plugin does, read from `hooks/index.ts` on `origin/
 - Section 2's charter text carries the ARCHITECT's round 4 ruling of 2026-10-02 as the Approach now quotes it: the resume sentence after the pause sentence, the three-case hold, nothing else of yours, and the document looked for up to the checkout's root; README.md:80 reads holds the entries it adds.
 - Section 2's charter text carries the ARCHITECT's round 3 ruling of 2026-10-02 as the Approach now quotes it: the plan entry's planPath, the planner-never-planned condition and the next quiet controller tick on the relaunch, the report of an entry the seat did not add, and all three seat leads in the admission sentence; README.md:80 is in section 2's scope.
 - Section 2's charter text carries the ARCHITECT's round 2 ruling of 2026-10-02 as the Approach now quotes it: the relaunch on the last entry's completion, the turn-starting nudge and its hold, the propose-level admission rule, and goal_create with its first goal_add in one turn.
+- The draft pull request is titled as the plan and carries a one-paragraph body.
+- The goal-entry sentences carry their own detail: the completing note names the draft number, the root objective is the seat's design work for this fleet, the relaunch keeps the tree and the next goal_add reopens the root, and goal_status shows an entry paused by another's resume.
+- The charter's comment block restates the draft pull request and abandonment duties.
+- The liaison comment gives the steer rule as its reason for clearing the steer sentences.
+- `docs/architecture.md`'s ledger totals sentence moves with the architect row.
 
 ## Sections of Work
 
@@ -99,7 +104,7 @@ Tests: the ledger's size pin, as section 1; the charter test's own run, since it
 
 ## Related
 
-- `../archive/agent_persona_kit-name-tolerance_spec_v1.md`: the plan this one waited on, merged and archived at ef0e3f4, since both edit the charter line.
+- `agent_persona_kit-name-tolerance_spec_v1.md`: the plan this one waited on, merged and archived at ef0e3f4, since both edit the charter line.
 
 ## Chapters
 
@@ -162,3 +167,26 @@ Gate: targeted lane at section close, 2026-10-02 about 15:05 on this machine, wo
 Next: finishing-work
 Commit Model: Branch-and-PR
 Delta: as Chapter 1's reading, worktree at 202b701.
+
+### Chapter 3 - 2026-10-02
+Completed: finishing pass
+Implemented By: main session (corrections 1f1902a, docs close); QA, reviews, goal read and docs curation by dispatched agents
+Metrics: review rounds 1 (security, performance and adversarial at fable), closed claim-exit; provenance 3 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 5 declared, 0 asked); advisory: 3 findings at Major, 2 fixed, 1 accepted as stated (the per-report relaunch); NEEDS_CONTEXT 0; escalations none; consults 0
+Recap: Goal: "The architect's charter, the instruction text the supervisor writes into the architect's first turn, says that every plan branch the architect pushes gets a draft pull request against the trunk, reported by number with the branch and the filename, and that where the worker runs the plan on that branch it pushes its Chapters there and its finishing pass marks the pull request ready and arms its merge, while a draft the operator merges before the worker starts leaves the worker to cut its own branch and open its own pull request, so the architect never marks one ready and never merges one. It also says that when a plan the architect wrote is no longer to run, whether a later plan supersedes it or the architect or the operator drops it, the architect tells the coordinator first, which may have queued the plan for a worker, then marks the plan Abandoned naming the successor or the reason and closes its pull request, where one is still open, with a note saying the same, all in the stretch that reaches the decision, a plan already on the trunk taking the mark on a fresh branch under its own draft reported as the operator's to land. The charter also says that every plan the architect writes is one entry on its goal tree from the ask to the draft pull request: added with goal_add in the turn that takes the ask, paused while the ask waits on the operator, completed with goal_done in the turn that reports the draft's number, and completed with goal_done, the note saying abandoned and why, when the plan is abandoned, so a restart resumes the architect on the entry rather than on nothing. The sentences saying the architect holds no goal node, in the charter and in the comments, the architecture reference and the charter test's comments that restate them, say the new thing. The injection ledger's baseline and the architecture reference's size row read the new charter's size, and the offline gate is green."; Now: the architect persona's standing instructions tell it to open a draft pull request for every plan branch it pushes and report its number, to leave marking it ready and merging it to the worker or the operator, and to abandon a plan it drops by telling the coordinator first and closing its open pull request. They also tell it to keep one goal entry per plan it is writing, carrying the plan's file path so the plugin treats it as a plan rather than a task, paused while waiting on the operator and completed when the draft is reported, so a restart resumes it on that plan. They say plainly that completing its last open entry relaunches it, so it finishes everything else in hand first. The size ledger, the architecture reference, the README and the client-sandbox runbook describe the same; Refinements during the run: pull request 146 merged the plan alone before any section ran, so the run worked on a new branch cut from main; the ARCHITECT ruled four rounds of review findings (the finishing pass arms the merge rather than merging, abandonment in already-merged states, the per-report relaunch, the entry's planPath, the resume rule and the nudge's three holds); the finishing pass corrected three of those ruled sentences with the ARCHITECT's consent (the launch turn admits a plan entry, the full ASK: marker, the archived case); README.md joined section 2's scope; Operator-pending: relaunch the architect on the updated plugin and read its first turn and next report; read its goal tree after its next plan; decide who lands an Abandoned mark for a plan already on the trunk
+Decisions / Surprises:
+- finishing open: close the plan after the finishing reviews, applying their corrections to the charter and the curator's restatement edits; serves the Goal as built; adds no mechanism; prose in five files; not doing it ships a charter that tells the architect to skip the goal entry on a launch-prompt plan.
+- Base ref: 6da8065, the merge-base with origin/main; main did not move during the run.
+- QA (qa-verifier): the whole offline gate at 90d78b2, 31 markers all 0 and natexit-parallel `342 OK, 0 FAIL`, every acceptance bullet of both sections checked by script.
+- The finishing security and adversarial lenses both found that the launch turn admits a plan entry: the supervisor sends the task prompt as its own sdk-origin turn after priming, so round 4's finding and the clause it produced were wrong. Confirmed in `bin/supervise-holder.sh` (goal_prompt_json) and `hooks/index.ts` (the priming test and turnIsOperators). The performance lens found a bare ASK: line opens no question. The adversarial lens found an archived copy also completes the entry. All three fixed in 1f1902a; the ARCHITECT confirmed each and raised no objection.
+- The per-report relaunch (performance Major) is stated in the charter and accepted; the ARCHITECT reports the operator has asked for a later plan removing it for every persona.
+- Docs drift adjudicated, all deviations: README.md's architect paragraph and charter list, `docs/architecture.md`'s seat description and lost-answer row, the client-sandbox runbook's pull request lines and the docs index line now describe the draft pull request, abandonment and the goal entry. Chapter 2's ledger figures (12,100 and 12,876) predate 1f1902a's 35 characters; the shipped figures are 12,135, 12,911, 56,204 and 29,614.
+- Backlog: the operator's three checks, the holder test's one-off interrupt-request red, and the security lens's Minor that the abandonment sentence names no channel for an operator's drop.
+- Library hygiene noted and left: two archived plans sit under `docs/plans/archive/` rather than `docs/archive/`, which predates this effort.
+Failed approaches: tried taking a reviewer's reading of the launch turn as settled, failed because the priming turn and the task-prompt turn are two turns, learned to read the turn sequence in the supervisor before ruling on which turn an instruction applies to.
+Assumptions: none
+Review Findings: review: security + performance + adversarial at fable, Workflow effort high; goal read: scope-adjudicator at fable, Agent tool, frontmatter effort high. Security: threat model present, one Major (the launch turn) fixed, one Minor (the drop's channel) to the backlog. Performance: two Majors, the bare ASK: line fixed and the per-report relaunch accepted as stated; four Minors left as bounded costs (charter size growth, nudge cadence, the plan-path walk, the ask expiry). Adversarial: one Major (the launch turn) fixed; Minors fixed (`docs/architecture.md:421`, the archived clause, the restatements via docs curation). goal read: 5 built-but-unasked (0 refused, 5 declared, 0 asked), 0 asked-but-unbuilt.
+Stamps: none further surfaced beyond the section Chapters' sweep.
+Gate: PENDING
+Next: none
+Commit Model: Branch-and-PR
+Delta: PENDING
