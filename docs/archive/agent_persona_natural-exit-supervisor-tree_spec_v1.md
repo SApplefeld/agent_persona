@@ -1,6 +1,6 @@
 # The natural-exit suite's (nf) case ends the supervisor tree it starts, so a run leaves nothing behind
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
@@ -28,11 +28,19 @@ Alternatives refused. Reopening the archived writer-leak plan for a second secti
 
 **Two readings of the supervisor's own survival, and the reproduction decides.** The DETACH route exits 143, so it does not explain why the first supervisor process is alive in every leftover tree. `docs/backlog.md`'s item of 2026-09-29 offered a second reading: `sup_bg` records `$!` from `env -i ... bash supervise.sh &`, and under MSYS that wrapper might not replace itself with bash, so the TERM would land on `env` and never reach the supervisor. The ARCHITECT probed that reading on 2026-10-01 in this seat's Git Bash: a backgrounded `env -i PATH=... bash -c 'exec sleep 37'` recorded a pid that `ps` showed as the launched command itself, the Windows process list showed one `sleep.exe 37` and no `env.exe` for it, and a TERM to the recorded pid removed it from both lists with `wait` returning 143. So the TERM does reach the supervisor, and the backlog's reading is refuted for this shape. What the supervisor does after the TERM is what the reproduction reads: the run keeps its folder, and the first supervisor's `nf/supervise.out` and its log under `nf/rd` are read for a `DETACH` line, a `STOP` line, or neither, with the last line it wrote. A supervisor that logged DETACH and is still alive is wedged on the route's own exit, which is the supervisor finding the Intent routes out. A supervisor that logged nothing after the TERM did not handle it, and the Chapter says what the trap did instead.
 
-**The teardown.** The case gains a teardown that ends the tree the way the design ends a detached child: it reads the holder's pid from `nf/rd/child-1/holder.pid`, which `bin/supervise.sh:3952` writes, ends the holder, which closes the stub's input so the stub exits on its own, waits on the first supervisor, and then reads the process list by the run's `nf` fixture path and fails a new check if anything still names it. Where the reproduction shows the supervisor survives the TERM, the teardown ends it by its pid after the holder, and the Chapter records that the kill was needed. The (na) and (nb) cases at `:2305`, which also TERM a supervisor with a live child, are read for the same shape and take the same teardown where they have it; the Chapter says which.
+**The teardown.** The case gains a teardown that ends the tree the way the design ends a detached child: it reads the holder's Windows pid and start ticks from child-1's `handle.json` (`holderWinPid`, `holderTicks`, written at `bin/supervise.sh:3688`), ends the holder through the suite's ticks-matched `kill_process_snapshot`, which closes the stub's input so the stub exits on its own, and then reads the process list by the case's fixture path and fails a new check if anything still names it. A bare `holder.pid` is not used, since it holds an MSYS pid that nothing checks for identity. Where the reproduction shows the supervisor survives the TERM, the teardown ends it by its pid after the holder, and the Chapter records that the kill was needed. The (na) and (nb) cases, which also TERM a supervisor with a live child, are read for the same shape and take the same teardown where they have it; the Chapter says which.
 
 **The listing.** The exit trap at `:167` runs `kill_leaked_survivors` and removes the temp root. Before the removal, the suite lists every process whose command line names `$TMP`, through the same `Get-CimInstance Win32_Process` read the suite's other pins use, and fails the run with the list printed where any remain. The listing is the withheld control for the teardown: a run on the script as it stands today, with the listing added and the teardown not yet, must go red on the (nf) tree, and that red is recorded in the Chapter before the teardown lands.
 
 **The sweep.** The leftovers are ended by their current Windows pids after re-reading the process list and confirming each still names a `/tmp/tmp.*/nf/` path whose folder does not exist. The stub `claude` is ended first, then the holder, then the supervisor. The live fleet's own supervisors and holders carry no `/tmp/tmp.*` path, and nothing is ended whose command line lacks one or whose temp folder still exists, since a folder that exists may be a suite run in progress in another session.
+
+## Standing Brief Amendments
+
+- The exit listing also fails the run when the process table cannot be read, and reports how many processes it read and how many had no readable command line; it still ends nothing.
+- The run's PASS or FAIL verdict line and its exit code are set in the exit trap, after the listing, with `kill_leaked_survivors` called unchanged.
+- The (nf) case also checks that its first supervisor exits 143 on the TERM, reading the `wait` status the case already holds.
+- The (na) case takes the same teardown and the same tree-gone check as (nf).
+- The `start_heartbeat_writer` comment says the exit listing catches a writer its caller's kill missed.
 
 ## Sections of Work
 
@@ -77,6 +85,10 @@ Tests: the reproduction both ways on (nf), the listing's red before the teardown
 
 - None.
 
+## Related
+
+- `agent_persona_natural-exit-writer-leak_spec_v1.md`: the archived plan whose dropped second section this plan carries. It made the (ne) case's heartbeat writer end itself.
+
 ## Chapters
 
 ### Interim board 1 - 2026-10-02
@@ -115,3 +127,25 @@ Delta: 2026-10-02, worktree at the commit carrying this Chapter. kit-size report
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 2 - 2026-10-02
+Completed: finishing pass
+Implemented By: main session (the Minor pass, bfc5a9a, and the close); reviews and the goal read by dispatched agents
+Metrics: review rounds 1, closed claim-exit; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 5 declared, 1 asked); advisory: 0 findings at Critical or Major, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations none; consults 0
+Recap: Goal: "A run of `.kit/supervisor-natural-exit-test.sh` leaves no supervisor, holder or stub child on the machine when it ends. Today every run's (nf) case leaves its first supervisor's whole tree: the `bin/supervise.sh` process, its `bin/supervise-holder.sh`, and the stub `claude` the holder feeds, each naming a fixture under `/tmp/tmp.*/nf` whose folder the run deleted at its exit. Eight such trees, 24 processes, sat on this machine on 2026-10-01, one per run, from four different worktrees. When this ships, the (nf) case ends the tree it started and proves it gone before the case closes, the suite's last step fails any run that leaves a process naming the run's own temp path, and the eight leftover trees are swept."; Now: the natural-exit test suite cleans up after itself. Two of its cases deliberately leave a supervisor's child process running when they stop the supervisor, and those cases now end that child and the small helper process feeding it, identifying the helper by its Windows process id and start time so a recycled id is never hit, and then check that nothing is left naming the case's folder. At the end of every run the suite lists every process still naming the run's temporary folder and fails the run, printing them, if any remain or if the process list cannot be read; it ends none of them. The 32 leftover test processes found on this machine were ended, and the 24 live fleet processes were untouched; Refinements during the run: the approach's holder.pid teardown was replaced by the handle's Windows pid and start-ticks pair through the suite's ticks-matched kill (round 1, recorded in Chapter 1); the (na) case took the same teardown after it was found leaking the same way; five extras the goal read accepted and declared are recorded as Standing Brief Amendments (the unread-table red, the verdict moved into the exit trap, the (nf) 143 check, the (na) teardown, the writer comment); the Approach's teardown paragraph was updated to the as-built mechanism; Operator-pending: run the suite once after this merges and read the process list a minute after it exits, with no process naming a `/tmp/tmp.*` path
+Decisions / Surprises:
+- finishing open: close the plan with one Minor pass over the finishing reviews' Minors; serves the Goal as built; adds no mechanism; three small edits to one file; not doing it leaves a check out of the order the bullet names and a passing run printing an error-looking line.
+- The previous session ended while the finishing review wave was in flight. The security and performance lenses had finished at fable (every assistant line claude-fable-5-1: 31 and 43 lines) and their reports were read from their transcripts; the adversarial lens had stopped mid-read with no report and was re-dispatched at fable, effort high, through Workflow.
+- Base ref: 779b39122a1f764e7816e28434b26c69bd81ab41, the merge-base of the plan branch with origin/main.
+- Control for the exit listing's Windows forward-slash leg, which had no recorded red: a scratch copy of the suite with the (ne) writer's kill removed went red on `--cases ne` with `FAIL: exit: 1 process(es) still name this run's temp root /tmp/tmp.17yimPsSW7 (pids: 13304)`, the hit a node writer whose command line names the folder only as `D:/Temp/tmp.17yimPsSW7/...`. The writer then ended itself and nothing named the folder. The first two control runs were void: the copy resolved its helper folder from scratch and extracted 0 of 8 supervisor helpers, so its listing read as unread; pinning that folder fixed it. The backslash leg stays unproven, since no case writes that spelling.
+- The goal read's ask: the `docs/README.md` Active plans line for this plan, which no Goal sentence or bullet names. The judge and the orchestrator both recommend keeping it, since the index is library bookkeeping; this close moves it to Archived plans. It goes to the operator in the close-out and holds nothing.
+- Docs drift adjudicated, every item a deviation, none a mistake: the backlog's (nf) entry retired to `docs/archive/backlog-2026-Q4.md` (new this quarter); the backlog's line anchors for the (nh) case, `drive` and case (r) corrected to :2667, :2668, :2670, 1630 and 2159, read at bfc5a9a; the root README's natural-exit bullet gained the teardown and the exit listing; the index entry moved to Archived plans with the sweep's real count. The backlog's 218-check figure is left as the dated measurement of 2026-09-18 it is. The curator's D4 rests on a pre-change claim it could not read, so the PR description names it unverified.
+- Found work routed out: `ps_cmdline_match` in `.kit/live-interrupt-ratelimit-test.sh` sets no `MSYS2_ENV_CONV_EXCL`, now a backlog entry (inferred from reading, not run).
+Failed approaches: tried a scratch copy of the suite with only its root pinned, failed because the suite resolves its helper folder from its own path, learned to pin both HERE and ROOT in a relocated copy.
+Assumptions: none
+Review Findings: review: security + performance at fable, Workflow effort high (previous session, wf_aa9282b8-226); review: adversarial at fable, Workflow effort high (re-dispatched, wf_e1068a65-0ad); goal read: scope-adjudicator at fable, Agent tool, frontmatter effort high. No Critical or Major from any lens. Security: threat model present, CLEAR, npm audit 0. Performance: CLEAR. Adversarial: APPROVED_WITH_CONCERNS. Minors: 13 listed, 3 fixed in the close pass (check order, cleared-handle wording, wait ceiling comment), 1 closed by the listing control above, 4 closed by the docs close (README index, spec Approach, backlog drift, Gate pin carried on this Chapter), 0 upgraded, 5 left with the reason: the (nf) 143 pin duplicates (na)'s but the goal read declared it on the Intent's "first supervisor is read dead too"; the per-listing sleep stays so the wait's pace does not depend on the helper's internals; the (na)+(nb) teardown's two spawns on a dead pair cost about 2.5 s and keep one teardown shape; the unbounded `wait` on the first supervisor is pre-existing and reachable only on a supervisor defect the plan keeps out of scope; the fixture handle reader is bounded by the ticks match and by `D:\Temp`'s ACL, which reads write access for the operator's account, Administrators and SYSTEM only. goal read: 5 built-but-unasked (0 refused, 5 declared, 1 asked), 0 asked-but-unbuilt.
+Stamps: adjudicated 7, stamped 2 (gitbash-sed-strips-cr-in-text-mode, operator-on-discord-cannot-read-plan-docs-or-code); plus relay-status-cadence-is-one-message-per-section-close stamped at the finishing open.
+Gate: PENDING
+Next: none
+Commit Model: Branch-and-PR
+Delta: PENDING

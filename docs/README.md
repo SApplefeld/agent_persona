@@ -9,10 +9,11 @@
 
 ## Active plans
 
-- `plans/agent_persona_natural-exit-supervisor-tree_spec_v1.md`: The natural-exit suite's (nf) case ends the supervisor tree it starts (the case ends the holder it left behind so the stub exits, reads its supervisor dead, and a third check reads the tree gone; the suite's exit path lists every process naming the run's temp path and fails the run if any remain; the eight leftover trees on the operator's machine are swept). Ready, one section, after pull request 139 merges.
+- None.
 
 ## Archived plans
 
+- `archive/agent_persona_natural-exit-supervisor-tree_spec_v1.md`: The natural-exit suite ends the supervisor trees its cases start (the (nf) and (na) cases end the child and holder a TERM detaches, by the holder's Windows pid and start ticks, and a check reads nothing left naming the case; the suite's exit path lists every process naming the run's temp root and fails the run if any remain or the process table cannot be read, ending none; 32 leftover test processes across 16 trees on the operator's machine were ended). Complete 2026-10-02, one section. Running the suite once after the merge and reading the process list is the operator's, carried in `backlog.md`.
 - `archive/agent_persona_types-probe_spec_v1.md`: The upgrade check reads the new build's declarations from a probe plugin the engine writes them beside (Claude Code 2.1.287 has no slash command for the declarations and writes `.claude-plugin/types/claude-code/index.d.ts` beside any plugin it loads from a folder, so step 2 writes a one-hook probe into the scratch folder, runs the build on it under a config directory inside that folder with three login keys dropped, and joins the interface and the built-in tools' tables the engine writes into the one file steps 3 and 4 read; the fixture, the unit test, the README's recipe and `.gitignore` follow). Complete 2026-10-02, one section. Running `.kit/live-all.sh` once the fleet is down is the operator's, carried in `backlog.md`.
 - `archive/agent_persona_post-upgrade-cleanup_spec_v1.md`: The plugin names its authors and stops setting the function-hooks flag (the manifest gains an author object and no version; the README's types section, the upgrade check's child environment and the five live-test scripts drop `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`, which Claude Code 2.1.287 no longer reads; the unit case keeps the fixture's log field and fails if any of the check's five launches carries the flag under any value; step 2 of the check failed on 2.1.287 for a reason the flag does not touch, which the types probe plan repairs). Complete 2026-10-02, one section.
 - `archive/agent_persona_natural-exit-writer-leak_spec_v1.md`: The natural-exit suite's heartbeat writer ends itself (one `start_heartbeat_writer` function, shared by the (ne) and (nh) cases, starts a node writer that exits when its fixture is gone or its lifetime ends, and the starter `exec`s node so each case's own kill reaches it; seven leftover writers and their shells from 2026-10-01's runs were swept).
@@ -74,4 +75,4 @@
 ## History
 
 - `archive/discussion/`: the review channel between the worker sessions and the reviewer session that built this plugin, every round through 166, with the gate logs the rounds cite. See its README.
-- `backlog.md`: open defects and design directions, each with its remedy; retired entries move to a quarterly snapshot, `archive/backlog-2026-Q3.md` (the earlier one-off is `archive/backlog-2026-09-11.md`).
+- `backlog.md`: open defects and design directions, each with its remedy; retired entries move to a quarterly snapshot, `archive/backlog-2026-Q4.md` for the current quarter and `archive/backlog-2026-Q3.md` before it (the earlier one-off is `archive/backlog-2026-09-11.md`).
