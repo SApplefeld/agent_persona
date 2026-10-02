@@ -9,6 +9,7 @@
 
 ## Active plans
 
+- `plans/agent_persona_goal-complete-boundary_spec_v1.md`: A persona stays in its session when its goal tree completes, and the turn that finishes a goal entry opens a compaction boundary (three sections: the supervisor stops relaunching on a completed root and counts a crash after one, the plugin reads a finished entry as a durable point, and the tool descriptions, charter sentence and documents say so). Ready, parked for a worker.
 - `plans/agent_persona_architect-draft-pr_spec_v1.md`: The architect's charter says a plan branch gets a draft pull request the worker finishes and a goal entry from the ask to that draft (two sections: four sentences on the draft, then the goal entry per plan with the charter's no-goal-node sentences and their restatements moved, the injection ledger baseline and the architecture size row refreshed). Ready, the kit-name tolerance precondition has merged.
 
 ## Archived plans
