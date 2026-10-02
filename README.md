@@ -666,13 +666,13 @@ The plugin tracks its own model-call cost and caps nudge frequency. All options 
 
 **AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. The engine version the typings were written by is line 1 of `.claude/types/claude-code.d.ts`.
 
-After any engine update, regenerate with the stream-json invocation:
+The engine writes the declarations beside any plugin it loads from a folder, as `.claude-plugin/types/claude-code/index.d.ts`, so a `--dev` session writes `.claude-plugin/types/` into this checkout, which `.gitignore` keeps out. After any engine update, regenerate against the new build with the probe run that step 2 of the upgrade check makes. `<probe>` is a folder holding `.claude-plugin/plugin.json` (`{"name":"upgrade-check-types-probe"}`), `hooks/hooks.json` (`{"modules":["./register.js"]}`) and `hooks/register.js` (`export function register(on) { on('session.start', async ($, e, next) => next(e)) }`), and `<empty config dir>` is an empty folder, so the run needs no login and makes no model call:
 
 ```
-printf '%s\n' '{"type":"user","message":{"role":"user","content":"/plugin-types"}}' | claude -p --input-format stream-json --output-format stream-json --verbose --model haiku --permission-mode bypassPermissions --plugin-dir <plugin dir>
+CLAUDE_CONFIG_DIR=<empty config dir> claude -p "/version" --plugin-dir <probe>
 ```
 
-The two files land in `.claude/types/` of the current directory. Copy both generated files to `.claude/types/`, run `npx tsc --noEmit`, and re-gate with the controller suite before trusting a green.
+The run prints "Not logged in" and exits 1, since no login exists in the empty config folder, and it has written the declarations by then. Copy `<probe>/.claude-plugin/types/claude-code/index.d.ts` to `.claude/types/claude-code.d.ts`, run `npx tsc --noEmit`, and re-gate with the controller suite before trusting a green. This run does not regenerate the tool-list mirror `.claude/types/claude-code-mcp.d.ts`: the mirror the engine writes beside the probe lists the tools the probe session had connected, which are none.
 
 **Re-gate rule:** If you upgrade the engine, re-run `npx tsc --noEmit` and the full test suite (`.kit/cost-ledger-unit-test.mjs`, `.kit/cost-migration-test.mjs`, `.kit/task-store-unit-test.mjs`, `.kit/controller-tick-test.mjs`, controller suite). The function names may change again.
 

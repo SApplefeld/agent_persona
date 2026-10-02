@@ -27,7 +27,9 @@
 //
 // The steps, and what each catches:
 //   1 versions   the build on disk, and the build this session is running.
-//   2 types      /plugin-types on the new build, straight from the engine.
+//   2 types      the declarations the new build writes beside a plugin it loads
+//                from a folder, read off a probe plugin made in the scratch
+//                folder.
 //   3 diff       what changed in that interface, and which changed names the
 //                plugin's own hooks read.
 //   4 compile    the hooks against the new types, with a control file the
@@ -776,10 +778,11 @@ export function pre(flags) {
   // The scratch folder, created empty so the plugin finds no persona there and
   // stays passive. It is emptied where it already exists, since a folder
   // carrying an earlier run's types file would let step 2 read that file as
-  // this build's. The refusals below bound that delete: a scratch inside the
-  // checkout or the results directory, or one holding either, would take
-  // files the check is there to read, and a folder that holds files but no
-  // marker was not made by this script, so it is not this script's to empty.
+  // this build's, and so would a stale probe plugin. The refusals below bound
+  // that delete: a scratch inside the checkout or the results directory, or
+  // one holding either, would take files the check is there to read, and a
+  // folder that holds files but no marker was not made by this script, so it
+  // is not this script's to empty.
   const scratch = flags.scratch ? path.resolve(flags.scratch) : path.join(os.tmpdir(), 'cc-validate-' + state.version);
   const holds = (parent, child) => {
     const a = path.resolve(parent).toLowerCase();
@@ -809,18 +812,37 @@ export function pre(flags) {
   }
 
   // --- Step 2. Regenerate the types on the new build. ---
-  const typesRun = runClaude(['-p', '/plugin-types'], { cwd: scratch, env: childEnv() });
-  const newTypesPath = path.join(scratch, '.claude', 'types', 'claude-code.d.ts');
+  // The engine writes the declarations beside any plugin it loads from a
+  // folder. The probe is the smallest plugin it loads: a manifest, a hooks.json
+  // naming one module, and a module whose register attaches one hook. A probe
+  // the engine does not load writes nothing. The config directory is an empty
+  // one inside the scratch folder, so the run needs no login, finds no
+  // installed plugin and makes no model call: the engine answers "Not logged
+  // in" and exits 1, since no login exists there, having already written the
+  // files. So the step passes on the file alone, and the exit code and the
+  // run's first output line are evidence. The emptied scratch folder is what
+  // keeps an earlier run's file from reading as this build's.
+  const probeDir = path.join(scratch, 'types-probe');
+  const configDir = path.join(scratch, 'config');
+  fs.mkdirSync(path.join(probeDir, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(probeDir, 'hooks'), { recursive: true });
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(probeDir, '.claude-plugin', 'plugin.json'), '{"name":"upgrade-check-types-probe"}');
+  fs.writeFileSync(path.join(probeDir, 'hooks', 'hooks.json'), '{"modules":["./register.js"]}');
+  fs.writeFileSync(path.join(probeDir, 'hooks', 'register.js'), "export function register(on) { on('session.start', async ($, e, next) => next(e)) }\n");
+  const probeCommand = 'claude -p "/version" --plugin-dir ' + probeDir;
+  const typesRun = runClaude(['-p', '/version', '--plugin-dir', probeDir], { cwd: scratch, env: { ...childEnv(), CLAUDE_CONFIG_DIR: configDir } });
+  const newTypesPath = path.join(probeDir, '.claude-plugin', 'types', 'claude-code', 'index.d.ts');
   let newTypes = '';
   try { newTypes = fs.readFileSync(newTypesPath, 'utf8'); } catch (e) { newTypes = ''; }
   const newFirstLine = newTypes ? (newTypes.split(LINE_TERMINATOR)[0] || '') : '';
   const typesProblem = childProblem(typesRun);
   if (typesProblem) {
-    record('2. types', 'fail', 'claude -p "/plugin-types" ' + typesProblem);
+    record('2. types', 'fail', probeCommand + ' ' + typesProblem);
   } else if (!newTypes) {
-    record('2. types', 'fail', 'claude -p "/plugin-types" exited ' + typesRun.status + ' and wrote no ' + newTypesPath + ': ' + evidenceLine(typesRun.stderr || typesRun.stdout));
+    record('2. types', 'fail', probeCommand + ' exited ' + typesRun.status + ' and wrote no ' + newTypesPath + ': ' + evidenceLine(typesRun.stderr || typesRun.stdout));
   } else {
-    record('2. types', typesRun.status === 0 ? 'pass' : 'fail', 'exit ' + typesRun.status + '; ' + newTypesPath + ' first line: ' + evidenceLine(newFirstLine));
+    record('2. types', 'pass', 'exit ' + typesRun.status + ' (' + evidenceLine(typesRun.stdout || typesRun.stderr) + '); ' + newTypesPath + ' first line: ' + evidenceLine(newFirstLine));
   }
 
   // --- Step 3. Compare the new interface against the committed one. ---
@@ -869,9 +891,9 @@ export function pre(flags) {
     record('4. compile', 'fail', 'step 2 wrote no types file, so there was nothing to compile against');
   } else {
     // The compile reads the new engine types and the checkout's own tool-list
-    // mirror. The mirror /plugin-types writes beside the types in the scratch
-    // folder lists the tools of a session whose plugin stayed passive, so it
-    // lacks the plugin's own tools and narrows every comparison against them.
+    // mirror. The mirror the engine writes beside the types under the probe
+    // lists the tools of a session whose plugin stayed passive, so it lacks the
+    // plugin's own tools and narrows every comparison against them.
     const checkoutMirror = path.join(repo, '.claude', 'types', 'claude-code-mcp.d.ts');
     const typeFiles = fs.existsSync(checkoutMirror) ? [newTypesPath, checkoutMirror] : [newTypesPath];
     const realConfig = path.join(scratch, 'tsconfig.json');

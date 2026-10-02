@@ -13,13 +13,15 @@
 // Each case is driven by the environment, so one fixture covers every case
 // the suite needs:
 //   FAKE_CLAUDE_CALLS        a file each invocation appends one JSON line to:
-//                            its arguments, its working directory and whether
+//                            its arguments, its working directory, the
+//                            CLAUDE_CONFIG_DIR it ran under and whether
 //                            CLAUDE_CODE_ENABLE_FUNCTION_HOOKS reached it.
 //   FAKE_CLAUDE_VERSION      what --version prints (default 9.9.9).
 //   FAKE_CLAUDE_VERSION_EXIT its exit code (default 0).
-//   FAKE_CLAUDE_TYPES_FILE   the types text /plugin-types writes.
+//   FAKE_CLAUDE_TYPES_FILE   the types text a -p "/version" run with
+//                            --plugin-dir writes beside that plugin.
 //   FAKE_CLAUDE_TYPES_WRITE  "none" to write no types file at all.
-//   FAKE_CLAUDE_TYPES_EXIT   /plugin-types' exit code (default 0).
+//   FAKE_CLAUDE_TYPES_EXIT   that run's exit code (default 0).
 //   FAKE_CLAUDE_VALIDATE_OUT what plugin validate prints (default: one
 //                            warning block).
 //   FAKE_CLAUDE_VALIDATE_EXIT   its exit code (default 0).
@@ -59,6 +61,7 @@ function record(kind) {
       kind,
       args,
       cwd: process.cwd(),
+      configDir: env.CLAUDE_CONFIG_DIR || '',
       functionHooks: env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS || '',
     }) + '\n');
   }
@@ -98,19 +101,22 @@ if (args[0] === 'plugin' && args[1] === 'test') {
   process.exit(exitCode('FAKE_CLAUDE_TEST_EXIT'));
 }
 
-if (prompt === '/plugin-types') {
+const pluginDir = valueAfter('--plugin-dir');
+if (prompt === '/version' && pluginDir) {
   record('types');
   if (env.FAKE_CLAUDE_TYPES_WRITE !== 'none') {
-    const dir = path.join(process.cwd(), '.claude', 'types');
-    fs.mkdirSync(dir, { recursive: true });
+    // The engine writes the declarations beside a plugin loaded from a folder.
+    const dir = path.join(path.resolve(process.cwd(), pluginDir), '.claude-plugin', 'types');
+    fs.mkdirSync(path.join(dir, 'claude-code'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'claude-code-mcp'), { recursive: true });
     const body = env.FAKE_CLAUDE_TYPES_FILE ? fs.readFileSync(env.FAKE_CLAUDE_TYPES_FILE, 'utf8') : DEFAULT_TYPES;
-    fs.writeFileSync(path.join(dir, 'claude-code.d.ts'), body);
-    // The real command writes the tool-list mirror beside the types, read off
-    // a session whose plugin stayed passive, so it lacks the plugin's own
+    fs.writeFileSync(path.join(dir, 'claude-code', 'index.d.ts'), body);
+    // The tool-list mirror the engine writes beside the types lists the tools
+    // of a session whose plugin stayed passive, so it lacks the plugin's own
     // tools. The fake compiler refuses any compile that reads this file.
-    fs.writeFileSync(path.join(dir, 'claude-code-mcp.d.ts'), '// SCRATCH_MIRROR: the scratch session\'s tools, without the plugin\'s.\n');
+    fs.writeFileSync(path.join(dir, 'claude-code-mcp', 'index.d.ts'), '// SCRATCH_MIRROR: the scratch session\'s tools, without the plugin\'s.\n');
   }
-  process.stdout.write('wrote the type files\n');
+  process.stdout.write('Not logged in\n');
   process.exit(exitCode('FAKE_CLAUDE_TYPES_EXIT'));
 }
 

@@ -19,7 +19,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const checkPath = resolve(here, '../bin/upgrade-check.mjs');
@@ -248,12 +248,61 @@ const cases = [
     assert.equal(only(r.rows, '4. compile').result, 'pass', only(r.rows, '4. compile').evidence);
     // The scratch session wrote a mirror, so the case is live: the fake
     // compiler would have refused had the compile read it.
-    assert.ok(fs.readFileSync(join(paths.scratch, '.claude', 'types', 'claude-code-mcp.d.ts'), 'utf8').includes('SCRATCH_MIRROR'));
+    const probeTypes = join(paths.scratch, 'types-probe', '.claude-plugin', 'types');
+    assert.ok(fs.readFileSync(join(probeTypes, 'claude-code-mcp', 'index.d.ts'), 'utf8').includes('SCRATCH_MIRROR'));
     const config = JSON.parse(fs.readFileSync(join(paths.scratch, 'tsconfig.json'), 'utf8'));
     const named = (config.files || []).map((f) => resolve(f));
-    assert.ok(named.includes(resolve(paths.scratch, '.claude', 'types', 'claude-code.d.ts')), 'the new engine types are read');
+    assert.ok(named.includes(resolve(probeTypes, 'claude-code', 'index.d.ts')), 'the new engine types are read');
     assert.ok(named.includes(resolve(paths.repo, '.claude', 'types', 'claude-code-mcp.d.ts')), 'the checkout mirror is read');
     for (const dir of config.include || []) assert.ok(!resolve(dir).startsWith(resolve(paths.scratch)), 'no scratch directory is included whole: ' + dir);
+  }],
+
+  // --- Step 2's probe plugin. ---
+  ['step 2 runs the probe plugin the engine loads, under a config directory inside the scratch folder', () => {
+    const { paths, r } = passingPre('probe-shape');
+    const types = r.calls.filter((c) => c.kind === 'types');
+    assert.equal(types.length, 1, JSON.stringify(r.calls.map((c) => c.kind)));
+    const call = types[0];
+    assert.equal(call.args[call.args.indexOf('-p') + 1], '/version');
+    const probeDir = call.args[call.args.indexOf('--plugin-dir') + 1];
+    const inScratch = (p) => resolve(p).toLowerCase().startsWith(resolve(paths.scratch).toLowerCase() + sep);
+    assert.ok(inScratch(probeDir), 'the probe is under the scratch folder: ' + probeDir);
+    assert.equal(resolve(probeDir), resolve(paths.scratch, 'types-probe'));
+    // The shape the engine loads: a probe whose module exports nothing, or
+    // whose hooks.json carries a module key, loads nothing and writes nothing.
+    assert.deepEqual(JSON.parse(fs.readFileSync(join(probeDir, '.claude-plugin', 'plugin.json'), 'utf8')), { name: 'upgrade-check-types-probe' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(join(probeDir, 'hooks', 'hooks.json'), 'utf8')), { modules: ['./register.js'] });
+    const register = fs.readFileSync(join(probeDir, 'hooks', 'register.js'), 'utf8');
+    assert.match(register, /export function register\(on\)/);
+    assert.match(register, /on\('session\.start', async \(\$, e, next\) => next\(e\)\)/);
+    // A run under the real config costs a model call and depends on login.
+    assert.ok(call.configDir && inScratch(call.configDir), 'the config directory is under the scratch folder: ' + call.configDir);
+    assert.ok(fs.statSync(call.configDir).isDirectory(), 'the config directory exists');
+    // The step reads the file the engine wrote at the probe path.
+    const row = only(r.rows, '2. types');
+    assert.equal(row.result, 'pass', row.evidence);
+    assert.ok(row.evidence.includes(join(probeDir, '.claude-plugin', 'types', 'claude-code', 'index.d.ts')), row.evidence);
+  }],
+  ['a probe run that exits 1 having written the declarations reads pass, with the exit code as evidence', () => {
+    // The engine exits 1 under an empty config directory, since no login
+    // exists there, and has already written the files by then.
+    const { r } = passingPre('types-exit-1', { FAKE_CLAUDE_TYPES_EXIT: '1' });
+    const row = only(r.rows, '2. types');
+    assert.equal(row.result, 'pass', row.evidence);
+    assert.match(row.evidence, /^exit 1 \(Not logged in\); .* first line: /);
+  }],
+  ['the fixture refuses the retired types slash command at its unknown branch, and a bare /version without --plugin-dir', () => {
+    const paths = makeCase('old-invocation');
+    // The retired command's name, split so the sweep for it over the tree stays empty.
+    const retired = '/plugin-' + 'types';
+    for (const args of [['-p', retired], ['-p', '/version']]) {
+      const r = spawnSync(process.execPath, [join(fixtures, 'claude'), ...args], {
+        cwd: paths.workdir, encoding: 'utf8', env: { ...process.env, FAKE_CLAUDE_CALLS: paths.calls },
+      });
+      assert.equal(r.status, 64, args.join(' ') + ' exited ' + r.status);
+      assert.match(r.stderr, /fake claude: no case for/);
+    }
+    assert.deepEqual(readCalls(paths).map((c) => c.kind), ['unknown', 'unknown'], 'both hit the unknown branch, not the types case');
   }],
 
   // --- The steps' own readings. ---
@@ -415,9 +464,10 @@ const cases = [
   }],
   ['a scratch folder an earlier run made is emptied at the start of a run, so its types file cannot be read as this build\'s', () => {
     const paths = makeCase('scratch-emptied');
-    fs.mkdirSync(join(paths.scratch, '.claude', 'types'), { recursive: true });
+    const staleDir = join(paths.scratch, 'types-probe', '.claude-plugin', 'types', 'claude-code');
+    fs.mkdirSync(staleDir, { recursive: true });
     fs.writeFileSync(join(paths.scratch, SCRATCH_MARKER), '');
-    fs.writeFileSync(join(paths.scratch, '.claude', 'types', 'claude-code.d.ts'), '// Written by Claude Code 0.0.1.\n');
+    fs.writeFileSync(join(staleDir, 'index.d.ts'), '// Written by Claude Code 0.0.1.\n');
     fs.writeFileSync(join(paths.scratch, 'leftover.txt'), 'from an earlier run');
     const r = run(paths, ['pre', '--repo', paths.repo, '--results', paths.results, '--scratch', paths.scratch, '--canary', 'FIXTURE'],
       { FAKE_CLAUDE_TYPES_WRITE: 'none' });
