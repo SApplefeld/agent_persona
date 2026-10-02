@@ -666,7 +666,7 @@ The plugin tracks its own model-call cost and caps nudge frequency. All options 
 
 **AL7 (engine 2.1.267):** The plugin uses `$.fs.read` and `$.fs.write` (not `$.fs.readFile` / `$.fs.writeFile`). These function names were introduced in Claude Code engine 2.1.267. The engine version the typings were written by is line 1 of `.claude/types/claude-code.d.ts`.
 
-After any engine update, regenerate with the stream-json invocation. Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment first:
+After any engine update, regenerate with the stream-json invocation:
 
 ```
 printf '%s\n' '{"type":"user","message":{"role":"user","content":"/plugin-types"}}' | claude -p --input-format stream-json --output-format stream-json --verbose --model haiku --permission-mode bypassPermissions --plugin-dir <plugin dir>

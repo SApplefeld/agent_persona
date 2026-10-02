@@ -230,7 +230,6 @@ trap cleanup EXIT
 unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ATTENDED \
   CLAUDE_PID CLAUDE_EFFORT CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN \
   CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_RETRY_WATCHDOG
-export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 # No controller nudge may queue a prompt behind a parked turn, since a queued
 # prompt runs next after an interrupt and would take the goal's place.
 export nudgeIdleMs=600000
