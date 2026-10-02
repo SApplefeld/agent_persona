@@ -156,15 +156,15 @@ export interface GoalNode {
                       // and no decision. Unset by the v2-v4 migration.
   nextSection?: string; // plan-record-sections Section 1: the first "Next:" line
                       // under the plan document's highest-numbered Chapter at
-                      // the last read, trimmed and cut to NEXT_LINE_MAX_CHARS
-                      // in hooks/plan-record.ts. Written by the document read
-                      // at turn end where it differs and removed where the
-                      // document has no such line, with no updatedAt touch
-                      // and no decision. Unset by the v2-v4 migration. The
-                      // value is document text, unfolded and with its brackets
-                      // as written, so any reader that puts it into a model's
-                      // context folds it through oneLine and bracketSafeText
-                      // first.
+                      // the last read, folded through oneLine, its whitespace
+                      // collapsed and cut to NEXT_LINE_MAX_CHARS in
+                      // hooks/plan-record.ts. Written by the document read at
+                      // turn end where it differs and removed where the
+                      // document has no such line or the line is empty, with
+                      // no updatedAt touch and no decision. Unset by the v2-v4
+                      // migration. The value keeps its brackets as written, so
+                      // any reader that puts it into a model's context folds
+                      // it through bracketSafeText first.
   awaitingYes?: boolean; // Set on a plan goal_add queued at the plan-and-ask
                       // autonomy level outside an operator or coordinator turn:
                       // the entry waits paused for the operator's yes, and

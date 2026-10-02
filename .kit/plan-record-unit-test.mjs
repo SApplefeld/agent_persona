@@ -154,7 +154,7 @@ check("a Next: line past the ## heading that ends the block is not the Chapter's
   parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Completed: 1. One"])]) + "\n## Related\n\nNext: outside\n")).next === null);
 check("an indented, marked-up or lower-case key is not the line (opening rule, case-sensitive)",
   parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["  Next: indented", "**Next:** marked", "next: lower"])]))).next === null);
-check("an Interim board heading is not a Chapter, so its Next: line is not read",
+check("the Chapter's own first Next: line is read ahead of an Interim board's later one",
   parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: from one"]), "### Interim board 2\n\nNext: from the board"]))).next === "from one");
 check("an Interim board after a latest Chapter with no Next: line contributes its Next: line, as the card reads it",
   parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Completed: 1. One"]), "### Interim board 2\n\nNext: from the board"]))).next === "from the board");
