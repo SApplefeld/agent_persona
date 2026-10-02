@@ -9,7 +9,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_types-probe_spec_v1.md`: The upgrade check reads the new build's declarations from a probe plugin the engine writes them beside (Claude Code 2.1.287 has no `/plugin-types` command and writes `.claude-plugin/types/claude-code/index.d.ts` beside any plugin it loads from a folder, so step 2 writes a one-hook probe into the scratch folder and runs the build on it under a config directory inside that folder; the fixture, the unit test, the README's recipe and `.gitignore` follow). Ready, one section, after the post-upgrade cleanup plan merges.
 
 ## Archived plans
 
