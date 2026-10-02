@@ -322,13 +322,13 @@ Four files write text into a child session that nobody typed: `bin/supervise-hol
 
 ### What is injected, and how large
 
-`.kit/injection-ledger.json` is the committed size baseline, 74 entries totalling 51,231 characters. Twelve entries come from `bin/supervise-holder.sh` and total 24,641, two come from `bin/supervise.sh` and total 292, and sixty come from `hooks/index.ts` and total 26,298, of which the twenty-one registered tool descriptions are 18,832.
+`.kit/injection-ledger.json` is the committed size baseline, 74 entries totalling 52,190 characters. Twelve entries come from `bin/supervise-holder.sh` and total 25,600, two come from `bin/supervise.sh` and total 292, and sixty come from `hooks/index.ts` and total 26,298, of which the twenty-one registered tool descriptions are 18,832.
 
 | What a launch reads | Characters |
 |---|---|
 | A worker with a channel: skill-load, coordinator steer, reply-tool | 4,745 |
 | The coordinator: those three plus the coordinator role instruction | 14,524 |
-| The architect: reply-tool plus its charter, the other two cleared | 7,938 |
+| The architect: reply-tool plus its charter, the other two cleared | 8,897 |
 | The liaison: reply-tool plus its charter, the other two cleared | 2,307 |
 | The twenty-one tool descriptions an owner-tier session registers | 18,832 |
 

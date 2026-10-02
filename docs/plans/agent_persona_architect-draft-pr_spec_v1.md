@@ -1,6 +1,6 @@
 # The architect's charter says a plan branch gets a draft pull request the worker finishes and a goal entry from the ask to that draft, so the habit survives a restart
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-02
 
@@ -96,3 +96,9 @@ Tests: the ledger's size pin, as section 1; the charter test's own run, since it
 
 ## Chapters
 
+### Interim board 1 - 2026-10-02
+State: section 1 implementing (implementer-sonnet dispatched with the brief at `.kit/scratch/architect-draft-pr/brief-section-1.md`); section 2 not started. Status changed from `Ready` to `In Progress` at the run's start.
+Branch: pull request 146 merged this plan doc alone to main as 6da8065 before any section ran, so that branch is frozen; the run works on `plans/architect-draft-pr-charter`, cut from origin/main at 6da8065, and opens its own pull request at finishing.
+Gate baseline: whole gate on this machine, 2026-10-02 12:29 to 13:16, on a tree whose only difference from 6da8065 is this plan doc and one docs index line (read by `git diff --stat`): 31 offline lanes all exit 0, natural-exit parallel `342 OK, 0 FAIL`.
+Intake: the architect row's before figures are 7,162 characters and 1,275 words at 6da8065, and `docs/architecture.md:331` reads 7,938. Sections 1 and 2 edit the same assignment, so they run in order. Every commit, Chapter and brief names the host as this machine, under the plan's private-identifier rule.
+Next: section 1 review (adversarial and blind at opus), close, then section 2 at opus.
