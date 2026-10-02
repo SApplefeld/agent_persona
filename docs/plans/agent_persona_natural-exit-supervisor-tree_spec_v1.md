@@ -1,6 +1,6 @@
 # The natural-exit suite's (nf) case ends the supervisor tree it starts, so a run leaves nothing behind
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
