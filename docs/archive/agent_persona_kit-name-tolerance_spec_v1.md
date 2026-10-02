@@ -1,6 +1,6 @@
 # The persona plugin and the supervisor find the kit under either of its names, so the kit's rename to Grimoire breaks no running persona
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-02
 
@@ -74,6 +74,11 @@ Tests: the preference for the new key over a newer old-key record, since a host 
 
 - None.
 
+## Related
+
+- `agent_persona_persona-memory-port_spec_v1.md`: built the plugin's memq spawn, which runs from the kit install this plan's lookup now finds under either key.
+- `agent_persona_boundary-compaction_spec_v1.md`: built the boundary bank's compaction checkpoint command, which runs from the same lookup.
+
 ## Chapters
 
 ### Chapter 1 - 2026-10-02
@@ -111,3 +116,22 @@ State: finishing pass, base ref 0245191fc01b8397a526e38e4f22f8e9b57b0dda, branch
 Done: step 1 QA PASS, all 30 offline lanes exit 0 against the all-zero baseline; `.kit/live-all.sh` refused with exit 10 on a live persona claim, operator-only. The red leg QA's hook blocked was replayed in the main thread: the base `hooks/index.ts` reds 19 tick checks, the head none. Steps 2 and 3 at fable: security CLEAR, performance CLEAR, adversarial APPROVED_WITH_CONCERNS with one Major (Case 7 pinned the skill-load wording), fixed in 09c1d01 and re-reviewed APPROVED at fable. Step 4 goal read at fable RULED: 8 built-but-unasked items, all accept-and-declare; nothing asked-but-unbuilt.
 Minor pass: the README pronoun the re-review found, fixed with this entry. The full disposition list is `.kit/scratch/kit-name-tolerance/finishing/minors.md`.
 Next: step 5 docs-curator, then step 6 (final Chapter with the backlog items on install scope and enabledPlugins, Status Complete, archive, index, handoff gate), then step 7 (ready, auto-merge), then tell the coordinator once #143 merges.
+
+### Chapter 2 - 2026-10-02
+Completed: 1. The lookup and the priming text accept both kit names and prefer the new one (finishing pass)
+Implemented By: the main session (Opus) for the fixes, the Minor pass, the close path and this Chapter; the docs curator for `docs/architecture.md`
+Metrics: review rounds 1 plus one fix-delta re-review, closed major-closed; provenance 1 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 8 declared, 0 asked); advisory: 3 findings, 1 fixed, 0 deferred, 2 left with reason; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal, quoted: "A persona runs the same whether the kit installed on its host is named `claude-kit` or `grimoire`. The plugin's kit lookup, which finds the kit's install folder in the engine's `installed_plugins.json` to run the memory CLI and the compaction boundary command, accepts either install key and prefers the new one. The supervisor's priming text names the kit's skills under whichever name the host has installed, so a session launched after the kit updates loads `grimoire:operating-instructions` and one launched before still loads `claude-kit:operating-instructions`. The unit suites pin both directions and the preference. When this ships and reaches every host, the kit may rename without a persona losing its memory calls, its compaction boundary or its skills."; What the tree does now: the plugin finds the kit's install folder under the new name first and the old name second, taking the first name whose install record is complete enough to run from. The supervisor reads the same file at each child launch and primes the child to load the kit's skills under the matching name, falling back to the old name when the read fails. The tests prove both names, the preference, and that the plugin and the supervisor pick the same name on every fixture; Refinements during the run: the prefix needs a usable install record rather than a bare key, so both readers agree (declared departure); the prefix reads USERPROFILE before HOME, as the plugin does (declared departure); `.kit/injection-ledger.json`, `.kit/supervisor-holder-test.sh` and `docs/security-model.md` were edited outside Files in scope; a record's install scope is not filtered, accepted as a gap and carried to the backlog; Operator-pending: update the persona plugin on every host before the kit rename merges; run `.kit/live-all.sh` with the fleet down
+Decisions / Surprises:
+- Base ref 0245191fc01b8397a526e38e4f22f8e9b57b0dda, the merge-base with main. Main was merged in at 28f6605, bringing the types probe plan's #142 across with no conflict.
+- Drift adjudication, six items, all deviations, none stopping the run. D1 (usable-record rule) and D2 (USERPROFILE before HOME) are the two departures Chapter 1 declares. D3: the architecture doc's injection-size table overstated four rows by 10 to 50 characters, and the curator's corrected figures were recomputed from the ledger and match (74 entries, 51,231 in total, rows 4,745, 14,524, 7,938 and 2,307). D4: the supervisor row now names the holder's prefix read. D5: the README's coverage entries for the priming suite and the holder suite now name the prefix legs, fixed in the main thread since the curator writes only under `docs/`. D6: the plugin row's reads omit `installed_plugins.json`. The new external-integrations entry carries it, and the curator judged the omission older than this plan, a pre-change claim it could not read and that stands unverified.
+- Library hygiene: the cross-reference gap the curator found is closed by the Related section above. The two completed plans under `docs/plans/archive/` predate this plan and are left where they are.
+- The goal read declared eight built-but-unasked items: holder Case 7, the empty-prefix fallback, the extra prefix fixtures and the literal-name check, the parity pin and the memq helper's two-key walk, the security-model sentences, the README's architect and liaison paragraphs, the docs index line, and the ledger counts.
+- The tick suite's parity pin spawns bash eight times, once per fixture, which adds about 2 to 4 seconds to `.kit/controller-tick-test.mjs` (inferred, not timed).
+Failed approaches: none in this pass.
+Assumptions: none.
+Review Findings: review: security + performance + adversarial at fable, Workflow (finishing round, effort high); review: adversarial at fable, Workflow (fix-delta re-review, effort high); goal read: scope-adjudicator at fable, Agent tool, RULED. Security CLEAR and performance CLEAR. The adversarial lens returned APPROVED_WITH_CONCERNS with one Major: Case 7 pinned the whole skill-load sentence, so a rewording would red it. It was fixed by matching the two skill tokens separately, and the re-review returned APPROVED. Minors fixed: the parity pin's unguarded stdout, carriage returns kept from a CRLF checkout, the README parenthetical, and a README pronoun. Minors left with reason: bash does not trim the home as the plugin does, which no host is known to need; the eight spawns, since no requirement bounds suite time; and the node read's missing timeout, which matches the file's other one-file reads. Goal read: 8 accept-and-declare, 0 asked-but-unbuilt. QA: PASS on all 30 offline lanes. `.kit/live-all.sh` refused with exit 10 on a live persona claim and is operator-only.
+Stamps: adjudicated 0, stamped 0. `memq unstamped --since 6h` listed 0 project-tier and 0 operator-tier records. No recalled record steered this pass, and the nudges named records that were not opened.
+Gate: whole offline gate at the handoff, in the kit-name-tolerance worktree on 2026-10-02 from 09:18 to 09:34, over the merged tree at 28f6605 with the close-path edits in the worktree. All 30 lanes exited 0 and the run's own marker reads 0: the 21 node suites, the 6 shell suites, `npx tsc --noEmit`, the loader-rule check, and the regenerated injection ledger matching `.kit/injection-ledger.json`. The baseline was all 30 lanes at 0 before the first edit, and QA's run was all 30 at 0. A foreign `.kit/supervisor-natural-exit-test.sh` bash started at 21:12 the day before, its parent gone, was running throughout and was left alone as another session's. `.kit/live-all.sh` is operator-only while a persona holds its claim. This repository defines no separate contention lane.
+Next: none. Plan Complete, archived in this changeset. The operator updates the persona plugin on every host after #143 merges and before the kit's rename merges, and runs `.kit/live-all.sh` with the fleet down.
+Commit Model: Branch-and-PR
