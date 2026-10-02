@@ -228,7 +228,7 @@ fail_on_leftover_processes() {
     return 1
   fi
   if [ -n "$hits" ]; then
-    echo "  FAIL: exit: $(printf '%s\n' "$hits" | wc -l | tr -d ' ') process(es) still name this run's temp root $TMP:"
+    echo "  FAIL: exit: $(printf '%s\n' "$hits" | wc -l | tr -d ' ') process(es) still name this run's temp root $TMP (pids: $(printf '%s\n' "$hits" | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')):"
     printf '%s\n' "$hits" | sed 's/^HIT /    /'
     return 1
   fi
@@ -238,9 +238,9 @@ fail_on_leftover_processes() {
 # The run's one verdict line is printed here, after the listing, so a run
 # whose cases passed and which left a process behind reads FAIL once rather
 # than PASS and then FAIL. kill_leaked_survivors runs first. Its stops are
-# matched by start ticks and need not have finished when the listing reads,
-# and the survivors it stops are bare PowerShell sleeps whose command lines
-# name no temp path, so the listing cannot be raced by them.
+# matched by start ticks and need not have finished when the listing reads.
+# The survivors it stops are bare PowerShell sleeps whose command lines name
+# no temp path.
 finish_run() {
   local run_rc="$1" leftover_rc
   kill_leaked_survivors
@@ -2432,8 +2432,9 @@ end_detached_child() {  # <case dir> <bound s>
 # after <delay> seconds the backgrounded starter execs a node writer that stamps
 # lastSeen every two seconds. A torn read of the fixture, which is rewritten in
 # place, is skipped. The writer ends itself with status 0 on the first read that
-# finds the fixture gone and after <lifetime> seconds, so no kill has to reach it
-# for a run to leave nothing behind. The caller's $! is the writer once the delay
+# finds the fixture gone and after <lifetime> seconds. The exit listing reads
+# before the temp root is removed, so a writer the caller's kill missed is still
+# alive then and fails the run. The caller's $! is the writer once the delay
 # has passed, and a kill during the delay ends the starter before any writer exists.
 start_heartbeat_writer() {  # <fixture> <persona> <delay s> <lifetime s>
   ( sleep "$3"; exec node -e 'const [f,p,life]=process.argv.slice(1);const fs=require("fs");setTimeout(()=>process.exit(0),Number(life)*1000);setInterval(()=>{let s;try{s=fs.readFileSync(f,"utf8");}catch(e){if(e.code==="ENOENT")process.exit(0);return;}try{const h=JSON.parse(s);h[p].lastSeen=Date.now();fs.writeFileSync(f,JSON.stringify(h));}catch(e){}},2000)' "$1" "$2" "$4" ) &
@@ -2597,8 +2598,8 @@ if want nf; then
   NF_LEFT=$(end_detached_child "$NF" 30)
   NF_LEFT_RC=$?
   NF_LEFT=$(printf '%s' "$NF_LEFT" | tr '\n' ';')
-  [ "$NF_RC1" -eq 143 ] && [ "$NF_LEFT_RC" -eq 0 ]
-  check "(nf) the first supervisor exits 143 on the TERM (rc=$NF_RC1) and no process names $NF once the case ends its detached child (left: ${NF_LEFT:-none})" "$?"
+  [ "$NF_RC1" -eq 143 ]; check "(nf) the first supervisor exits 143 on the TERM (rc=$NF_RC1)" "$?"
+  [ "$NF_LEFT_RC" -eq 0 ]; check "(nf) no process names $NF once the case ends its detached child (left: ${NF_LEFT:-none})" "$?"
   DRIVE_ENV=(); DRIVE_CRASH_LIMIT=1
 fi
 
