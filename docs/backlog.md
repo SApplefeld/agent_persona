@@ -10,6 +10,17 @@ The natural-exit supervisor-tree plan (`docs/archive/agent_persona_natural-exit-
 
 `ps_cmdline_match` in `.kit/live-interrupt-ratelimit-test.sh` hands the run directory to PowerShell as `PAT_MSYS` in its MSYS spelling, but sets no `MSYS2_ENV_CONV_EXCL`. MSYS rewrites a `/tmp/...` value into its Windows spelling on the way to a native program, so the leg meant to catch a command line naming the MSYS spelling likely tests the Windows spelling twice. A survivor whose command line names only the MSYS spelling would then go unlisted. This is inferred from reading the function, not from a run. The natural-exit suite's `processes_naming` sets `MSYS2_ENV_CONV_EXCL=PAT_MSYS` for this reason. Remedy: set the same exclusion on the call. Proof: a control run with a survivor naming only the MSYS spelling, unlisted before the change and listed after it.
 
+## Operator checks owed by the kit-name tolerance plan (parked 2026-10-02)
+
+The kit-name tolerance plan (`docs/archive/agent_persona_kit-name-tolerance_spec_v1.md`) is Complete. Two checks are the operator's.
+
+- **Update the persona plugin on every fleet host before the kit's rename merges.** Each supervisor's next launch then runs the two-key lookup and the prefix read. A host that misses the update loses its memory calls, its compaction boundary and its kit skills once its kit installs as `grimoire`, until it updates and relaunches. A relaunched child on a `claude-kit` host whose priming turn names anything but `claude-kit:operating-instructions` reopens the plan.
+- **Run `.kit/live-all.sh` once the fleet is down.** It refused with exit 10 while a persona held its claim, so the finishing gate ran every other lane. A red there reopens the plan.
+
+## The kit lookup and the prefix read ignore an install record's scope (found 2026-10-02)
+
+`kitInstallPathOf` in `hooks/index.ts` and `kit_skill_prefix` in `bin/agentic-common.sh` both take a usable record under a key whatever its `scope` and `projectPath`, and neither reads `enabledPlugins`. A host holding `grimoire` at project scope for another directory, beside a user-scope `claude-kit`, would prime `grimoire` skills that the working directory does not load. Neither reader filtered scope before the kit-name tolerance plan, and no such record has been seen on a fleet host. The fix is one shared rule for which record applies to a working directory, used by both readers, with the tick suite's parity pin extended to the new fixtures.
+
 ## Operator checks owed by the post-upgrade cleanup plan (parked 2026-10-02)
 
 The post-upgrade cleanup plan (`docs/archive/agent_persona_post-upgrade-cleanup_spec_v1.md`) is Complete. Two checks are the operator's.
