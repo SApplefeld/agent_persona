@@ -38,6 +38,12 @@ The supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_
 - **Relaunch each persona's supervisor after the installed plugin updates.** A holder launched by an older supervisor watches no interrupt file, and a child loads `fleet_interrupt` only from the updated plugin. Until the relaunch, `fleet_interrupt` writes a request nothing relays. A failure here shows as `fleet_interrupt` answering and no `INTERRUPT:` line in that persona's `supervisor.log`, which reopens the plan.
 - **Run `.kit/live-all.sh` once the fleet is down.** It refuses with exit 10 while the live Steward holds its claim, so the finishing gate ran every other lane. A red there reopens the plan.
 
+## Operator checks owed by the types probe plan (parked 2026-10-02)
+
+The types probe plan (`docs/archive/agent_persona_types-probe_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Run `.kit/live-all.sh` once the fleet is down.** It refused with exit 10 on a live persona claim at both of the finishing pass's whole gates, which ran every other lane green. A red there reopens the plan. The same run discharges the supervisor interrupt plan's item above.
+
 ## Findings the supervisor interrupt finishing pass deferred (found 2026-09-30)
 
 The finishing reviews of the supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_spec_v1.md`) raised four Minors that serve no part of that plan's Goal. Each is deferred here with its likely remedy.
@@ -371,7 +377,7 @@ The supervisor interrupt plan's Section 2 review found three items outside that 
 
 ## The generated tool-list mirror does not list fleet_restart (found 2026-09-21)
 
-`.claude/types/claude-code-mcp.d.ts` mirrors the plugin's registered tools and is written by the `/plugin-types` command of an interactive session. The supervisor gaps plan's Section 3 registered `fleet_restart` under the owner tier from a headless session, which cannot run that command. The mirror was last regenerated on 2026-09-12 and lists eleven tools of the sixteen the owner tier registers, so it already lacked `agentic_say`, `agentic_inbox`, `fleet_status` and `agentic_resolve`, and it now lacks `fleet_restart` too. Nothing at runtime reads the mirror. Its readers are authors and type checks that consult it for a tool's shape, and they find no entry for the new tool. The file is generated. Its `supervisor_shutdown` entry carries a hand edit for the `park` parameter and the tool's current description, and its `goal_longterm` entry is written by hand in the same form. The next regeneration rewrites both from the source. Remedy: run `/plugin-types` in an interactive session on this checkout and commit the regenerated file. The upgrade check's step 2, in `bin/upgrade-check.mjs`, runs `/plugin-types` on every new build, but it regenerates `claude-code.d.ts` only. It ignores the tool-list mirror its scratch session writes, since that session's plugin stayed passive, so it does not close this item.
+`.claude/types/claude-code-mcp.d.ts` mirrors the plugin's registered tools. Before Claude Code 2.1.287 it was written by the `/plugin-types` command of an interactive session. The supervisor gaps plan's Section 3 registered `fleet_restart` under the owner tier from a headless session, which could not run that command. The mirror was last regenerated on 2026-09-12 and lists eleven tools of the sixteen the owner tier registers, so it already lacked `agentic_say`, `agentic_inbox`, `fleet_status` and `agentic_resolve`, and it now lacks `fleet_restart` too. Nothing at runtime reads the mirror. Its readers are authors and type checks that consult it for a tool's shape, and they find no entry for the new tool. The file is generated. Its `supervisor_shutdown` entry carries a hand edit for the `park` parameter and the tool's current description, and its `goal_longterm` entry is written by hand in the same form. The next regeneration rewrites both from the source. Remedy: regenerate it from a session that loads this checkout with `--plugin-dir` and has the plugin's tools connected, then commit the file. From Claude Code 2.1.287 no `/plugin-types` command exists: the engine writes the mirror beside a plugin it loads from a folder, as `.claude-plugin/types/claude-code-mcp/index.d.ts`, listing the MCP tools that session had connected. The upgrade check's step 2 runs the build on a one-hook probe under an empty config directory, so the mirror it writes is empty and the step does not close this item.
 
 ## The poll's rate-limit tail read takes one readSync and decodes the whole buffer (found 2026-09-21)
 
@@ -962,7 +968,7 @@ What it costs is type narrowing rather than behaviour. The declarations merge in
 
 It is not edited by hand on its own instruction, and it sits in no section's scope, which is why it is here rather than folded into the section that made it stale.
 
-Remedy: regenerate it, after the types probe plan lands. Claude Code 2.1.287 has no `/plugin-types` command. The engine writes its declarations under the plugin's own `.claude-plugin/types/` when it loads a plugin passed with `--plugin-dir`, and `claude-code-mcp/index.d.ts` there is this file's successor. The types probe plan moves the upgrade check onto that path and settles where the committed declarations live, so this snapshot is regenerated from wherever that plan puts them. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
+Remedy: regenerate it the way the item "The generated tool-list mirror does not list fleet_restart" states, since the same engine write produces both files and no `/plugin-types` command exists from Claude Code 2.1.287. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
 
 ## A promoted turn record has `false` written for the outcome that scores the turn-open question (found 2026-09-27)
 
@@ -1126,3 +1132,11 @@ DEV-DISCORD's store (`D:\discord-channels\.agentic-personas.json`, read 2026-10-
 The code confirms each step. Planning fires only when the root has no pending, active or paused descendant (`hooks/index.ts:8342`). Its prompt lists blocked items as history and allows one retry "with a different approach" (`:8415`). Every planner entry is pushed as a new node, and none is reused (`:8508-8531`). A node with no `planPath` on itself or an ancestor is not a plan entry (`isPlanEntry`, `hooks/index.ts:4710`, through `planHolderOf`, `hooks/agent-state.ts:1711`). So it keeps a round budget and is blocked "Max rounds reached" at `hooks/index.ts:10251`, and the load-time recovery at `hooks/agent-state.ts:855` skips it for the same reason. The cap blocks the root at 5 planning rounds or at 2 consecutive all-blocked rounds (`hooks/agent-state.ts:1888-1892`).
 
 How the root came to lack a `planPath` is not confirmed. The likely path is a goal created from a sentence naming the plan rather than from the plan file. Two remedies are open. One makes the goal-creating tools set `planPath` whenever the text names a file under `docs/plans/` or `docs/archive/`. The other makes the planner decline to break down a root whose objective names a plan document and ask for the path instead. Either needs a tick-suite case driving a root with a plan named in its words and no path, and showing it never re-plans.
+
+## The upgrade check's probe run drops three login keys but not a cloud-provider login (found 2026-10-02)
+
+Step 2 of `bin/upgrade-check.mjs` runs the new build on a probe plugin under an empty config folder, so the run makes no model call. It drops `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` from the probe's environment, which is the list the types probe plan's ruling fixed. A host that reaches the model through a cloud provider instead, with a switch such as `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY` and that provider's credentials, still logs the probe in, so `/version` goes to the model as a prompt.
+
+It is here rather than fixed because the ruling named three keys, and widening it is the ARCHITECT persona's call. No fleet host is known to use a cloud provider, which is unconfirmed.
+
+Remedy: decide whether the probe should also drop the cloud-provider switches, and if so add them to `PROBE_LOGIN_KEYS` with a unit case beside the existing one.
