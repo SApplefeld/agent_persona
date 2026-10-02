@@ -1,5 +1,22 @@
 # Backlog
 
+## Operator checks owed by the post-upgrade cleanup plan (parked 2026-10-02)
+
+The post-upgrade cleanup plan (`docs/archive/agent_persona_post-upgrade-cleanup_spec_v1.md`) is Complete. Two checks are the operator's.
+
+- **Remove the function-hooks flag from each fleet host.** Delete `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` from the `env` block of `~/.claude/settings.json` and from any machine-level environment that sets it, then start a session and read its debug log. The line `hooks module agentic-plugin` should show the module loaded at tier user. A host where it does not load reopens the plan.
+- **Decide on the root `CLAUDE.md` warning.** `claude plugin validate --strict` warns that a `CLAUDE.md` at the plugin root is not loaded as project context. Decide whether that earns a later change.
+
+## Operator check owed by the natural-exit writer leak plan (parked 2026-10-01)
+
+The natural-exit writer leak plan (`docs/archive/agent_persona_natural-exit-writer-leak_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Run the suite once and read the process list a minute after it exits.** No `node.exe` should name an `agentic-heartbeat.json` path. One that does reopens the plan's section 1.
+
+## The natural-exit suite's (nh) case may pass on the gate timeout, and its kill can land on a freed pid (found 2026-10-01)
+
+Three findings from the natural-exit writer leak plan's reviews, all outside that plan's scope, which kept the supervisor's stop path out. First, the (nh) case's supervisor is TERMed about 8 s in but holds until GATE TIMEOUT, since `bin/supervise.sh:784` runs its `exit 143` trap only after the gate's foreground pipeline returns, and the case's check at `.kit/supervisor-natural-exit-test.sh:2521` asserts only a non-zero exit, which GATE TIMEOUT's exit 2 also satisfies, so the check may pass without the signal path running. Second, `wait "$NH_SUP"` at `:2518` has no bound, unlike the (ne) case's `timeout 200`. Third, the case's `kill "$NH_HB"` at `:2519` runs near 130 s, about a minute after the writer it names ended at its 60 s lifetime, so on a busy Git Bash host it could reach an unrelated process that took the freed pid. Remedy, unproven: assert the supervisor's 143 exit specifically, wrap the (nh) supervisor in `timeout 200`, and drop the (nh) kill or guard it with `kill -0` and a command-line read.
+
 ## Operator check owed by the error turn definition plan (parked 2026-10-01)
 
 The error turn definition plan (`docs/archive/agent_persona_error-turn-definition_spec_v1.md`) is Complete. One check is the operator's.
@@ -20,6 +37,12 @@ The supervisor interrupt plan (`docs/archive/agent_persona_supervisor-interrupt_
 
 - **Relaunch each persona's supervisor after the installed plugin updates.** A holder launched by an older supervisor watches no interrupt file, and a child loads `fleet_interrupt` only from the updated plugin. Until the relaunch, `fleet_interrupt` writes a request nothing relays. A failure here shows as `fleet_interrupt` answering and no `INTERRUPT:` line in that persona's `supervisor.log`, which reopens the plan.
 - **Run `.kit/live-all.sh` once the fleet is down.** It refuses with exit 10 while the live Steward holds its claim, so the finishing gate ran every other lane. A red there reopens the plan.
+
+## Operator checks owed by the types probe plan (parked 2026-10-02)
+
+The types probe plan (`docs/archive/agent_persona_types-probe_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Run `.kit/live-all.sh` once the fleet is down.** It refused with exit 10 on a live persona claim at both of the finishing pass's whole gates, which ran every other lane green. A red there reopens the plan. The same run discharges the supervisor interrupt plan's item above.
 
 ## Findings the supervisor interrupt finishing pass deferred (found 2026-09-30)
 
@@ -354,7 +377,7 @@ The supervisor interrupt plan's Section 2 review found three items outside that 
 
 ## The generated tool-list mirror does not list fleet_restart (found 2026-09-21)
 
-`.claude/types/claude-code-mcp.d.ts` mirrors the plugin's registered tools and is written by the `/plugin-types` command of an interactive session. The supervisor gaps plan's Section 3 registered `fleet_restart` under the owner tier from a headless session, which cannot run that command. The mirror was last regenerated on 2026-09-12 and lists eleven tools of the sixteen the owner tier registers, so it already lacked `agentic_say`, `agentic_inbox`, `fleet_status` and `agentic_resolve`, and it now lacks `fleet_restart` too. Nothing at runtime reads the mirror. Its readers are authors and type checks that consult it for a tool's shape, and they find no entry for the new tool. The file is generated. Its `supervisor_shutdown` entry carries a hand edit for the `park` parameter and the tool's current description, and its `goal_longterm` entry is written by hand in the same form. The next regeneration rewrites both from the source. Remedy: run `/plugin-types` in an interactive session on this checkout and commit the regenerated file. The upgrade check's step 2, in `bin/upgrade-check.mjs`, runs `/plugin-types` on every new build, but it regenerates `claude-code.d.ts` only. It ignores the tool-list mirror its scratch session writes, since that session's plugin stayed passive, so it does not close this item.
+`.claude/types/claude-code-mcp.d.ts` mirrors the plugin's registered tools. Before Claude Code 2.1.287 it was written by the `/plugin-types` command of an interactive session. The supervisor gaps plan's Section 3 registered `fleet_restart` under the owner tier from a headless session, which could not run that command. The mirror was last regenerated on 2026-09-12 and lists eleven tools of the sixteen the owner tier registers, so it already lacked `agentic_say`, `agentic_inbox`, `fleet_status` and `agentic_resolve`, and it now lacks `fleet_restart` too. Nothing at runtime reads the mirror. Its readers are authors and type checks that consult it for a tool's shape, and they find no entry for the new tool. The file is generated. Its `supervisor_shutdown` entry carries a hand edit for the `park` parameter and the tool's current description, and its `goal_longterm` entry is written by hand in the same form. The next regeneration rewrites both from the source. Remedy: regenerate it from a session that loads this checkout with `--plugin-dir` and has the plugin's tools connected, then commit the file. From Claude Code 2.1.287 no `/plugin-types` command exists: the engine writes the mirror beside a plugin it loads from a folder, as `.claude-plugin/types/claude-code-mcp/index.d.ts`, listing the MCP tools that session had connected. The upgrade check's step 2 runs the build on a one-hook probe under an empty config directory, so the mirror it writes is empty and the step does not close this item.
 
 ## The poll's rate-limit tail read takes one readSync and decodes the whole buffer (found 2026-09-21)
 
@@ -945,7 +968,7 @@ What it costs is type narrowing rather than behaviour. The declarations merge in
 
 It is not edited by hand on its own instruction, and it sits in no section's scope, which is why it is here rather than folded into the section that made it stale.
 
-Remedy: regenerate it. The sibling record in the operator memory tier, `function-hooks-prototype-ships-behind-a-flag`, states that the `/plugin-types` command works in a headless session with the function-hooks flag set, and that a leading slash passed from Git Bash needs `MSYS_NO_PATHCONV=1` or the CLI never sees the command. That record names the sibling file and a different generator, so confirm which command writes this one before running it. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
+Remedy: regenerate it the way the item "The generated tool-list mirror does not list fleet_restart" states, since the same engine write produces both files and no `/plugin-types` command exists from Claude Code 2.1.287. Doing so spawns a `claude` child, so it wants a moment when the box is not running a suite.
 
 ## A promoted turn record has `false` written for the outcome that scores the turn-open question (found 2026-09-27)
 
@@ -1086,12 +1109,6 @@ The steward-architect plan's Section 4 acceptance asks for a registry entry unde
 
 The registry has one writer, the kit role skill's `/role` takeover, which writes the entry at the takeover ritual's "Write the registry entry" step, per that skill's "Registry Entry" section. The steward's priming tells it to take the seat that way (`bin/supervise-holder.sh:292`), and the steward-architect design says the same. None of the steward's eight most recent session transcripts shows the role skill invoked, while each of its reconciliation passes notes "no `/role` takeovers recorded". So the confirmed cause is that the steward does not run the takeover its priming asks for. Why is not confirmed: the child may pass over the instruction, or the role skill may not run from a `claude -p` child at all. The next step is one priming-time `/role Coordinator` attempt in a steward child, read from its transcript. If the skill cannot run there, the steward-architect plan's Section 4 makes it a design stop for the operator.
 
-## The natural-exit suite leaves a test shell and a heartbeat loop running (found 2026-09-30)
-
-After each whole run of `.kit/supervisor-natural-exit-test.sh`, one `bash` process running the suite script is left alive with no parent. It holds one `node -e` loop that rewrites a `.agentic-heartbeat.json` under the run's `mktemp` directory every two seconds for the persona `natexit`. The two whole runs on 2026-09-29 left one pair each, started 22:27Z and 23:36Z, and all four processes were killed by hand on 2026-09-30. This pair is separate from the `(nf)` entry above, which names a `bin/supervise.sh` and its holder.
-
-The loop is case `(ne)`'s, the only heartbeat loop in the suite writing under `$NE/wd` (`.kit/supervisor-natural-exit-test.sh:2379`). The case starts it inside a background subshell that records the `node` pid in `$NE/hb.pid` and kills it only after its own `sleep 130`, and the case's cleanup signals that subshell, `kill "$NE_HB"`, rather than the `node` pid. Case `(nh)` at `:2497` has the same shape with `$NH_HB`. That the loop is `(ne)`'s is confirmed from its path. Why both the subshell and its `node` outlived the cleanup is not confirmed, since a subshell that survived the TERM would have killed `node` itself after 130 seconds. The remedy holds either way: each case's cleanup kills the pid in its `hb.pid` file, then the subshell.
-
 ## No live run proves the harness accepts a submit made right after a completion (found 2026-09-30)
 
 The inbox-drain plan assumed, at its Assumptions entry of 2026-09-24 (`docs/archive/agent_persona_inbox-drain_v1.md:275`), that this is proven on the deferred live gate and in its Operator Verification, because the tick suite's fake submit settles at once. The deferred gate run ran the live suites green on `c777ceb`, but none of them was read for this behavior, and that plan sat outside the gate policy's stated scope. So the claim is still unproven on a real harness. Proving it takes one live run that ends a turn and submits a queued inbox record in the same controller tick, reading from the child's output that the second turn ran.
@@ -1115,3 +1132,11 @@ DEV-DISCORD's store (`D:\discord-channels\.agentic-personas.json`, read 2026-10-
 The code confirms each step. Planning fires only when the root has no pending, active or paused descendant (`hooks/index.ts:8342`). Its prompt lists blocked items as history and allows one retry "with a different approach" (`:8415`). Every planner entry is pushed as a new node, and none is reused (`:8508-8531`). A node with no `planPath` on itself or an ancestor is not a plan entry (`isPlanEntry`, `hooks/index.ts:4710`, through `planHolderOf`, `hooks/agent-state.ts:1711`). So it keeps a round budget and is blocked "Max rounds reached" at `hooks/index.ts:10251`, and the load-time recovery at `hooks/agent-state.ts:855` skips it for the same reason. The cap blocks the root at 5 planning rounds or at 2 consecutive all-blocked rounds (`hooks/agent-state.ts:1888-1892`).
 
 How the root came to lack a `planPath` is not confirmed. The likely path is a goal created from a sentence naming the plan rather than from the plan file. Two remedies are open. One makes the goal-creating tools set `planPath` whenever the text names a file under `docs/plans/` or `docs/archive/`. The other makes the planner decline to break down a root whose objective names a plan document and ask for the path instead. Either needs a tick-suite case driving a root with a plan named in its words and no path, and showing it never re-plans.
+
+## The upgrade check's probe run drops three login keys but not a cloud-provider login (found 2026-10-02)
+
+Step 2 of `bin/upgrade-check.mjs` runs the new build on a probe plugin under an empty config folder, so the run makes no model call. It drops `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` from the probe's environment, which is the list the types probe plan's ruling fixed. A host that reaches the model through a cloud provider instead, with a switch such as `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY` and that provider's credentials, still logs the probe in, so `/version` goes to the model as a prompt.
+
+It is here rather than fixed because the ruling named three keys, and widening it is the ARCHITECT persona's call. No fleet host is known to use a cloud provider, which is unconfirmed.
+
+Remedy: decide whether the probe should also drop the cloud-provider switches, and if so add them to `PROBE_LOGIN_KEYS` with a unit case beside the existing one.

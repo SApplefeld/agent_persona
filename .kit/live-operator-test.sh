@@ -85,7 +85,6 @@ cleanup() {
 trap cleanup EXIT
 
 rm -f "$OWNER_OUT" "$OWNER_ERR" "$READER_OUT"
-export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
 # --- Settings ---

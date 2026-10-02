@@ -53,7 +53,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 
 [ -f "$RUNNING" ] && { echo "RUNNING exists, refusing"; exit 8; }
