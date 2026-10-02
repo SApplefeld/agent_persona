@@ -395,17 +395,19 @@ const cases = [
     assert.match(only(r.rows, '7. smoke').evidence, /no debug log at /);
   }],
 
-  // --- The function-hooks flag, which is what makes the engine load the
-  // plugin at all: steps 2 and 7 carry it and no other step does.
-  ['CLAUDE_CODE_ENABLE_FUNCTION_HOOKS reaches steps 2 and 7 and no other step', () => {
-    // Cleared in the launch environment first: this machine sets the flag
-    // globally, so a case that inherited it would read every step as carrying
-    // it and could not tell the two steps that add it from the rest.
+  // --- The function-hooks flag, which the engine no longer needs to load the
+  // plugin: no step's child environment carries it.
+  ["no step's child environment carries CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", () => {
+    // Cleared in the launch environment first: a machine that still sets the
+    // flag globally would otherwise pass it to every step and fail the case
+    // for a reason the check does not own.
     const { paths, r } = passingPre('function-hooks', { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '' });
-    const withFlag = r.calls.filter((c) => c.functionHooks === '1').map((c) => c.kind).sort();
-    assert.deepEqual(withFlag, ['smoke', 'types'], JSON.stringify(r.calls.map((c) => [c.kind, c.functionHooks])));
-    // Both run in the scratch folder, so the plugin finds no persona there.
-    for (const call of r.calls.filter((c) => c.functionHooks === '1')) {
+    const withFlag = r.calls.filter((c) => c.functionHooks === '1').map((c) => c.kind);
+    assert.deepEqual(withFlag, [], JSON.stringify(r.calls.map((c) => [c.kind, c.functionHooks])));
+    // The types and smoke steps run in the scratch folder, so the plugin finds no persona there.
+    const scratchCalls = r.calls.filter((c) => c.kind === 'types' || c.kind === 'smoke');
+    assert.deepEqual(scratchCalls.map((c) => c.kind).sort(), ['smoke', 'types']);
+    for (const call of scratchCalls) {
       assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(paths.scratch));
     }
   }],

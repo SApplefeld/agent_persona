@@ -88,7 +88,6 @@ source "$SCRIPT_DIR/live-common.sh"
 
 trap 'rm -f "$RUNNING"' EXIT
 rm -f "$K"/commons-A.out.jsonl "$K"/commons-A.err.log "$K"/commons-B.out.jsonl "$K"/commons-B.err.log "$K"/commons.exit "$K"/commons.assert.log
-export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 unset CLAUDECODE
 TOOLS="mcp__agentic-plugin__goal_create,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity"
 

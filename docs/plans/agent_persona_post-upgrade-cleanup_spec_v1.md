@@ -1,6 +1,6 @@
 # The plugin names its authors and stops asking for the function-hooks flag, which Claude Code 2.1.287 no longer reads
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
