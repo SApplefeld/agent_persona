@@ -830,7 +830,7 @@ export function pre(flags) {
   fs.writeFileSync(path.join(probeDir, '.claude-plugin', 'plugin.json'), '{"name":"upgrade-check-types-probe"}');
   fs.writeFileSync(path.join(probeDir, 'hooks', 'hooks.json'), '{"modules":["./register.js"]}');
   fs.writeFileSync(path.join(probeDir, 'hooks', 'register.js'), "export function register(on) { on('session.start', async ($, e, next) => next(e)) }\n");
-  const probeCommand = 'claude -p "/version" --plugin-dir ' + probeDir;
+  const probeCommand = 'CLAUDE_CONFIG_DIR="' + configDir + '" claude -p "/version" --plugin-dir "' + probeDir + '"';
   const typesRun = runClaude(['-p', '/version', '--plugin-dir', probeDir], { cwd: scratch, env: { ...childEnv(), CLAUDE_CONFIG_DIR: configDir } });
   const newTypesPath = path.join(probeDir, '.claude-plugin', 'types', 'claude-code', 'index.d.ts');
   let newTypes = '';
@@ -842,7 +842,8 @@ export function pre(flags) {
   } else if (!newTypes) {
     record('2. types', 'fail', probeCommand + ' exited ' + typesRun.status + ' and wrote no ' + newTypesPath + ': ' + evidenceLine(typesRun.stderr || typesRun.stdout));
   } else {
-    record('2. types', 'pass', 'exit ' + typesRun.status + ' (' + evidenceLine(typesRun.stdout || typesRun.stderr) + '); ' + newTypesPath + ' first line: ' + evidenceLine(newFirstLine));
+    const firstOutput = (typesRun.stdout || typesRun.stderr || '').split(LINE_TERMINATOR).find((line) => line.trim()) || '';
+    record('2. types', 'pass', 'exit ' + typesRun.status + ' (' + evidenceLine(firstOutput).slice(0, 120) + '); ' + newTypesPath + ' first line: ' + evidenceLine(newFirstLine));
   }
 
   // --- Step 3. Compare the new interface against the committed one. ---

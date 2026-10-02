@@ -289,7 +289,7 @@ const cases = [
     const { r } = passingPre('types-exit-1', { FAKE_CLAUDE_TYPES_EXIT: '1' });
     const row = only(r.rows, '2. types');
     assert.equal(row.result, 'pass', row.evidence);
-    assert.match(row.evidence, /^exit 1 \(Not logged in\); .* first line: /);
+    assert.match(row.evidence, /^exit 1 \(.+\); .* first line: /);
   }],
   ['the fixture refuses the retired types slash command at its unknown branch, and a bare /version without --plugin-dir', () => {
     const paths = makeCase('old-invocation');
