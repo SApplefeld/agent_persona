@@ -1,5 +1,15 @@
 # Backlog
 
+## Operator check owed by the natural-exit writer leak plan (parked 2026-10-01)
+
+The natural-exit writer leak plan (`docs/archive/agent_persona_natural-exit-writer-leak_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Run the suite once and read the process list a minute after it exits.** No `node.exe` should name an `agentic-heartbeat.json` path. One that does reopens the plan's section 1.
+
+## The natural-exit suite's (nh) case may pass on the gate timeout, and its kill can land on a freed pid (found 2026-10-01)
+
+Three findings from the natural-exit writer leak plan's reviews, all outside that plan's scope, which kept the supervisor's stop path out. First, the (nh) case's supervisor is TERMed about 8 s in but holds until GATE TIMEOUT, since `bin/supervise.sh:784` runs its `exit 143` trap only after the gate's foreground pipeline returns, and the case's check at `.kit/supervisor-natural-exit-test.sh:2521` asserts only a non-zero exit, which GATE TIMEOUT's exit 2 also satisfies, so the check may pass without the signal path running. Second, `wait "$NH_SUP"` at `:2518` has no bound, unlike the (ne) case's `timeout 200`. Third, the case's `kill "$NH_HB"` at `:2519` runs near 130 s, about a minute after the writer it names ended at its 60 s lifetime, so on a busy Git Bash host it could reach an unrelated process that took the freed pid. Remedy, unproven: assert the supervisor's 143 exit specifically, wrap the (nh) supervisor in `timeout 200`, and drop the (nh) kill or guard it with `kill -0` and a command-line read.
+
 ## Operator check owed by the error turn definition plan (parked 2026-10-01)
 
 The error turn definition plan (`docs/archive/agent_persona_error-turn-definition_spec_v1.md`) is Complete. One check is the operator's.
@@ -1085,12 +1095,6 @@ Remedy: `kill_holder` returns the kill's result, and `stop_child` logs "input cl
 The steward-architect plan's Section 4 acceptance asks for a registry entry under `~/.claude/coordinator/<machine>/registry/` whose `Name:` is the Coordinator seat and whose `Session:` is the steward child. None exists. The registry directory holds no entry at all, and the machine board records "no `/role` takeovers". The steward child does hold the seat in practice: the board names it as the Coordinator and logs its reconciliation passes.
 
 The registry has one writer, the kit role skill's `/role` takeover, which writes the entry at the takeover ritual's "Write the registry entry" step, per that skill's "Registry Entry" section. The steward's priming tells it to take the seat that way (`bin/supervise-holder.sh:292`), and the steward-architect design says the same. None of the steward's eight most recent session transcripts shows the role skill invoked, while each of its reconciliation passes notes "no `/role` takeovers recorded". So the confirmed cause is that the steward does not run the takeover its priming asks for. Why is not confirmed: the child may pass over the instruction, or the role skill may not run from a `claude -p` child at all. The next step is one priming-time `/role Coordinator` attempt in a steward child, read from its transcript. If the skill cannot run there, the steward-architect plan's Section 4 makes it a design stop for the operator.
-
-## The natural-exit suite leaves a test shell and a heartbeat loop running (found 2026-09-30)
-
-After each whole run of `.kit/supervisor-natural-exit-test.sh`, one `bash` process running the suite script is left alive with no parent. It holds one `node -e` loop that rewrites a `.agentic-heartbeat.json` under the run's `mktemp` directory every two seconds for the persona `natexit`. The two whole runs on 2026-09-29 left one pair each, started 22:27Z and 23:36Z, and all four processes were killed by hand on 2026-09-30. This pair is separate from the `(nf)` entry above, which names a `bin/supervise.sh` and its holder.
-
-The loop is case `(ne)`'s, the only heartbeat loop in the suite writing under `$NE/wd` (`.kit/supervisor-natural-exit-test.sh:2379`). The case starts it inside a background subshell that records the `node` pid in `$NE/hb.pid` and kills it only after its own `sleep 130`, and the case's cleanup signals that subshell, `kill "$NE_HB"`, rather than the `node` pid. Case `(nh)` at `:2497` has the same shape with `$NH_HB`. That the loop is `(ne)`'s is confirmed from its path. Why both the subshell and its `node` outlived the cleanup is not confirmed, since a subshell that survived the TERM would have killed `node` itself after 130 seconds. The remedy holds either way: each case's cleanup kills the pid in its `hb.pid` file, then the subshell.
 
 ## No live run proves the harness accepts a submit made right after a completion (found 2026-09-30)
 
