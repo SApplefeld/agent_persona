@@ -9,7 +9,7 @@
 
 ## Active plans
 
-None.
+- `plans/agent_persona_natural-exit-supervisor-tree_spec_v1.md`: The natural-exit suite's (nf) case ends the supervisor tree it starts (the case ends the holder it left behind so the stub exits, reads its supervisor dead, and a third check reads the tree gone; the suite's exit path lists every process naming the run's temp path and fails the run if any remain; the eight leftover trees on the operator's machine are swept). Ready, one section, after pull request 139 merges.
 
 ## Archived plans
 

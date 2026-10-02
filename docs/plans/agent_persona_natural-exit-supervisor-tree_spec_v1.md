@@ -1,0 +1,80 @@
+# The natural-exit suite's (nf) case ends the supervisor tree it starts, so a run leaves nothing behind
+
+Status: Ready
+Commit Model: Branch-and-PR
+Created: 2026-10-01
+
+## Dispatch Authorization
+
+The coordinator persona found on 2026-10-01 that every run of the natural-exit suite leaves the (nf) case's supervisor tree running, and the ARCHITECT persona wrote the fix as a second section of `agent_persona_natural-exit-writer-leak_spec_v1.md` on branch `plans/natural-exit-writer-leak-nf` at `6ff502d`. That plan closed Complete at `f893a1a` with its first section only, before the section was merged, so this plan carries the section on its own. It has one precondition, on dispatch: pull request 139, which archives that plan and changes `.kit/supervisor-natural-exit-test.sh`, merges first, and the run cuts its branch from `main` after that merge. The plan is otherwise armed on the ARCHITECT's design remit, with no operator ruling owed.
+
+## Goal
+
+A run of `.kit/supervisor-natural-exit-test.sh` leaves no supervisor, holder or stub child on the machine when it ends. Today every run's (nf) case leaves its first supervisor's whole tree: the `bin/supervise.sh` process, its `bin/supervise-holder.sh`, and the stub `claude` the holder feeds, each naming a fixture under `/tmp/tmp.*/nf` whose folder the run deleted at its exit. Eight such trees, 24 processes, sat on this machine on 2026-10-01, one per run, from four different worktrees. When this ships, the (nf) case ends the tree it started and proves it gone before the case closes, the suite's last step fails any run that leaves a process naming the run's own temp path, and the eight leftover trees are swept.
+
+## Intent
+
+The coordinator's finding, 2026-10-01: "Every run's (nf) case appears to leave its test supervisor tree running: a bash.exe on bin/supervise.sh with a /tmp/tmp.<id>/nf/wd fixture, its supervise-holder.sh, and in one case the stub claude. Six sets are on this machine now ... The cause is not diagnosed. The process list alone shows it." A warning for any sweep: the live fleet's own `supervise.sh` and `supervise-holder.sh` processes match the same names, and only the `/tmp/tmp.*` paths mark the leftovers.
+
+What done needs to do. The (nf) case, after its two checks, ends the first supervisor's child tree and proves it gone, and its first supervisor is read dead too. The case's two checks pass as they do today, and a third check in the case reads the tree gone. The suite's exit path lists every process whose command line names the run's temp path and fails the run if any remain, so a case that leaks is a red rather than a process list someone reads a day later. After a run of the suite, no process whose command line names that run's temp path remains. The eight leftover trees on this machine are ended.
+
+What done does not need to do. It does not change the supervisor. If the reproduction shows the first supervisor wedged after the TERM, rather than left behind by a teardown that predates the detach design, that is a supervisor defect and a different goal: the Chapter records the reading with the log lines, the finding goes to the coordinator as a proposal, and this plan still ends the tree from the case. It does not add a general kill to the suite's exit trap: `kill_leaked_survivors` at `.kit/supervisor-natural-exit-test.sh:153` ends what a case's stub recorded as a "pid,ticks" pair, and a case that ends its own tree needs no entry there. The listing this plan adds fails the run and ends nothing. It does not fix the suite's other reds, which `docs/backlog.md` records, and which this plan's gate therefore does not run.
+
+Alternatives refused. Reopening the archived writer-leak plan for a second section: refused, since its finishing pass ran two whole gates and its reviews over section 1, and a reopened Complete plan would owe that pass again over work the first section does not touch. Ending the tree by running a third supervisor with a shutdown request, the way the (ng) case adopts and stops a detached child: refused as the teardown, since it costs a gate wait and more supervisor behavior than the case is testing; the (nf) case tests the gate's refusal to adopt, and its teardown should be the shortest honest end of what it started. Recording every launched supervisor's pid and killing the set from the exit trap, the remedy `docs/backlog.md` proposed on 2026-09-29: refused as the fix, since a trap that kills what a case should have ended hides the case's defect, and the listing that fails the run gives the same safety net as a red the next run reads. Leaving the trees and sweeping by hand: refused, the finding is that this repeats on every run.
+
+## Approach
+
+**What the case does today.** `.kit/supervisor-natural-exit-test.sh:2433` on `main` starts the case's first supervisor in the background through `sup_bg` at `:2283`, under a "holds" plan whose stub child reads its input until the input closes and only then exits. After the two checks, `:2447` sends that supervisor a TERM and waits for it. Since 2026-09-24, commit `a17dc35`, a supervisor signalled with a live handled child takes the DETACH route at `bin/supervise.sh:752` and leaves the child and its holder running for the next supervisor to adopt. So the case's teardown ends nothing it started: the holder keeps the stub's input open, the stub keeps reading, and no supervisor ever adopts them.
+
+**Two readings of the supervisor's own survival, and the reproduction decides.** The DETACH route exits 143, so it does not explain why the first supervisor process is alive in every leftover tree. `docs/backlog.md`'s item of 2026-09-29 offered a second reading: `sup_bg` records `$!` from `env -i ... bash supervise.sh &`, and under MSYS that wrapper might not replace itself with bash, so the TERM would land on `env` and never reach the supervisor. The ARCHITECT probed that reading on 2026-10-01 in this seat's Git Bash: a backgrounded `env -i PATH=... bash -c 'exec sleep 37'` recorded a pid that `ps` showed as the launched command itself, the Windows process list showed one `sleep.exe 37` and no `env.exe` for it, and a TERM to the recorded pid removed it from both lists with `wait` returning 143. So the TERM does reach the supervisor, and the backlog's reading is refuted for this shape. What the supervisor does after the TERM is what the reproduction reads: the run keeps its folder, and the first supervisor's `nf/supervise.out` and its log under `nf/rd` are read for a `DETACH` line, a `STOP` line, or neither, with the last line it wrote. A supervisor that logged DETACH and is still alive is wedged on the route's own exit, which is the supervisor finding the Intent routes out. A supervisor that logged nothing after the TERM did not handle it, and the Chapter says what the trap did instead.
+
+**The teardown.** The case gains a teardown that ends the tree the way the design ends a detached child: it reads the holder's pid from `nf/rd/child-1/holder.pid`, which `bin/supervise.sh:3952` writes, ends the holder, which closes the stub's input so the stub exits on its own, waits on the first supervisor, and then reads the process list by the run's `nf` fixture path and fails a new check if anything still names it. Where the reproduction shows the supervisor survives the TERM, the teardown ends it by its pid after the holder, and the Chapter records that the kill was needed. The (na) and (nb) cases at `:2305`, which also TERM a supervisor with a live child, are read for the same shape and take the same teardown where they have it; the Chapter says which.
+
+**The listing.** The exit trap at `:167` runs `kill_leaked_survivors` and removes the temp root. Before the removal, the suite lists every process whose command line names `$TMP`, through the same `Get-CimInstance Win32_Process` read the suite's other pins use, and fails the run with the list printed where any remain. The listing is the withheld control for the teardown: a run on the script as it stands today, with the listing added and the teardown not yet, must go red on the (nf) tree, and that red is recorded in the Chapter before the teardown lands.
+
+**The sweep.** The leftovers are ended by their current Windows pids after re-reading the process list and confirming each still names a `/tmp/tmp.*/nf/` path whose folder does not exist. The stub `claude` is ended first, then the holder, then the supervisor. The live fleet's own supervisors and holders carry no `/tmp/tmp.*` path, and nothing is ended whose command line lacks one or whose temp folder still exists, since a folder that exists may be a suite run in progress in another session.
+
+## Sections of Work
+
+### 1. The (nf) case ends the tree it started, the suite fails a run that leaves one, and the leftover trees go
+
+Model: opus
+
+The reproduction runs first with the run folder kept, so the first supervisor's log is read and its reading recorded in the Chapter. Then the listing lands and goes red on the tree. Then the teardown lands, the reproduction reruns green, and the leftover trees are ended.
+
+Acceptance:
+- Before the change, `bash .kit/supervisor-natural-exit-test.sh --cases nf` ends with a `bash.exe` on `bin/supervise.sh`, one on `supervise-holder.sh` and one on the stub `claude` still running, each naming `<TMP>/nf`, read from the process list within a minute of the run's exit. The run's `nf/supervise.out` and the first supervisor's log are copied out before the exit trap removes them, and the Chapter records what the first supervisor logged after the TERM: a `DETACH` line, a `STOP` line, or neither, with the last line it wrote. A reading that shows the supervisor wedged rather than exited is recorded as a supervisor finding for the coordinator, and this section still lands its teardown.
+- With the listing added and the teardown not yet, the same run exits non-zero and prints the three processes. That red is recorded in the Chapter.
+- After the teardown, the same run leaves no process whose command line names that path, read the same way, the two (nf) checks pass, the third check in the case reads the tree gone, and the run's listing is empty with the run exiting 0.
+- The (na) and (nb) cases are run once each after the change and leave no process naming their fixture paths. Where either leaked before the change, the Chapter says so and the same teardown lands there.
+- The leftover trees on this machine are gone: `Get-CimInstance Win32_Process` filtered on a command line containing `/tmp/tmp.` and `/nf/` returns nothing. The Chapter names the pids ended, 24 if every tree still has three members, and confirms the live fleet's supervisors were untouched by listing their count before and after. A tree whose temp folder still exists is left and named.
+- The suite's other cases are not run as the gate, for the reason the Intent states.
+
+Files in scope: `.kit/supervisor-natural-exit-test.sh`.
+Tests: the reproduction both ways on (nf), the listing's red before the teardown, the (na) and (nb) reads, the new in-case check.
+
+## Out of Scope
+
+- The supervisor's own stop path, the DETACH route and `kill_leaked_survivors`. A supervisor found wedged by the reproduction is reported, not fixed here.
+- The suite's other reds, recorded in `docs/backlog.md`.
+- A general kill of orphaned processes in the suite's exit trap.
+- The ten processes naming `/tmp/tmp.3d8TmB3GTc/o/` on this machine on 2026-10-01, a `timeout 420` wrapper, seven `supervise.sh`, one holder and two stubs from the (o) case under the `turn-open-wording-bound` worktree. That is a different case and possibly a run in progress; the listing this plan adds will name it on that case's next run, and the ARCHITECT reported it to the coordinator with this plan.
+- `.kit/supervisor-natural-exit-parallel.sh`, which only schedules the suite's cases and starts no supervisor.
+
+## Assumptions
+
+- assumed 2026-10-01 (source: `bin/supervise.sh:752` at `0fb2a08` and the (nf) case at `.kit/supervisor-natural-exit-test.sh:2447`): the holder and stub are left behind because the case's teardown, a TERM and a wait, predates the DETACH route that commit `a17dc35` added on 2026-09-24, so the two are left by design and the case never ends them; reversal: the reproduction reads the log, and the teardown lands either way.
+- assumed 2026-10-01 (source: the ARCHITECT's probe of a backgrounded `env -i ... bash -c` in Git Bash, where the recorded pid was the launched command and a TERM to it ended it): the TERM at `:2447` reaches the supervisor, and the supervisor's own survival is not the `env` wrapper's; reversal: a reproduction whose process list shows an `env.exe` holding the recorded pid, which moves the fix to `sup_bg` recording the bash's pid instead.
+- assumed 2026-10-01 (inferred from the process list, eight `supervise.sh` processes alive with their holders and stubs): the first supervisor's own survival after the TERM is not explained by the DETACH route, which exits 143; the cause is read in the reproduction and, if it is the supervisor's, routed out as a finding.
+- assumed 2026-10-01 (default): the teardown ends the holder by the pid in `nf/rd/child-1/holder.pid` rather than by a third supervisor carrying a shutdown request; reversal: the (ng) case shows the other shape.
+- assumed 2026-10-01 (default): the blind read and the plan review are skipped, since the spec is one section over one test file, as the archived writer-leak plan assumed for the same file.
+
+## Operator Verification
+
+- After this merges, run the suite once on this machine and read the process list a minute after it exits. No process names a `/tmp/tmp.*` path. One that does reopens section 1, and the run's own listing should have gone red first.
+
+## Open Questions
+
+- None.
+
+## Chapters
