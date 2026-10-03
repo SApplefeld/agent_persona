@@ -96,7 +96,7 @@ export const RESULTS = Object.freeze(['pass', 'warn', 'gap', 'fail', 'skipped'])
 export const DEFAULT_HEARTBEAT_MS = 30000;
 // The manifest name the debug log writes the plugin under, and the five
 // readings in a log line that say the engine did not take the plugin whole.
-export const PLUGIN_NAME = 'agentic-plugin';
+export const PLUGIN_NAME = 'personas';
 export const SMOKE_PATTERNS = Object.freeze(['skipped', 'WARN', 'not attached', 'does not validate', 'refused']);
 // Readings that say the engine did not load the plugin at all, which the smoke
 // step reads as a fail rather than a warn. The engine logs a refused manifest

@@ -119,7 +119,7 @@ The fleet runs on the persona plugin and the kit. Both must be installed before 
 
    ```
    claude plugin marketplace add SApplefeld/agent_persona
-   claude plugin install agentic-plugin@agent-persona --scope user
+   claude plugin install personas@agent-persona --scope user
    ```
 
 2. Install the kit:

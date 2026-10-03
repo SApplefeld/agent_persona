@@ -27,8 +27,8 @@
 
 # --- Plugin ids ---
 # The two ids pluginConfigs is keyed by: --plugin-dir load, and installed load.
-AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
-AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
+AGENTIC_PLUGIN_DEV_ID="personas"
+AGENTIC_PLUGIN_INSTALLED_ID="personas@agent-persona"
 
 # --- Kit skill prefix ---
 # The name the kit's skills are qualified by on this host: "grimoire" where the
@@ -451,10 +451,23 @@ EOF
 # it truncated. Returns 1 when the file is not valid JSON, when it, its
 # pluginConfigs, an id entry or an options value is not a plain object, or when
 # the write fails.
+#
+# The plugin was named agentic-plugin before it was named personas. The
+# engine's rename map rewrites the user, project and local settings files but
+# not a --settings file, so a run directory written before the rename holds its
+# options under the former ids alone. Where neither current id carries options,
+# each current id takes the options of its former counterpart, or of the other
+# former id where its counterpart carries none, every option as written. The
+# former keys stay in the file, since the engine no longer reads them. A former
+# key that holds no usable options object is skipped rather than refused. A file
+# already carrying either current id takes the copy rule above, and the former
+# keys are not read.
 ensure_settings_plugin_ids() {
   node -e '
 const fs = require("fs");
 const [file, devId, installedId] = process.argv.slice(1);
+const formerDevId = "agentic-plugin";
+const formerInstalledId = "agentic-plugin@agent-persona";
 const fail = (msg) => { console.error("ERROR: ensure_settings_plugin_ids: " + file + " " + msg); process.exit(1); };
 const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 let s;
@@ -468,12 +481,18 @@ for (const id of [devId, installedId]) {
   if (!plain(pc[id])) fail("has a " + id + " entry that is not an object");
   if (pc[id].options !== undefined && !plain(pc[id].options)) fail("has " + id + " options that are not an object");
 }
-const has = (id) => pc[id] !== undefined && plain(pc[id].options) && Object.keys(pc[id].options).length > 0;
-let from, to;
-if (has(devId) && !has(installedId)) { from = devId; to = installedId; }
-else if (has(installedId) && !has(devId)) { from = installedId; to = devId; }
+const has = (id) => plain(pc[id]) && plain(pc[id].options) && Object.keys(pc[id].options).length > 0;
+const copies = [];
+if (has(devId) && !has(installedId)) copies.push([devId, installedId]);
+else if (has(installedId) && !has(devId)) copies.push([installedId, devId]);
+else if (!has(devId) && !has(installedId)) {
+  const fromDev = has(formerDevId) ? formerDevId : has(formerInstalledId) ? formerInstalledId : null;
+  if (fromDev === null) process.exit(0);
+  const fromInstalled = has(formerInstalledId) ? formerInstalledId : fromDev;
+  copies.push([fromDev, devId], [fromInstalled, installedId]);
+}
 else process.exit(0);
-pc[to] = Object.assign({}, pc[to], { options: Object.assign({}, pc[from].options) });
+for (const [from, to] of copies) pc[to] = Object.assign({}, pc[to], { options: Object.assign({}, pc[from].options) });
 const tmp = file + ".tmp-" + process.pid;
 try {
   fs.writeFileSync(tmp, JSON.stringify(s));
@@ -923,10 +942,10 @@ valid_persona_name() {
 
 # --- find_global_store ---
 # Plan item 6: the commons store's filename is load-mode-specific -
-# "agentic-plugin_inline-<hash>.json" under --plugin-dir, and
-# "agentic-plugin_<marketplace-name>-<hash>.json" for an installed plugin
-# (confirmed live: "agentic-plugin_agent-persona-<hash>.json" for this
-# repo's own marketplace). Once both load modes have ever run on one
+# "personas_inline-<hash>.json" under --plugin-dir, and
+# "personas_<marketplace-name>-<hash>.json" for an installed plugin
+# ("personas_agent-persona-<hash>.json" for this repo's own
+# marketplace). The engine prefixes both with the manifest name. Once both load modes have ever run on one
 # machine, both files can exist at once, and "take the first match"
 # silently picks the wrong one for whichever mode this run is in. The
 # caller's own dev_mode (whether --dev/--plugin-dir was given) says which
@@ -945,7 +964,7 @@ find_global_store() {
   local f
   if [ -d "$HOME/.claude/plugins/store" ]; then
     if [ "$dev_mode" -eq 1 ]; then
-      for f in "$HOME/.claude/plugins/store"/agentic-plugin_inline-*.json; do
+      for f in "$HOME/.claude/plugins/store"/personas_inline-*.json; do
         if [ -f "$f" ]; then
           echo "$f"
           return 0
@@ -967,7 +986,7 @@ find_global_store() {
 
 # --- list_installed_stores ---
 # Prints every installed-mode commons store, one path per line: each
-# agentic-plugin_*.json under the plugin store directory that is not an
+# personas_*.json under the plugin store directory that is not an
 # inline (dev-tree) store. This is the one filter that decides what counts
 # as an installed store. find_global_store's installed branch takes the
 # first line and .kit/live-all.sh's refuse-at-start check reads every
@@ -977,10 +996,10 @@ find_global_store() {
 list_installed_stores() {
   local f
   [ -d "$HOME/.claude/plugins/store" ] || return 0
-  for f in "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
+  for f in "$HOME/.claude/plugins/store"/personas_*.json; do
     [ -f "$f" ] || continue
     case "$(basename "$f")" in
-      agentic-plugin_inline-*) continue ;;
+      personas_inline-*) continue ;;
     esac
     echo "$f"
   done

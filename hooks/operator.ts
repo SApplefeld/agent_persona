@@ -1,4 +1,4 @@
-// Operator channel: cross-session steering for agentic-plugin.
+// Operator channel: cross-session steering for personas.
 // D1: Records (inbox, reply, ask) in the commons store.
 // D2: Reader claim and tools (agentic_say, agentic_inbox).
 //

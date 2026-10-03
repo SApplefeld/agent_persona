@@ -44,7 +44,7 @@ emit_settings_json "settings.json"
 feed | claude -p --input-format stream-json --output-format stream-json --verbose \
   --plugin-dir "$(cygpath -w "$PLUGIN_DIR")" \
   --settings "$(cygpath -w "$SUITE_DIR/settings.json")" \
-  --allowedTools "mcp__agentic-plugin__goal_create,mcp__agentic-plugin__goal_add,mcp__agentic-plugin__goal_done,mcp__agentic-plugin__goal_status,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity" \
+  --allowedTools "mcp__personas__goal_create,mcp__personas__goal_add,mcp__personas__goal_done,mcp__personas__goal_status,mcp__personas__memory_add,mcp__personas__agentic_identity" \
   --model haiku \
   > "$K"/goaltree.out.jsonl 2> "$K"/goaltree.err.log
 EXIT_CODE=$?

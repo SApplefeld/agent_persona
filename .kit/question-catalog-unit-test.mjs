@@ -924,14 +924,14 @@ const VALID_CONTROLLER_OVERRIDE = {
   const opening = catalog.turnOpeningText;
   const trailer = "This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.";
   check("Test 12k: turnOpeningText removes the engine's wrapper line and trailer paragraph and trims",
-    typeof opening === "function" && opening("\n The agentic-plugin plugin sent a message:\n[GOAL] Do it.\n\n" + trailer + "\n") === "[GOAL] Do it.",
-    typeof opening === "function" ? opening("\n The agentic-plugin plugin sent a message:\n[GOAL] Do it.\n\n" + trailer + "\n") : typeof opening);
+    typeof opening === "function" && opening("\n The personas plugin sent a message:\n[GOAL] Do it.\n\n" + trailer + "\n") === "[GOAL] Do it.",
+    typeof opening === "function" ? opening("\n The personas plugin sent a message:\n[GOAL] Do it.\n\n" + trailer + "\n") : typeof opening);
   check("Test 12k control: a text carrying neither is only trimmed",
     typeof opening === "function" && opening("  Tidy the notes.\n") === "Tidy the notes.");
   if (typeof stateText === "function") {
     const noFlags = Object.fromEntries((catalog.TURN_SCORE_TOOL_FLAGS || []).map((f) => [f, false]));
     const longNudge = "[GOAL] " + "n".repeat(1300);
-    const wrapped = stateText("The agentic-plugin plugin sent a message:\n" + longNudge + "\n\n" + trailer, "a", "o", { flags: noFlags, calls: [] });
+    const wrapped = stateText("The personas plugin sent a message:\n" + longNudge + "\n\n" + trailer, "a", "o", { flags: noFlags, calls: [] });
     check("Test 12k: the state removes the wrapper before its 1,200 cut, so a long nudge fills the bound and the trailer never reaches it",
       wrapped.startsWith(`Turn opened with: (GOAL) ${"n".repeat(1200 - "(GOAL) ".length)}\n\n`) && !wrapped.includes("This is how"), wrapped.slice(0, 60));
   }

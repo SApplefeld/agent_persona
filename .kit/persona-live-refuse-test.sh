@@ -63,7 +63,7 @@ STORE_J_CTRL="$TMP/j-ctrl.json"; write_store "$STORE_J_CTRL" '{"commons:s1":{las
 STUB_HOME="$TMP/home"
 STUB_STORE_DIR="$STUB_HOME/.claude/plugins/store"
 mkdir -p "$STUB_STORE_DIR"
-for name in agentic-plugin_inline-abc agentic-plugin_agent-persona-1 agentic-plugin_agent-persona-2 agentic-plugin_zzz-3; do
+for name in personas_inline-abc personas_agent-persona-1 personas_agent-persona-2 personas_zzz-3; do
   write_store "$STUB_STORE_DIR/$name.json" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
 done
 

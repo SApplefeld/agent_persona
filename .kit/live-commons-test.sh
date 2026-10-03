@@ -89,7 +89,7 @@ source "$SCRIPT_DIR/live-common.sh"
 trap 'rm -f "$RUNNING"' EXIT
 rm -f "$K"/commons-A.out.jsonl "$K"/commons-A.err.log "$K"/commons-B.out.jsonl "$K"/commons-B.err.log "$K"/commons.exit "$K"/commons.assert.log
 unset CLAUDECODE
-TOOLS="mcp__agentic-plugin__goal_create,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity"
+TOOLS="mcp__personas__goal_create,mcp__personas__memory_add,mcp__personas__agentic_identity"
 
 # F16: Feed A: claim the persona, wait for result (gate on 'result' line), then try a write.
 feedA() {
@@ -147,7 +147,7 @@ STORE_FILE="$(find_global_store)"
 if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
   STORE_FILE_PRE=$(cygpath -m "$STORE_FILE" 2>/dev/null || echo "$STORE_FILE")
   # F13b: threshold matches commons.ts:47 DEFAULT_STALE_AFTER_MS (90_000 ms).
-  # The plugin manifest is .claude-plugin/plugin.json (not agentic-plugin.json),
+  # The plugin manifest is .claude-plugin/plugin.json (not personas.json),
   # and options arrive via --settings pluginConfigs; there is no per-plugin config
   # file in $PLUGIN_DIR to read, so the threshold is the constant 90000.
   STALE_THRESHOLD_MS=90000

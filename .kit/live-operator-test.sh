@@ -95,8 +95,8 @@ export COST_MAX_NUDGES_PER_HOUR=1
 export COST_SUMMARY_EVERY_N_TICKS=3
 emit_settings_json "settings.json"
 
-OWNER_TOOLS="mcp__agentic-plugin__goal_create,mcp__agentic-plugin__memory_add,mcp__agentic-plugin__agentic_identity"
-READER_TOOLS="mcp__agentic-plugin__agentic_identity,mcp__agentic-plugin__agentic_say,mcp__agentic-plugin__agentic_inbox,mcp__agentic-plugin__memory_add"
+OWNER_TOOLS="mcp__personas__goal_create,mcp__personas__memory_add,mcp__personas__agentic_identity"
+READER_TOOLS="mcp__personas__agentic_identity,mcp__personas__agentic_say,mcp__personas__agentic_inbox,mcp__personas__memory_add"
 
 echo "DeepSeekHarness $0 $(date -u +%FT%TZ)" > "$RUNNING"
 

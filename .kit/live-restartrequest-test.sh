@@ -128,7 +128,7 @@ READER_DIR="$SUITE_DIR/reader"
 mkdir -p "$READER_DIR"
 READER_OUT="$SUITE_DIR/reader.out.jsonl"
 READER_ERR="$SUITE_DIR/reader.err.log"
-READER_TOOLS="mcp__agentic-plugin__agentic_identity,mcp__agentic-plugin__agentic_say,mcp__agentic-plugin__agentic_inbox"
+READER_TOOLS="mcp__personas__agentic_identity,mcp__personas__agentic_say,mcp__personas__agentic_inbox"
 if [ -n "$ACTIVE_BEFORE" ]; then
   (
     cd "$READER_DIR" || exit 9

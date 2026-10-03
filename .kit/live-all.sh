@@ -75,7 +75,7 @@ fi
 # which lets the next suite start early and join default as a reader
 # instead of an owner - the exact failure this line exists to catch loudly.
 case "$(basename "$GLOBAL_STORE")" in
-  agentic-plugin_inline-*) ;;
+  personas_inline-*) ;;
   *)
     echo "ERROR: pre-gate store is not an inline (dev-tree) store: $GLOBAL_STORE" >&2
     echo "This harness only launches --plugin-dir children; find_global_store should never resolve to an installed-plugin store here." >&2

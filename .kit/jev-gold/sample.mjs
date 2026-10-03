@@ -377,10 +377,19 @@ function namesPlanDocument(value) {
   return suffix !== null && PLAN_PATH_PATTERN.test(suffix[2].replace(/\\/g, "/"));
 }
 
+// The plugin's own tool prefixes. The engine names a plugin's tools
+// mcp__<manifest name>__, and the manifest name was agentic-plugin before it
+// became personas. The gold fixtures under .kit/fixtures/jev-gold/ and every
+// transcript recorded before the rename carry the old prefix, so a recorded
+// call classifies under either.
+const PLUGIN_TOOL_PREFIXES = Object.freeze(["mcp__personas__", "mcp__agentic-plugin__"]);
+const isPluginTool = (toolName) => PLUGIN_TOOL_PREFIXES.some((prefix) => toolName.startsWith(prefix));
+const isGoalDone = (toolName) => PLUGIN_TOOL_PREFIXES.some((prefix) => toolName === prefix + "goal_done");
+
 function isWorkTool(toolName) {
   if (["Write", "Edit", "Bash", "NotebookEdit"].includes(toolName)) return true;
   if (!toolName.startsWith("mcp__")) return false;
-  if (toolName.startsWith("mcp__agentic-plugin__")) return false;
+  if (isPluginTool(toolName)) return false;
   if (toolName.includes("__reply") || toolName.endsWith("_reply")) return false;
   return true;
 }
@@ -403,7 +412,7 @@ export function toolActivityText(tools, offThreadReply = false) {
       if (GIT_PUSH_PATTERN.test(input.command)) flags.pushed = true;
     }
     if (name === "Agent") flags.agentDispatched = true;
-    if (name === "mcp__agentic-plugin__goal_done") flags.goalDoneCalled = true;
+    if (isGoalDone(name)) flags.goalDoneCalled = true;
     if (isReplyTool(name)) reply = true;
   }
   const yn = (held) => (held ? "yes" : "no");

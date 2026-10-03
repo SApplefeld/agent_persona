@@ -122,7 +122,7 @@ async function startSession(caseName, overrides = {}) {
 }
 
 function callFleetStatus(h) {
-  return h.handlers["tool.call"](h.fake, { tool: "mcp__agentic-plugin__fleet_status" }, async () => ({ result: "passthrough" }));
+  return h.handlers["tool.call"](h.fake, { tool: "mcp__personas__fleet_status" }, async () => ({ result: "passthrough" }));
 }
 
 // The five personas of .kit/fixtures/fleet-status.roster.json, as the machine
@@ -1025,7 +1025,7 @@ function caseBaseDelayMatchesTheKeeper() {
 // ============================================================
 // fleet_restart: the coordinator restarts another persona's child
 // ============================================================
-const RESTART_TOOL = "mcp__agentic-plugin__fleet_restart";
+const RESTART_TOOL = "mcp__personas__fleet_restart";
 
 function callFleetRestart(h, persona, reason) {
   return h.handlers["tool.call"](h.fake, { tool: RESTART_TOOL, persona, reason }, async () => ({ result: "passthrough" }));
@@ -1220,7 +1220,7 @@ async function caseRestartOverAStaleOrBrokenRequest() {
 // fleet_interrupt: the coordinator ends another persona's running turn in
 // place, keeping its conversation, with no fifteen-minute interval refusal
 // ============================================================
-const INTERRUPT_TOOL = "mcp__agentic-plugin__fleet_interrupt";
+const INTERRUPT_TOOL = "mcp__personas__fleet_interrupt";
 
 function callFleetInterrupt(h, persona, reason) {
   return h.handlers["tool.call"](h.fake, { tool: INTERRUPT_TOOL, persona, reason }, async () => ({ result: "passthrough" }));

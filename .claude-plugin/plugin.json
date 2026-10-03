@@ -1,8 +1,8 @@
 {
-  "name": "agentic-plugin",
+  "name": "personas",
   "description": "PIANO-esque cognitive layer: persona-keyed state, heartbeat liveness, controller with classify/actuate",
   "author": { "name": "Dreamed up by Scott Applefeld, built by Claude" },
-  "types": "./hooks/agentic-plugin.d.ts",
+  "types": "./hooks/personas.d.ts",
   "userConfig": {
     "persona": {
       "type": "string",

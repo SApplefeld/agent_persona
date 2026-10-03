@@ -10,7 +10,7 @@
 # grimoire@applefeld record and by claude-kit otherwise (kit_skill_prefix in
 # bin/agentic-common.sh).
 #
-# By default the child loads agentic-plugin as an installed plugin (plan
+# By default the child loads personas as an installed plugin (plan
 # item 6: the target runtime, installed from this repo's own marketplace
 # manifest). Pass --dev to load it from this checkout instead via
 # --plugin-dir, for working on the plugin's own code.
@@ -4524,8 +4524,8 @@ while true; do
     # that adopted this child can read how it ended without `wait`.
 
     # Plan item 6: --plugin-dir is opt-in (--dev), loading this checkout's own
-    # code. Without it the child loads agentic-plugin as an installed plugin
-    # (claude plugin install agentic-plugin@agent-persona), the target runtime.
+    # code. Without it the child loads personas as an installed plugin
+    # (claude plugin install personas@agent-persona), the target runtime.
     PLUGIN_DIR_ARGS=()
     if [ "$DEV_MODE" -eq 1 ]; then
       PLUGIN_DIR_ARGS=(--plugin-dir "$(cygpath -w "$PLUGIN_DIR")")

@@ -267,7 +267,7 @@ function createFake$(opts = {}) {
   let processRunAnswer = { exitCode: 128 };
 
   const fake = {
-    plugin: { name: "agentic-plugin", root: HARNESS_PLUGIN_ROOT },
+    plugin: { name: "personas", root: HARNESS_PLUGIN_ROOT },
     ui: {
       log(msg) { uiLogs.push(String(msg)); },
       status() {},
