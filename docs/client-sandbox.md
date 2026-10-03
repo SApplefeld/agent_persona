@@ -14,7 +14,7 @@ Angle brackets mark a value you supply. Every other value in this runbook is fix
 | `<Azure DevOps url>` | The clone URL of the Azure DevOps repository that holds `<client branch>` |
 | `<bridge folder>` | The folder on your own machine that holds the bridge clone |
 | `<sweep pattern>` | A regular expression matching every other client's name and the credential shapes your repositories carry |
-| `<reviewer>` | The GitHub account that reviews the worker's pull requests: a client user's, or a second account of yours. It is never the token's owner, since GitHub refuses an author's approval of their own pull request |
+| `<reviewer>` | The GitHub account that reviews the fleet's pull requests, the worker's and the architect's plan drafts alike: a client user's, or a second account of yours. It is never the token's owner, since GitHub refuses an author's approval of their own pull request |
 | `<host>` | The VM's name, in capitals, as `$env:COMPUTERNAME` prints it. The broker shows it on its cards |
 | `<user>` | The VM's Windows account that runs the fleet |
 | `<channel id>`, `<your user id>`, `<client user id>` | Discord IDs, copied with Developer Mode on |
@@ -466,7 +466,7 @@ The first host is accepted when every item below passes. Each names what you run
 
 2. **Brief reaches the architect.** In the liaison's thread, ask for a change to `<client repo>` that needs a plan. `Select-String -Path $HOME\.claude\projects\D--personas-architect\*.jsonl -SimpleMatch -Pattern '[WORKER:liaison id='` then matches the liaison's brief. Once the architect's own thread shows its answer, the liaison's thread carries that answer in plain words. No brief in the architect's transcript, or no relayed answer in the liaison's thread, fails it.
 
-3. **Plan reaches the worker.** The architect reports a plan filename. Then run the command below, writing each character of `<client repo>` other than a letter or digit as `-`:
+3. **Plan reaches the worker.** The architect reports a plan filename and its draft pull request number. Then run the command below, writing each character of `<client repo>` other than a letter or digit as `-`:
 
    ```powershell
    Select-String -Path $HOME\.claude\projects\D--<client repo>\*.jsonl -SimpleMatch -Pattern '<plan filename>'
@@ -474,7 +474,7 @@ The first host is accepted when every item below passes. Each names what you run
 
    It passes where a matching line carries a `[COORDINATOR id=` record, and `Select-String -Path D:\<client repo>\.agentic-personas.json -SimpleMatch -Pattern '<plan filename>'` also matches. No coordinator record naming the plan, or a worker store without it, fails it.
 
-4. **Token cannot merge.** The worker opens a pull request on the client repository, which `gh pr list --repo <owner>/<client repo>` shows. On the host, before anyone reviews it, `gh pr view <number> --repo <owner>/<client repo> --json mergeStateStatus,reviewDecision` prints `BLOCKED` and `REVIEW_REQUIRED`. With the ruleset's bypass list empty, no token can merge past that block. Once `<reviewer>` approves it on GitHub, the same command prints `APPROVED` for `reviewDecision`. A `mergeStateStatus` of `CLEAN` before the review fails it, and so does a review that leaves `REVIEW_REQUIRED`. Never try a merge from the host to test this. A failed block would land an unreviewed change on `main`.
+4. **Token cannot merge.** The worker carries a pull request on the client repository, its own or the architect's draft that its finishing pass marks ready, and `gh pr list --repo <owner>/<client repo>` shows it. On the host, once it is out of draft and before anyone reviews it, `gh pr view <number> --repo <owner>/<client repo> --json mergeStateStatus,reviewDecision` prints `BLOCKED` and `REVIEW_REQUIRED`. With the ruleset's bypass list empty, no token can merge past that block. Once `<reviewer>` approves it on GitHub, the same command prints `APPROVED` for `reviewDecision`. A `mergeStateStatus` of `CLEAN` before the review fails it, and so does a review that leaves `REVIEW_REQUIRED`. Never try a merge from the host to test this. A failed block would land an unreviewed change on `main`.
 
 5. **Memory holds nothing of the fleet.** From `D:\personas\liaison`, `memq recall` prints no record your fleet wrote, and its stderr names no refusal. `git -C $HOME\.claude remote -v` prints nothing. A fleet record, a remote, or a refusal line fails it. A refused read prints nothing and proves nothing.
 

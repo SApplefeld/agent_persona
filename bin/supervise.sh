@@ -4,9 +4,11 @@
 # Usage: bin/supervise.sh <workdir> <persona> <permission-mode> [--prompt TEXT] [--rundir DIR] [--dev] [--no-channel] [--channel-name NAME]
 #
 # The priming turn's skill-load instruction (SKILL_LOAD_INSTRUCTION in bin/supervise-holder.sh)
-# assumes the claude-kit plugin is installed globally on the host running
-# this script, since it names claude-kit:operating-instructions and
-# claude-kit:executing-work by their plugin-qualified skill names.
+# assumes the kit plugin is installed globally on the host running this
+# script, under either name: it names the kit's skills by their plugin-qualified
+# names, qualified by grimoire where installed_plugins.json holds a usable
+# grimoire@applefeld record and by claude-kit otherwise (kit_skill_prefix in
+# bin/agentic-common.sh).
 #
 # By default the child loads agentic-plugin as an installed plugin (plan
 # item 6: the target runtime, installed from this repo's own marketplace

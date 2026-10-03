@@ -2664,18 +2664,22 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
   }
 }
 
-// The kit plugin's key in the engine's installed_plugins.json, and how long
-// its boundary command may run before $.process.run kills it and rejects.
-const KIT_PLUGIN_KEY = "claude-kit@applefeld";
+// The kit plugin's keys in the engine's installed_plugins.json, newest name
+// first, and how long its boundary command may run before $.process.run kills
+// it and rejects.
+const KIT_PLUGIN_KEYS = ["grimoire@applefeld", "claude-kit@applefeld"];
 const KIT_BOUNDARY_TIMEOUT_MS = 15_000;
 
 // Where the kit plugin is installed: <home>/.claude/plugins/installed_plugins.json
-// holds { plugins: { "claude-kit@applefeld": [{ installPath, lastUpdated }, ...] } },
-// and the record with the greatest lastUpdated is the build in use. The file is
-// the engine's, so every shape miss (no home, no file, a read that fails, text
-// that is not JSON, no plugins object, no key, a value that is not an array, an
-// empty array, no record with a string installPath and a readable
-// lastUpdated) returns a reason rather than throwing.
+// holds { plugins: { "grimoire@applefeld": [{ installPath, lastUpdated }, ...] } },
+// or the same under "claude-kit@applefeld" on a host the kit has not renamed on.
+// The first key in KIT_PLUGIN_KEYS with a usable record is the one read, and
+// within it the record with the greatest lastUpdated is the build in use. A key
+// that is absent, not an array, empty or without a usable record falls through
+// to the next. The file is the engine's, so every shape miss (no home, no file,
+// a read that fails, text that is not JSON, no plugins object, no key with a
+// record that has a string installPath and a readable lastUpdated) returns a
+// reason rather than throwing.
 async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { skip: string }> {
   let home: unknown;
   try {
@@ -2702,22 +2706,23 @@ async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { sk
   const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const plugins = isObject(parsed) ? parsed.plugins : undefined;
   if (!isObject(plugins)) return { skip: "installed_plugins.json has no plugins object" };
-  if (!Object.hasOwn(plugins, KIT_PLUGIN_KEY)) return { skip: `installed_plugins.json has no ${KIT_PLUGIN_KEY} key` };
-  const records = plugins[KIT_PLUGIN_KEY];
-  if (!Array.isArray(records)) return { skip: `${KIT_PLUGIN_KEY} is not an array` };
-  if (records.length === 0) return { skip: `${KIT_PLUGIN_KEY} has no install record` };
-  // A record without a string installPath or a readable lastUpdated is passed
-  // over, so a stale or partial entry beside a good one still leaves the good
-  // one to run; the run is skipped only when no record qualifies.
-  let best: { installPath: string; at: number } | null = null;
-  for (const record of records) {
-    if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) continue;
-    const at = typeof record.lastUpdated === "string" ? Date.parse(record.lastUpdated) : NaN;
-    if (Number.isNaN(at)) continue;
-    if (best === null || at > best.at) best = { installPath: record.installPath.trim(), at };
+  for (const key of KIT_PLUGIN_KEYS) {
+    if (!Object.hasOwn(plugins, key)) continue;
+    const records = plugins[key];
+    if (!Array.isArray(records)) continue;
+    // A record without a string installPath or a readable lastUpdated is passed
+    // over, so a stale or partial entry beside a good one still leaves the good
+    // one to run; a key is passed over only when no record qualifies.
+    let best: { installPath: string; at: number } | null = null;
+    for (const record of records) {
+      if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) continue;
+      const at = typeof record.lastUpdated === "string" ? Date.parse(record.lastUpdated) : NaN;
+      if (Number.isNaN(at)) continue;
+      if (best === null || at > best.at) best = { installPath: record.installPath.trim(), at };
+    }
+    if (best !== null) return { installPath: best.installPath };
   }
-  if (best === null) return { skip: `no ${KIT_PLUGIN_KEY} record has an installPath and a readable lastUpdated` };
-  return { installPath: best.installPath };
+  return { skip: `no ${KIT_PLUGIN_KEYS.join(" or ")} install record is usable` };
 }
 
 // Runs the kit's checkpoint command with its boundary verb for this session,
@@ -10430,8 +10435,11 @@ export const register: Register = async (on, options) => {
     // runs: completeLeaf, runHealth, a complete decision naming the document,
     // activateNext, activate. A Chapter count above the stored one stores the
     // new count and logs plan_progress; an
-    // unchanged count logs nothing. An unreadable document changes nothing
-    // and logs one plan_record_unreadable decision per holder per session.
+    // unchanged count logs nothing. A read document also sets the holder's
+    // sectionCount and nextSection, silently. An unreadable or archived
+    // document writes neither of those two. An unreadable document changes
+    // nothing and logs one plan_record_unreadable decision per holder per
+    // session.
     // Only the owner reads: a reader's state is never saved, and completion
     // would spawn a health run for nothing.
     // The reader never throws on a document it cannot read; the try/catch
@@ -10519,6 +10527,18 @@ export const register: Register = async (on, options) => {
               action: "plan_progress",
               detail: `${holder.id}: ${planPath} Chapters ${previous} -> ${reading.chapters}`,
             });
+          }
+          // The section total and the latest Chapter's Next: line, for the
+          // board card that reads the store. Each is written only where it
+          // differs, a null line removes the field, and neither write touches
+          // updatedAt or logs a decision, since neither is progress.
+          if (reading.kind === "read") {
+            if (holder.sectionCount !== reading.sections) holder.sectionCount = reading.sections;
+            if (reading.next === null) {
+              if (holder.nextSection !== undefined) delete holder.nextSection;
+            } else if (holder.nextSection !== reading.next) {
+              holder.nextSection = reading.next;
+            }
           }
           const documentComplete = reading.kind === "archived" || reading.complete;
           if (documentComplete && holder.status !== "complete" && holder.status !== "abandoned") {

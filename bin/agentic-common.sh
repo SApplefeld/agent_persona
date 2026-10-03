@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # bin/agentic-common.sh - Shared supervisor/test helpers.
-# Sourced by bin/supervise.sh and .kit/live-common.sh.
+# Sourced by bin/supervise.sh, bin/supervise-holder.sh and .kit/live-common.sh.
+# The holder sources it inside the process whose stdout is the child's input
+# pipe, so nothing at this file's top level may write to stdout.
 # Provides: wait_persona_free, refuse_if_persona_live, emit_settings_json,
 #           ensure_settings_plugin_ids, ensure_settings_arming,
 #           ensure_settings_jev_mode, ensure_settings_jev_live,
@@ -12,7 +14,7 @@
 #           read_settings_fleet_roster,
 #           valid_persona_name,
 #           find_global_store, list_installed_stores, poll_decisions,
-#           poll_heartbeat.
+#           poll_heartbeat, kit_skill_prefix.
 # COORDINATOR_PERSONA, ARCHITECT_PERSONA and LIAISON_PERSONA are exported on
 # both settings branches: emit_settings_json exports the names it writes, and
 # the three read_settings_*_persona functions print the names a provided file
@@ -27,6 +29,38 @@
 # The two ids pluginConfigs is keyed by: --plugin-dir load, and installed load.
 AGENTIC_PLUGIN_DEV_ID="agentic-plugin"
 AGENTIC_PLUGIN_INSTALLED_ID="agentic-plugin@agent-persona"
+
+# --- Kit skill prefix ---
+# The name the kit's skills are qualified by on this host: "grimoire" where the
+# engine's installed_plugins.json holds a usable record under the key
+# "grimoire@applefeld", and "claude-kit" in every other case, an absent,
+# unreadable or unparsable file included, so a launch always primes a prefix.
+# A usable record is one kitInstallPathOf in hooks/index.ts would run from: an
+# object with a non-empty string installPath and a lastUpdated that parses as a
+# date. The home is USERPROFILE, else HOME, as the plugin resolves it, so the
+# prefix and the plugin's kit lookup read the same file by the same rule. The
+# path is passed to node as an argument, never spliced into the script text.
+kit_skill_prefix() {
+  local file got
+  file="${USERPROFILE:-${HOME:-}}/.claude/plugins/installed_plugins.json"
+  file=$(cygpath -m "$file" 2>/dev/null || echo "$file")
+  got=$(node -e '
+  const fs = require("fs");
+  try {
+    const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8").replace(/^\uFEFF/, ""));
+    const p = s && s.plugins;
+    const plain = p !== null && typeof p === "object" && !Array.isArray(p);
+    const records = plain && Object.hasOwn(p, "grimoire@applefeld") ? p["grimoire@applefeld"] : null;
+    const usable = (r) => r !== null && typeof r === "object" && !Array.isArray(r) &&
+      typeof r.installPath === "string" && r.installPath.trim().length > 0 &&
+      typeof r.lastUpdated === "string" && !Number.isNaN(Date.parse(r.lastUpdated));
+    process.stdout.write(Array.isArray(records) && records.some(usable) ? "grimoire" : "claude-kit");
+  } catch (e) {
+    process.stdout.write("claude-kit");
+  }
+' "$file" 2>/dev/null)
+  if [ "$got" = "grimoire" ]; then printf 'grimoire\n'; else printf 'claude-kit\n'; fi
+}
 
 # --- Contention guards ---
 # The bound below which a commons entry counts as live, matching the plugin's
