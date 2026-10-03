@@ -460,8 +460,8 @@ EOF
 # former id where its counterpart carries none, every option as written. The
 # former keys stay in the file, since the engine no longer reads them. A former
 # key that holds no usable options object is skipped rather than refused. A file
-# already carrying either current id takes the copy rule above, and the former
-# keys are not read.
+# carrying options under either current id takes the copy rule above, and the
+# former keys are not read.
 ensure_settings_plugin_ids() {
   node -e '
 const fs = require("fs");
@@ -958,13 +958,19 @@ valid_persona_name() {
 # store's claims and let suites start inside each other's staleness window.
 # Default is dev_mode=1: every .kit/*.sh caller runs under --plugin-dir,
 # and bin/supervise.sh always passes its own DEV_MODE explicitly.
+# The plugin was named agentic-plugin before it was named personas, and no
+# personas_ store exists until a child of the renamed plugin starts. So each
+# mode also reads the former prefix, agentic-plugin_, and the first launch
+# after the rename passes the gate on the old file. A current store always
+# wins once one exists. Where neither name matches, this prints an empty
+# line and the caller refuses as before.
 # Usage: find_global_store [dev_mode: 0|1, default 1]
 find_global_store() {
   local dev_mode="${1:-1}"
   local f
   if [ -d "$HOME/.claude/plugins/store" ]; then
     if [ "$dev_mode" -eq 1 ]; then
-      for f in "$HOME/.claude/plugins/store"/personas_inline-*.json; do
+      for f in "$HOME/.claude/plugins/store"/personas_inline-*.json "$HOME/.claude/plugins/store"/agentic-plugin_inline-*.json; do
         if [ -f "$f" ]; then
           echo "$f"
           return 0
@@ -987,19 +993,23 @@ find_global_store() {
 # --- list_installed_stores ---
 # Prints every installed-mode commons store, one path per line: each
 # personas_*.json under the plugin store directory that is not an
-# inline (dev-tree) store. This is the one filter that decides what counts
+# inline (dev-tree) store, then each such agentic-plugin_*.json, the
+# plugin's former name. This is the one filter that decides what counts
 # as an installed store. find_global_store's installed branch takes the
-# first line and .kit/live-all.sh's refuse-at-start check reads every
-# line, so the two cannot drift apart. Prints nothing when the directory
-# is absent or holds no such file. Reads $HOME at call time.
+# first line, so a current store wins once one exists and the first launch
+# after the rename passes the gate on the former one. .kit/live-all.sh's
+# refuse-at-start check reads every line, so a session still running the
+# former plugin is read too, and the two cannot drift apart. Prints nothing
+# when the directory is absent or holds no such file. Reads $HOME at call
+# time.
 # Usage: list_installed_stores
 list_installed_stores() {
   local f
   [ -d "$HOME/.claude/plugins/store" ] || return 0
-  for f in "$HOME/.claude/plugins/store"/personas_*.json; do
+  for f in "$HOME/.claude/plugins/store"/personas_*.json "$HOME/.claude/plugins/store"/agentic-plugin_*.json; do
     [ -f "$f" ] || continue
     case "$(basename "$f")" in
-      personas_inline-*) continue ;;
+      personas_inline-*|agentic-plugin_inline-*) continue ;;
     esac
     echo "$f"
   done

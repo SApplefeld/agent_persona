@@ -76,6 +76,12 @@ fi
 # instead of an owner - the exact failure this line exists to catch loudly.
 case "$(basename "$GLOBAL_STORE")" in
   personas_inline-*) ;;
+  *_inline-*)
+    echo "ERROR: the only inline (dev-tree) store is under the plugin's former name: $GLOBAL_STORE" >&2
+    echo "This harness's children write a personas_inline store, so the pre-gate would read a store they never touch. Run one --plugin-dir session of this checkout first so that store exists." >&2
+    rm -f "$GLOBAL_RUNNING"
+    exit 9
+    ;;
   *)
     echo "ERROR: pre-gate store is not an inline (dev-tree) store: $GLOBAL_STORE" >&2
     echo "This harness only launches --plugin-dir children; find_global_store should never resolve to an installed-plugin store here." >&2

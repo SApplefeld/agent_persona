@@ -48,6 +48,10 @@ Provenance: written by the ARCHITECT persona, session 57239bb8, on 2026-10-02, w
 
 **The sweep's control.** After the sweep, `git grep -n -- 'agentic-plugin'` outside the four exclusions must find only the marketplace renames line, the two sites in `.kit/jev-gold/sample.mjs` with their comment, the five old-prefix pin lines in `.kit/jev-gold-unit-test.mjs`, the migration in `ensure_settings_plugin_ids` and its cases in `.kit/settings-plugin-key-test.sh`. The control is a tracked file carrying the token, written under `skills/` and added to the index before the sweep runs; the sweep runs once, the worker reads the control changed, removes it, and only then restores by hand the two `sample.mjs` sites and the four pins the sweep also rewrote. The Chapter records the control's change and the restorations.
 
+## Standing Brief Amendments
+
+- The supervisor's pre-launch gate does not read persona claims from a former-prefix `agentic-plugin_*` store once a `personas_*` store exists. It reads the former store only while no current one exists, so the first launch after the rename can pass. The Intent's "does not carry the old store file's claims forward", its refused alternative "Migrating the old store file's contents" and the `## Out of Scope` entry on the old store file keep that out. A finding asking for it is refused on that ground.
+
 ## Sections of Work
 
 ### 1. The plugin, its tools, its store and the supervisor's settings carry the new name

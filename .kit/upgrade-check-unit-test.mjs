@@ -424,6 +424,26 @@ const cases = [
     assert.match(smoke.evidence, /1 log line\(s\) naming personas .*prompt\.submit skipped/);
     assert.equal(r.status, 0, 'a warn does not read as triage');
   }],
+  ['a smoke log whose only other mention of the plugin name is a path beside a WARN stays pass', () => {
+    // The manifest name is a plain word, so a folder or prose carrying it is
+    // not the engine naming the plugin. Only the engine's own shape counts:
+    // the word plugin, then the name.
+    const { r } = passingPre('smoke-name-in-path', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nengine: WARN could not stat D:/personas/x\nengine: personas folder skipped\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'pass', smoke.evidence);
+    assert.match(smoke.evidence, /\b1 of 5 line\(s\)/);
+  }],
+  ['a smoke log naming a longer plugin name that starts with the manifest name does not count as naming the plugin', () => {
+    const { r } = passingPre('smoke-longer-name', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nplugin personas-extra: prompt.submit skipped\nPlugin personas-extra has an invalid manifest file\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'pass', smoke.evidence);
+  }],
+  ['the engine\'s capitalized "Plugin <name> has" refusal still counts as naming the plugin', () => {
+    const { r } = passingPre('smoke-capital-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'engine: ready\n[ERROR] Plugin personas has an invalid manifest file\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'fail', smoke.evidence);
+    assert.match(smoke.evidence, /Plugin personas has an invalid manifest file/);
+  }],
   ['a smoke log carrying one of the readings on a line that does not name the plugin stays pass', () => {
     const { r } = passingPre('smoke-other-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nplugin claude-kit: prompt.submit skipped\nengine: WARN something else\n' });
     const smoke = only(r.rows, '7. smoke');

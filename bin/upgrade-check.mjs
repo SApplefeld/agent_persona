@@ -106,6 +106,16 @@ export const SMOKE_FAIL_PATTERNS = Object.freeze(['ERROR', 'Failed to load', 'in
 // The smoke row names that path, so the reader sees which copy of the plugin
 // the run exercised: the installed one or a development checkout.
 export const HOOKS_READ_PREFIX = 'Read hooks.json for plugin ' + PLUGIN_NAME + ' (enabled=true): ';
+// Whether a debug log line is the engine naming the plugin: the word plugin or
+// Plugin, then the manifest name, then no further name character. The name is
+// a plain word, so a folder such as D:/personas or prose carrying it is not the
+// engine naming the plugin, and neither is a longer plugin name such as
+// personas-extra. Covers "plugin personas:", "plugin personas@agent-persona",
+// "Plugin personas has" and "Read hooks.json for plugin personas".
+const PLUGIN_NAMED = new RegExp('\\b[Pp]lugin ' + PLUGIN_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])');
+export function namesPlugin(line) {
+  return PLUGIN_NAMED.test(line);
+}
 // The lines post reads as a supervisor error since the newest launch, and the
 // two a relaunch writes while the old child's heartbeat ages out, which are
 // the pre-launch gate working rather than failing.
@@ -983,7 +993,7 @@ export function pre(flags) {
   // search that found nothing in a log that never names the plugin says
   // nothing about the plugin.
   const logLines = smokeLog.split(LINE_TERMINATOR);
-  const named = logLines.filter((line) => line.includes(PLUGIN_NAME));
+  const named = logLines.filter(namesPlugin);
   const hits = named.filter((line) => SMOKE_PATTERNS.some((p) => line.includes(p)));
   const refusals = named.filter((line) => SMOKE_FAIL_PATTERNS.some((p) => line.includes(p)));
   // Which copy of the plugin the engine loaded: the path on the last line
