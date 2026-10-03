@@ -1,6 +1,6 @@
 # The plugin is renamed from `agentic-plugin` to `personas`, its tools with it, and the kit is read under `grimoire` alone
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-02
 
@@ -22,7 +22,7 @@ What done does not need to do. It does not rename the marketplace `agent-persona
 
 Alternatives refused. Keeping `agentic-plugin` and setting `displayName` to Personas, which the documentation offers as the rename that breaks nothing: refused, since the operator asked for the name itself and the tool names would stay as they are. Renaming the marketplace too: refused, since it widens the host migration past what the renames map covers for no ruling. Migrating the old store file's contents: refused, since the fleet is down at the cutover and the file holds live claims only.
 
-Rulings after the spec shipped: none yet.
+Rulings after the spec shipped: decided 2026-10-03 by the operator on the worker's Discord channel, in answer to whether finishing should arm auto-merge given that a merged rename reaches hosts while personas run: "The fleet is already switched over, everyone is updated, and the kit tools are backwards compatible. We can proceed with #2." Option 2 was running the plan as written, auto-merge included. The same message is the operator's confirmation that every host runs the kit under `grimoire`, which the Dispatch Authorization's second precondition and the third Operator Verification item ask for.
 
 Provenance: written by the ARCHITECT persona, session 57239bb8, on 2026-10-02, with the name run through this machine's installed 2.1.287 validator and the renames mechanism read from the Claude Code host-marketplace documentation the same day.
 
