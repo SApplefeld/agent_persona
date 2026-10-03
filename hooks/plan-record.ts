@@ -12,15 +12,17 @@
 // turn for the entry that was active when the turn started, when that entry
 // has a plan.
 
-import { PLAN_PATH_PATTERN } from "./agent-state";
+import { PLAN_PATH_PATTERN, oneLine } from "./agent-state";
 
 export interface PlanRecord {
   complete: boolean;
   chapters: number;
+  sections: number;
+  next: string | null;
 }
 
 export type PlanRecordReading =
-  | { kind: "read"; complete: boolean; chapters: number }
+  | { kind: "read"; complete: boolean; chapters: number; sections: number; next: string | null }
   | { kind: "archived"; at: string }
   | { kind: "unreadable"; reason: string };
 
@@ -50,15 +52,100 @@ const PLAN_DIR_PREFIX = "docs/plans/";
 // header reading "Status: In Progress" governs over it. A document with no
 // Status line in its header is simply not complete.
 //
-// Chapters: the number of "### Chapter N" headings under the "## Chapters"
-// heading, counted up to the next "## " heading. N is the digits; what
+// The Chapters, Sections and Next rules below use the heading patterns and the
+// block rule of the Discord board card in the broker's repository, in
+// `broker/board/plans.ts`, which the external engine's own reading shares. The
+// card and this parser therefore agree on which lines are headings, which
+// blocks they open, the Chapter count and the section count of the same file.
+// That agreement does not cover Complete, which keeps its own rule above, and
+// it does not cover the Next: value, whose fold and cut are this plugin's own
+// bound.
+//
+// A block is the lines after its heading up to the next block heading, a line
+// opening "##" then whitespace then text. "###" and deeper headings never end
+// a block, and neither does "##text" with no whitespace. Only the first
+// heading of a block's name opens it: a second "## Chapters" or
+// "## Sections of Work" further down is read as a foreign heading that ends
+// whatever block is open.
+//
+// Chapters: the number of "### Chapter N" headings in the "## Chapters"
+// block, with any whitespace run between the words. N is the digits; what
 // follows them (a colon, a dash and a date, a suffix) is convention rather
 // than the contract, so "### Chapter 1: title" counts. "### Interim board N"
-// and a "### Chapter" with no number are not Chapters. The heading may carry
-// text after the word, as "## Chapters (append-only)" does. A document with
-// no "## Chapters" section has zero.
+// and a "### Chapter" with no number are not Chapters. The block heading is
+// "##", whitespace, "Chapters", then nothing but whitespace, so
+// "## Chapters (append-only)" opens no block and its Chapters count nothing.
+// A document with no such block has zero.
+//
+// Sections: the number of "### N." headings inside the "## Sections of Work"
+// block, where N is one or more digits followed by a period and whitespace.
+// The block heading is "##", whitespace, "Sections of Work", then nothing but
+// whitespace. A foreign "##" heading inside the block ends it early and drops
+// every later section. That edge is the plan-doc contract's own, and the
+// board card and the external engine count the same way, so a count that
+// disagreed with theirs about the same file would be the wrong one. A "### N."
+// line outside the block, and a "#### N." line inside it, count nothing. A
+// document with no such block has zero.
+//
+// Next: the value of the first line opening with "Next:" under the
+// highest-numbered Chapter, the Chapters being the headings the count above
+// counts. Every line from a Chapter's heading to the next Chapter heading or
+// the block's end is under it, an Interim board's lines included. A repeated
+// number reads the later-written Chapter, the more recent account of it. The
+// first Next: line the pattern matches ends the search whatever its value, so
+// a bare "Next:" above a "Next: y" reads null. The value is folded to one line
+// through oneLine, its whitespace runs collapsed to one space and trimmed,
+// then cut to NEXT_LINE_MAX_CHARS code points, so an astral character is never
+// halved. Collapsing first means whitespace never spends the cut. The cut
+// first takes 2 x NEXT_LINE_MAX_CHARS UTF-16 units, which hold at least
+// NEXT_LINE_MAX_CHARS code points, so the code-point array stays small however
+// long the line is. An empty value reads null, as does a document with no
+// Chapter or a highest Chapter with no Next: line, even where an earlier
+// Chapter carries one. The key is case-sensitive and must open the line, as
+// the contract reads it. Brackets in the value are kept as written.
+export const NEXT_LINE_MAX_CHARS = 200;
+
+// The two heading patterns below take a line terminator class. A line here
+// holds no LF, so the characters \s takes and "." refuses are CR (U+000D),
+// U+2028 and U+2029. The class is built from their code points rather than
+// written into the source, since a live U+2028 or U+2029 inside a regex
+// literal is a syntax error and some editors turn the escape into the live
+// character.
+const TERMINATORS = "\\r" + String.fromCharCode(0x2028) + String.fromCharCode(0x2029);
+const TERMINATOR = `[${TERMINATORS}]`;
+const NON_TERMINATOR = `[^${TERMINATORS}]`;
+
+// The block heading. It equals the card's literal /^##\s+.+$/ and accepts
+// exactly the same lines in a linear form. The card's form backtracks
+// quadratically over a whitespace run ending in CR (U+000D), U+2028 or
+// U+2029; this one does not. The line is "##", then either one whitespace
+// character and a non-terminator, or a whitespace run whose last character is
+// a terminator and a non-terminator, then only non-terminators to the end.
+export const BLOCK_HEADING = new RegExp(`^##(?:\\s${NON_TERMINATOR}|\\s*${TERMINATOR}${NON_TERMINATOR})${NON_TERMINATOR}*$`);
+const SECTIONS_HEADING = /^##\s+Sections of Work\s*$/;
+const CHAPTERS_HEADING = /^##\s+Chapters\s*$/;
+const CHAPTER_HEADING = /^###\s+Chapter\s+(\d+)/;
+// The section heading. It equals the card's literal /^###\s+(\d+)\.\s+(.*)$/
+// and accepts exactly the same lines in a linear form, without the captures,
+// which the count never reads. Its terminator class is the block heading's:
+// CR (U+000D), U+2028 and U+2029. After "### N." comes either one whitespace
+// character and only non-terminators, or a whitespace run whose last
+// character is a terminator and only non-terminators.
+export const SECTION_HEADING = new RegExp(`^###\\s+\\d+\\.(?:\\s${NON_TERMINATOR}*|\\s*${TERMINATOR}${NON_TERMINATOR}*)$`);
+
+function nextValue(raw: string): string | null {
+  const collapsed = oneLine(raw).replace(/\s+/g, " ").trim();
+  const cut = Array.from(collapsed.slice(0, NEXT_LINE_MAX_CHARS * 2)).slice(0, NEXT_LINE_MAX_CHARS).join("");
+  return cut === "" ? null : cut;
+}
+
 export function parsePlanRecord(text: string): PlanRecord {
-  const lines = text.split(/\r?\n/);
+  // The split is the card's own. The LINE_TERMINATOR guard in ./agent-state
+  // governs text that leaves the parse for a reader, and the next line is the
+  // only free text here that does, so it alone is folded through oneLine.
+  // A leading byte-order mark is dropped first, as the card drops it.
+  const BOM = String.fromCharCode(0xfeff);
+  const lines = (text.startsWith(BOM) ? text.slice(1) : text).split(/\r?\n/);
 
   let complete = false;
   for (const line of lines) {
@@ -71,16 +158,51 @@ export function parsePlanRecord(text: string): PlanRecord {
   }
 
   let chapters = 0;
+  let sections = 0;
   let inChapters = false;
+  let inSections = false;
+  let chaptersOpened = false;
+  let sectionsOpened = false;
+  // The highest-numbered Chapter seen so far, whether a Next: line has been
+  // seen under it and that line's value, and whether the line being read
+  // sits under that Chapter.
+  let latest = -1;
+  let latestNextSeen = false;
+  let latestNext: string | null = null;
+  let underLatest = false;
   for (const line of lines) {
-    if (/^## /.test(line)) {
-      inChapters = /^## Chapters\b/.test(line);
+    if (BLOCK_HEADING.test(line)) {
+      inChapters = !chaptersOpened && CHAPTERS_HEADING.test(line);
+      inSections = !sectionsOpened && SECTIONS_HEADING.test(line);
+      if (inChapters) chaptersOpened = true;
+      if (inSections) sectionsOpened = true;
+      underLatest = false;
       continue;
     }
-    if (inChapters && /^### Chapter \d+(?!\d)/.test(line)) chapters += 1;
+    if (inSections && SECTION_HEADING.test(line)) sections += 1;
+    if (!inChapters) continue;
+    const chapter = CHAPTER_HEADING.exec(line);
+    if (chapter) {
+      chapters += 1;
+      const n = Number(chapter[1]);
+      underLatest = n >= latest;
+      if (underLatest) {
+        latest = n;
+        latestNextSeen = false;
+        latestNext = null;
+      }
+      continue;
+    }
+    if (underLatest && !latestNextSeen) {
+      const next = /^Next:(.*)$/.exec(line);
+      if (next) {
+        latestNextSeen = true;
+        latestNext = nextValue(next[1]);
+      }
+    }
   }
 
-  return { complete, chapters };
+  return { complete, chapters, sections, next: latestNext };
 }
 
 // The reader. The host's file functions are passed as two closures rather
@@ -117,7 +239,7 @@ export async function readPlanRecord(
         return { kind: "unreadable", reason: `document over ${PLAN_RECORD_MAX_BYTES} bytes` };
       }
       const record = parsePlanRecord(text);
-      return { kind: "read", complete: record.complete, chapters: record.chapters };
+      return { kind: "read", complete: record.complete, chapters: record.chapters, sections: record.sections, next: record.next };
     }
     for (const dir of PLAN_ARCHIVE_DIRS) {
       const archived = `${dir}/${name}`;

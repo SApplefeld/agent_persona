@@ -3556,6 +3556,12 @@ async function main() {
     await casePlanRecord2_blockedHolderCompletesWithNoReason(clock);
     await casePlanRecord2_unreadableRearmsAfterARead(clock);
 
+    // Section 1 (plan-record-sections): the section total and the next line
+    // the turn-end read writes to the plan holder.
+    await casePlanSections1_readWritesBothFieldsAndDropRemovesNext(clock);
+    await casePlanSections1_unreadableAndArchivedWriteNeither(clock);
+    await casePlanSections1_fewerChaptersKeepsTheCount(clock);
+
     // Section 1 (boundary-compaction): the plan document is read from the
     // directory the session runs in, not the launch checkout.
     await caseLive1_completeUnderLiveDirCompletesTheHolder(clock);
@@ -3580,6 +3586,7 @@ async function main() {
     await caseBank2_aLateSettlingEndNeverBanksMidTurn(clock);
     await caseBank2_greatestLastUpdatedRecordIsRun(clock);
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
+    await caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
     await caseBank2_aThrowingMidSectionEndStillClearsTheOwedBank(clock);
     await caseBank2_aPlanAddedInANoGoalTurnIsMidSection(clock);
@@ -15488,6 +15495,155 @@ async function casePlanRecord2_unreadableRearmsAfterARead(clock) {
   check("plan2 unreadable re-arm: plan-1 is still active throughout", getState(h).goals.find(g => g.id === "plan-1").status === "active");
 }
 
+// --- Section 1 (plan-record-sections): the section total and the next line on the holder ---
+
+// A plan document with a Sections of Work block holding `sections` titles,
+// numbered from 1, and a Chapters block holding one Chapter per entry of
+// `chapters`, each written with its own number and, where `next` is a string,
+// a Next: line carrying it.
+function sections1Doc({ sections = [], chapters = [], status = "Status: In Progress" } = {}) {
+  const sectionText = sections.map((title, i) => `### ${i + 1}. ${title}\n\nModel: opus\n\nWhat to build.\n`).join("\n");
+  const chapterText = chapters.map(({ n, next }) =>
+    `### Chapter ${n} - 2026-10-01\n\nCompleted: ${n}. Done\n${typeof next === "string" ? `Next: ${next}\n` : ""}\nWhat shipped.\n`).join("\n");
+  return `# A plan\n\n${status}\nCommit Model: Branch-and-PR\n\n## Goal\n\nThe goal.\n\n## Sections of Work\n\n${sectionText}\n## Chapters\n\n${chapterText}`;
+}
+
+// The holder after a turn, and every plan_* decision in the whole log.
+function sections1Read(h) {
+  const holder = getState(h).goals.find(g => g.id === "plan-1");
+  const planDecisions = getDecisions(h).filter(d => typeof d.action === "string" && d.action.startsWith("plan_"));
+  return { holder, planDecisions };
+}
+
+// A read reading writes sectionCount and nextSection to the plan holder, each
+// alone where only it changed, and removes nextSection when the latest
+// Chapter's Next: line goes. None of those writes touches updatedAt or logs a
+// decision, and a read that changes nothing writes nothing. The holder is
+// plan-1 above an active task-1, so the turn's scorer touches task-1 and no
+// write but the read's reaches plan-1. The clock runs a minute past the
+// seeded updatedAt, so a touch would show, and the last turn is the control:
+// a Chapter rise does move updatedAt, and its plan_progress text is pinned
+// whole.
+async function casePlanSections1_readWritesBothFieldsAndDropRemovesNext(clock) {
+  console.log("\n=== plan-record-sections Section 1: a read writes the section total and the next line, and nothing else ===");
+  clock.set(T0);
+  const h = await plan2Harness("sections1_read_writes", { taskUnderPlan: true, chapterCount: 2 });
+  const seeded = getState(h).goals.find(g => g.id === "plan-1");
+  check("sections1 setup: plan-1 holds chapterCount 2, no sectionCount, no nextSection, updatedAt T0",
+    seeded && seeded.chapterCount === 2 && !("sectionCount" in seeded) && !("nextSection" in seeded) && seeded.updatedAt === T0, seeded);
+  clock.advance(60_000);
+
+  // Turn 1: both fields written from an unchanged Chapter count.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three"], chapters: [{ n: 1, next: "2. Two" }, { n: 2, next: "3. Three" }] }));
+  await plan2ScoredTurn(h, "t-sections-1", "on-goal");
+  let r = sections1Read(h);
+  check("sections1 read: sectionCount is the parsed 3", r.holder && r.holder.sectionCount === 3, r.holder && r.holder.sectionCount);
+  check("sections1 read: nextSection is Chapter 2's line", r.holder && r.holder.nextSection === "3. Three", r.holder && r.holder.nextSection);
+  check("sections1 read: chapterCount stays 2", r.holder && r.holder.chapterCount === 2, r.holder && r.holder.chapterCount);
+  check("sections1 read: updatedAt is untouched by the two writes", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
+  check("sections1 read: no plan_* decision at all in the log (scope: every decision after the turn)", r.planDecisions.length === 0, r.planDecisions);
+
+  // Turn 2: the same document writes nothing and logs nothing.
+  const afterFirst = JSON.stringify(r.holder);
+  await plan2ScoredTurn(h, "t-sections-2", "on-goal");
+  r = sections1Read(h);
+  check("sections1 unchanged: the holder is identical to the previous turn's", JSON.stringify(r.holder) === afterFirst, r.holder);
+  check("sections1 unchanged: still no plan_* decision", r.planDecisions.length === 0, r.planDecisions);
+
+  // Turn 3: only the section total changes.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three", "Four"], chapters: [{ n: 1, next: "2. Two" }, { n: 2, next: "3. Three" }] }));
+  await plan2ScoredTurn(h, "t-sections-3", "on-goal");
+  r = sections1Read(h);
+  check("sections1 total alone: sectionCount is now 4 and nextSection is unchanged",
+    r.holder && r.holder.sectionCount === 4 && r.holder.nextSection === "3. Three", r.holder);
+  check("sections1 total alone: updatedAt is untouched", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
+
+  // Turn 4: the latest Chapter drops its Next: line, so the field goes,
+  // though Chapter 1 still carries one.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three", "Four"], chapters: [{ n: 1, next: "2. Two" }, { n: 2 }] }));
+  await plan2ScoredTurn(h, "t-sections-4", "on-goal");
+  r = sections1Read(h);
+  check("sections1 next dropped: nextSection is removed from the holder, not set to a value",
+    r.holder && !Object.prototype.hasOwnProperty.call(r.holder, "nextSection"), r.holder);
+  check("sections1 next dropped: sectionCount stays 4", r.holder && r.holder.sectionCount === 4, r.holder && r.holder.sectionCount);
+  check("sections1 next dropped: updatedAt is untouched", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
+  check("sections1 next dropped: still no plan_* decision", r.planDecisions.length === 0, r.planDecisions);
+
+  // Turn 5, the control: a Chapter rise moves updatedAt and logs plan_progress
+  // in its unchanged text, and the new Chapter's line is written beside it.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three", "Four"], chapters: [{ n: 1, next: "2. Two" }, { n: 2 }, { n: 3, next: "4. Four" }] }));
+  await plan2ScoredTurn(h, "t-sections-5", "on-goal");
+  r = sections1Read(h);
+  const progress = r.planDecisions.filter(d => d.action === "plan_progress");
+  check("sections1 control: chapterCount is now 3 and updatedAt moved", r.holder && r.holder.chapterCount === 3 && r.holder.updatedAt > T0, r.holder);
+  check("sections1 control: one plan_progress decision, its text exactly the holder, the document and 2 -> 3",
+    progress.length === 1 && progress[0].detail === `plan-1: ${PLAN2_PATH} Chapters 2 -> 3`, progress);
+  check("sections1 control: nextSection is Chapter 3's line", r.holder && r.holder.nextSection === "4. Four", r.holder && r.holder.nextSection);
+}
+
+// A reading of kind unreadable or archived writes neither field, on a holder
+// seeded with values the document would change. The read variant is the
+// control: the same seed and the same document at planPath do change both,
+// with plan-1 itself the active leaf.
+async function casePlanSections1_unreadableAndArchivedWriteNeither(clock) {
+  console.log("\n=== plan-record-sections Section 1: an unreadable or archived reading writes neither field ===");
+  const text = sections1Doc({ sections: ["One", "Two"], chapters: [{ n: 1, next: "2. Two" }] });
+  const variants = [
+    { label: "read (control)", seed: (h) => h.fsMap.set(PLAN2_FILE, text), changes: true },
+    { label: "unreadable, absent from all four places", seed: () => {}, changes: false },
+    { label: "unreadable, over the 256 KiB cap", seed: (h) => h.fsMap.set(PLAN2_FILE, text + "x".repeat(256 * 1024)), changes: false },
+    { label: "archived at docs/archive", seed: (h) => h.fsMap.set(`${HARNESS_CWD}/docs/archive/a_v1.md`, text), changes: false },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const tree = plan2Goals({ chapterCount: 1 });
+    const plan1Seed = tree.goals.find(g => g.id === "plan-1");
+    plan1Seed.sectionCount = 7;
+    plan1Seed.nextSection = "a stored line";
+    const h = await createTickHarness({ ...OPTS, caseName: `sections1_kind_${variants.indexOf(v)}`, stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+    v.seed(h);
+    await plan2ScoredTurn(h, "t-kind", "on-goal");
+    const { holder } = sections1Read(h);
+    if (v.changes) {
+      check(`sections1 kind (${v.label}): both fields take the document's values`,
+        holder && holder.sectionCount === 2 && holder.nextSection === "2. Two", holder);
+    } else {
+      check(`sections1 kind (${v.label}): sectionCount and nextSection are as seeded`,
+        holder && holder.sectionCount === 7 && holder.nextSection === "a stored line", holder);
+    }
+  }
+}
+
+// A holder at chapterCount 3 whose document now counts no Chapter keeps its
+// stored count and logs nothing, since the count only ratchets up, while the
+// same read still writes sectionCount and nextSection from the document. The
+// document's Chapters sit under "## Chapters (append-only)", a heading that
+// opens no block, so the read counts 0 Chapters and has no next line. The
+// holder is plan-1 above an active task-1, so only the read reaches plan-1.
+async function casePlanSections1_fewerChaptersKeepsTheCount(clock) {
+  console.log("\n=== plan-record-sections Section 1: a document counting fewer Chapters keeps the stored count ===");
+  clock.set(T0);
+  const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 3 });
+  const plan1Seed = tree.goals.find(g => g.id === "plan-1");
+  plan1Seed.sectionCount = 7;
+  plan1Seed.nextSection = "a stored line";
+  const h = await createTickHarness({ ...OPTS, caseName: "sections1_fewer_chapters", stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+  clock.advance(60_000);
+  const text = sections1Doc({ sections: ["One", "Two"], chapters: [{ n: 1, next: "2. Two" }, { n: 2, next: "3. Three" }] })
+    .replace("\n## Chapters\n", "\n## Chapters (append-only)\n");
+  h.fsMap.set(PLAN2_FILE, text);
+  await plan2ScoredTurn(h, "t-fewer", "on-goal");
+  const r = sections1Read(h);
+  check("sections1 fewer: chapterCount stays 3", r.holder && r.holder.chapterCount === 3, r.holder && r.holder.chapterCount);
+  check("sections1 fewer: no plan_progress decision (scope: every decision after the turn)",
+    r.planDecisions.filter(d => d.action === "plan_progress").length === 0, r.planDecisions);
+  check("sections1 fewer: no plan_* decision at all", r.planDecisions.length === 0, r.planDecisions);
+  check("sections1 fewer: sectionCount is the read's 2", r.holder && r.holder.sectionCount === 2, r.holder && r.holder.sectionCount);
+  check("sections1 fewer: nextSection is removed, since the read has no Chapter",
+    r.holder && !Object.prototype.hasOwnProperty.call(r.holder, "nextSection"), r.holder);
+  check("sections1 fewer: updatedAt is untouched", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
+}
+
 // --- Section 1 (boundary-compaction): the plan document is read from the live directory ---
 
 // The directory the session runs in once the persona has moved into its plan
@@ -16477,10 +16633,10 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
   console.log("\n=== boundary-compaction Section 2: a missing install record skips the run with one decision ===");
   const misses = [
     { label: "absent file", seed: null, token: "absent" },
-    { label: "missing key", seed: { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } }, token: "no claude-kit@applefeld key" },
-    { label: "empty array", seed: { version: 2, plugins: { "claude-kit@applefeld": [] } }, token: "no install record" },
+    { label: "missing key", seed: { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } }, token: "no grimoire@applefeld or claude-kit@applefeld install record is usable" },
+    { label: "empty array", seed: { version: 2, plugins: { "claude-kit@applefeld": [] } }, token: "no grimoire@applefeld or claude-kit@applefeld install record is usable" },
     { label: "unparseable JSON", seed: "{ \"version\": 2, \"plugins\": ", token: "not JSON" },
-    { label: "no usable record", seed: { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", lastUpdated: "2026-09-25T00:00:00.000Z" }, { scope: "user", installPath: "C:\\kit", lastUpdated: "never" }] } }, token: "no claude-kit@applefeld record has an installPath" },
+    { label: "no usable record", seed: { version: 2, plugins: { "claude-kit@applefeld": [{ scope: "user", lastUpdated: "2026-09-25T00:00:00.000Z" }, { scope: "user", installPath: "C:\\kit", lastUpdated: "never" }] } }, token: "no grimoire@applefeld or claude-kit@applefeld install record is usable" },
   ];
   for (const m of misses) {
     clock.set(T0);
@@ -16497,6 +16653,77 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
       decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped" && decisions[0].detail.includes(m.token), decisions);
     await bank2CheckNoSecondBank(`bank2 ${m.label}`, h, runs, "t-after");
   }
+}
+
+// The kit installs under either key. The new key alone and the old key alone
+// each run from their own record. Where both are present the new key's record
+// runs even when the old key's record is the newer one, since a host
+// mid-migration holds both and the old record is the stale one. Where neither
+// is present the run is skipped with one decision naming both keys.
+async function caseBank2_bothKitKeysAreAcceptedAndTheNewOnePrefers(clock) {
+  console.log("\n=== boundary-compaction Section 2: either kit key runs, the new key is preferred, neither skips naming both ===");
+  const NEW_INSTALL = "C:\\kit-cache\\grimoire\\build-new";
+  const OLD_INSTALL = "C:\\kit-cache\\claude-kit\\build-old";
+  const newRecord = (lastUpdated) => [{ scope: "user", installPath: NEW_INSTALL, version: "n", lastUpdated }];
+  const oldRecord = (lastUpdated) => [{ scope: "user", installPath: OLD_INSTALL, version: "o", lastUpdated }];
+  const runs = [
+    { label: "new key alone", plugins: { "grimoire@applefeld": newRecord("2026-09-25T09:59:04.362Z") }, install: NEW_INSTALL },
+    { label: "old key alone", plugins: { "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "both keys, old record newer", plugins: { "claude-kit@applefeld": oldRecord("2026-10-01T00:00:00.000Z"), "grimoire@applefeld": newRecord("2026-09-01T00:00:00.000Z") }, install: NEW_INSTALL },
+    { label: "new key present with no usable record, old key usable", plugins: { "grimoire@applefeld": [], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "new key with an unusable record before a usable one", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: NEW_INSTALL }, ...newRecord("2026-09-25T09:59:04.362Z")] }, install: NEW_INSTALL },
+    { label: "new key whose lastUpdated does not parse, old key usable", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: NEW_INSTALL, lastUpdated: "never" }], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+    { label: "new key whose installPath is blank, old key usable", plugins: { "grimoire@applefeld": [{ scope: "user", installPath: " ", lastUpdated: "2026-09-25T09:59:04.362Z" }], "claude-kit@applefeld": oldRecord("2026-09-25T09:59:04.362Z") }, install: OLD_INSTALL },
+  ];
+  // The supervisor's kit_skill_prefix (bin/agentic-common.sh) reads the same
+  // file by the same usable-record rule, so each fixture here is also handed
+  // to it: it must answer grimoire exactly where this lookup runs the grimoire
+  // install. A change to either reader's rule that the other does not share
+  // reds here rather than priming skills the plugin's install does not hold.
+  const prefixFn = readFileSync(join(import.meta.dirname, "..", "bin", "agentic-common.sh"), "utf8")
+    .replace(/\r/g, "").match(/^kit_skill_prefix\(\) \{$[\s\S]*?^\}$/m)?.[0];
+  check("bank2 kit keys: kit_skill_prefix is found in bin/agentic-common.sh", typeof prefixFn === "string");
+  const prefixFor = (plugins) => {
+    const home = mkdtempSync(join(tmpdir(), "kit-prefix-"));
+    try {
+      mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+      writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins }));
+      const r = spawnSync("bash", ["-c", `${prefixFn}\nkit_skill_prefix`], { env: { ...process.env, USERPROFILE: home, HOME: home }, encoding: "utf8" });
+      return r.error ? `bash did not run: ${r.error.message}` : (r.stdout ?? "").trim();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+  for (const c of runs) {
+    const want = c.install === NEW_INSTALL ? "grimoire" : "claude-kit";
+    const got = typeof prefixFn === "string" ? prefixFor(c.plugins) : "";
+    check(`bank2 ${c.label}: kit_skill_prefix answers ${want}, the name of the install this lookup runs`, got === want, got);
+  }
+  for (const c of runs) {
+    clock.set(T0);
+    const h = await bank2NoGoalHarness(`bank2_keys_${runs.indexOf(c)}`);
+    await bank2SeedInstalled(h, { version: 2, plugins: c.plugins });
+    const recorded = bank2Recorder(h);
+    const end = await bank2Turn(h, "t-keys", "Here is the answer.");
+    bank2CheckOwedOnly(`bank2 ${c.label}`, h, recorded, end);
+    const call = await bank2NextTurnCall(`bank2 ${c.label}`, h, recorded, "t-after");
+    bank2CheckBanked(`bank2 ${c.label}`, h, recorded, call, { script: `${c.install}/hooks/kit-compact-checkpoint.js` });
+  }
+  clock.set(T0);
+  const h = await bank2NoGoalHarness("bank2_keys_neither");
+  await bank2SeedInstalled(h, { version: 2, plugins: { "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] } });
+  const recorded = bank2Recorder(h);
+  const end = await bank2Turn(h, "t-keys", "Here is the answer.");
+  bank2CheckOwedOnly("bank2 neither key", h, recorded, end);
+  const call = await bank2NextTurnCall("bank2 neither key", h, recorded, "t-after");
+  const decisions = bank2Decisions(h);
+  bank2CheckSettled("bank2 neither key (first main-loop tool call)", call);
+  check("bank2 neither key: no child process ran", recorded.length === 0, recorded);
+  check("bank2 neither key: exactly one skipped decision naming both keys",
+    decisions.length === 1 && decisions[0].action === "compaction_boundary_skipped"
+      && decisions[0].detail.includes("no grimoire@applefeld or claude-kit@applefeld install record is usable"), decisions);
+  const neitherPrefix = typeof prefixFn === "string" ? prefixFor({ "other@market": [{ installPath: "C:\\other", lastUpdated: "2026-09-25T00:00:00.000Z" }] }) : "";
+  check("bank2 neither key: kit_skill_prefix answers claude-kit", neitherPrefix === "claude-kit", neitherPrefix);
 }
 
 // A run that exits non-zero, and a run that rejects (the host's timeout
@@ -34888,8 +35115,8 @@ async function caseMemq12_theMigrationRunsWhereverASessionBecomesOwner(clock) {
 }
 
 // The installed kit the plugin would run, located as the plugin locates it:
-// the record with the greatest lastUpdated under claude-kit@applefeld in the
-// real installed_plugins.json. A string naming why where there is none.
+// the record with the greatest lastUpdated under grimoire@applefeld, else under
+// claude-kit@applefeld, in the real installed_plugins.json. A string naming why where there is none.
 function memq11InstalledMemq() {
   let parsed;
   try {
@@ -34897,11 +35124,11 @@ function memq11InstalledMemq() {
   } catch (err) {
     return `installed_plugins.json could not be read (${err && err.code ? err.code : String(err)})`;
   }
-  const records = parsed && parsed.plugins && Array.isArray(parsed.plugins["claude-kit@applefeld"]) ? parsed.plugins["claude-kit@applefeld"] : [];
-  const best = records
+  const keyed = (key) => (parsed && parsed.plugins && Array.isArray(parsed.plugins[key]) ? parsed.plugins[key] : [])
     .filter((r) => r && typeof r.installPath === "string" && typeof r.lastUpdated === "string")
     .sort((a, b) => (a.lastUpdated < b.lastUpdated ? 1 : a.lastUpdated > b.lastUpdated ? -1 : 0))[0];
-  if (!best) return "no claude-kit@applefeld install is recorded";
+  const best = keyed("grimoire@applefeld") || keyed("claude-kit@applefeld");
+  if (!best) return "no grimoire@applefeld or claude-kit@applefeld install is recorded";
   const script = join(best.installPath, "scripts", "memq.js");
   try { readFileSync(script); } catch { return `the located install holds no scripts/memq.js (${script})`; }
   return { script };
