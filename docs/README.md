@@ -9,7 +9,7 @@
 
 ## Active plans
 
-- None.
+- `plans/agent_persona_personas-rename_spec_v1.md`: The plugin is renamed from `agentic-plugin` to `personas`, its tools with it, and the kit is read under `grimoire` alone (the manifest, the marketplace entry with a `renames` map, the tool prefix, the state namespace and types file, the supervisor's two plugin ids with a migration of each run directory's settings file, the store globs, the liaison template and the live suites; then the kit lookup and priming text drop the old kit name). In Progress 2026-10-03, two sections. Third of the four plans that rename the kit and this plugin; the kit's rename has merged and reached every host.
 
 ## Archived plans
 
