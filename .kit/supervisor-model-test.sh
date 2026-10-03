@@ -66,7 +66,7 @@ accepted() {  # <label> env assignments...
 # recorded argv shows an exported MODEL winning over its setting at the
 # --model flag and supervisorEffort reaching the --effort flag on its own.
 mkdir -p "$TMP/home-free/.claude/plugins/store" "$TMP/wd-launch"
-printf '{}' > "$TMP/home-free/.claude/plugins/store/agentic-plugin_agent-persona-modelprobe.json"
+printf '{}' > "$TMP/home-free/.claude/plugins/store/personas_agent-persona-modelprobe.json"
 rm -f "$TMP/stub/launched" "$TMP/stub/argv"
 OUT=$(env -i PATH="$TMP/stub:$PATH" HOME="$TMP/home-free" supervisorCrashLimit=1 supervisorPollMs=1000 \
   MODEL=haiku supervisorModel=sonnet supervisorEffort=high \
@@ -1973,7 +1973,7 @@ check "loop-head shutdown: a shutdown_requested recorded during a restart_passiv
 # running, and end them by the marker and the pid files the launch wrote,
 # never by name.
 mkdir -p "$TMP/stub-relaunch" "$TMP/wd-relaunch" "$TMP/home-relaunch/.claude/plugins/store"
-printf '{}' > "$TMP/home-relaunch/.claude/plugins/store/agentic-plugin_agent-persona-modelprobe.json"
+printf '{}' > "$TMP/home-relaunch/.claude/plugins/store/personas_agent-persona-modelprobe.json"
 RL_DIE="$TMP/relaunch-die"
 # The stub reads its input with a timeout rather than sleeping, so it spawns
 # no process of its own and the child's tree record holds still across polls.
@@ -2495,7 +2495,7 @@ kill "$IA_PID" 2>/dev/null; wait "$IA_PID" 2>/dev/null
 # site are both still exercised by the ADOPT drive above.
 IL_DIR=$(mktemp -d "$TMP/rd-interrupt-launch.XXXXXX")
 mkdir -p "$TMP/home-interrupt-launch/.claude/plugins/store" "$TMP/stub-interrupt-launch" "$TMP/wd-interrupt-launch"
-printf '{}' > "$TMP/home-interrupt-launch/.claude/plugins/store/agentic-plugin_agent-persona-modelprobe.json"
+printf '{}' > "$TMP/home-interrupt-launch/.claude/plugins/store/personas_agent-persona-modelprobe.json"
 # The stub prints one init-shaped line carrying session_id "sess-il" before
 # it sleeps, so note_child_session_id's real read of $OUT records that id:
 # relay_interrupt_request's session-known check waits for CHILD_SESSION_ID before it

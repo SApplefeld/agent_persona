@@ -2126,7 +2126,7 @@ function planDocumentLine(state: AgentState, entry: GoalNode): string {
 function isWorkTool(toolName: string): boolean {
   if (["Write", "Edit", "Bash", "NotebookEdit"].includes(toolName)) return true;
   if (!toolName.startsWith("mcp__")) return false;
-  if (toolName.startsWith("mcp__agentic-plugin__")) return false;
+  if (toolName.startsWith("mcp__personas__")) return false;
   if (toolName.includes("__reply") || toolName.endsWith("_reply")) return false;
   return true;
 }
@@ -2604,7 +2604,7 @@ function noteTurnToolCall(tool: string, args: { file_path?: unknown; command?: u
     if (GIT_PUSH_PATTERN.test(args.command)) turnToolFlags.pushed = true;
   }
   if (tool === "Agent") turnToolFlags.agentDispatched = true;
-  if (tool === "mcp__agentic-plugin__goal_done") turnToolFlags.goalDoneCalled = true;
+  if (tool === "mcp__personas__goal_done") turnToolFlags.goalDoneCalled = true;
 }
 
 // Whether the count was reset, by an activation, a new tree or a loaded
@@ -2664,22 +2664,18 @@ async function runHealth(dp: any, forNodeId: string | null): Promise<void> {
   }
 }
 
-// The kit plugin's keys in the engine's installed_plugins.json, newest name
-// first, and how long its boundary command may run before $.process.run kills
-// it and rejects.
-const KIT_PLUGIN_KEYS = ["grimoire@applefeld", "claude-kit@applefeld"];
+// The kit plugin's key in the engine's installed_plugins.json, and how long
+// its boundary command may run before $.process.run kills it and rejects.
+const KIT_PLUGIN_KEY = "grimoire@applefeld";
 const KIT_BOUNDARY_TIMEOUT_MS = 15_000;
 
 // Where the kit plugin is installed: <home>/.claude/plugins/installed_plugins.json
 // holds { plugins: { "grimoire@applefeld": [{ installPath, lastUpdated }, ...] } },
-// or the same under "claude-kit@applefeld" on a host the kit has not renamed on.
-// The first key in KIT_PLUGIN_KEYS with a usable record is the one read, and
-// within it the record with the greatest lastUpdated is the build in use. A key
-// that is absent, not an array, empty or without a usable record falls through
-// to the next. The file is the engine's, so every shape miss (no home, no file,
-// a read that fails, text that is not JSON, no plugins object, no key with a
-// record that has a string installPath and a readable lastUpdated) returns a
-// reason rather than throwing.
+// and the record with the greatest lastUpdated is the build in use. The file is
+// the engine's, so every shape miss (no home, no file, a read that fails, text
+// that is not JSON, no plugins object, no key, a value that is not an array, an
+// empty array, no record with a string installPath and a readable
+// lastUpdated) returns a reason rather than throwing.
 async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { skip: string }> {
   let home: unknown;
   try {
@@ -2706,23 +2702,22 @@ async function kitInstallPathOf(dp: any): Promise<{ installPath: string } | { sk
   const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const plugins = isObject(parsed) ? parsed.plugins : undefined;
   if (!isObject(plugins)) return { skip: "installed_plugins.json has no plugins object" };
-  for (const key of KIT_PLUGIN_KEYS) {
-    if (!Object.hasOwn(plugins, key)) continue;
-    const records = plugins[key];
-    if (!Array.isArray(records)) continue;
-    // A record without a string installPath or a readable lastUpdated is passed
-    // over, so a stale or partial entry beside a good one still leaves the good
-    // one to run; a key is passed over only when no record qualifies.
-    let best: { installPath: string; at: number } | null = null;
-    for (const record of records) {
-      if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) continue;
-      const at = typeof record.lastUpdated === "string" ? Date.parse(record.lastUpdated) : NaN;
-      if (Number.isNaN(at)) continue;
-      if (best === null || at > best.at) best = { installPath: record.installPath.trim(), at };
-    }
-    if (best !== null) return { installPath: best.installPath };
+  if (!Object.hasOwn(plugins, KIT_PLUGIN_KEY)) return { skip: `installed_plugins.json has no ${KIT_PLUGIN_KEY} key` };
+  const records = plugins[KIT_PLUGIN_KEY];
+  if (!Array.isArray(records)) return { skip: `${KIT_PLUGIN_KEY} is not an array` };
+  if (records.length === 0) return { skip: `${KIT_PLUGIN_KEY} has no install record` };
+  // A record without a string installPath or a readable lastUpdated is passed
+  // over, so a stale or partial entry beside a good one still leaves the good
+  // one to run; the run is skipped only when no record qualifies.
+  let best: { installPath: string; at: number } | null = null;
+  for (const record of records) {
+    if (!isObject(record) || typeof record.installPath !== "string" || record.installPath.trim().length === 0) continue;
+    const at = typeof record.lastUpdated === "string" ? Date.parse(record.lastUpdated) : NaN;
+    if (Number.isNaN(at)) continue;
+    if (best === null || at > best.at) best = { installPath: record.installPath.trim(), at };
   }
-  return { skip: `no ${KIT_PLUGIN_KEYS.join(" or ")} install record is usable` };
+  if (best === null) return { skip: `no ${KIT_PLUGIN_KEY} record has an installPath and a readable lastUpdated` };
+  return { installPath: best.installPath };
 }
 
 // Runs the kit's checkpoint command with its boundary verb for this session,
@@ -5587,7 +5582,7 @@ export const register: Register = async (on, options) => {
     let heldLaunchDir: unknown;
     let stateRead = false;
     try {
-      heldLaunchDir = (await $.state.get({ plugin: "agentic-plugin", key: "memqLaunchDir" })).value;
+      heldLaunchDir = (await $.state.get({ plugin: "personas", key: "memqLaunchDir" })).value;
       stateRead = true;
     } catch {
       // $.state unavailable; sess alone carries the launch directory
@@ -5600,7 +5595,7 @@ export const register: Register = async (on, options) => {
       }
       if (stateRead && sess.memqLaunchDir !== "") {
         try {
-          await $.state.set({ plugin: "agentic-plugin", key: "memqLaunchDir" }, sess.memqLaunchDir);
+          await $.state.set({ plugin: "personas", key: "memqLaunchDir" }, sess.memqLaunchDir);
         } catch {
           // $.state unavailable; sess alone carries the launch directory
         }
@@ -11172,7 +11167,7 @@ export const register: Register = async (on, options) => {
     // Serve agentic_identity (F9: single arbiter = commons; epoch is only the
     // same-directory write fence). Claim in commons FIRST; if a live earlier
     // holder exists, join as reader (no epoch bump, no ownership).
-    if (e.tool === "mcp__agentic-plugin__agentic_identity") {
+    if (e.tool === "mcp__personas__agentic_identity") {
       const name = String((e as any).persona || "default").trim() || "default";
       // The shared name rule, before any claim or store write: a persona
       // that fails it could be owned but never addressed, and its inbox
@@ -11337,7 +11332,7 @@ export const register: Register = async (on, options) => {
     }
 
     // Serve goal_create (v3: creates the root node, NO planning in handler: R1).
-    if (e.tool === "mcp__agentic-plugin__goal_create") {
+    if (e.tool === "mcp__personas__goal_create") {
       // Before the owner check: a session that never loaded its state is not
       // an owner either, and "held by a live session" would be untrue of it.
       if (sess.stateNotLoaded !== null) {
@@ -11481,7 +11476,7 @@ export const register: Register = async (on, options) => {
     }
 
     // Serve goal_add (R4: parent resolution).
-    if (e.tool === "mcp__agentic-plugin__goal_add") {
+    if (e.tool === "mcp__personas__goal_add") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -11667,7 +11662,7 @@ export const register: Register = async (on, options) => {
     // response to an operator steer). Each branch logs a decision naming the
     // change, so the decision log plus the resulting tree diff is the proof
     // the operator's request actually changed something.
-    if (e.tool === "mcp__agentic-plugin__goal_edit") {
+    if (e.tool === "mcp__personas__goal_edit") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -11769,7 +11764,7 @@ export const register: Register = async (on, options) => {
     // The list sits beside the tree, so nothing here reads or writes goals or
     // activeGoalId. Each change logs a decision, and a drop's decision
     // carries its reason.
-    if (e.tool === "mcp__agentic-plugin__goal_longterm") {
+    if (e.tool === "mcp__personas__goal_longterm") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -11866,7 +11861,7 @@ export const register: Register = async (on, options) => {
     // before the argument is read. A write that is not saved puts the old
     // level and the decision log back, so what the session holds matches the
     // store.
-    if (e.tool === "mcp__agentic-plugin__goal_autonomy") {
+    if (e.tool === "mcp__personas__goal_autonomy") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -11911,7 +11906,7 @@ export const register: Register = async (on, options) => {
     // abandoned, and has no child still open. An entry that was not the
     // active one when the call arrived earns no round or score credit and
     // leaves any other active entry active.
-    if (e.tool === "mcp__agentic-plugin__goal_done") {
+    if (e.tool === "mcp__personas__goal_done") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -12136,7 +12131,7 @@ export const register: Register = async (on, options) => {
     // the [GOAL TREE] injection uses to decide it has an active leaf at all.
     // None of the three checks turnMayStartEffort: the list is the persona's
     // own scratch pad on the goal it already holds, not a new effort.
-    if (e.tool === "mcp__agentic-plugin__task_add") {
+    if (e.tool === "mcp__personas__task_add") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -12211,7 +12206,7 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
-    if (e.tool === "mcp__agentic-plugin__task_done") {
+    if (e.tool === "mcp__personas__task_done") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -12259,7 +12254,7 @@ export const register: Register = async (on, options) => {
       return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
     }
 
-    if (e.tool === "mcp__agentic-plugin__task_clear") {
+    if (e.tool === "mcp__personas__task_clear") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -12291,7 +12286,7 @@ export const register: Register = async (on, options) => {
     // park: true writes park_requested in place of shutdown_requested, so the
     // supervisor exits on the park code and the keeper's next start launches
     // the persona again rather than holding it for a hand release.
-    if (e.tool === "mcp__agentic-plugin__supervisor_shutdown") {
+    if (e.tool === "mcp__personas__supervisor_shutdown") {
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -12322,7 +12317,7 @@ export const register: Register = async (on, options) => {
     // Serve supervisor_restart (plan item 8.3: mirrors supervisor_shutdown;
     // supervise.sh's decide unit maps this fact to restart_passive, so the
     // child is relaunched with the goal tree kept rather than the run ending).
-    if (e.tool === "mcp__agentic-plugin__supervisor_restart") {
+    if (e.tool === "mcp__personas__supervisor_restart") {
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -12344,7 +12339,7 @@ export const register: Register = async (on, options) => {
     }
 
     // Serve goal_status (read-only, passive-reader OK).
-    if (e.tool === "mcp__agentic-plugin__goal_status") {
+    if (e.tool === "mcp__personas__goal_status") {
       // A session that never loaded its state holds no tree to show, and
       // "No goal tree exists." would read as a fact about the store.
       if (sess.stateNotLoaded !== null) {
@@ -12404,7 +12399,7 @@ export const register: Register = async (on, options) => {
     }
 
     // M5: Serve goal_resume (owner only: resumes paused leaf, resets nudge budget).
-    if (e.tool === "mcp__agentic-plugin__goal_resume") {
+    if (e.tool === "mcp__personas__goal_resume") {
       if (sess.stateNotLoaded !== null) {
         toolErrorsThisTurn++;
         return { deny: stateNotLoadedText(sess.stateNotLoaded) };
@@ -12510,7 +12505,7 @@ export const register: Register = async (on, options) => {
     }
 
     // Serve memory_add.
-    if (e.tool === "mcp__agentic-plugin__memory_add") {
+    if (e.tool === "mcp__personas__memory_add") {
       if (!sess.isOwner) {
         toolErrorsThisTurn++;
         return { deny: `persona '${sess.persona}' is held by a live session; this write was not saved.` };
@@ -12568,7 +12563,7 @@ export const register: Register = async (on, options) => {
     // Plan D2: agentic_say(text, answers?, urgent?, persona?). The target is
     // the persona argument when given, else sess.persona; sess.persona itself
     // never changes here, and no claim is written.
-    if ((e as any).tool === "mcp__agentic-plugin__agentic_say") {
+    if ((e as any).tool === "mcp__personas__agentic_say") {
       const targetOrDeny = targetPersonaOf((e as any).persona, sess.persona);
       if ("deny" in targetOrDeny) {
         toolErrorsThisTurn++;
@@ -12641,7 +12636,7 @@ export const register: Register = async (on, options) => {
     // Plan D2: agentic_inbox(persona?). The target is the persona argument
     // when given, else sess.persona, under the same guard and reach rule as
     // agentic_say; no identity switch, no claim written.
-    if ((e as any).tool === "mcp__agentic-plugin__agentic_inbox") {
+    if ((e as any).tool === "mcp__personas__agentic_inbox") {
       const targetOrDeny = targetPersonaOf((e as any).persona, sess.persona);
       if ("deny" in targetOrDeny) {
         toolErrorsThisTurn++;
@@ -12702,7 +12697,7 @@ export const register: Register = async (on, options) => {
     // keeps the read-only promise, since readAllClaims collects stale entries
     // on its own read and those entries are what a stopped persona's
     // heartbeat age is read from.
-    if ((e as any).tool === "mcp__agentic-plugin__fleet_status") {
+    if ((e as any).tool === "mcp__personas__fleet_status") {
       const now = Date.now();
       // Every commons entry on the machine, read without readAllClaims'
       // staleness filter and without the garbage collection it performs on its
@@ -12749,7 +12744,7 @@ export const register: Register = async (on, options) => {
     // ground fences this tool and not the file: every persona runs as the
     // operator's own account, so any local process can write restart.request
     // directly, the same boundary the persona store already sits inside.
-    if ((e as any).tool === "mcp__agentic-plugin__fleet_restart") {
+    if ((e as any).tool === "mcp__personas__fleet_restart") {
       const now = Date.now();
       const target = String((e as any).persona || "").trim();
       const reason = String((e as any).reason || "").trim().slice(0, FLEET_RESTART_REASON_MAX);
@@ -12835,7 +12830,7 @@ export const register: Register = async (on, options) => {
     // directory check are the same rule for the same reason fleet_restart's
     // comment gives: every persona runs as the operator's own account, so
     // this tool's ground fences the tool, not the file.
-    if ((e as any).tool === "mcp__agentic-plugin__fleet_interrupt") {
+    if ((e as any).tool === "mcp__personas__fleet_interrupt") {
       const now = Date.now();
       const target = String((e as any).persona || "").trim();
       const reason = String((e as any).reason || "").trim().slice(0, FLEET_RESTART_REASON_MAX);
@@ -12897,7 +12892,7 @@ export const register: Register = async (on, options) => {
     // resolve, and a record keyed to another persona does not resolve here.
     // A pending record has not been read, and a skipped record's writer is
     // gone, so neither has anything to resolve.
-    if ((e as any).tool === "mcp__agentic-plugin__agentic_resolve") {
+    if ((e as any).tool === "mcp__personas__agentic_resolve") {
       const persona = sess.persona;
       const id = String((e as any).id || "").trim();
       const outcome = (e as any).outcome as string | undefined;

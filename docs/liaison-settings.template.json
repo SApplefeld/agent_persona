@@ -2,11 +2,11 @@
   "permissions": {
     "allow": [
       "mcp__plugin_relay_channel-relay__reply",
-      "mcp__agentic-plugin__agentic_say",
-      "mcp__agentic-plugin__agentic_inbox",
-      "mcp__agentic-plugin__agentic_resolve",
-      "mcp__agentic-plugin__goal_status",
-      "mcp__agentic-plugin__supervisor_shutdown",
+      "mcp__personas__agentic_say",
+      "mcp__personas__agentic_inbox",
+      "mcp__personas__agentic_resolve",
+      "mcp__personas__goal_status",
+      "mcp__personas__supervisor_shutdown",
       "Read(./**)",
       "Edit(./notes/**)",
       "Bash(memq recall:*)",

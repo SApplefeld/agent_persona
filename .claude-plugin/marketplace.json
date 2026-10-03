@@ -4,9 +4,10 @@
     "name": "Scott Applefeld",
     "email": "sapplefeld@gmail.com"
   },
+  "renames": { "agentic-plugin": "personas" },
   "plugins": [
     {
-      "name": "agentic-plugin",
+      "name": "personas",
       "source": ".",
       "description": "PIANO-esque cognitive layer: persona-keyed state, heartbeat liveness, controller with classify/actuate. The passive supervisor's own runtime."
     }

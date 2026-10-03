@@ -88,7 +88,7 @@ function makeCase(name, opts = {}) {
   // The checkout's own tool-list mirror, which names the plugin's tools. The
   // compile reads this one and never the mirror the scratch session wrote.
   fs.writeFileSync(join(paths.repo, '.claude', 'types', 'claude-code-mcp.d.ts'), '// CHECKOUT_MIRROR: the plugin\'s own tools.\n');
-  fs.writeFileSync(join(paths.repo, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'agentic-plugin' }));
+  fs.writeFileSync(join(paths.repo, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'personas' }));
   if (opts.typescript !== false) {
     const bin = join(paths.repo, 'node_modules', 'typescript', 'bin');
     fs.mkdirSync(bin, { recursive: true });
@@ -116,6 +116,17 @@ function projectKey(workdir) {
 }
 ({ projectKey: projectKeyFn } = await import(pathToFileURL(resolve(here, '../bin/supervise-liveness.mjs')).href));
 
+// The smoke log a case gets unless it sets its own: the fake engine's default
+// log in shape, with the plugin named as this checkout's manifest names it.
+// The fake's own default is recorded history and names the plugin's former
+// name, which the check no longer reads as the plugin.
+const PLUGIN_NAME_IN_MANIFEST = JSON.parse(fs.readFileSync(resolve(here, '../.claude-plugin/plugin.json'), 'utf8')).name;
+const DEFAULT_SMOKE_LOG = [
+  'plugin ' + PLUGIN_NAME_IN_MANIFEST + ': admitted',
+  'plugin ' + PLUGIN_NAME_IN_MANIFEST + ': session.start settled in 11.8 ms',
+  'engine: tasks gate off',
+].join('\n');
+
 // Runs the check as its own process, with the fixtures first on PATH and the
 // session id and profile the transcript sits under.
 function run(paths, args, env = {}) {
@@ -135,6 +146,7 @@ function run(paths, args, env = {}) {
       FAKE_CLAUDE_CALLS: paths.calls,
       FAKE_CLAUDE_VERSION: NEW_VERSION,
       FAKE_CLAUDE_TYPES_FILE: join(fixtures, 'claude-code.d.ts'),
+      FAKE_CLAUDE_SMOKE_LOG: DEFAULT_SMOKE_LOG,
       ...env,
     },
   });
@@ -406,37 +418,68 @@ const cases = [
     assert.match(validate.evidence, /exit 1; Found 2 errors: userConfig\.jevLive\.type: Invalid input userConfig\.jevLive: Invalid input/);
   }],
   ['a smoke log naming the plugin beside one of the five readings is a warn carrying the line', () => {
-    const { r } = passingPre('smoke-warn', { FAKE_CLAUDE_SMOKE_LOG: 'engine: ready\nplugin agentic-plugin: prompt.submit skipped\n' });
+    const { r } = passingPre('smoke-warn', { FAKE_CLAUDE_SMOKE_LOG: 'engine: ready\nplugin personas: prompt.submit skipped\n' });
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'warn', smoke.evidence);
-    assert.match(smoke.evidence, /1 log line\(s\) naming agentic-plugin .*prompt\.submit skipped/);
+    assert.match(smoke.evidence, /1 log line\(s\) naming personas .*prompt\.submit skipped/);
     assert.equal(r.status, 0, 'a warn does not read as triage');
   }],
+  ['a smoke log whose only other mention of the plugin name is a path beside a WARN stays pass', () => {
+    // The manifest name is a plain word, so a folder or prose carrying it is
+    // not the engine naming the plugin. Only the engine's own shape counts:
+    // the word plugin, then the name.
+    const { r } = passingPre('smoke-name-in-path', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nengine: WARN could not stat D:/personas/x\nengine: personas folder skipped\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'pass', smoke.evidence);
+    assert.match(smoke.evidence, /\b1 of 5 line\(s\)/);
+  }],
+  ['a smoke log naming a longer plugin name that starts with the manifest name does not count as naming the plugin', () => {
+    const { r } = passingPre('smoke-longer-name', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nplugin personas-extra: prompt.submit skipped\nPlugin personas-extra has an invalid manifest file\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'pass', smoke.evidence);
+  }],
+  ['the engine\'s capitalized "Plugin <name> has" refusal still counts as naming the plugin', () => {
+    const { r } = passingPre('smoke-capital-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'engine: ready\n[ERROR] Plugin personas has an invalid manifest file\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'fail', smoke.evidence);
+    assert.match(smoke.evidence, /Plugin personas has an invalid manifest file/);
+  }],
+  ['the engine\'s "hooks module <name> failed to load" line counts as naming the plugin', () => {
+    const { r } = passingPre('smoke-hooks-module', { FAKE_CLAUDE_SMOKE_LOG: 'Read hooks.json for plugin personas (enabled=true): D:/x/hooks/hooks.json\n[ERROR] hooks module personas failed to load: boom\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'fail', smoke.evidence);
+    assert.match(smoke.evidence, /hooks module personas failed to load/);
+  }],
+  ['a line naming the installed id with no word before it counts as naming the plugin', () => {
+    const { r } = passingPre('smoke-installed-id', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nengine: personas@agent-persona prompt.submit skipped\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'warn', smoke.evidence);
+  }],
   ['a smoke log carrying one of the readings on a line that does not name the plugin stays pass', () => {
-    const { r } = passingPre('smoke-other-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'plugin agentic-plugin: admitted\nplugin claude-kit: prompt.submit skipped\nengine: WARN something else\n' });
+    const { r } = passingPre('smoke-other-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nplugin grimoire: prompt.submit skipped\nengine: WARN something else\n' });
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'pass');
     // The pass says how much of the log named the plugin at all.
     assert.match(smoke.evidence, /\b1 of 5 line\(s\)/);
-    assert.match(smoke.evidence, /agentic-plugin/);
+    assert.match(smoke.evidence, /personas/);
   }],
   ['the smoke row names the path the engine read the plugin\'s hooks from, the last where the log names several', () => {
     const log = [
-      'Read hooks.json for plugin agentic-plugin (enabled=true): C:/cache/agentic-plugin/old/hooks/hooks.json',
-      'plugin agentic-plugin: admitted',
-      'Read hooks.json for plugin agentic-plugin (enabled=true): C:/cache/agentic-plugin/new/hooks/hooks.json',
+      'Read hooks.json for plugin personas (enabled=true): C:/cache/personas/old/hooks/hooks.json',
+      'plugin personas: admitted',
+      'Read hooks.json for plugin personas (enabled=true): C:/cache/personas/new/hooks/hooks.json',
     ].join('\n');
     const { r } = passingPre('smoke-hooks-path', { FAKE_CLAUDE_SMOKE_LOG: log });
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'pass', smoke.evidence);
-    assert.match(smoke.evidence, /C:\/cache\/agentic-plugin\/new\/hooks\/hooks\.json/);
-    assert.doesNotMatch(smoke.evidence, /agentic-plugin\/old\//);
+    assert.match(smoke.evidence, /C:\/cache\/personas\/new\/hooks\/hooks\.json/);
+    assert.doesNotMatch(smoke.evidence, /personas\/old\//);
   }],
   ['a smoke log with no hooks.json line for the plugin says so, and the result stands on the other readings', () => {
     const { r } = passingPre('smoke-no-hooks-path');
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'pass', smoke.evidence);
-    assert.match(smoke.evidence, /no "Read hooks\.json for plugin agentic-plugin" line/);
+    assert.match(smoke.evidence, /no "Read hooks\.json for plugin personas" line/);
   }],
   ['the smoke run is handed the debug log as an absolute path in the scratch folder', () => {
     const { r, paths } = passingPre('smoke-debug-path');
@@ -447,19 +490,19 @@ const cases = [
     assert.equal(resolve(given), resolve(paths.scratch, 'smoke.log'));
   }],
   ['a smoke log that never names the plugin reads fail, since its silence says nothing about the plugin', () => {
-    const { r } = passingPre('smoke-never-named', { FAKE_CLAUDE_SMOKE_LOG: 'plugin claude-kit: admitted\nengine: ready\n' });
+    const { r } = passingPre('smoke-never-named', { FAKE_CLAUDE_SMOKE_LOG: 'plugin grimoire: admitted\nengine: ready\n' });
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'fail', smoke.evidence);
-    assert.match(smoke.evidence, /no line in .* names agentic-plugin/);
+    assert.match(smoke.evidence, /no line in .* names personas/);
     assert.equal(r.status, 1);
   }],
   ['a plugin the engine failed to load reads fail and the verdict triage, never a warn', () => {
     // The shape Claude Code 2.1.283 writes when it refuses the manifest.
-    const refused = '[ERROR] "Failed to load plugin agentic-plugin@agent-persona: Plugin agentic-plugin has an invalid manifest file"';
+    const refused = '[ERROR] "Failed to load plugin personas@agent-persona: Plugin personas has an invalid manifest file"';
     const { r } = passingPre('smoke-load-failed', { FAKE_CLAUDE_SMOKE_LOG: 'engine: ready\n' + refused + '\n' });
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'fail', smoke.evidence);
-    assert.match(smoke.evidence, /Failed to load plugin agentic-plugin/);
+    assert.match(smoke.evidence, /Failed to load plugin personas/);
     assert.match(r.verdict, /^pre: triage 7\. smoke \(run /);
     assert.equal(r.status, 1);
   }],
@@ -467,7 +510,7 @@ const cases = [
     const { r } = passingPre('smoke-named');
     const evidence = only(r.rows, '7. smoke').evidence;
     assert.match(evidence, /\b2 of 4 line\(s\)/);
-    assert.match(evidence, /agentic-plugin/);
+    assert.match(evidence, /personas/);
   }],
   ['a smoke run that writes no debug log reads fail rather than an empty pass', () => {
     const { r } = passingPre('smoke-no-log', { FAKE_CLAUDE_SMOKE_WRITE: 'none' });
@@ -647,7 +690,7 @@ const cases = [
     // The run the pre half recorded, so post's rows join it and carry its canary.
     fs.mkdirSync(paths.results, { recursive: true });
     fs.writeFileSync(paths.jsonl, JSON.stringify(api().row('run-post-1', FIXTURE_FROM, FIXTURE_FROM, 'FIXTURE', '1. versions', 'pass', 'seeded by the pre half')) + '\n');
-    fs.writeFileSync(join(paths.rundir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'agentic-plugin': { options: { heartbeatMs: 50 } } } }));
+    fs.writeFileSync(join(paths.rundir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'personas': { options: { heartbeatMs: 50 } } } }));
     fs.writeFileSync(join(paths.rundir, 'supervisor.log'),
       'LAUNCH child-3 pid 1234\nGATE poll FAIL heartbeat still fresh\nGATE poll FAIL heartbeat still fresh\nHEARTBEAT ok\n');
     // The heartbeat as it stands before the check reads it, then a ticker that
@@ -670,7 +713,7 @@ const cases = [
   }],
   ['post: a transcript version behind the build on disk reads triage, exit 1', () => {
     const paths = makeCase('post-triage');
-    fs.writeFileSync(join(paths.rundir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'agentic-plugin': { options: { heartbeatMs: 50 } } } }));
+    fs.writeFileSync(join(paths.rundir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'personas': { options: { heartbeatMs: 50 } } } }));
     fs.writeFileSync(join(paths.rundir, 'heartbeat.json'), JSON.stringify({ sessionId: 's', lastSeen: 1 }));
     fs.writeFileSync(join(paths.rundir, 'supervisor.log'),
       'LAUNCH child-4 pid 99\nERROR the child never stamped a heartbeat\n');
@@ -875,9 +918,9 @@ const cases = [
     const dir = join(root, 'heartbeat-ms');
     fs.mkdirSync(dir, { recursive: true });
     const write = (body) => fs.writeFileSync(join(dir, 'settings.json'), body);
-    write(JSON.stringify({ pluginConfigs: { 'agentic-plugin': { options: { heartbeatMs: 1234 } } } }));
+    write(JSON.stringify({ pluginConfigs: { 'personas': { options: { heartbeatMs: 1234 } } } }));
     assert.equal(api().readHeartbeatMs(dir), 1234);
-    write(JSON.stringify({ pluginConfigs: { 'agentic-plugin@agent-persona': { options: { heartbeatMs: 4321 } } } }));
+    write(JSON.stringify({ pluginConfigs: { 'personas@agent-persona': { options: { heartbeatMs: 4321 } } } }));
     assert.equal(api().readHeartbeatMs(dir), 4321);
     write('\uFEFF' + JSON.stringify({ pluginConfigs: { p: { options: { heartbeatMs: 77 } } } }));
     assert.equal(api().readHeartbeatMs(dir), 77, 'a byte-order mark is stripped');

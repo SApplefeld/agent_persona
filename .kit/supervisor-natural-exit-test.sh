@@ -1305,7 +1305,7 @@ fi  # end of the unit blocks
 # untracked_work detail is the shape the hook writes, and no reader parses it.
 STUB="$TMP/stub"
 mkdir -p "$STUB" "$TMP/home/.claude/plugins/store"
-printf '{}' > "$TMP/home/.claude/plugins/store/agentic-plugin_agent-persona-natexit.json"
+printf '{}' > "$TMP/home/.claude/plugins/store/personas_agent-persona-natexit.json"
 printf '%s' "$BACKSTOP_DETAIL" > "$STUB/detail-backfilled"
 printf '%s\n' "${DETAILS:-}" | head -n 1 | tr -d '\n' | sed 's/\${[^}]*}/root-r1/g' > "$STUB/detail-real"
 printf '%s' 'x1: stub goal' > "$STUB/detail-untracked"

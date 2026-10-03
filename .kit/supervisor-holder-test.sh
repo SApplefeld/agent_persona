@@ -433,13 +433,9 @@ process.exit(interruptIdx >= 0 && goalIdx >= 0 && interruptIdx < goalIdx ? 0 : 1
 check "an interrupt written no later than the priming result reaches the pipe before the goal turn it raced" "$?"
 kill "$C6_CHILD" 2>/dev/null
 
-# --- Case 7: the priming turn names the kit's skills under the name the host
-#     has installed. The holder is launched with USERPROFILE and HOME on a
-#     fixture home, so its own prefix read, not one this suite sets, decides
-#     the name: grimoire for a usable grimoire@applefeld record, claude-kit for
-#     an old-key-only file. A copy of the holder with no agentic-common.sh
-#     beside it fails its source, and primes claude-kit rather than a bare
-#     ":operating-instructions". ---
+# --- Case 7: the priming turn names the kit's skills under grimoire. The
+#     holder is launched on a home with no installed_plugins.json, so the name
+#     it primes comes from its own text and not from anything on the host. ---
 priming_text() {  # <stdout file>
   node -e '
 const fs = require("fs");
@@ -447,33 +443,23 @@ const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").filter
 process.stdout.write(lines.length ? JSON.parse(lines[0]).message.content[0].text : "");
 ' "$1" 2>/dev/null
 }
-for C7_CASE in grimoire:usable claude-kit:old-only claude-kit:lone-copy; do
-  C7_WANT="${C7_CASE%%:*}"; C7_SHAPE="${C7_CASE#*:}"
-  D="$TMP/c7-$C7_SHAPE"; mkdir -p "$D/home/.claude/plugins"
-  case "$C7_SHAPE" in
-    usable|lone-copy) printf '%s' '{"version":2,"plugins":{"grimoire@applefeld":[{"installPath":"C:/g","lastUpdated":"2026-10-01T00:00:00.000Z"}]}}' > "$D/home/.claude/plugins/installed_plugins.json" ;;
-    old-only) printf '%s' '{"version":2,"plugins":{"claude-kit@applefeld":[{"installPath":"C:/k","lastUpdated":"2026-10-02T00:00:00.000Z"}]}}' > "$D/home/.claude/plugins/installed_plugins.json" ;;
-  esac
-  C7_HOLDER="$HOLDER"
-  if [ "$C7_SHAPE" = lone-copy ]; then mkdir -p "$D/lone"; cp "$HOLDER" "$D/lone/supervise-holder.sh"; C7_HOLDER="$D/lone/supervise-holder.sh"; fi
-  sleep 30 & C7_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C7_CHILD"
-  echo "$C7_CHILD" > "$D/child.pid"
-  USERPROFILE="$D/home" HOME="$D/home" PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" LIAISON_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1 \
-    bash "$C7_HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" "" \
-    > "$D/stdout" 2> "$D/err" &
-  C7_HOLDER_PID=$!; HOLDER_PIDS="$HOLDER_PIDS $C7_HOLDER_PID"
-  wait_for 80 test -s "$D/stdout"
-  C7_TEXT=$(priming_text "$D/stdout")
-  C7_RC=1
-  case "$C7_TEXT" in *"$C7_WANT:operating-instructions"*)
-    case "$C7_TEXT" in *"$C7_WANT:executing-work"*) C7_RC=0 ;; esac ;;
-  esac
-  check "$C7_SHAPE: the priming turn names $C7_WANT:operating-instructions and $C7_WANT:executing-work" "$C7_RC"
-  case "$C7_TEXT" in *" :operating-instructions"*|*"for :"*) C7_RC=1 ;; *) C7_RC=0 ;; esac
-  check "$C7_SHAPE: the priming turn names no skill with an empty prefix" "$C7_RC"
-  kill -TERM "$C7_HOLDER_PID" 2>/dev/null
-  kill "$C7_CHILD" 2>/dev/null
-done
+C7_WANT=grimoire
+D="$TMP/c7"; mkdir -p "$D/home"
+sleep 30 & C7_CHILD=$!; CHILD_PIDS="$CHILD_PIDS $C7_CHILD"
+echo "$C7_CHILD" > "$D/child.pid"
+USERPROFILE="$D/home" HOME="$D/home" PERSONA=default NO_CHANNEL=1 COORDINATOR_PERSONA=coord ARCHITECT_PERSONA="" LIAISON_PERSONA="" CHILD_INDEX=1 SUPERVISOR_HOLDER_POLL_S=1   bash "$HOLDER" "$D/holder.pid" "$D/out.jsonl" "$D/child.pid" "$D/ask.request" ""   > "$D/stdout" 2> "$D/err" &
+C7_HOLDER_PID=$!; HOLDER_PIDS="$HOLDER_PIDS $C7_HOLDER_PID"
+wait_for 80 test -s "$D/stdout"
+C7_TEXT=$(priming_text "$D/stdout")
+C7_RC=1
+case "$C7_TEXT" in *"$C7_WANT:operating-instructions"*)
+  case "$C7_TEXT" in *"$C7_WANT:executing-work"*) C7_RC=0 ;; esac ;;
+esac
+check "the priming turn names $C7_WANT:operating-instructions and $C7_WANT:executing-work" "$C7_RC"
+case "$C7_TEXT" in *" :operating-instructions"*|*"for :"*) C7_RC=1 ;; *) C7_RC=0 ;; esac
+check "the priming turn names no skill with an empty prefix" "$C7_RC"
+kill -TERM "$C7_HOLDER_PID" 2>/dev/null
+kill "$C7_CHILD" 2>/dev/null
 
 echo
 if [ "$failed" = "0" ]; then

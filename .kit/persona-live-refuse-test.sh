@@ -63,9 +63,28 @@ STORE_J_CTRL="$TMP/j-ctrl.json"; write_store "$STORE_J_CTRL" '{"commons:s1":{las
 STUB_HOME="$TMP/home"
 STUB_STORE_DIR="$STUB_HOME/.claude/plugins/store"
 mkdir -p "$STUB_STORE_DIR"
-for name in agentic-plugin_inline-abc agentic-plugin_agent-persona-1 agentic-plugin_agent-persona-2 agentic-plugin_zzz-3; do
+for name in personas_inline-abc personas_agent-persona-1 personas_agent-persona-2 personas_zzz-3; do
   write_store "$STUB_STORE_DIR/$name.json" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
 done
+
+# (l) stub plugin store directories across the plugin's rename from
+# agentic-plugin to personas: a host holding only the former plugin's stores,
+# a host holding both names, and a host holding only an unrelated plugin's
+# store. stub_home <dir> <store names...> writes one empty store per name.
+stub_home() {
+  local home="$1"; shift
+  mkdir -p "$home/.claude/plugins/store"
+  local name
+  for name in "$@"; do
+    write_store "$home/.claude/plugins/store/$name.json" '{"commons:s1":{lastSeen: now-1000, claims:[]}}'
+  done
+}
+FORMER_HOME="$TMP/home-former"
+stub_home "$FORMER_HOME" agentic-plugin_inline-old agentic-plugin_agent-persona-old kitprobe_inline-x
+BOTH_HOME="$TMP/home-both"
+stub_home "$BOTH_HOME" agentic-plugin_inline-old personas_inline-new agentic-plugin_agent-persona-old personas_agent-persona-new
+NONE_HOME="$TMP/home-none"
+stub_home "$NONE_HOME" kitprobe_inline-x kitprobe_agent-persona-y
 
 # Runs every case once, reporting each result through the function named
 # by $1 ("check", which counts toward this suite's exit).
@@ -132,6 +151,48 @@ run_cases() {
   R=1
   if [ -n "$FIRST" ] && [ "$FIRST" = "$(echo "$LIST" | head -n 1)" ]; then R=0; fi
   "$report" "(k) control: find_global_store 0 returns the first store list_installed_stores names" "$R"
+
+  # (l) The first launch after the rename finds only the former plugin's
+  # stores, and must still pass the gate on them rather than refuse.
+  OUT=$(HOME="$FORMER_HOME" find_global_store 1)
+  R=1
+  [ "$(basename "$OUT")" = "agentic-plugin_inline-old.json" ] && R=0
+  "$report" "(l) find_global_store 1 falls back to the former inline store where no current one exists (got '$(basename "$OUT")')" "$R"
+
+  LIST=$(HOME="$FORMER_HOME" list_installed_stores 2>&1)
+  R=1
+  [ "$(echo "$LIST" | grep -c .)" -eq 1 ] && [ "$(basename "$LIST")" = "agentic-plugin_agent-persona-old.json" ] && R=0
+  "$report" "(l) list_installed_stores names the former installed store where no current one exists, and no inline store (got '$LIST')" "$R"
+
+  OUT=$(HOME="$FORMER_HOME" find_global_store 0)
+  R=1
+  [ "$(basename "$OUT")" = "agentic-plugin_agent-persona-old.json" ] && R=0
+  "$report" "(l) find_global_store 0 falls back to the former installed store (got '$(basename "$OUT")')" "$R"
+
+  # Once a current store exists it wins in both modes, and the former
+  # installed store is still listed after it for the refuse-at-start check.
+  OUT=$(HOME="$BOTH_HOME" find_global_store 1)
+  R=1
+  [ "$(basename "$OUT")" = "personas_inline-new.json" ] && R=0
+  "$report" "(l) find_global_store 1 takes the current inline store over the former one (got '$(basename "$OUT")')" "$R"
+
+  LIST=$(HOME="$BOTH_HOME" list_installed_stores 2>&1)
+  R=1
+  [ "$(echo "$LIST" | grep -c .)" -eq 2 ] && [ "$(basename "$(echo "$LIST" | sed -n 1p)")" = "personas_agent-persona-new.json" ] && [ "$(basename "$(echo "$LIST" | sed -n 2p)")" = "agentic-plugin_agent-persona-old.json" ] && R=0
+  "$report" "(l) list_installed_stores names the current installed store first, then the former one, and no inline store (got '$LIST')" "$R"
+
+  OUT=$(HOME="$BOTH_HOME" find_global_store 0)
+  R=1
+  [ "$(basename "$OUT")" = "personas_agent-persona-new.json" ] && R=0
+  "$report" "(l) find_global_store 0 takes the current installed store over the former one (got '$(basename "$OUT")')" "$R"
+
+  # A host with neither name still resolves to no store, so the gate's
+  # empty-match refusal is reached as before. The unrelated plugin's stores
+  # are the control that the globs are not matching any store at all.
+  OUT=$(HOME="$NONE_HOME" find_global_store 1); OUT0=$(HOME="$NONE_HOME" find_global_store 0); LIST=$(HOME="$NONE_HOME" list_installed_stores 2>&1)
+  R=1
+  [ -z "$OUT" ] && [ -z "$OUT0" ] && [ -z "$LIST" ] && R=0
+  "$report" "(l) with no store of either name, both modes of find_global_store and list_installed_stores print nothing (got '$OUT' '$OUT0' '$LIST')" "$R"
 }
 
 source "$REAL"

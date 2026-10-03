@@ -96,7 +96,7 @@ export const RESULTS = Object.freeze(['pass', 'warn', 'gap', 'fail', 'skipped'])
 export const DEFAULT_HEARTBEAT_MS = 30000;
 // The manifest name the debug log writes the plugin under, and the five
 // readings in a log line that say the engine did not take the plugin whole.
-export const PLUGIN_NAME = 'agentic-plugin';
+export const PLUGIN_NAME = 'personas';
 export const SMOKE_PATTERNS = Object.freeze(['skipped', 'WARN', 'not attached', 'does not validate', 'refused']);
 // Readings that say the engine did not load the plugin at all, which the smoke
 // step reads as a fail rather than a warn. The engine logs a refused manifest
@@ -106,6 +106,19 @@ export const SMOKE_FAIL_PATTERNS = Object.freeze(['ERROR', 'Failed to load', 'in
 // The smoke row names that path, so the reader sees which copy of the plugin
 // the run exercised: the installed one or a development checkout.
 export const HOOKS_READ_PREFIX = 'Read hooks.json for plugin ' + PLUGIN_NAME + ' (enabled=true): ';
+// Whether a debug log line is the engine naming the plugin: the word plugin,
+// Plugin or module, then the manifest name, or the installed id on its own,
+// then no further name character. The name is a plain word, so a folder such
+// as D:/personas or prose carrying it is not the engine naming the plugin, and
+// neither is a longer plugin name such as personas-extra. Covers "plugin
+// personas:", "plugin personas@agent-persona", "Plugin personas has", "Read
+// hooks.json for plugin personas", "hooks module personas failed to load" and
+// a bare "personas@agent-persona".
+const PLUGIN_NAME_RE = PLUGIN_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PLUGIN_NAMED = new RegExp('(?:\\b(?:[Pp]lugin|module) ' + PLUGIN_NAME_RE + '|(?<![\\w@/.\\\\-])' + PLUGIN_NAME_RE + '@agent-persona)(?![\\w-])');
+export function namesPlugin(line) {
+  return PLUGIN_NAMED.test(line);
+}
 // The lines post reads as a supervisor error since the newest launch, and the
 // two a relaunch writes while the old child's heartbeat ages out, which are
 // the pre-launch gate working rather than failing.
@@ -983,7 +996,7 @@ export function pre(flags) {
   // search that found nothing in a log that never names the plugin says
   // nothing about the plugin.
   const logLines = smokeLog.split(LINE_TERMINATOR);
-  const named = logLines.filter((line) => line.includes(PLUGIN_NAME));
+  const named = logLines.filter(namesPlugin);
   const hits = named.filter((line) => SMOKE_PATTERNS.some((p) => line.includes(p)));
   const refusals = named.filter((line) => SMOKE_FAIL_PATTERNS.some((p) => line.includes(p)));
   // Which copy of the plugin the engine loaded: the path on the last line

@@ -181,6 +181,15 @@ try {
         t("Bash", { command: "git -C D:/w commit -m x && git push" }),
         t("Agent"), t("mcp__agentic-plugin__goal_done"), t("mcp__plugin_relay__reply"),
       ]) === "plan_read=yes plan_edited=yes commit=yes push=yes agent_dispatched=yes goal_done=yes reply=yes work_tools=2 tools=Read,Edit,Bash,Agent,mcp__agentic-plugin__goal_done,mcp__plugin_relay__reply");
+    // The same turn under the plugin's current tool prefix: the case above
+    // keeps the prefix every recorded transcript before the rename carries.
+    check("the flags and ring read the same under the mcp__personas__ prefix",
+      toolActivityText([
+        t("Read", { file_path: "D:\\w\\docs\\plans\\a_spec_v1.md" }),
+        t("Edit", { file_path: "docs/plans/a_spec_v1.md" }),
+        t("Bash", { command: "git -C D:/w commit -m x && git push" }),
+        t("Agent"), t("mcp__personas__goal_done"), t("mcp__plugin_relay__reply"),
+      ]) === "plan_read=yes plan_edited=yes commit=yes push=yes agent_dispatched=yes goal_done=yes reply=yes work_tools=2 tools=Read,Edit,Bash,Agent,mcp__personas__goal_done,mcp__plugin_relay__reply");
     check("an empty turn reads every flag no",
       toolActivityText([]) === "plan_read=no plan_edited=no commit=no push=no agent_dispatched=no goal_done=no reply=no work_tools=0 tools=");
     const ten = Array.from({ length: 10 }, (_, i) => t(`T${i}`));
@@ -1392,6 +1401,9 @@ try {
       const goalDoneActivity = toolActivityText([{ name: "mcp__agentic-plugin__goal_done", input: {} }]);
       check("a v1 record whose transcript turn called goal_done is refused as answer_on_other_goal",
         cdStateOf(cdRecord("c-gd", { transcript: { ...rec.transcript, toolActivity: goalDoneActivity } })) === "refused: answer_on_other_goal");
+      const goalDoneActivityNew = toolActivityText([{ name: "mcp__personas__goal_done", input: {} }]);
+      check("a v1 record whose transcript turn called goal_done under the mcp__personas__ prefix is refused as answer_on_other_goal",
+        cdStateOf(cdRecord("c-gd-new", { transcript: { ...rec.transcript, toolActivity: goalDoneActivityNew } })) === "refused: answer_on_other_goal");
       const nudgeOn = (objective) => `[GOAL] The active goal is: ${objective}\nThe Controller detected 45s of idle time. Re-read the objective.`;
       check("a v1 record whose transcript turn opened on a nudge naming another objective is refused as answer_on_other_goal",
         cdStateOf(cdRecord("c-other-obj", { transcript: { ...rec.transcript, prompt: nudgeOn("Ship the release") } })) === "refused: answer_on_other_goal");
@@ -1499,6 +1511,24 @@ try {
         parsedEvery !== null && catalog.TURN_SCORE_TOOL_FLAGS.every((name) => parsedEvery.flags[name] === true), { everyFlag, parsedEvery });
       check("the activity parse reads the ring back as the tool names in call order, repeats kept",
         parsedEvery !== null && same(parsedEvery.calls, ["Read", "Edit", "Bash", "Bash", "Agent", "mcp__agentic-plugin__goal_done", "mcp__plugin_relay_channel-relay__reply"]), parsedEvery);
+      // The same round trip under the plugin's current tool prefix. The ring
+      // reads back whatever the names are, so the calls case also pins the
+      // line's work-tool count, the part of the line the prefix decides: the
+      // plugin's own goal_done is not work, leaving Edit and the two Bash calls.
+      const everyFlagNew = toolActivityText([
+        { name: "Read", input: { file_path: "D:/w/docs/plans/x_v1.md" } },
+        { name: "Edit", input: { file_path: "docs\\plans\\x_v1.md" } },
+        { name: "Bash", input: { command: "git commit -m x" } },
+        { name: "Bash", input: { command: "git push origin main" } },
+        { name: "Agent", input: {} },
+        { name: "mcp__personas__goal_done", input: {} },
+        { name: "mcp__plugin_relay_channel-relay__reply", input: {} },
+      ]);
+      const parsedEveryNew = parseToolActivity(everyFlagNew);
+      check("the activity parse reads every flag back as held under the mcp__personas__ prefix",
+        parsedEveryNew !== null && catalog.TURN_SCORE_TOOL_FLAGS.every((name) => parsedEveryNew.flags[name] === true), { everyFlagNew, parsedEveryNew });
+      check("the activity parse reads the ring back in call order under the mcp__personas__ prefix, with the plugin's own call not counted as work",
+        parsedEveryNew !== null && same(parsedEveryNew.calls, ["Read", "Edit", "Bash", "Bash", "Agent", "mcp__personas__goal_done", "mcp__plugin_relay_channel-relay__reply"]) && / work_tools=3 /.test(everyFlagNew), { everyFlagNew, parsedEveryNew });
       const parsedNone = parseToolActivity(toolActivityText([{ name: "Grep", input: {} }, { name: "Read", input: { file_path: "README.md" } }]));
       check("the activity parse reads a flag-free turn as no flag held, with its calls kept",
         parsedNone !== null && catalog.TURN_SCORE_TOOL_FLAGS.every((name) => parsedNone.flags[name] === false) && same(parsedNone.calls, ["Grep", "Read"]), parsedNone);
@@ -1583,7 +1613,7 @@ try {
       check("a v1-journaled record whose transcript opens on another text than User asked is built, since the v1 text proves nothing",
         v2StateOf(v1Other).startsWith("Turn opened with: <task-notification> a different message\n\n"), v2StateOf(v1Other));
       const v2State = (opening, tools = { flags: tsFlags, calls: ["Read", "Bash"] }, answer = "x") => catalog.turnScoreStateText(opening, answer, "Keep the notes tidy", tools);
-      const v2Same = tsRecord("t-v2-same", { state: v2State("The agentic-plugin plugin sent a message:\nTidy the notes for t-v2-same.\n\n" + trailer, undefined, rec.transcript.finalMessage),
+      const v2Same = tsRecord("t-v2-same", { state: v2State("The personas plugin sent a message:\nTidy the notes for t-v2-same.\n\n" + trailer, undefined, rec.transcript.finalMessage),
         transcript: { ...rec.transcript, prompt: "Tidy the notes  for t-v2-same." } });
       check("a v2-journaled record whose transcript opening builds the journaled opening part passes the cross-check",
         v2StateOf(v2Same).startsWith("Turn opened with: Tidy the notes for t-v2-same.\n\n"), v2StateOf(v2Same));

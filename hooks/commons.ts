@@ -1,4 +1,4 @@
-// Commons: machine-global, cross-session coordination for agentic-plugin sessions.
+// Commons: machine-global, cross-session coordination for personas sessions.
 // Substrate: $.store (per plugin, global across sessions, async JSON values).
 //
 // Key layout: one writer per key. Each session owns `commons:<its-session-id>`.

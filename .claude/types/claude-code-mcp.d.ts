@@ -7,12 +7,12 @@ export {}
 declare module 'claude-code' {
   interface McpToolInputs {
     /** Switch this session to a persona's store, joining or claiming ownership safely: it never evicts a live session. If another session already holds this persona and its heartbeat is current, this session joins as a passive reader (agentic_say/agentic_inbox), taking no write access. Ownership is taken only when no live holder exists, or the existing holder's heartbeat has gone stale (the holder crashed or exited without releasing it). Pass the persona name (e.g. 'default'). */
-    "mcp__agentic-plugin__agentic_identity": {
+    "mcp__personas__agentic_identity": {
       /** The persona name to activate (e.g. "default", "refactorer"). If omitted, activates "default". */
       persona: string
     }
     /** Add a node (plan or task) to the goal tree. Plans go under the root; tasks go under a plan. If parentId is omitted, the parent is the active leaf when it is a plan, otherwise the active task's parent. */
-    "mcp__agentic-plugin__goal_add": {
+    "mcp__personas__goal_add": {
       /** One-line title for the new node. */
       title: string
       /** What done looks like. */
@@ -25,7 +25,7 @@ declare module 'claude-code' {
       maxRounds?: number
     }
     /** Create a new goal tree for this persona. The root represents the operator's objective; plans are created by the planner at the next controller tick. Optionally provide a roadmap file to guide planning. Use when the user asks to pursue a multi-step objective. */
-    "mcp__agentic-plugin__goal_create": {
+    "mcp__personas__goal_create": {
       /** What the worker should accomplish across multiple turns. */
       objective: string
       /** Maximum number of goal rounds before auto-blocking. Default 10. */
@@ -34,31 +34,31 @@ declare module 'claude-code' {
       roadmapPath?: string
     }
     /** Mark the active goal leaf as complete. The controller then activates the next pending plan. Once every entry under the top goal is complete or abandoned, with at least one complete, the top goal completes by itself, unless the planner has planned it before, in which case the planner is asked for more. Call when the current step is finished. */
-    "mcp__agentic-plugin__goal_done": {
+    "mcp__personas__goal_done": {
       /** One-line note about why this is done. */
       note?: string
     }
     /** Resume a paused goal leaf. If no node is active, resumes the most recently paused node. Resets the nudge budget. Owner only. */
-    "mcp__agentic-plugin__goal_resume": {
+    "mcp__personas__goal_resume": {
       /** Optional. The id of the paused node to resume. Defaults to the most recently paused node. */
       nodeId?: string
     }
     /** Show the current goal tree as formatted text. Read-only; works for passive readers. */
-    "mcp__agentic-plugin__goal_status": {}
+    "mcp__personas__goal_status": {}
     /** Stop the supervisor itself, not just the current goal: the child exits by the graceful EOF path once this turn ends. park: true parks for an update window and the keeper's next start brings the persona back; without it the call stops for good and is made only on the operator's explicit ask. A finished goal needs no call here: goal_done already returns the supervisor to its passive waiting state. Owner only. */
-    "mcp__agentic-plugin__supervisor_shutdown": {
+    "mcp__personas__supervisor_shutdown": {
       /** reason is optional: why the operator asked to shut down. */
       reason?: string
       /** park: true parks for a restart: the supervisor exits on the park code and the keeper's next start relaunches it. */
       park?: boolean
     }
     /** Relaunch the supervised child without stopping the supervisor: this child exits by the graceful EOF path and a fresh one starts with the goal tree intact and resumes the active plan. Use when the operator asks for a restart, or to pick up an updated runtime (a plugin update) without ending the run. Never for a completed goal (goal_done already returns the supervisor to its passive waiting state). Owner only. */
-    "mcp__agentic-plugin__supervisor_restart": {
+    "mcp__personas__supervisor_restart": {
       /** Optional. Why the operator asked for a restart. */
       reason?: string
     }
     /** Steer the goal tree in response to an operator request: drop a pending plan or task (marks it abandoned, it is never activated), pause an active or pending node with a reason (use goal_resume to continue it later), or reprioritize a pending node so it activates before its siblings. Owner only. */
-    "mcp__agentic-plugin__goal_edit": {
+    "mcp__personas__goal_edit": {
       /** The id of the node to change (see goal_status). */
       nodeId: string
       /** "drop" | "pause" | "reprioritize" */
@@ -67,7 +67,7 @@ declare module 'claude-code' {
       reason?: string
     }
     /** Hold or let go of a long-term goal: the idea this persona is working towards, kept beside the goal tree and listed by goal_status. A long-term goal is never the active work and never starts by itself. add holds a new one and returns its id; at most 5 are held, and an add past that is refused. drop lets one go by its id and records the reason. An edit is a drop and an add. Refused outside a turn the operator or the coordinator persona started. Owner only. */
-    "mcp__agentic-plugin__goal_longterm": {
+    "mcp__personas__goal_longterm": {
       /** action is "add" or "drop". */
       action: string
       /** title is the goal in one line. Required for add. */
@@ -80,24 +80,24 @@ declare module 'claude-code' {
       reason?: string
     }
     /** Set this persona's autonomy level, which says what it may do with work it found on its own. level "propose": it may only propose work, by sending a [PROPOSAL] record to the coordinator persona. level "plan-and-ask": it may write a plan document and queue it with goal_add, and the entry waits paused for the operator's yes. level "plan-and-start": it may write a plan document, queue it and start it, and the plugin tells the coordinator persona. Only the operator's own turn on this persona's thread may call this; every other turn is refused, a coordinator delivery included. The level governs goal_add with kind "plan" and nothing else. goal_status shows the level. Owner only. */
-    "mcp__agentic-plugin__goal_autonomy": {
+    "mcp__personas__goal_autonomy": {
       /** level is "propose", "plan-and-ask" or "plan-and-start". */
       level: string
     }
     /** Add a working item to the active goal's task list, a lighter tier below the goal tree, scoped to whichever goal is active right now. Refused with no active goal, at the per-goal cap, or under a plan run, where the plan document's own chapters are already the task list. Completing the goal clears its tasks; finishing every task never completes the goal by itself. */
-    "mcp__agentic-plugin__task_add": {
+    "mcp__personas__task_add": {
       /** text is the working item, one line. */
       text: string
     }
     /** Mark one task of the active goal's task list done, by id. An id not under the active goal is refused as unknown. Once every task of the active goal is done, the result suggests goal_done, but never completes the goal by itself. */
-    "mcp__agentic-plugin__task_done": {
+    "mcp__personas__task_done": {
       /** id names the task to complete, as task_add returned it. */
       id: string
     }
     /** Remove every task of the active goal's task list, whether done or not. Other goals' tasks are untouched. Refused with no active goal. The goal itself is not touched: completing it clears its tasks automatically, so this is for dropping a list mid-goal rather than for closing the goal. */
-    "mcp__agentic-plugin__task_clear": {}
+    "mcp__personas__task_clear": {}
     /** Add a memory entry to this persona's durable store. Use for facts, preferences, or lessons the worker should remember across sessions. Distill to one clear, self-contained statement. */
-    "mcp__agentic-plugin__memory_add": {
+    "mcp__personas__memory_add": {
       /** A short, self-contained statement (one fact, preference, or lesson). */
       text: string
       /** Memory kind: "fact", "preference", or "lesson". */

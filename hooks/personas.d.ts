@@ -5,6 +5,6 @@
 // that captures one.
 declare module "claude-code" {
   interface PluginState {
-    "agentic-plugin": { memqLaunchDir: string };
+    "personas": { memqLaunchDir: string };
   }
 }
