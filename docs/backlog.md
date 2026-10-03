@@ -14,9 +14,11 @@ The architect charter plan (`docs/archive/agent_persona_architect-draft-pr_spec_
 - **Read the architect's goal tree after its next plan.** goal_status, read from its own directory's store or asked of it on its channel, should show one plan entry per plan it is writing, each carrying a planPath, and a completed one for each draft it has reported. An ask worked with no entry, where the plugin refused neither the add nor the tree's creation, reopens section 2.
 - **Decide who lands an Abandoned mark for a plan already on the trunk.** The charter gives it to the operator, as a fresh branch under its own draft pull request; a worker could take it instead.
 
-## The holder test's interrupt-request log check failed once (found 2026-10-02)
+## The holder test's interrupt-request log check races the holder's log write (found 2026-10-02)
 
-`.kit/supervisor-holder-test.sh` failed once with `FAIL: each refused interrupt-request file is named in the holder's log (refusals=9 of 9)` and passed on two isolated reruns and on every later run, including a whole offline gate. The failing line reports all nine refusals, so the check's predicate is something the count line does not show, most likely the holder's log not yet holding every refusal line when the check reads it. The failing run's log was kept only in the run's scratch folder. Remedy: read the check's predicate, and if it reads the log while the holder can still be writing it, wait for the holder's exit or for the last refusal line before reading. Proof: the check run under load, red before the change and green after.
+The cause is a race in the test. The holder renames `interrupt.request` to `interrupt.request.taken`, then parses it, then logs the refusal (`bin/supervise-holder.sh`, the interrupt branch of the poll loop). The test's `wait_for 30 test ! -e "$D/interrupt.request"` returns at the rename, so the count at the check can run before the last refusal line is written. The count printed in the check's own message is re-read after it, which is why it shows 9 of 9. It failed again on 2026-10-03 inside a fifteen-step lane with the persona fleet up, and passed on three isolated reruns. The ask-request check at the line before it waits the same way.
+
+`.kit/supervisor-holder-test.sh` first failed with `FAIL: each refused interrupt-request file is named in the holder's log (refusals=9 of 9)` and passed on two isolated reruns and on every later run, including a whole offline gate. The failing line reports all nine refusals, so the check's predicate is something the count line does not show, most likely the holder's log not yet holding every refusal line when the check reads it. The failing run's log was kept only in the run's scratch folder. Remedy: read the check's predicate, and if it reads the log while the holder can still be writing it, wait for the holder's exit or for the last refusal line before reading. Proof: the check run under load, red before the change and green after.
 
 ## The architect takes an operator's drop from any record (found 2026-10-02)
 
@@ -34,12 +36,11 @@ The natural-exit supervisor-tree plan (`docs/archive/agent_persona_natural-exit-
 
 ## Operator checks owed by the kit-name tolerance plan (parked 2026-10-02)
 
-The kit-name tolerance plan (`docs/archive/agent_persona_kit-name-tolerance_spec_v1.md`) is Complete. Two checks are the operator's.
+The kit-name tolerance plan (`docs/archive/agent_persona_kit-name-tolerance_spec_v1.md`) is Complete. One check is the operator's.
 
-- **Update the persona plugin on every fleet host before the kit's rename merges.** Each supervisor's next launch then runs the two-key lookup and the prefix read. A host that misses the update loses its memory calls, its compaction boundary and its kit skills once its kit installs as `grimoire`, until it updates and relaunches. A relaunched child on a `claude-kit` host whose priming turn names anything but `claude-kit:operating-instructions` reopens the plan.
 - **Run `.kit/live-all.sh` once the fleet is down.** It refused with exit 10 while a persona held its claim, so the finishing gate ran every other lane. A red there reopens the plan.
 
-## The kit lookup and the prefix read ignore an install record's scope (found 2026-10-02)
+## The kit lookup ignores an install record's scope (found 2026-10-02)
 
 `kitInstallPathOf` in `hooks/index.ts` takes a usable `grimoire@applefeld` record whatever its `scope` and `projectPath`, and does not read `enabledPlugins`. A host holding a project-scope `grimoire` record for another directory, newer than its user-scope one, would run the memq CLI and the compaction checkpoint from that other install. No such record has been seen on a fleet host. The fix is a rule for which record applies to a working directory, with the tick suite's kit-key cases extended to the new fixtures.
 

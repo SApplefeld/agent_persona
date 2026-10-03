@@ -3586,7 +3586,7 @@ async function main() {
     await caseBank2_aLateSettlingEndNeverBanksMidTurn(clock);
     await caseBank2_greatestLastUpdatedRecordIsRun(clock);
     await caseBank2_installRecordMissesSkipWithOneDecision(clock);
-    await caseBank2_theKitKeyIsRunAndNoOtherKeyIsRead(clock);
+    await caseBank2_theKitKeyIsRun(clock);
     await caseBank2_failedRunsLogOneDecisionAndNeverFailTheTurn(clock);
     await caseBank2_aThrowingMidSectionEndStillClearsTheOwedBank(clock);
     await caseBank2_aPlanAddedInANoGoalTurnIsMidSection(clock);
@@ -16661,7 +16661,7 @@ async function caseBank2_installRecordMissesSkipWithOneDecision(clock) {
 // runs, including one placed after an unusable record. A file with no
 // grimoire@applefeld key skips with one decision, whatever other keys it holds,
 // since no other key is read.
-async function caseBank2_theKitKeyIsRunAndNoOtherKeyIsRead(clock) {
+async function caseBank2_theKitKeyIsRun(clock) {
   console.log("\n=== boundary-compaction Section 2: the kit key runs, and a file without it skips ===");
   const KIT_INSTALL = "C:\\kit-cache\\grimoire\\build-new";
   const kitRecord = (lastUpdated) => [{ scope: "user", installPath: KIT_INSTALL, version: "n", lastUpdated }];
