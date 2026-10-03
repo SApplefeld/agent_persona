@@ -106,13 +106,16 @@ export const SMOKE_FAIL_PATTERNS = Object.freeze(['ERROR', 'Failed to load', 'in
 // The smoke row names that path, so the reader sees which copy of the plugin
 // the run exercised: the installed one or a development checkout.
 export const HOOKS_READ_PREFIX = 'Read hooks.json for plugin ' + PLUGIN_NAME + ' (enabled=true): ';
-// Whether a debug log line is the engine naming the plugin: the word plugin or
-// Plugin, then the manifest name, then no further name character. The name is
-// a plain word, so a folder such as D:/personas or prose carrying it is not the
-// engine naming the plugin, and neither is a longer plugin name such as
-// personas-extra. Covers "plugin personas:", "plugin personas@agent-persona",
-// "Plugin personas has" and "Read hooks.json for plugin personas".
-const PLUGIN_NAMED = new RegExp('\\b[Pp]lugin ' + PLUGIN_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])');
+// Whether a debug log line is the engine naming the plugin: the word plugin,
+// Plugin or module, then the manifest name, or the installed id on its own,
+// then no further name character. The name is a plain word, so a folder such
+// as D:/personas or prose carrying it is not the engine naming the plugin, and
+// neither is a longer plugin name such as personas-extra. Covers "plugin
+// personas:", "plugin personas@agent-persona", "Plugin personas has", "Read
+// hooks.json for plugin personas", "hooks module personas failed to load" and
+// a bare "personas@agent-persona".
+const PLUGIN_NAME_RE = PLUGIN_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PLUGIN_NAMED = new RegExp('(?:\\b(?:[Pp]lugin|module) ' + PLUGIN_NAME_RE + '|(?<![\\w@/.\\\\-])' + PLUGIN_NAME_RE + '@agent-persona)(?![\\w-])');
 export function namesPlugin(line) {
   return PLUGIN_NAMED.test(line);
 }

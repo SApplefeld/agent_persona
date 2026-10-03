@@ -444,6 +444,17 @@ const cases = [
     assert.equal(smoke.result, 'fail', smoke.evidence);
     assert.match(smoke.evidence, /Plugin personas has an invalid manifest file/);
   }],
+  ['the engine\'s "hooks module <name> failed to load" line counts as naming the plugin', () => {
+    const { r } = passingPre('smoke-hooks-module', { FAKE_CLAUDE_SMOKE_LOG: 'Read hooks.json for plugin personas (enabled=true): D:/x/hooks/hooks.json\n[ERROR] hooks module personas failed to load: boom\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'fail', smoke.evidence);
+    assert.match(smoke.evidence, /hooks module personas failed to load/);
+  }],
+  ['a line naming the installed id with no word before it counts as naming the plugin', () => {
+    const { r } = passingPre('smoke-installed-id', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nengine: personas@agent-persona prompt.submit skipped\n' });
+    const smoke = only(r.rows, '7. smoke');
+    assert.equal(smoke.result, 'warn', smoke.evidence);
+  }],
   ['a smoke log carrying one of the readings on a line that does not name the plugin stays pass', () => {
     const { r } = passingPre('smoke-other-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nplugin claude-kit: prompt.submit skipped\nengine: WARN something else\n' });
     const smoke = only(r.rows, '7. smoke');
