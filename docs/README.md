@@ -9,6 +9,7 @@
 
 ## Active plans
 
+- `plans/agent_persona_public-marketplace_spec_v1.md`: The persona plugin publishes its runtime folder to the public marketplace repository on a tag, and the supervisor and the runbook install it from there (the kit's publish job instanced here with this repository's allowlist, the installed id `personas@applefeld` with a migration from the former id, and the client sandbox runbook installing all three plugins from the public marketplace). Ready 2026-10-02, one section; waits on the personas rename merging. Sibling of the kit's `claude-kit_public-marketplace_spec_v1.md`.
 - `plans/agent_persona_personas-rename_spec_v1.md`: The plugin is renamed from `agentic-plugin` to `personas`, its tools with it, and the kit is read under `grimoire` alone (the manifest, the marketplace entry with a `renames` map, the tool prefix, the state namespace and types file, the supervisor's two plugin ids with a migration of each run directory's settings file, the store globs, the liaison template and the live suites; then the kit lookup and priming text drop the old kit name). In Progress 2026-10-03, two sections. Third of the four plans that rename the kit and this plugin; the kit's rename has merged and reached every host.
 
 ## Archived plans
