@@ -10435,8 +10435,11 @@ export const register: Register = async (on, options) => {
     // runs: completeLeaf, runHealth, a complete decision naming the document,
     // activateNext, activate. A Chapter count above the stored one stores the
     // new count and logs plan_progress; an
-    // unchanged count logs nothing. An unreadable document changes nothing
-    // and logs one plan_record_unreadable decision per holder per session.
+    // unchanged count logs nothing. A read document also sets the holder's
+    // sectionCount and nextSection, silently. An unreadable or archived
+    // document writes neither of those two. An unreadable document changes
+    // nothing and logs one plan_record_unreadable decision per holder per
+    // session.
     // Only the owner reads: a reader's state is never saved, and completion
     // would spawn a health run for nothing.
     // The reader never throws on a document it cannot read; the try/catch
@@ -10524,6 +10527,18 @@ export const register: Register = async (on, options) => {
               action: "plan_progress",
               detail: `${holder.id}: ${planPath} Chapters ${previous} -> ${reading.chapters}`,
             });
+          }
+          // The section total and the latest Chapter's Next: line, for the
+          // board card that reads the store. Each is written only where it
+          // differs, a null line removes the field, and neither write touches
+          // updatedAt or logs a decision, since neither is progress.
+          if (reading.kind === "read") {
+            if (holder.sectionCount !== reading.sections) holder.sectionCount = reading.sections;
+            if (reading.next === null) {
+              if (holder.nextSection !== undefined) delete holder.nextSection;
+            } else if (holder.nextSection !== reading.next) {
+              holder.nextSection = reading.next;
+            }
           }
           const documentComplete = reading.kind === "archived" || reading.complete;
           if (documentComplete && holder.status !== "complete" && holder.status !== "abandoned") {

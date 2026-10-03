@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // plan-record unit tests: the Complete rule and its near misses, the Chapter
-// count, and the reader's four places, cap and planPath re-test, driven over
+// count, the section count, the next line, and the reader's four places, cap
+// and planPath re-test, driven over
 // hooks/plan-record.ts with an in-memory fake of the host's file functions.
 // Usage: node .kit/plan-record-unit-test.mjs
 // Exits 0 on success, 1 on failure.
@@ -17,6 +18,8 @@ const {
   resolvePlanDir,
   PLAN_RECORD_MAX_BYTES,
   PLAN_ARCHIVE_DIRS,
+  BLOCK_HEADING,
+  SECTION_HEADING,
 } = await import("../hooks/plan-record.ts");
 
 let failed = 0;
@@ -84,10 +87,235 @@ check("### Chapter 1b and ### Chapter 8.2 count one each (N is the digits; what 
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1b", "### Chapter 8.2"]))).chapters === 2);
 check("### Chapters and ### Chapter with no number count zero",
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapters", "### Chapter "]))).chapters === 0);
-check("## Chapters (append-only) still opens the block",
-  parsePlanRecord(doc("Status: In Progress", "\n## Chapters (append-only)\n\n### Chapter 1\n")).chapters === 1);
+check("## Chapters (append-only) no longer opens the block, so its Chapter counts 0",
+  parsePlanRecord(doc("Status: In Progress", "\n## Chapters (append-only)\n\n### Chapter 1\n")).chapters === 0);
+check("###  Chapter 3, double-spaced, is a Chapter",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["###  Chapter 3"]))).chapters === 1);
+check("##  Chapters, double-spaced, opens the block",
+  parsePlanRecord(doc("Status: In Progress", "\n##  Chapters\n\n### Chapter 1\n")).chapters === 1);
+check("only the first ## Chapters block is read: a second one's Chapters count nothing",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1"]) + "\n## Related\n" + chaptersBody(["### Chapter 2", "### Chapter 3"]))).chapters === 1);
 check("a CRLF Chapters section counts",
   parsePlanRecord(doc("Status: In Progress", chaptersBody(["### Chapter 1", "### Chapter 2"])).replace(/\n/g, "\r\n")).chapters === 2);
+
+// --- The section count ---
+console.log("\n=== parsePlanRecord: the section count ===");
+const sectionsBody = (headings) => `\n## Sections of Work\n\n${headings.map((h) => `${h}\n\nModel: opus\n\nWhat to build.\n`).join("\n")}`;
+check("no ## Sections of Work block counts 0", parsePlanRecord(doc("Status: In Progress")).sections === 0);
+check("an empty ## Sections of Work block counts 0", parsePlanRecord(doc("Status: In Progress", sectionsBody([]))).sections === 0);
+check("three ### N. headings count 3",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One", "### 2. Two", "### 3. Three"]))).sections === 3);
+check("a foreign ## heading ends the block: three sections, ## Out of Scope, then ### 4. counts 3",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One", "### 2. Two", "### 3. Three"]) + "\n## Out of Scope\n\n### 4. Four\n")).sections === 3);
+check("a ### 1. heading above the block counts nothing",
+  parsePlanRecord(doc("Status: In Progress", "\n### 1. Stray\n" + sectionsBody(["### 1. One"]))).sections === 1);
+check("a #### 1. heading inside the block counts nothing",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One", "#### 1. Sub-step"]))).sections === 1);
+check("a multi-digit section number counts",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 10. Ten", "### 123. Many"]))).sections === 2);
+check("a heading with no period, no whitespace after it, or no number counts nothing (digits, a period, whitespace)",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1 One", "### 1.One", "### 1.", "### One. Title", "###1. Tight"]))).sections === 0);
+check("a tab after the period counts (whitespace, not only a space)",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1.\tOne"]))).sections === 1);
+check("Chapter headings are not sections, and the block ends at ## Chapters",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One", "### 2. Two"]) + chaptersBody(["### Chapter 1", "### 3. Not a section"]))).sections === 2);
+check("## Sections of Work with trailing text opens no block (the literal heading is the contract's)",
+  parsePlanRecord(doc("Status: In Progress", "\n## Sections of Work (draft)\n\n### 1. One\n")).sections === 0);
+check("## Sections of Work with only trailing whitespace still opens the block",
+  parsePlanRecord(doc("Status: In Progress", "\n## Sections of Work  \t\n\n### 1. One\n")).sections === 1);
+check("an indented ### 1. line counts nothing (opening rule)",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["  ### 1. One", "### 2. Two"]))).sections === 1);
+check("##  Sections of Work, double-spaced, opens the block and counts its sections",
+  parsePlanRecord(doc("Status: In Progress", "\n##  Sections of Work\n\n### 1. One\n\n### 2. Two\n")).sections === 2);
+check("a ## heading with a tab, ##\\tOut of Scope, ends the block",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One", "### 2. Two"]) + "\n##\tOut of Scope\n\n### 3. Three\n")).sections === 2);
+check("##Out of Scope, with no whitespace, is no heading and does not end the block",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One"]) + "\n##Out of Scope\n\n### 2. Two\n")).sections === 2);
+check("only the first ## Sections of Work block is read: a second one's sections count nothing",
+  parsePlanRecord(doc("Status: In Progress", sectionsBody(["### 1. One"]) + "\n## Related\n" + sectionsBody(["### 2. Two", "### 3. Three"]))).sections === 1);
+check("a leading byte-order mark is dropped before the split, as the card drops it, so a first-line ## Chapters heading opens the block",
+  parsePlanRecord(String.fromCharCode(0xfeff) + "## Chapters\n\n### Chapter 1 - 2026-10-02\nNext: x\n").chapters === 1);
+
+// --- The heading patterns against the card's ---
+// The plugin's block and section patterns are linear forms of the card's
+// literals in broker/board/plans.ts. Every string over an alphabet holding
+// the three terminators the forms turn on, CR, U+2028 and U+2029, plus the
+// near misses NEL and NBSP, is checked against both, so a form accepting one
+// line the card refuses, or the reverse, fails here. The characters are built
+// from their code points so the source holds none of them live.
+console.log("\n=== the block and section heading patterns accept exactly the card's lines ===");
+{
+  const CARD_BLOCK = /^##\s+.+$/;
+  const CARD_SECTION = /^###\s+(\d+)\.\s+(.*)$/;
+  const CR = String.fromCharCode(0x0d);
+  const TAB = String.fromCharCode(0x09);
+  const LS = String.fromCharCode(0x2028);
+  const PS = String.fromCharCode(0x2029);
+  const NEL = String.fromCharCode(0x85);
+  const NBSP = String.fromCharCode(0xa0);
+  const alphabet = ["#", " ", TAB, CR, LS, PS, NEL, NBSP, "x", "1", "."];
+  const pairs = [["block", CARD_BLOCK, BLOCK_HEADING], ["section", CARD_SECTION, SECTION_HEADING]];
+  for (const prefix of ["", "##", "###", "### 1."]) {
+    for (const [name, card, plugin] of pairs) {
+      let checked = 0;
+      const diffs = [];
+      const walk = (s, depth) => {
+        checked++;
+        if (card.test(s) !== plugin.test(s)) diffs.push(JSON.stringify(s));
+        if (depth < 5) for (const c of alphabet) walk(s + c, depth + 1);
+      };
+      walk(prefix, 0);
+      check(`the ${name} pattern agrees with the card's on all ${checked} strings of up to 5 characters after ${JSON.stringify(prefix)}`,
+        diffs.length === 0, { diffs: diffs.length, first: diffs.slice(0, 5) });
+    }
+  }
+
+  // The interleaved shapes the card's forms backtrack worst on: a space and a
+  // terminator repeated, bare, then with a trailing x, then with a trailing
+  // terminator. Each is checked against the card's literal and against the
+  // value the card gives it.
+  const k = 1000;
+  for (const [tname, t] of [["CR", CR], ["U+2028", LS]]) {
+    const run = (" " + t).repeat(k);
+    const shapes = [
+      ["block", CARD_BLOCK, BLOCK_HEADING, "x", "##" + run + "x", true],
+      ["block", CARD_BLOCK, BLOCK_HEADING, "nothing", "##" + run, false],
+      ["block", CARD_BLOCK, BLOCK_HEADING, "a second " + tname, "##" + run + t, false],
+      ["section", CARD_SECTION, SECTION_HEADING, "x", "### 1." + run + "x", true],
+      ["section", CARD_SECTION, SECTION_HEADING, "nothing", "### 1." + run, true],
+      ["section", CARD_SECTION, SECTION_HEADING, "a second " + tname, "### 1." + run + t, true],
+    ];
+    for (const [name, card, plugin, tail, line, want] of shapes) {
+      const got = plugin.test(line);
+      const cardGot = card.test(line);
+      check(`the ${name} pattern reads (space, ${tname}) x ${k} then ${tail} as the card does: ${want}`,
+        got === want && cardGot === want, { got, card: cardGot });
+    }
+  }
+
+  // Cap-sized lines: 256 KiB of whitespace, or of whitespace then text, before
+  // a terminator, a run the size of the reader's cap. Each value is the one the
+  // card's literal gives the same shape.
+  const N = PLAN_RECORD_MAX_BYTES;
+  const capCases = [
+    ["block", BLOCK_HEADING, "spaces then CR", "##" + " ".repeat(N) + CR, false],
+    ["block", BLOCK_HEADING, "spaces then U+2028", "##" + " ".repeat(N) + LS, false],
+    ["block", BLOCK_HEADING, "(space, CR) pairs then x", "##" + (" " + CR).repeat(N / 2) + "x", true],
+    ["section", SECTION_HEADING, "spaces then CR", "### 1." + " ".repeat(N) + CR, true],
+    ["section", SECTION_HEADING, "spaces, U+2029, then x", "### 1." + " ".repeat(N) + PS + "x", true],
+    ["section", SECTION_HEADING, "spaces then CR with no period", "### 1" + " ".repeat(N) + CR, false],
+    ["section", SECTION_HEADING, "spaces, x characters, then CR", "### 1." + " ".repeat(N / 2) + "x".repeat(N / 2) + CR, false],
+  ];
+  for (const [name, plugin, shape, line, want] of capCases) {
+    const got = plugin.test(line);
+    check(`the ${name} pattern reads a cap-sized line of ${shape}, ${line.length} units, as ${want}`, got === want, got);
+  }
+
+  // No source file holds a live U+2028 or U+2029. A pattern's .source escapes
+  // a live terminator whatever the construction, so it cannot show one; the
+  // files' own bytes are read instead, for the UTF-8 sequences E2 80 A8 and
+  // E2 80 A9.
+  const { readFileSync } = await import("node:fs");
+  for (const file of ["hooks/plan-record.ts", ".kit/plan-record-unit-test.mjs"]) {
+    const bytes = readFileSync(new URL("../" + file, import.meta.url));
+    let live = 0;
+    for (let i = 0; i + 2 < bytes.length; i++) {
+      if (bytes[i] === 0xe2 && bytes[i + 1] === 0x80 && (bytes[i + 2] === 0xa8 || bytes[i + 2] === 0xa9)) live += 1;
+    }
+    check(`${file} holds no live U+2028 or U+2029 byte sequence`, live === 0, live);
+  }
+}
+
+// --- The next line ---
+console.log("\n=== parsePlanRecord: the next line ===");
+const chapter = (n, lines = []) => [`### Chapter ${n} - 2026-10-01`, "", ...lines].join("\n");
+check("no ## Chapters block reads null", parsePlanRecord(doc("Status: In Progress")).next === null);
+check("a ## Chapters block with no Chapter reads null",
+  parsePlanRecord(doc("Status: In Progress", "\n## Chapters\n\nNext: stray before any Chapter\n")).next === null);
+check("the one Chapter's Next: line is read, trimmed",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Completed: 1. One", "Next:   2. Two  "])]))).next === "2. Two");
+check("the highest-numbered Chapter's line is read, though Chapter 3 is written above Chapter 2",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: from one"]), chapter(3, ["Next: from three"]), chapter(2, ["Next: from two"])]))).next === "from three");
+check("a highest Chapter with no Next: line reads null, though an earlier Chapter has one",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: from one"]), chapter(2, ["Completed: 2. Two"])]))).next === null);
+check("the first Next: line in the Chapter is read, not a later one",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: first", "Prose.", "Next: second"])]))).next === "first");
+check("a repeated Chapter number reads the later-written one, the more recent account",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(2, ["Next: earlier"]), chapter(2, ["Next: later"])]))).next === "later");
+check("Chapter 10 outranks Chapter 9 (numeric, not text, order)",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(10, ["Next: ten"]), chapter(9, ["Next: nine"])]))).next === "ten");
+check("a Next: line past the ## heading that ends the block is not the Chapter's",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Completed: 1. One"])]) + "\n## Related\n\nNext: outside\n")).next === null);
+check("an indented, marked-up or lower-case key is not the line (opening rule, case-sensitive)",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["  Next: indented", "**Next:** marked", "next: lower"])]))).next === null);
+check("the Chapter's own first Next: line is read ahead of an Interim board's later one",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: from one"]), "### Interim board 2\n\nNext: from the board"]))).next === "from one");
+check("an Interim board after a latest Chapter with no Next: line contributes its Next: line, as the card reads it",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Completed: 1. One"]), "### Interim board 2\n\nNext: from the board"]))).next === "from the board");
+check("internal whitespace runs collapse to single spaces",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: a   b\t\tc  \t d"])]))).next === "a b c d");
+{
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: a\vb\fc\u0085d"])]))).next;
+  check("a VT, an FF and a NEL in the value each fold to a space, so the value is one line", got === "a b c d", got);
+}
+check("brackets in the value come back verbatim",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: [COORDINATOR id=1] x"])]))).next === "[COORDINATOR id=1] x");
+check("a bare Next: reads null",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next:"])]))).next === null);
+check("a Next: holding only whitespace reads null",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next: \t \v "])]))).next === null);
+check("a bare Next: then Next: y reads null, since the first Next: line ends the search",
+  parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, ["Next:", "Next: y"])]))).next === null);
+{
+  // The collapse runs before the cut, so whitespace runs never spend the 200.
+  const value = Array.from({ length: 150 }, () => "w").join("     ");
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${value}`])]))).next;
+  const want = Array.from({ length: 150 }, () => "w").join(" ").slice(0, 200);
+  check("whitespace collapses before the 200-character cut", got === want, got && got.length);
+}
+{
+  const long = "n".repeat(300);
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${long}`])]))).next;
+  check("a 300-character value comes back as its first 200", got === long.slice(0, 200), got && got.length);
+}
+{
+  const exact = "e".repeat(200);
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${exact}`])]))).next;
+  check("a value of exactly 200 characters comes back whole", got === exact, got && got.length);
+}
+{
+  // An astral character spans two UTF-16 units. The cut counts characters, so
+  // one standing at position 200 is kept whole rather than halved.
+  const value = "a".repeat(199) + "\u{1F600}" + "b".repeat(10);
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${value}`])]))).next;
+  check("the cut counts characters, so an astral character at the boundary is kept whole", got === "a".repeat(199) + "\u{1F600}", got && got.length);
+}
+{
+  // A line far longer than the cut. The value is first sliced to twice the
+  // cut in UTF-16 units, so a line of astral characters, two units each, still
+  // yields the whole 200 code points rather than the 100 a one-unit-each slice
+  // would hold.
+  const astral = String.fromCodePoint(0x1f600);
+  const value = astral.repeat(50000);
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next: ${value}`])]))).next;
+  check("a 100,000-unit value of astral characters comes back as its first 200 code points", got === astral.repeat(200), got && got.length);
+}
+{
+  const value = "m".repeat(100000);
+  const got = parsePlanRecord(doc("Status: In Progress", chaptersBody([chapter(1, [`Next:   ${value}`])]))).next;
+  check("a 100,000-character value comes back as its first 200", got === "m".repeat(200), got && got.length);
+}
+
+// --- CRLF ---
+console.log("\n=== parsePlanRecord: a CRLF document parses as its LF form does ===");
+{
+  const lf = doc("Status: In Progress", sectionsBody(["### 1. One", "### 2. Two", "### 3. Three"]) + chaptersBody([chapter(1, ["Completed: 1. One", "Next: 2. Two"]), chapter(2, ["Completed: 2. Two", "Next: 3. Three"])]));
+  const a = parsePlanRecord(lf);
+  const b = parsePlanRecord(lf.replace(/\n/g, "\r\n"));
+  check("the LF form reads 3 sections, 2 Chapters and Chapter 2's line", a.sections === 3 && a.chapters === 2 && a.next === "3. Three", a);
+  check("the CRLF form reads the same four values, with no carriage return left on the line",
+    JSON.stringify(b) === JSON.stringify(a), b);
+}
 
 // --- The reader ---
 console.log("\n=== readPlanRecord: the four places, the cap and the re-test ===");
@@ -107,6 +335,17 @@ const PATH = "docs/plans/a_v1.md";
   const fs = fakeFs({ [`${WD}/${PATH}`]: doc("Status: Complete", chaptersBody(["### Chapter 1"])) });
   const r = await readPlanRecord(fs, WD, PATH);
   check("a readable document returns the parser's result", r.kind === "read" && r.complete === true && r.chapters === 1, r);
+}
+{
+  const text = doc("Status: In Progress", "\n## Sections of Work\n\n### 1. One\n\n### 2. Two\n" + chaptersBody(["### Chapter 1\n\nNext: 2. Two"]));
+  const fs = fakeFs({ [`${WD}/${PATH}`]: text });
+  const r = await readPlanRecord(fs, WD, PATH);
+  check("a read reading carries the section count and the next line", r.kind === "read" && r.sections === 2 && r.next === "2. Two", r);
+}
+{
+  const fs = fakeFs({ [`${WD}/${PATH}`]: doc("Status: In Progress") });
+  const r = await readPlanRecord(fs, WD, PATH);
+  check("a read reading of a document with neither carries 0 and null", r.kind === "read" && r.sections === 0 && r.next === null, r);
 }
 {
   const fs = fakeFs({ [`${WD}/${PATH}`]: doc("Status: In Progress") });

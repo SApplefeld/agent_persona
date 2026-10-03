@@ -1,5 +1,27 @@
 # Backlog
 
+## Operator check owed by the plan-record sections plan (parked 2026-10-02)
+
+The plan-record sections plan (`docs/archive/agent_persona_plan-record-sections_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Watch the board card follow a worktree's count.** After this plan and the broker's companion plan merge, and the plugin cache and broker update, relaunch one persona working a plan in a linked worktree and watch its line on the Discord board card across two section closes. The count should move with the worktree copy and the next line should be the latest Chapter's. A card still drawing the launch checkout's count reopens the companion plan. A store entry missing `sectionCount` after a turn end reopens this one.
+
+## Operator checks owed by the architect charter plan (parked 2026-10-02)
+
+The architect charter plan (`docs/archive/agent_persona_architect-draft-pr_spec_v1.md`) is Complete. Three checks are the operator's.
+
+- **Relaunch the architect on the updated plugin and read its first turn.** After the installed plugin copy is updated and the architect relaunched, its first turn should carry the draft pull request, abandonment and goal-entry sentences, and the next plan it ships should arrive with a draft pull request number in its report. A report with no number reopens section 1.
+- **Read the architect's goal tree after its next plan.** goal_status, read from its own directory's store or asked of it on its channel, should show one plan entry per plan it is writing, each carrying a planPath, and a completed one for each draft it has reported. An ask worked with no entry, where the plugin refused neither the add nor the tree's creation, reopens section 2.
+- **Decide who lands an Abandoned mark for a plan already on the trunk.** The charter gives it to the operator, as a fresh branch under its own draft pull request; a worker could take it instead.
+
+## The holder test's interrupt-request log check failed once (found 2026-10-02)
+
+`.kit/supervisor-holder-test.sh` failed once with `FAIL: each refused interrupt-request file is named in the holder's log (refusals=9 of 9)` and passed on two isolated reruns and on every later run, including a whole offline gate. The failing line reports all nine refusals, so the check's predicate is something the count line does not show, most likely the holder's log not yet holding every refusal line when the check reads it. The failing run's log was kept only in the run's scratch folder. Remedy: read the check's predicate, and if it reads the log while the holder can still be writing it, wait for the holder's exit or for the last refusal line before reading. Proof: the check run under load, red before the change and green after.
+
+## The architect takes an operator's drop from any record (found 2026-10-02)
+
+The architect charter's abandonment sentence has the seat abandon a plan "because you or the operator drop it", and names no channel the operator's drop must arrive on. A worker record is the seat's work item and a reader record is information, so text claiming the operator dropped a plan could lead the seat to close a pull request a worker is finishing. The sentence tells the coordinator first, closing is reversible, and the trunk ruleset bounds the branch, so the finishing security review rated it Minor. Remedy: take an operator's drop only from the operator's channel or a coordinator record, the shape the charter's clone rule already uses.
+
 ## Operator check owed by the natural-exit supervisor-tree plan (parked 2026-10-02)
 
 The natural-exit supervisor-tree plan (`docs/archive/agent_persona_natural-exit-supervisor-tree_spec_v1.md`) is Complete. One check is the operator's.
