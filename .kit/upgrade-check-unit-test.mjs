@@ -456,7 +456,7 @@ const cases = [
     assert.equal(smoke.result, 'warn', smoke.evidence);
   }],
   ['a smoke log carrying one of the readings on a line that does not name the plugin stays pass', () => {
-    const { r } = passingPre('smoke-other-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nplugin claude-kit: prompt.submit skipped\nengine: WARN something else\n' });
+    const { r } = passingPre('smoke-other-plugin', { FAKE_CLAUDE_SMOKE_LOG: 'plugin personas: admitted\nplugin grimoire: prompt.submit skipped\nengine: WARN something else\n' });
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'pass');
     // The pass says how much of the log named the plugin at all.
@@ -490,7 +490,7 @@ const cases = [
     assert.equal(resolve(given), resolve(paths.scratch, 'smoke.log'));
   }],
   ['a smoke log that never names the plugin reads fail, since its silence says nothing about the plugin', () => {
-    const { r } = passingPre('smoke-never-named', { FAKE_CLAUDE_SMOKE_LOG: 'plugin claude-kit: admitted\nengine: ready\n' });
+    const { r } = passingPre('smoke-never-named', { FAKE_CLAUDE_SMOKE_LOG: 'plugin grimoire: admitted\nengine: ready\n' });
     const smoke = only(r.rows, '7. smoke');
     assert.equal(smoke.result, 'fail', smoke.evidence);
     assert.match(smoke.evidence, /no line in .* names personas/);

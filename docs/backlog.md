@@ -41,7 +41,7 @@ The kit-name tolerance plan (`docs/archive/agent_persona_kit-name-tolerance_spec
 
 ## The kit lookup and the prefix read ignore an install record's scope (found 2026-10-02)
 
-`kitInstallPathOf` in `hooks/index.ts` and `kit_skill_prefix` in `bin/agentic-common.sh` both take a usable record under a key whatever its `scope` and `projectPath`, and neither reads `enabledPlugins`. A host holding `grimoire` at project scope for another directory, beside a user-scope `claude-kit`, would prime `grimoire` skills that the working directory does not load. Neither reader filtered scope before the kit-name tolerance plan, and no such record has been seen on a fleet host. The fix is one shared rule for which record applies to a working directory, used by both readers, with the tick suite's parity pin extended to the new fixtures.
+`kitInstallPathOf` in `hooks/index.ts` takes a usable `grimoire@applefeld` record whatever its `scope` and `projectPath`, and does not read `enabledPlugins`. A host holding a project-scope `grimoire` record for another directory, newer than its user-scope one, would run the memq CLI and the compaction checkpoint from that other install. No such record has been seen on a fleet host. The fix is a rule for which record applies to a working directory, with the tick suite's kit-key cases extended to the new fixtures.
 
 ## Operator checks owed by the post-upgrade cleanup plan (parked 2026-10-02)
 

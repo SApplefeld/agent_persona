@@ -47,7 +47,7 @@
 // Pure apart from reading the transcript files it is handed. Every read is
 // wrapped, so a missing or unparsable file yields its fail-closed reading and
 // never a throw. The same rule is the kit's leash-takeover instrument in the
-// claude-kit repository; a divergence between the two readers goes to
+// grimoire repository; a divergence between the two readers goes to
 // docs/backlog.md rather than being reconciled silently in one of them.
 
 import fs from 'node:fs';
