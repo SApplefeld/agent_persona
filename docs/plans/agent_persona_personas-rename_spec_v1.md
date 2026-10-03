@@ -117,3 +117,10 @@ Tests: the new-key cases staying green, since they are the only pin left on the 
 - `claude-kit_grimoire-rename_spec_v1.md` in the kit repository: the second plan, which this one waits on.
 
 ## Chapters
+
+### Interim board 1 - 2026-10-03
+Section 1 stage: review round 2 of the section, after fix round 1. The work is committed on branch `plans/personas-rename-build` (PR #149, draft), as e021434 (first green) and e0467e6 (round 1 fixes). #144 merged as a spec-only PR at 930d406, so the work moved to this fresh branch off main.
+Live dispatches: the round 2 adversarial reviewer (fable), asked to review `git diff 930d406 HEAD` with the fix delta `e021434..HEAD` against the Goal, the Intent and section 1's acceptance. The round 2 security reviewer returned CLEAR with one Minor. The round 2 blind reviewer returned 0 Critical, 0 Major and 4 Minors.
+Gate baseline: validate, tsc and nine offline suites (controller-tick, settings-plugin-key, fleet-status, jev-gold, question-catalog, supervisor-model, persona-live-refuse, channel-reply, upgrade-check) all exited 0 at 09cc3f5 on a clean worktree, 2026-10-03, NEO-CLAUDE, with no contention seen. After fix round 1, all exited 0 at e021434 plus the fix edits.
+Rulings since the last boundary: the round 1 blind Critical, where a fresh host fails the pre-launch gate because no `personas_` store exists, was confirmed and fixed with a former-name store fallback. The round 1 blind Major asking the gate to read old-store claims once a `personas_` store exists was refused by the scope adjudicator on the Intent's not-done clause, its refused alternative and the Out of Scope entry, recorded in `## Standing Brief Amendments`. The round 1 blind Major on the upgrade check's name match was fixed. The Minor list is at `.kit/scratch/personas-rename/minors-section-1.md`.
+Next action: adjudicate the round 2 adversarial report. Then run the close pass over the Minors, which widens `namesPlugin` to also accept the installed id and adds the former store to `docs/security-model.md:65`. Then run the close gate and write Chapter 1. Section 2, tier sonnet, follows.
