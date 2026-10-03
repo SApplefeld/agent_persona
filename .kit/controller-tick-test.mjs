@@ -3556,6 +3556,12 @@ async function main() {
     await casePlanRecord2_blockedHolderCompletesWithNoReason(clock);
     await casePlanRecord2_unreadableRearmsAfterARead(clock);
 
+    // Section 1 (plan-record-sections): the section total and the next line
+    // the turn-end read writes to the plan holder.
+    await casePlanSections1_readWritesBothFieldsAndDropRemovesNext(clock);
+    await casePlanSections1_unreadableAndArchivedWriteNeither(clock);
+    await casePlanSections1_fewerChaptersKeepsTheCount(clock);
+
     // Section 1 (boundary-compaction): the plan document is read from the
     // directory the session runs in, not the launch checkout.
     await caseLive1_completeUnderLiveDirCompletesTheHolder(clock);
@@ -15487,6 +15493,155 @@ async function casePlanRecord2_unreadableRearmsAfterARead(clock) {
     check(`plan2 unreadable re-arm: after "${label}" the plan_record_unreadable count is ${expected}`, count === expected, count);
   }
   check("plan2 unreadable re-arm: plan-1 is still active throughout", getState(h).goals.find(g => g.id === "plan-1").status === "active");
+}
+
+// --- Section 1 (plan-record-sections): the section total and the next line on the holder ---
+
+// A plan document with a Sections of Work block holding `sections` titles,
+// numbered from 1, and a Chapters block holding one Chapter per entry of
+// `chapters`, each written with its own number and, where `next` is a string,
+// a Next: line carrying it.
+function sections1Doc({ sections = [], chapters = [], status = "Status: In Progress" } = {}) {
+  const sectionText = sections.map((title, i) => `### ${i + 1}. ${title}\n\nModel: opus\n\nWhat to build.\n`).join("\n");
+  const chapterText = chapters.map(({ n, next }) =>
+    `### Chapter ${n} - 2026-10-01\n\nCompleted: ${n}. Done\n${typeof next === "string" ? `Next: ${next}\n` : ""}\nWhat shipped.\n`).join("\n");
+  return `# A plan\n\n${status}\nCommit Model: Branch-and-PR\n\n## Goal\n\nThe goal.\n\n## Sections of Work\n\n${sectionText}\n## Chapters\n\n${chapterText}`;
+}
+
+// The holder after a turn, and every plan_* decision in the whole log.
+function sections1Read(h) {
+  const holder = getState(h).goals.find(g => g.id === "plan-1");
+  const planDecisions = getDecisions(h).filter(d => typeof d.action === "string" && d.action.startsWith("plan_"));
+  return { holder, planDecisions };
+}
+
+// A read reading writes sectionCount and nextSection to the plan holder, each
+// alone where only it changed, and removes nextSection when the latest
+// Chapter's Next: line goes. None of those writes touches updatedAt or logs a
+// decision, and a read that changes nothing writes nothing. The holder is
+// plan-1 above an active task-1, so the turn's scorer touches task-1 and no
+// write but the read's reaches plan-1. The clock runs a minute past the
+// seeded updatedAt, so a touch would show, and the last turn is the control:
+// a Chapter rise does move updatedAt, and its plan_progress text is pinned
+// whole.
+async function casePlanSections1_readWritesBothFieldsAndDropRemovesNext(clock) {
+  console.log("\n=== plan-record-sections Section 1: a read writes the section total and the next line, and nothing else ===");
+  clock.set(T0);
+  const h = await plan2Harness("sections1_read_writes", { taskUnderPlan: true, chapterCount: 2 });
+  const seeded = getState(h).goals.find(g => g.id === "plan-1");
+  check("sections1 setup: plan-1 holds chapterCount 2, no sectionCount, no nextSection, updatedAt T0",
+    seeded && seeded.chapterCount === 2 && !("sectionCount" in seeded) && !("nextSection" in seeded) && seeded.updatedAt === T0, seeded);
+  clock.advance(60_000);
+
+  // Turn 1: both fields written from an unchanged Chapter count.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three"], chapters: [{ n: 1, next: "2. Two" }, { n: 2, next: "3. Three" }] }));
+  await plan2ScoredTurn(h, "t-sections-1", "on-goal");
+  let r = sections1Read(h);
+  check("sections1 read: sectionCount is the parsed 3", r.holder && r.holder.sectionCount === 3, r.holder && r.holder.sectionCount);
+  check("sections1 read: nextSection is Chapter 2's line", r.holder && r.holder.nextSection === "3. Three", r.holder && r.holder.nextSection);
+  check("sections1 read: chapterCount stays 2", r.holder && r.holder.chapterCount === 2, r.holder && r.holder.chapterCount);
+  check("sections1 read: updatedAt is untouched by the two writes", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
+  check("sections1 read: no plan_* decision at all in the log (scope: every decision after the turn)", r.planDecisions.length === 0, r.planDecisions);
+
+  // Turn 2: the same document writes nothing and logs nothing.
+  const afterFirst = JSON.stringify(r.holder);
+  await plan2ScoredTurn(h, "t-sections-2", "on-goal");
+  r = sections1Read(h);
+  check("sections1 unchanged: the holder is identical to the previous turn's", JSON.stringify(r.holder) === afterFirst, r.holder);
+  check("sections1 unchanged: still no plan_* decision", r.planDecisions.length === 0, r.planDecisions);
+
+  // Turn 3: only the section total changes.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three", "Four"], chapters: [{ n: 1, next: "2. Two" }, { n: 2, next: "3. Three" }] }));
+  await plan2ScoredTurn(h, "t-sections-3", "on-goal");
+  r = sections1Read(h);
+  check("sections1 total alone: sectionCount is now 4 and nextSection is unchanged",
+    r.holder && r.holder.sectionCount === 4 && r.holder.nextSection === "3. Three", r.holder);
+  check("sections1 total alone: updatedAt is untouched", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
+
+  // Turn 4: the latest Chapter drops its Next: line, so the field goes,
+  // though Chapter 1 still carries one.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three", "Four"], chapters: [{ n: 1, next: "2. Two" }, { n: 2 }] }));
+  await plan2ScoredTurn(h, "t-sections-4", "on-goal");
+  r = sections1Read(h);
+  check("sections1 next dropped: nextSection is removed from the holder, not set to a value",
+    r.holder && !Object.prototype.hasOwnProperty.call(r.holder, "nextSection"), r.holder);
+  check("sections1 next dropped: sectionCount stays 4", r.holder && r.holder.sectionCount === 4, r.holder && r.holder.sectionCount);
+  check("sections1 next dropped: updatedAt is untouched", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
+  check("sections1 next dropped: still no plan_* decision", r.planDecisions.length === 0, r.planDecisions);
+
+  // Turn 5, the control: a Chapter rise moves updatedAt and logs plan_progress
+  // in its unchanged text, and the new Chapter's line is written beside it.
+  h.fsMap.set(PLAN2_FILE, sections1Doc({ sections: ["One", "Two", "Three", "Four"], chapters: [{ n: 1, next: "2. Two" }, { n: 2 }, { n: 3, next: "4. Four" }] }));
+  await plan2ScoredTurn(h, "t-sections-5", "on-goal");
+  r = sections1Read(h);
+  const progress = r.planDecisions.filter(d => d.action === "plan_progress");
+  check("sections1 control: chapterCount is now 3 and updatedAt moved", r.holder && r.holder.chapterCount === 3 && r.holder.updatedAt > T0, r.holder);
+  check("sections1 control: one plan_progress decision, its text exactly the holder, the document and 2 -> 3",
+    progress.length === 1 && progress[0].detail === `plan-1: ${PLAN2_PATH} Chapters 2 -> 3`, progress);
+  check("sections1 control: nextSection is Chapter 3's line", r.holder && r.holder.nextSection === "4. Four", r.holder && r.holder.nextSection);
+}
+
+// A reading of kind unreadable or archived writes neither field, on a holder
+// seeded with values the document would change. The read variant is the
+// control: the same seed and the same document at planPath do change both,
+// with plan-1 itself the active leaf.
+async function casePlanSections1_unreadableAndArchivedWriteNeither(clock) {
+  console.log("\n=== plan-record-sections Section 1: an unreadable or archived reading writes neither field ===");
+  const text = sections1Doc({ sections: ["One", "Two"], chapters: [{ n: 1, next: "2. Two" }] });
+  const variants = [
+    { label: "read (control)", seed: (h) => h.fsMap.set(PLAN2_FILE, text), changes: true },
+    { label: "unreadable, absent from all four places", seed: () => {}, changes: false },
+    { label: "unreadable, over the 256 KiB cap", seed: (h) => h.fsMap.set(PLAN2_FILE, text + "x".repeat(256 * 1024)), changes: false },
+    { label: "archived at docs/archive", seed: (h) => h.fsMap.set(`${HARNESS_CWD}/docs/archive/a_v1.md`, text), changes: false },
+  ];
+  for (const v of variants) {
+    clock.set(T0);
+    const tree = plan2Goals({ chapterCount: 1 });
+    const plan1Seed = tree.goals.find(g => g.id === "plan-1");
+    plan1Seed.sectionCount = 7;
+    plan1Seed.nextSection = "a stored line";
+    const h = await createTickHarness({ ...OPTS, caseName: `sections1_kind_${variants.indexOf(v)}`, stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+    v.seed(h);
+    await plan2ScoredTurn(h, "t-kind", "on-goal");
+    const { holder } = sections1Read(h);
+    if (v.changes) {
+      check(`sections1 kind (${v.label}): both fields take the document's values`,
+        holder && holder.sectionCount === 2 && holder.nextSection === "2. Two", holder);
+    } else {
+      check(`sections1 kind (${v.label}): sectionCount and nextSection are as seeded`,
+        holder && holder.sectionCount === 7 && holder.nextSection === "a stored line", holder);
+    }
+  }
+}
+
+// A holder at chapterCount 3 whose document now counts no Chapter keeps its
+// stored count and logs nothing, since the count only ratchets up, while the
+// same read still writes sectionCount and nextSection from the document. The
+// document's Chapters sit under "## Chapters (append-only)", a heading that
+// opens no block, so the read counts 0 Chapters and has no next line. The
+// holder is plan-1 above an active task-1, so only the read reaches plan-1.
+async function casePlanSections1_fewerChaptersKeepsTheCount(clock) {
+  console.log("\n=== plan-record-sections Section 1: a document counting fewer Chapters keeps the stored count ===");
+  clock.set(T0);
+  const tree = plan2Goals({ taskUnderPlan: true, chapterCount: 3 });
+  const plan1Seed = tree.goals.find(g => g.id === "plan-1");
+  plan1Seed.sectionCount = 7;
+  plan1Seed.nextSection = "a stored line";
+  const h = await createTickHarness({ ...OPTS, caseName: "sections1_fewer_chapters", stateOpts: { now: T0, goals: tree.goals, activeGoalId: tree.activeGoalId } });
+  clock.advance(60_000);
+  const text = sections1Doc({ sections: ["One", "Two"], chapters: [{ n: 1, next: "2. Two" }, { n: 2, next: "3. Three" }] })
+    .replace("\n## Chapters\n", "\n## Chapters (append-only)\n");
+  h.fsMap.set(PLAN2_FILE, text);
+  await plan2ScoredTurn(h, "t-fewer", "on-goal");
+  const r = sections1Read(h);
+  check("sections1 fewer: chapterCount stays 3", r.holder && r.holder.chapterCount === 3, r.holder && r.holder.chapterCount);
+  check("sections1 fewer: no plan_progress decision (scope: every decision after the turn)",
+    r.planDecisions.filter(d => d.action === "plan_progress").length === 0, r.planDecisions);
+  check("sections1 fewer: no plan_* decision at all", r.planDecisions.length === 0, r.planDecisions);
+  check("sections1 fewer: sectionCount is the read's 2", r.holder && r.holder.sectionCount === 2, r.holder && r.holder.sectionCount);
+  check("sections1 fewer: nextSection is removed, since the read has no Chapter",
+    r.holder && !Object.prototype.hasOwnProperty.call(r.holder, "nextSection"), r.holder);
+  check("sections1 fewer: updatedAt is untouched", r.holder && r.holder.updatedAt === T0, r.holder && r.holder.updatedAt);
 }
 
 // --- Section 1 (boundary-compaction): the plan document is read from the live directory ---

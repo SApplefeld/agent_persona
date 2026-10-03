@@ -1,5 +1,11 @@
 # Backlog
 
+## Operator check owed by the plan-record sections plan (parked 2026-10-02)
+
+The plan-record sections plan (`docs/archive/agent_persona_plan-record-sections_spec_v1.md`) is Complete. One check is the operator's.
+
+- **Watch the board card follow a worktree's count.** After this plan and the broker's companion plan merge, and the plugin cache and broker update, relaunch one persona working a plan in a linked worktree and watch its line on the Discord board card across two section closes. The count should move with the worktree copy and the next line should be the latest Chapter's. A card still drawing the launch checkout's count reopens the companion plan. A store entry missing `sectionCount` after a turn end reopens this one.
+
 ## Operator checks owed by the architect charter plan (parked 2026-10-02)
 
 The architect charter plan (`docs/archive/agent_persona_architect-draft-pr_spec_v1.md`) is Complete. Three checks are the operator's.
